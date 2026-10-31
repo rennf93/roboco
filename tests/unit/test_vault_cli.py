@@ -12,7 +12,9 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
+from roboco import vault
 from roboco.config import settings
+from roboco.db import base as db_base
 from roboco.services.vault_writer import TaskNoteData
 from roboco.vault import ensure_vault_assets, main
 
@@ -68,8 +70,10 @@ def test_relocate_into_existing_vault_grafts_roboco_subtree(
     assert main(["relocate", str(personal)]) == 0
 
     assert (personal / "RoboCo" / "marker.md").read_text(encoding="utf-8") == "hi"
-    assert not (personal / "old-vault").exists()  # no nested old dirname
-    assert not (old_root / "RoboCo").exists()  # subtree moved, not copied
+    # No nested old dirname
+    assert not (personal / "old-vault").exists()
+    # Subtree moved, not copied
+    assert not (old_root / "RoboCo").exists()
     # Personal config untouched; absent shipped assets materialized.
     assert (personal / ".obsidian" / "app.json").read_text(
         encoding="utf-8"
@@ -200,3 +204,25 @@ def test_rebuild_writes_agent_task_journal_and_a2a(
     assert any((tmp_path / "RoboCo" / "A2A").glob("*.md"))
     # asset bootstrap ran too
     assert (tmp_path / ".obsidian" / "community-plugins.json").exists()
+
+
+def test_rebuild_closes_its_loops_engines_before_the_loop_ends(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``asyncio.run`` ends the loop the rebuild's engine opened its
+    connections on; nothing could close them afterwards."""
+    monkeypatch.setattr(settings, "obsidian_vault_enabled", True)
+    monkeypatch.setattr(settings, "vault_path", str(tmp_path))
+    calls: list[str] = []
+
+    async def _rebuild(_vault_root: Path) -> None:
+        calls.append("rebuild")
+
+    async def _close_db() -> None:
+        calls.append("close_db")
+
+    monkeypatch.setattr(vault, "_rebuild", _rebuild)
+    monkeypatch.setattr(db_base, "close_db", _close_db)
+
+    assert main(["rebuild"]) == 0
+    assert calls == ["rebuild", "close_db"]

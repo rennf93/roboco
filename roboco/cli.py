@@ -11,6 +11,7 @@ import asyncio
 from roboco.bootstrap import main
 from roboco.config import resolve_uvicorn_loop_factory, settings
 from roboco.db import bootstrap_database
+from roboco.db.base import run_then_close_db
 
 
 def parse_args() -> argparse.Namespace:
@@ -48,13 +49,15 @@ def cli() -> None:
     loop_factory = resolve_uvicorn_loop_factory(settings.uvicorn_loop)
 
     if args.db_only:
-        asyncio.run(bootstrap_database(), loop_factory=loop_factory)
+        asyncio.run(run_then_close_db(bootstrap_database()), loop_factory=loop_factory)
     else:
         asyncio.run(
-            main(
-                skip_db=args.skip_db,
-                skip_orchestrator=args.skip_orchestrator,
-                spawn_agents=args.spawn,
+            run_then_close_db(
+                main(
+                    skip_db=args.skip_db,
+                    skip_orchestrator=args.skip_orchestrator,
+                    spawn_agents=args.spawn,
+                )
             ),
             loop_factory=loop_factory,
         )

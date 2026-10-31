@@ -219,7 +219,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
     if args.command == "rebuild":
-        asyncio.run(_rebuild(Path(settings.vault_path)))
+        from roboco.db.base import run_then_close_db
+
+        asyncio.run(run_then_close_db(_rebuild(Path(settings.vault_path))))
         print(f"Vault rebuilt at {settings.vault_path}")
         return 0
     return _relocate(args.new_path)

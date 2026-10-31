@@ -503,12 +503,9 @@ markers = [
 ]
 # A warning fails the run. Each one the suite printed was a real defect (an
 # un-awaited coroutine from a mis-modelled session, a deprecated API, an FK
-# cycle SQLAlchemy could not order, a too-short HMAC key): fix the cause.
-# ResourceWarning stays hidden, as Python hides it by default: the e2e harness
-# and the eval bench still bind the process-global DB engines and RAG service
-# to short-lived event loops (the uvicorn threads, each test's loop, each
-# run_db) and leave connections bound to dead loops to garbage collection.
-filterwarnings = ["error", "ignore::ResourceWarning"]
+# cycle SQLAlchemy could not order, a too-short HMAC key, a DB connection left
+# open on an event loop that ended): fix the cause.
+filterwarnings = ["error"]
 
 [tool.coverage.run]
 # Coverage core. Python 3.12+ supports sys.monitoring; the legacy `pytrace`

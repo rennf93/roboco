@@ -182,8 +182,10 @@ async def test_h25_sweep_deletes_orphan_release_locks(
 
         await rp.sweep_orphan_release_locks()
 
-        assert await conn.get(orphan_key) is None  # orphan deleted
-        assert await conn.get(in_flight_key) is not None  # in-flight preserved
+        # Orphan deleted
+        assert await conn.get(orphan_key) is None
+        # In-flight preserved
+        assert await conn.get(in_flight_key) is not None
     finally:
         rp._INFLIGHT_APPROVES.clear()
         await conn.flushdb()
@@ -216,17 +218,9 @@ async def test_m1_refresh_rotated_tokens_survive_caller_rollback(
     discard them (TikTok already invalidated the old refresh_token → a
     discard was a permanent credential lockout). Seeds a row, drives the
     real ``_refresh`` with a mocked TikTok token endpoint, rolls the caller
-    session back, and re-reads from a fresh session.
-
-    The lazy engine (``_DbHolder``) is reset first so ``_refresh``'s
-    internal ``get_session_factory()`` creates the engine in THIS test's
-    loop — without the reset, prior API requests in the uvicorn thread bind
-    the lazy engine to a different loop and asyncpg raises
-    "Future attached to a different loop"."""
+    session back, and re-reads from a fresh session."""
     from roboco.db import base as db_base
 
-    db_base._DbHolder.engine = None
-    db_base._DbHolder.session_factory = None
     factory = db_base.get_session_factory()
     try:
         await _seed_tiktok_row(factory)
@@ -385,10 +379,6 @@ async def test_m21_render_cycle_commits_per_task(
 
     monkeypatch.setattr(settings, "video_engine_enabled", True)
 
-    # Reset the lazy engine so ``get_db_context`` (used by the cycle) binds
-    # to THIS test's loop, not the uvicorn thread's.
-    db_base._DbHolder.engine = None
-    db_base._DbHolder.session_factory = None
     factory = db_base.get_session_factory()
     try:
         a_id, b_id = await _seed_video_render_stack(factory)
@@ -445,7 +435,8 @@ async def test_m21_render_cycle_commits_per_task(
             # Retryable, not terminal: one failed attempt, next cycle retries.
             assert b_draft.get("render_status") is None
             assert b_draft.get("render_attempts") == 1
-            assert post_row.confirmed_by_human is False  # held for CEO
+            # Held for CEO
+            assert post_row.confirmed_by_human is False
             post_draft = markers.get_video_draft(post_row) or {}
             assert post_draft.get("source_task_id") == str(a_id)
             assert post_draft.get("render_status") == "rendered"

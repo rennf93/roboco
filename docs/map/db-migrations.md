@@ -19,12 +19,15 @@ The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for 
 
 | Name | Kind | File:Line | Responsibility |
 |------|------|-----------|----------------|
-| `Base` | class | db/base.py:43 | DeclarativeBase + MetaData naming convention. |
-| `get_engine` | fn | db/base.py:157 | Lazy singleton async engine (pool_pre_ping). |
-| `get_db` | fn | db/base.py:226 | FastAPI async session dependency. |
+| `Base` | class | db/base.py:41 | DeclarativeBase + MetaData naming convention. |
+| `_PoolEngines` | class | db/base.py:55 | A pool's engines, one per event loop (`_PRIMARY_ENGINES`, `_BACKGROUND_ENGINES`): each loop gets its own instead of taking over another's; an engine built with no loop running is claimed by the first loop to use it. |
+| `get_engine` | fn | db/base.py:188 | The running loop's async engine for a pool, created on first use (pool_pre_ping). |
+| `close_db` | fn | db/base.py:492 | Disposes the running loop's engines (both pools); another loop's are that loop's owner's to close. |
+| `run_then_close_db` | fn | db/base.py:503 | Awaits a one-shot `asyncio.run`'s work, then `close_db` before that loop ends: `python -m roboco.cli`, `python -m roboco.vault rebuild`, the decisions export. |
+| `get_db` | fn | db/base.py:206 | FastAPI async session dependency. |
 | `get_db_context` | fn | db/base.py | Out-of-request async session context. |
-| `init_db` | fn | db/base.py:434 | Boot entry: stamp pre-Alembic DB at 001 then `run_migrations`. |
-| `run_migrations` | fn | db/base.py:373 | Runs `alembic upgrade head` via `command.upgrade` in a thread. |
+| `init_db` | fn | db/base.py:414 | Boot entry: stamp pre-Alembic DB at 001 then `run_migrations`. |
+| `run_migrations` | fn | db/base.py:353 | Runs `alembic upgrade head` via `command.upgrade` in a thread. |
 | `bootstrap_database` | fn | db/seed.py:82 | `init_db` + seed default agents. |
 | `TaskTable` | class | tables.py:167 | Core task entity (largest table, drives lifecycle). |
 | `WorkSessionTable` | class | tables.py:975 | Per-claim session; single-active enforced by 047 partial-unique index. |
@@ -390,6 +393,8 @@ Migration chain 001..110
 > Delta 2026-07-21/23 (10 migrations, 077-086): `077_github_app` (GitHub App credentials + `projects.github_installation_id`), `078_project_codegen_command` (`projects.codegen_command`, auto-regenerate-before-push), `079_notification_backoff` (re-escalation columns replacing the every-tick-forever sweep), `080_task_project_budgets` (`tasks.budget_usd` + `projects.monthly_budget_usd`), `081_doctrine_version` (`agent_spawn_sessions.doctrine_version`, the golden-task eval cohort stamp), `082_routing_presets` (named full-snapshot routing presets), `083_seed_openai_provider` + `084_modelprovider_gemini` + `085_seed_gemini_provider` + `086_enable_gemini_provider` (Codex + Gemini CLI provider rows — see `docs/map/runtime-providers.md`). Chain head is now 086.
 
 > Delta 2026-10-31 (trail #32): `roboco/db/base.py` disposes an engine on the loop that owns its pooled connections. `close_db` hands an engine bound to another thread's running loop to that loop (`_dispose_on_its_loop`, `asyncio.run_coroutine_threadsafe`) instead of awaiting `dispose()` on the wrong loop, and `_rebind_holder_to_current_loop` does the same with the engine it drops, which before was dropped un-disposed. Both leaked asyncpg connections that stayed open until garbage collection. The e2e conftest's `_reset_lazy_db_holder` disposes the app's engine on the uvicorn thread's loop before dropping it between tests; with `ResourceWarning` as an error, the e2e smoke's unclosed connections go from 102 to 31. `roboco/logging.py`'s `setup_logging` closes the file handlers it replaces. `pyproject.toml` still exempts `ResourceWarning`: the e2e harness and eval bench bind the process-global engines and RAG service to short-lived loops, which the remaining 31 come from.
+
+> Delta 2026-10-31, later (trail #32): the cross-loop disposal above is replaced. `roboco/db/base.py` keeps one engine per event loop (`_PoolEngines`); `_DbHolder`, `_BackgroundDbHolder`, `_rebind_holder_to_current_loop` and `_dispose_on_its_loop` are gone. A loop never takes over another's engine, which had disposed it while that loop's background hooks still held connections, and `close_db` closes only the running loop's. Each loop's owner closes its engines before the loop ends: production's lifespan, the one-shot CLIs through `run_then_close_db` (`python -m roboco.cli`, including `--db-only`; `python -m roboco.vault rebuild`; the decisions export), which had left their connections to die with the process, the e2e app's new lifespan (`tests/e2e_smoke/harness.py`), `E2EStack.run_db` for its `asyncio.run`, the root conftest for each test's loop. The e2e conftest's `_reset_lazy_db_holder` and the tests' `_DbHolder.engine = None` resets are gone. The e2e smoke's unclosed connections go from 31 to 0, and `pyproject.toml` no longer exempts `ResourceWarning`.
 
 ## Regression Risks
 

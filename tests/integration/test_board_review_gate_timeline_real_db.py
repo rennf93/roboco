@@ -75,7 +75,7 @@ def _agent(uuid: str, slug: str, role: AgentRole, team: Team | None) -> AgentTab
 async def board_gate_setup(
     db_session: AsyncSession, _test_database_url: str
 ) -> AsyncIterator[dict]:
-    """Seed agents + a board/coordination task and point the global DB holder
+    """Seed agents + a board/coordination task and point this loop's app engine
     at the test database so the orchestrator's own session writes land here.
 
     Existence-checked per row (mirrors ``test_roadmap_routes.py``'s
@@ -114,19 +114,19 @@ async def board_gate_setup(
     db_session.add(task)
     await db_session.commit()
 
-    # Point the global DB holder (used by get_db_context inside the handoff) at
-    # the SAME test database, so the gate's real writes land where we read them.
-    saved_engine = db_base._DbHolder.engine
-    saved_factory = db_base._DbHolder.session_factory
-    saved_loop = db_base._DbHolder.loop
+    # Make this loop's app engine (used by get_db_context inside the handoff)
+    # one on the SAME test database, so the gate's real writes land where we
+    # read them.
     handoff_engine = create_async_engine(_test_database_url, future=True)
-    db_base._DbHolder.engine = handoff_engine
-    db_base._DbHolder.session_factory = async_sessionmaker(
-        bind=handoff_engine, class_=AsyncSession, expire_on_commit=False
+    saved = db_base._PRIMARY_ENGINES.release()
+    db_base._PRIMARY_ENGINES.install(
+        db_base._LoopEngine(
+            engine=handoff_engine,
+            session_factory=async_sessionmaker(
+                bind=handoff_engine, class_=AsyncSession, expire_on_commit=False
+            ),
+        )
     )
-    # Clear the loop stamp so the per-loop rebind guard claims the injected
-    # engine for this test's loop instead of discarding it as foreign.
-    db_base._DbHolder.loop = None
 
     # The dispatcher receives tasks from the HTTP API, which serializes
     # assigned_to as the agent UUID; _resolve_agent_slug maps it back to a slug.
@@ -143,10 +143,10 @@ async def board_gate_setup(
     try:
         yield {"task_id": str(task.id), "task_dict": task_dict, "db": db_session}
     finally:
+        db_base._PRIMARY_ENGINES.release()
         await handoff_engine.dispose()
-        db_base._DbHolder.engine = saved_engine
-        db_base._DbHolder.session_factory = saved_factory
-        db_base._DbHolder.loop = saved_loop
+        if saved is not None:
+            db_base._PRIMARY_ENGINES.install(saved)
 
 
 def _make_orch() -> AgentOrchestrator:

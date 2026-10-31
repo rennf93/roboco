@@ -25,9 +25,10 @@ from uuid import uuid4
 
 import pytest
 from roboco.config import settings
+from roboco.db import base as db_base
 from roboco.db.base import (
-    _BackgroundDbHolder,
-    _DbHolder,
+    _LoopEngine,
+    _PoolEngines,
     close_db,
     get_db_context,
     get_engine,
@@ -39,9 +40,7 @@ from roboco.services.notification_delivery import defer_after_commit
 from sqlalchemy import select
 
 if TYPE_CHECKING:
-    from collections.abc import Generator
-
-    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+    from sqlalchemy.ext.asyncio import AsyncEngine
 
 _PRIMARY_POOL_SIZE = 10
 _PRIMARY_MAX_OVERFLOW = 20
@@ -51,23 +50,11 @@ _TWO = 2
 
 
 @pytest.fixture(autouse=True)
-def _reset_holders() -> Generator[None]:
-    """Snapshot/restore BOTH singletons so tests don't poison the live
-    engines, mirroring test_db_base.py's _reset_holder, extended to the
-    background holder this module adds coverage for."""
-    saved_primary = (_DbHolder.engine, _DbHolder.session_factory, _DbHolder.loop)
-    saved_background = (
-        _BackgroundDbHolder.engine,
-        _BackgroundDbHolder.session_factory,
-        _BackgroundDbHolder.loop,
-    )
-    yield
-    _DbHolder.engine, _DbHolder.session_factory, _DbHolder.loop = saved_primary
-    (
-        _BackgroundDbHolder.engine,
-        _BackgroundDbHolder.session_factory,
-        _BackgroundDbHolder.loop,
-    ) = saved_background
+def _fresh_engines(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Empty registries for BOTH pools per test, mirroring test_db_base.py's
+    _fresh_engines, so no test reaches or leaves behind a real engine."""
+    monkeypatch.setattr(db_base, "_PRIMARY_ENGINES", _PoolEngines())
+    monkeypatch.setattr(db_base, "_BACKGROUND_ENGINES", _PoolEngines())
 
 
 # ---------------------------------------------------------------------------
@@ -77,8 +64,6 @@ def _reset_holders() -> Generator[None]:
 
 def test_background_pool_is_a_separate_engine_from_primary() -> None:
     """Two distinct create_async_engine calls, not the primary engine reused."""
-    _DbHolder.engine = None
-    _BackgroundDbHolder.engine = None
     engines = [MagicMock(), MagicMock()]
     with patch("roboco.db.base.create_async_engine", side_effect=engines) as ce:
         primary = get_engine("primary")
@@ -98,8 +83,6 @@ def test_background_pool_sized_from_its_own_settings(
     monkeypatch.setattr(settings, "database_max_overflow", 20)
     monkeypatch.setattr(settings, "database_background_pool_size", 4)
     monkeypatch.setattr(settings, "database_background_max_overflow", 4)
-    _DbHolder.engine = None
-    _BackgroundDbHolder.engine = None
     with patch("roboco.db.base.create_async_engine", return_value=MagicMock()) as ce:
         get_engine("primary")
         get_engine("background")
@@ -112,23 +95,19 @@ def test_background_pool_sized_from_its_own_settings(
 
 
 def test_background_pool_caches_independently_of_primary() -> None:
-    _DbHolder.engine = None
-    _BackgroundDbHolder.engine = None
     with patch("roboco.db.base.create_async_engine", return_value=MagicMock()) as ce:
         get_engine("primary")
         get_engine("primary")
         get_engine("background")
         get_engine("background")
-    assert ce.call_count == _TWO  # one per pool, each cached on repeat access
+    # One per pool, each cached on repeat access
+    assert ce.call_count == _TWO
 
 
-def test_background_pool_rebinds_on_a_different_event_loop() -> None:
-    """Mirrors test_get_engine_rebinds_on_a_different_event_loop for the
-    background holder: a second loop must not reuse the first loop's
-    background engine (its pooled connections are loop-bound)."""
-    _BackgroundDbHolder.engine = None
-    _BackgroundDbHolder.session_factory = None
-    _BackgroundDbHolder.loop = None
+def test_each_event_loop_gets_its_own_background_engine() -> None:
+    """Mirrors test_each_event_loop_gets_its_own_engine for the background
+    pool: a second loop must not reuse the first loop's background engine
+    (its pooled connections are loop-bound)."""
     engines = [MagicMock(), MagicMock()]
     with patch("roboco.db.base.create_async_engine", side_effect=engines):
 
@@ -142,10 +121,6 @@ def test_background_pool_rebinds_on_a_different_event_loop() -> None:
 
 
 def test_get_session_factory_background_pool_creates_and_caches() -> None:
-    _DbHolder.engine = None
-    _DbHolder.session_factory = None
-    _BackgroundDbHolder.engine = None
-    _BackgroundDbHolder.session_factory = None
     fake_factories = [MagicMock(), MagicMock()]
     with (
         patch("roboco.db.base.create_async_engine", return_value=MagicMock()),
@@ -186,27 +161,23 @@ async def test_close_db_disposes_both_pools() -> None:
     fake_primary.dispose = AsyncMock()
     fake_background = MagicMock()
     fake_background.dispose = AsyncMock()
-    _DbHolder.engine = fake_primary
-    _DbHolder.session_factory = MagicMock()
-    _BackgroundDbHolder.engine = fake_background
-    _BackgroundDbHolder.session_factory = MagicMock()
+    db_base._PRIMARY_ENGINES.install(
+        _LoopEngine(
+            engine=cast("AsyncEngine", fake_primary), session_factory=MagicMock()
+        )
+    )
+    db_base._BACKGROUND_ENGINES.install(
+        _LoopEngine(
+            engine=cast("AsyncEngine", fake_background), session_factory=MagicMock()
+        )
+    )
 
     await close_db()
 
     fake_primary.dispose.assert_awaited_once()
     fake_background.dispose.assert_awaited_once()
-    primary_engine_after = cast("AsyncEngine | None", _DbHolder.engine)
-    primary_factory_after = cast(
-        "async_sessionmaker[AsyncSession] | None", _DbHolder.session_factory
-    )
-    background_engine_after = cast("AsyncEngine | None", _BackgroundDbHolder.engine)
-    background_factory_after = cast(
-        "async_sessionmaker[AsyncSession] | None", _BackgroundDbHolder.session_factory
-    )
-    assert primary_engine_after is None
-    assert primary_factory_after is None
-    assert background_engine_after is None
-    assert background_factory_after is None
+    assert db_base._PRIMARY_ENGINES.current() is None
+    assert db_base._BACKGROUND_ENGINES.current() is None
 
 
 # ---------------------------------------------------------------------------
@@ -243,8 +214,6 @@ async def test_primary_and_background_sessions_have_independent_identity_maps(
     the primary one. Loading the SAME row through a primary-pool session and
     a background-pool session must yield two distinct Python objects (no
     identity-map sharing across pools), both reflecting the same row."""
-    _DbHolder.engine = None
-    _BackgroundDbHolder.engine = None
     try:
         agent_id = uuid4()
         async with get_db_context(pool="primary") as db:
@@ -302,7 +271,6 @@ async def test_defer_after_commit_is_engine_agnostic_on_background_pool(
     Mirrors test_defer_after_commit_does_not_drain_at_savepoint_release in
     tests/integration/test_notification_expiry_sweep.py, run here against
     the background pool instead of the default fixture session."""
-    _BackgroundDbHolder.engine = None
     try:
         async with get_db_context(pool="background") as db:
             ran: list[str] = []
@@ -310,18 +278,22 @@ async def test_defer_after_commit_is_engine_agnostic_on_background_pool(
             async def _work() -> None:
                 ran.append("ran")
 
-            await db.execute(select(1))  # force a real root transaction to open
+            # Force a real root transaction to open
+            await db.execute(select(1))
             defer_after_commit(db, _work)
 
             async with db.begin_nested():
-                pass  # savepoint opens and releases; root transaction stays open
+                # Savepoint opens and releases; root transaction stays open
+                pass
 
-            assert ran == []  # not drained at the savepoint boundary
+            # Not drained at the savepoint boundary
+            assert ran == []
 
             await db.commit()
             drain_tasks = list(db.info.get("_roboco_drain_tasks", []))
             if drain_tasks:
                 await asyncio.gather(*drain_tasks, return_exceptions=True)
-            assert ran == ["ran"]  # drained at the real root commit
+            # Drained at the real root commit
+            assert ran == ["ran"]
     finally:
         await close_db()

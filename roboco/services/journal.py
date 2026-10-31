@@ -76,7 +76,8 @@ class JournalService(BaseService):
 
     def __init__(self, db: AsyncSession) -> None:
         super().__init__(db)
-        self._optimal_service: Any = None  # Lazy loaded to avoid circular import
+        # Lazy loaded to avoid circular import
+        self._optimal_service: Any = None
 
     async def _get_optimal_service(self) -> Any:
         """Lazy load the OptimalService."""
@@ -884,7 +885,7 @@ class JournalService(BaseService):
                         if entry:
                             # Filter by agent_id to ensure we only
                             # return this agent's entries
-                            journal = await self.get_journal(agent_id)
+                            journal = await self.get_journal_by_agent(agent_id)
                             if journal and entry.journal_id == journal.id:
                                 entries.append(entry)
                     except ValueError:

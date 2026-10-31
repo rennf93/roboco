@@ -45,11 +45,13 @@ def _make_envelope(error: str, missing: list[str] | None = None) -> MagicMock:
 
 
 def _build_app(mock_choreographer: MagicMock | None = None) -> FastAPI:
-    """Minimal FastAPI app with the flow_main_pm router and optional mocked dep."""
+    """Minimal FastAPI app with the flow_main_pm router and a mocked
+    choreographer: the real one opens a database session for every request,
+    even one its body validation rejects."""
     app = FastAPI()
     app.include_router(router)
-    if mock_choreographer is not None:
-        app.dependency_overrides[get_choreographer] = lambda: mock_choreographer
+    choreographer = MagicMock() if mock_choreographer is None else mock_choreographer
+    app.dependency_overrides[get_choreographer] = lambda: choreographer
     return app
 
 
@@ -89,7 +91,8 @@ def test_i_will_plan_rejects_empty_subtasks_for_pm() -> None:
             "task_id": str(uuid4()),
             "plan": "Route to backend cell only",
             "approach": _GOOD_APPROACH,
-            "sub_tasks": [],  # empty — gateway rejects for PM
+            # Empty — gateway rejects for PM
+            "sub_tasks": [],
         },
     )
     # Schema validation passes (sub_tasks is a valid empty list).

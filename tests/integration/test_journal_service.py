@@ -497,7 +497,8 @@ async def test_write_decision_inside_caller_savepoint_leaves_its_transaction_ope
     ``unblock`` and main-PM ``escalate_up``)."""
     svc = journal_setup["svc"]
     session = svc.session
-    session.sync_session.autoflush = False  # as get_session_factory() builds it
+    # As get_session_factory() builds it
+    session.sync_session.autoflush = False
 
     async with session.begin_nested():
         entry = await svc.write_decision(
@@ -522,7 +523,8 @@ async def test_create_entry_integrity_error_inside_caller_savepoint_propagates(
     discarded the caller's entire outer transaction instead."""
     svc = journal_setup["svc"]
     session = svc.session
-    session.sync_session.autoflush = False  # as get_session_factory() builds it
+    # As get_session_factory() builds it
+    session.sync_session.autoflush = False
     journal = await svc.get_or_create_journal(journal_setup["agent_id"])
     await session.execute(
         update(JournalTable)
@@ -538,7 +540,8 @@ async def test_create_entry_integrity_error_inside_caller_savepoint_propagates(
                     type=JournalEntryType.GENERAL,
                     title="orphan",
                     content="x",
-                    task_id=uuid4(),  # no such task: FK violation at flush
+                    # No such task: FK violation at flush
+                    task_id=uuid4(),
                 )
             )
 
@@ -745,10 +748,10 @@ async def test_get_growth_metrics_with_resolved_struggles(
 
 
 @pytest.mark.asyncio
-async def test_search_entries_appends_when_journal_matches(
+async def test_search_entries_returns_the_agents_own_match(
     journal_setup: dict,
 ) -> None:
-    """When the journal lookup matches and entry's journal_id aligns, append."""
+    """A RAG match in the agent's own journal is returned in full."""
     svc = journal_setup["svc"]
     aid = journal_setup["agent_id"]
     journal = await svc.get_or_create_journal(aid)
@@ -768,31 +771,34 @@ async def test_search_entries_appends_when_journal_matches(
     mock_optimal.search = _AsyncMock(return_value=[mock_result])
     svc._optimal_service = mock_optimal
 
-    # Patch get_journal to return the journal regardless of arg, so the
-    # `entry.journal_id == journal.id` branch runs.
-    original_get_journal = svc.get_journal
-    svc.get_journal = _AsyncMock(return_value=journal)
-    try:
-        results = await svc.search_entries(aid, "query", top_k=5)
-    finally:
-        svc.get_journal = original_get_journal
-    assert any(e.id == entry.id for e in results)
+    results = await svc.search_entries(aid, "query", top_k=5)
+    assert [e.id for e in results] == [entry.id]
 
 
 @pytest.mark.asyncio
-async def test_search_entries_with_valid_metadata_runs_lookup(
-    journal_setup: dict,
+async def test_search_entries_skips_another_agents_match(
+    journal_setup: dict, db_session: AsyncSession
 ) -> None:
-    """search_entries fetches full entries via metadata.entry_id.
-
-    Note: the production code calls `get_journal(agent_id)` but the param
-    is actually a journal_id-shaped UUID, so the per-result filter is a
-    near-miss in production. We assert the call path runs without error
-    and that the agent-id mismatch produces an empty list.
-    """
+    """A RAG match in another agent's journal is never returned."""
     svc = journal_setup["svc"]
     aid = journal_setup["agent_id"]
-    journal = await svc.get_or_create_journal(aid)
+    other = AgentTable(
+        id=uuid4(),
+        name="Other Dev",
+        slug=f"be-dev-{uuid4().hex[:8]}",
+        role=AgentRole.DEVELOPER,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="dev",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(other)
+    await db_session.flush()
+    await svc.get_or_create_journal(aid)
+    journal = await svc.get_or_create_journal(other.id)
     entry = await svc.create_entry(
         JournalEntryCreate(
             journal_id=journal.id,
@@ -809,10 +815,8 @@ async def test_search_entries_with_valid_metadata_runs_lookup(
     mock_optimal.search = _AsyncMock(return_value=[mock_result])
     svc._optimal_service = mock_optimal
 
-    # Path runs through entry_id parsing + lookup.
     results = await svc.search_entries(aid, "query", top_k=5)
-    # get_journal(agent_id) won't match anything → empty list.
-    assert isinstance(results, list)
+    assert results == []
 
 
 @pytest.mark.asyncio

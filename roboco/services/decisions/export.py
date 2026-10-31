@@ -277,7 +277,11 @@ def main(argv: list[str] | None = None) -> int:
         help="Maximum rows to select (default 50000, oldest first).",
     )
     args = parser.parse_args(argv)
-    written = asyncio.run(export_corpus(args.out, args.pilot, max(args.limit, 0)))
+    from roboco.db.base import run_then_close_db
+
+    written = asyncio.run(
+        run_then_close_db(export_corpus(args.out, args.pilot, max(args.limit, 0)))
+    )
     print(f"wrote {written} labeled examples to {args.out}")
     return 0
 

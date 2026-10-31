@@ -12,9 +12,11 @@ from typing import TYPE_CHECKING, Annotated, Any, cast
 from uuid import UUID
 
 import httpx
+import pytest
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, field_validator
+from roboco.api import middleware as middleware_module
 from roboco.api.middleware import (
     DbCommitMiddleware,
     _uuid_field_remediation,
@@ -47,6 +49,20 @@ from structlog.testing import capture_logs
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+@pytest.fixture(autouse=True)
+def _no_verb_latency_writes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A flow-verb request here would write its latency sample through the
+    real engine, on TestClient's own loop: that loop ends with the request and
+    never closes the engine. ``test_verb_latency_telemetry.py`` covers the
+    write itself."""
+
+    async def _skip_write(*_sample: object) -> None:
+        return None
+
+    monkeypatch.setattr(middleware_module, "_persist_verb_latency", _skip_write)
+
 
 # ---------------------------------------------------------------------------
 # get_status_code
@@ -260,7 +276,8 @@ def test_truncated_task_id_422_carries_remediation() -> None:
 def test_other_validation_422_omits_remediation() -> None:
     """A non-task_id validation error keeps the standard 422 shape (no remediate)."""
     client = TestClient(_make_uuid_app(), raise_server_exceptions=False)
-    response = client.post("/needs-uuid", json={})  # missing task_id entirely
+    # Missing task_id entirely
+    response = client.post("/needs-uuid", json={})
     assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
     assert "remediate" not in response.json()
 
@@ -394,7 +411,8 @@ def test_request_validation_handler_scrubs_secrets_from_log() -> None:
     assert logged_body["api_key"] == "***REDACTED***"
     assert logged_body["auth_token"] == "***REDACTED***"
     assert logged_body["nested"]["git_token"] == "***REDACTED***"
-    assert logged_body["nested"]["safe"] == "keep"  # non-secret preserved
+    # Non-secret preserved
+    assert logged_body["nested"]["safe"] == "keep"
     assert "errors" in fails[0]
 
 
@@ -422,8 +440,10 @@ def test_request_validation_handler_log_preserves_non_secret_fields() -> None:
     fails = [e for e in logs if e["event"] == "Request validation failed"]
     assert len(fails) == 1
     logged_body = fails[0]["body"]
-    assert logged_body["title"] == "visible-title"  # non-secret preserved
-    assert logged_body["git_token"] == "***REDACTED***"  # secret redacted
+    # Non-secret preserved
+    assert logged_body["title"] == "visible-title"
+    # Secret redacted
+    assert logged_body["git_token"] == "***REDACTED***"
     assert "ghp_secret_xyz" not in str(logged_body)
 
 
@@ -655,7 +675,8 @@ class _CancelableCommitSession:
     async def commit(self) -> None:
         self._order.append("commit_start")
         await self._never_set.wait()
-        self._order.append("commit_end")  # unreachable: proves no commit-after-cancel
+        # Unreachable: proves no commit-after-cancel
+        self._order.append("commit_end")
 
     async def rollback(self) -> None:
         self._order.append("rollback")

@@ -4,8 +4,8 @@ Pieces (all REAL except GitHub and the LLM):
 
 - The API: the real v1 flow/do routers + real middleware/exception handlers,
   served by uvicorn in a thread, over the ephemeral test Postgres (the app's
-  own lazy engine is pointed at it by patching ``settings.database_*`` and
-  resetting ``_DbHolder``).
+  own engine is pointed at it by patching ``settings.database_*``; the
+  server's loop builds that engine and closes it on shutdown).
 - Git: a local bare origin whose path CONTAINS ``github.com/<owner>/<repo>``
   — ``_parse_git_url`` extracts owner/repo from it while clone/fetch/push
   run tokenless over the local protocol.
@@ -29,7 +29,7 @@ import socket
 import subprocess
 import threading
 import time
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -42,7 +42,7 @@ from sqlalchemy.engine.url import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import AsyncIterator, Iterator
     from pathlib import Path
     from types import ModuleType
     from typing import Protocol
@@ -283,7 +283,13 @@ class E2EStack:
         return self.workspaces_root / project_slug / team / agent_slug
 
     def run_db(self, coro_fn: Any) -> Any:
-        """Run ``coro_fn(session)`` against a fresh engine/session and return."""
+        """Run ``coro_fn(session)`` against a fresh engine/session and return.
+
+        Production code ``coro_fn`` reaches (a hook's ``get_db_context()``)
+        opens the app's own engine on this ``asyncio.run`` loop;
+        ``run_then_close_db`` closes it before the loop ends.
+        """
+        from roboco.db.base import run_then_close_db
 
         async def _run() -> Any:
             engine = create_async_engine(self.db_url)
@@ -296,7 +302,7 @@ class E2EStack:
             finally:
                 await engine.dispose()
 
-        return asyncio.run(_run())
+        return asyncio.run(run_then_close_db(_run()))
 
 
 def _free_port() -> int:
@@ -337,6 +343,18 @@ def _make_admin_clone(root: Path, origin: Path) -> Path:
     return admin
 
 
+@asynccontextmanager
+async def _close_db_and_rag_on_shutdown(_app: FastAPI) -> AsyncIterator[None]:
+    """Close the RAG service and engines the server's loop opened before that
+    loop ends, as the production lifespan does (``roboco/api/app.py``)."""
+    from roboco.db.base import close_db
+    from roboco.services.optimal import close_optimal_service
+
+    yield
+    await close_optimal_service()
+    await close_db()
+
+
 def _build_app(gh: _FakeGitHub) -> FastAPI:
     from roboco.api.middleware import setup_middleware
     from roboco.api.routes.dashboard import router as dashboard_router
@@ -356,7 +374,7 @@ def _build_app(gh: _FakeGitHub) -> FastAPI:
     from roboco.api.routes.v1 import flow_pr_reviewer as fpr
     from roboco.api.routes.v1 import flow_qa as fq
 
-    app = FastAPI(title="roboco-e2e-smoke")
+    app = FastAPI(title="roboco-e2e-smoke", lifespan=_close_db_and_rag_on_shutdown)
     setup_middleware(app)
     app.include_router(health_router)
     for module in (fd, fq, fdoc, fcp, fmp, fb, fa, fpr, fdv):
@@ -417,9 +435,12 @@ def build_e2e_stack(
     mp.setattr(settings, "workspace_auto_clone", True)
     mp.setattr(settings, "encryption_key", Fernet.generate_key().decode())
 
-    # The app's lazy engine must bind to the patched settings, not a leftover.
-    db_base._DbHolder.engine = None
-    db_base._DbHolder.session_factory = None
+    # The app's engines must bind to the patched settings. Each loop builds
+    # its own after this point; one built earlier with no loop running would
+    # be claimed, settings and all, by the first loop to use it, so it is
+    # dropped (it opens connections only once a loop claims it).
+    for engines in (db_base._PRIMARY_ENGINES, db_base._BACKGROUND_ENGINES):
+        engines.release()
 
     port = _free_port()
     base_url = f"http://127.0.0.1:{port}"
@@ -469,10 +490,9 @@ def build_e2e_stack(
             container_url=f"http://host.docker.internal:{port}",
         )
     finally:
+        # The server's lifespan closes the engines its loop opened.
         server.should_exit = True
         thread.join(timeout=10)
-        db_base._DbHolder.engine = None
-        db_base._DbHolder.session_factory = None
         mp.undo()
 
 

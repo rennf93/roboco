@@ -19,11 +19,10 @@ from roboco.db import base as db_base
 
 @pytest.fixture
 def _holder_reset(monkeypatch: pytest.MonkeyPatch) -> Any:
-    """Isolate _DbHolder so the test never touches the real engine."""
-    monkeypatch.setattr(db_base._DbHolder, "engine", None)
-    monkeypatch.setattr(db_base._DbHolder, "session_factory", None)
-    monkeypatch.setattr(db_base._DbHolder, "loop", None)
-    return db_base._DbHolder
+    """Empty engine registry, so the test never touches the real engine."""
+    engines = db_base._PoolEngines()
+    monkeypatch.setattr(db_base, "_PRIMARY_ENGINES", engines)
+    return engines
 
 
 def _capture_engine_kwargs(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:

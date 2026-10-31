@@ -169,8 +169,9 @@ def set_shared_embedder(embedder: "OllamaEmbedder") -> None:
 
 
 async def close_shared_embedder() -> None:
-    """Release the shared embedder resources."""
+    """Release the shared embedder resources: its HTTP client and the instance."""
     async with _SharedEmbedderHolder.get_lock():
         if _SharedEmbedderHolder.instance is not None:
             logger.info("Closing shared embedder")
+            _SharedEmbedderHolder.instance.close()
             _SharedEmbedderHolder.instance = None

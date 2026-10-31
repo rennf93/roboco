@@ -8,8 +8,9 @@ mapping) is exercised end-to-end.
 from __future__ import annotations
 
 from http import HTTPStatus
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
 import pytest
@@ -27,6 +28,7 @@ from roboco.db.tables import (
 )
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import JournalEntryType, TaskNature, TaskStatus, TaskType
+from roboco.models.optimal import IndexType
 from roboco.models.permissions import AgentContext
 
 if TYPE_CHECKING:
@@ -79,6 +81,7 @@ async def journal_client(
 
 
 _HDR = {"X-Agent-ID": str(uuid4()), "X-Agent-Role": "developer"}
+_SEARCH_TOP_K = 5
 
 
 @pytest.mark.asyncio
@@ -425,18 +428,48 @@ async def test_list_agent_entries_for_self(
 
 
 @pytest.mark.asyncio
-async def test_search_my_entries_returns_list(
+async def test_search_my_entries_returns_the_entries_rag_matched(
     journal_setup_with_task: tuple[AsyncClient, AgentTable, UUID],
+    db_session: AsyncSession,
 ) -> None:
-    """Search route — may 200 with empty list or 500 if RAG isn't configured."""
-    client, _, _ = journal_setup_with_task
-    response = await client.post(
-        "/api/journals/me/search",
-        json={"query": "test query", "top_k": 5},
-        headers=_HDR,
+    """The route searches this agent's journal index and returns the entries
+    RAG matched, read back from the database. The entry is inserted directly:
+    the create route would also start indexing it into the real RAG."""
+    client, agent, _ = journal_setup_with_task
+    journal = JournalTable(id=uuid4(), agent_id=agent.id)
+    db_session.add(journal)
+    await db_session.flush()
+    entry = JournalEntryTable(
+        id=uuid4(),
+        journal_id=journal.id,
+        type=JournalEntryType.GENERAL,
+        title="Searchable entry",
+        content="c",
     )
-    # Accept any non-server-error response.
-    assert response.status_code in (HTTPStatus.OK, HTTPStatus.INTERNAL_SERVER_ERROR)
+    db_session.add(entry)
+    await db_session.flush()
+    entry_id = str(entry.id)
+    rag = MagicMock()
+    rag.search = AsyncMock(
+        return_value=[SimpleNamespace(metadata={"entry_id": entry_id})]
+    )
+
+    with patch(
+        "roboco.services.optimal.get_optimal_service", AsyncMock(return_value=rag)
+    ):
+        response = await client.post(
+            "/api/journals/me/search",
+            json={"query": "test query", "top_k": _SEARCH_TOP_K},
+            headers=_HDR,
+        )
+
+    assert response.status_code == HTTPStatus.OK
+    assert [entry["id"] for entry in response.json()] == [entry_id]
+    search = rag.search.await_args.kwargs
+    assert search["query"] == "test query"
+    assert search["top_k"] == _SEARCH_TOP_K
+    assert search["context"].agent_id == agent.id
+    assert search["context"].index_types == [IndexType.JOURNALS]
 
 
 # ---------------------------------------------------------------------------
