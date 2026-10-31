@@ -8863,21 +8863,21 @@ The metrics & observability slice is the read-only measurement layer of RoboCo: 
 | `MetricsService._avg_cycle_hours` | method | metrics.py:1601 | Avg started→completed hours for completed tasks |
 | `_as_hours` | func | metrics.py:88 | Coerce SQL epoch aggregate to rounded float (avoids Decimal→JSON string crash) |
 | `ACTIVE_STATUSES` | const | metrics.py:104 | CLAIMED/IN_PROGRESS/VERIFYING/AWAITING_QA (BLOCKED excluded — note) |
-| `DashboardService` | class | dashboard.py:401 | Auditor flags/reports + CEO overview + agent/activity feeds |
+| `DashboardService` | class | dashboard.py:417 | Auditor flags/reports + CEO overview + agent/activity feeds |
 | `DashboardFlags` | class | dashboard.py:62 | Mixin of `DashboardService` (5 methods): The auditor's flags: creating, listing, getting and resolving them, and the unresolved count. |
-| `DashboardReports` | class | dashboard.py:122 | Mixin of `DashboardService` (5 methods): The auditor's reports: creating, listing, getting and sending them, and when the last one went out. |
-| `DashboardCEOOverview` | class | dashboard.py:180 | Mixin of `DashboardService` (5 methods): The CEO overview: team health, key metrics, the auditor's alerts, the portfolio, and roadmap progress. |
-| `DashboardAuditorMetrics` | class | dashboard.py:289 | Mixin of `DashboardService` (4 methods): The auditor dashboard: its metrics, the open findings, every agent's status, and recent activity. |
+| `DashboardReports` | class | dashboard.py:126 | Mixin of `DashboardService` (5 methods): The auditor's reports: creating, listing, getting and sending them, and when the last one went out. |
+| `DashboardCEOOverview` | class | dashboard.py:188 | Mixin of `DashboardService` (5 methods): The CEO overview: team health, key metrics, the auditor's alerts, the portfolio, and roadmap progress. |
+| `DashboardAuditorMetrics` | class | dashboard.py:301 | Mixin of `DashboardService` (4 methods): The auditor dashboard: its metrics, the open findings, every agent's status, and recent activity. |
 | `_DashboardStorageHolder` | class | dashboard.py:39 | Process-singleton in-memory flag/report store |
 | `get_storage` / `reset_storage` | func | dashboard.py:45/52 | Singleton accessor + test reset |
-| `DashboardService.create_flag/get_flags/resolve_flag` | methods | dashboard.py:66/81/103 | Auditor flag CRUD over in-memory store |
-| `DashboardService.create_report/send_report` | methods | dashboard.py:126/164 | Auditor report CRUD + send marking |
-| `DashboardService.get_audit_queue` | method | dashboard.py:443 | Blocked + awaiting-QA tasks as queue items |
-| `DashboardService.get_team_health_list` | method | dashboard.py:184 | Health for BACKEND/FRONTEND/UX_UI/BOARD |
-| `DashboardService.get_portfolio` | method | dashboard.py:229 | Merges project identities onto `MetricsService.get_portfolio_metrics`' per-project dict so EVERY project appears once (zeroed when inactive), sorts most-active-first — backs `GET /api/dashboard/portfolio` (see `docs/backend/api/dashboard-portfolio.md`). |
-| `DashboardService.get_key_metrics` | method | dashboard.py:204 | Velocity + doc coverage + blockers summary |
-| `DashboardService.get_all_agent_status` | method | dashboard.py:336 | Agent counts by status + per-agent snapshot |
-| `DashboardService.get_recent_activity` | method | dashboard.py:369 | Merged messages+task_updates feed, sorted desc |
+| `DashboardService.create_flag/get_flags/resolve_flag` | methods | dashboard.py:70/85/107 | Auditor flag CRUD over in-memory store |
+| `DashboardService.create_report/send_report` | methods | dashboard.py:134/172 | Auditor report CRUD + send marking |
+| `DashboardService.get_audit_queue` | method | dashboard.py:451 | Blocked + awaiting-QA tasks as queue items |
+| `DashboardService.get_team_health_list` | method | dashboard.py:196 | Health for BACKEND/FRONTEND/UX_UI/BOARD |
+| `DashboardService.get_portfolio` | method | dashboard.py:241 | Merges project identities onto `MetricsService.get_portfolio_metrics`' per-project dict so EVERY project appears once (zeroed when inactive), sorts most-active-first — backs `GET /api/dashboard/portfolio` (see `docs/backend/api/dashboard-portfolio.md`). |
+| `DashboardService.get_key_metrics` | method | dashboard.py:216 | Velocity + doc coverage + blockers summary |
+| `DashboardService.get_all_agent_status` | method | dashboard.py:352 | Agent counts by status + per-agent snapshot |
+| `DashboardService.get_recent_activity` | method | dashboard.py:385 | Merged messages+task_updates feed, sorted desc |
 | `CockpitService` | class | cockpit.py:39 | Read-only CEO summary + lightweight signals slice |
 | `CockpitService.summary` | method | cockpit.py:44 | goals+counts+delivery+spend+projection+pitches+signals, `basis="proxy"`. `delivery.first_pass_yield` is a pass-through of `MetricsService.get_org_scorecard().first_pass_yield` (no new computation); `delivery.escaped_defects` is `len(ReviewFindingsRepository.escaped_defects_since(30d cutoff))` — see the Gotchas entry below for the definition. `delivery.completed_30d`/`delivery.median_lead_time_hours` are a straight pass-through of `TaskService.get_delivery_stats_30d()` — see that method's own Gotchas entry for its population scope. |
 | `TaskService.get_delivery_stats_30d` | method | `services/task.py:1814` | Completed-count + median lead-time hours over the last 30 days, scoped to real delivery work — see the Gotchas entry below. Not itself part of this slice's files (lives in `services/task.py`), but is `CockpitService.summary`'s sole source for those two fields. |

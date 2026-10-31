@@ -63,6 +63,10 @@ class DashboardFlags(_Base):
     """The auditor's flags: creating, listing, getting and resolving them, and the
     unresolved count."""
 
+    # =========================================================================
+    # FLAG MANAGEMENT
+    # =========================================================================
+
     def create_flag(self, params: CreateFlagParams) -> FlagData:
         """Create a new auditor flag."""
         flag = FlagData(
@@ -123,6 +127,10 @@ class DashboardReports(_Base):
     """The auditor's reports: creating, listing, getting and sending them, and when
     the last one went out."""
 
+    # =========================================================================
+    # REPORT MANAGEMENT
+    # =========================================================================
+
     def create_report(
         self,
         *,
@@ -180,6 +188,10 @@ class DashboardReports(_Base):
 class DashboardCEOOverview(_Base):
     """The CEO overview: team health, key metrics, the auditor's alerts, the
     portfolio, and roadmap progress."""
+
+    # =========================================================================
+    # CEO OVERVIEW HELPERS
+    # =========================================================================
 
     async def get_team_health_list(self) -> list[TeamHealthData]:
         """Get health status for all teams."""
@@ -289,6 +301,10 @@ class DashboardCEOOverview(_Base):
 class DashboardAuditorMetrics(_Base):
     """The auditor dashboard: its metrics, the open findings, every agent's status,
     and recent activity."""
+
+    # =========================================================================
+    # AUDITOR DASHBOARD METRICS
+    # =========================================================================
 
     async def get_auditor_metrics(self) -> dict[str, Any]:
         """Get metrics for auditor dashboard."""
@@ -429,14 +445,6 @@ class DashboardService(
         return self._metrics
 
     # =========================================================================
-    # FLAG MANAGEMENT
-    # =========================================================================
-
-    # =========================================================================
-    # REPORT MANAGEMENT
-    # =========================================================================
-
-    # =========================================================================
     # AUDIT QUEUE
     # =========================================================================
 
@@ -473,14 +481,6 @@ class DashboardService(
             )
 
         return queue[:limit]
-
-    # =========================================================================
-    # CEO OVERVIEW HELPERS
-    # =========================================================================
-
-    # =========================================================================
-    # AUDITOR DASHBOARD METRICS
-    # =========================================================================
 
 
 # =============================================================================
