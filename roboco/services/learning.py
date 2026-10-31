@@ -39,20 +39,29 @@ logger = structlog.get_logger()
 class LearningScope(Enum):
     """Scope of a learning's visibility."""
 
-    PERSONAL = "personal"  # Only visible to the author
-    TEAM = "team"  # Visible to same-role agents
-    CELL = "cell"  # Visible to entire cell
-    ORG = "org"  # Visible to entire organization
+    # Only visible to the author
+    PERSONAL = "personal"
+    # Visible to same-role agents
+    TEAM = "team"
+    # Visible to entire cell
+    CELL = "cell"
+    # Visible to entire organization
+    ORG = "org"
 
 
 class LearningType(Enum):
     """Type of learning."""
 
-    SOLUTION = "solution"  # How to solve a problem
-    PATTERN = "pattern"  # A useful code/workflow pattern
-    GOTCHA = "gotcha"  # A pitfall to avoid
-    INSIGHT = "insight"  # A useful understanding
-    REVIEW_FEEDBACK = "review_feedback"  # From code review
+    # How to solve a problem
+    SOLUTION = "solution"
+    # A useful code/workflow pattern
+    PATTERN = "pattern"
+    # A pitfall to avoid
+    GOTCHA = "gotcha"
+    # A useful understanding
+    INSIGHT = "insight"
+    # From code review
+    REVIEW_FEEDBACK = "review_feedback"
 
 
 @dataclass
@@ -81,7 +90,8 @@ class LearningNotification:
     learning_id: str
     target_agent_id: UUID
     learning_summary: str
-    reason: str  # Why this agent should see it
+    # Why this agent should see it
+    reason: str
     created_at: str
     acknowledged: bool = False
 
@@ -406,7 +416,8 @@ class LearningPropagationService(LearningPropagationNotices):
             content=learning.content,
             category=learning.learning_type.value,
             agent_role=learning.agent_role,
-            team=None,  # Could be derived from agent role
+            # Could be derived from agent role
+            team=None,
             shareable=learning.scope != LearningScope.PERSONAL,
             tags=learning.tags,
         )
