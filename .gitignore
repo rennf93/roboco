@@ -128,10 +128,11 @@ motion/node_modules/
 # slash-less entry or it slips through `git add`/`git status` untracked.
 motion/node_modules
 video-renderer/node_modules/
-# hyperframes lint/preview generates index.html in each composition dir —
-# regenerated locally as needed, not tracked (the sidecar renders
-# <orientation>.html directly, never index.html)
-motion/compositions/*/index.html
+# hyperframes preview (Studio) keeps its state here: the ledger of files it has
+# stamped with data-hf-id and a preview cache. The ids themselves are committed
+# with each composition (stamping is idempotent), so a preview leaves the tree
+# clean.
+motion/.hyperframes/
 # Internal-only: strategy/scratch/reference dumps — never publish
 docs/internal/
 

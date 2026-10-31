@@ -6,11 +6,18 @@ In-repo [HyperFrames](https://github.com/heygen-com/hyperframes) composition pac
 
 Compositions live under `compositions/<composition_id>/`. Each composition is one directory containing the HTML/CSS/JS for that clip; one HTML file per orientation (the sidecar points `inputPath` at a single HTML file, so per-orientation branching belongs in its own file, not inside one file).
 
+`motion/` is one HyperFrames project. `index.html` at its root marks it: the CLI (lint, preview) takes the nearest folder holding an `index.html` as the project, and the video-renderer renders with `motion/` as the project root, so a cut's `../../kit/...` and `../../public/...` paths resolve inside it everywhere and the fonts load. Never add an `index.html` under `compositions/`: it would become the CLI's root for that cut and push those paths outside it again. `compositions/assets.test.js` fails on one, and on any path a cut, `kit/kit.css` or a `theme.css` loads that leaves `motion/` or doesn't exist.
+
 1. Create `compositions/<your_clip>/vertical.html` and `square.html` carrying the HyperFrames render params on the `<div id="stage">` root: `data-composition-id`, `data-width`, `data-height`, `data-duration` (seconds), `data-fps`. Keep `data-composition-id` on that one element only: the renderer takes the first element carrying it as the root and sizes the video from that element's `data-width`/`data-height` (1080×1920 when they are missing), so a second id on `<html>` turns every square cut into a 1080×1920 render. `compositions/render-root.test.js` checks this on every cut. Timed visible elements get `class="clip"` plus `data-start`, `data-duration`, and `data-track-index`.
 2. Add a shared `theme.css` with `@font-face` declarations (fonts are vendored under `public/fonts/*.woff2` — never load from a CDN, the render is offline) and the color/type tokens for the clip. (Skip this if you're building in the panel-demo register below — `kit/kit.css` already owns the reset + fonts.)
 3. Ship a `props.js` with default `window.__PROPS__` + `window.__ORIENTATION__` values for local preview. The sidecar OVERWRITES this file at render time with the real per-release values — your HTML loads it via `<script src="props.js"></script>` before any inline script that reads the globals.
 4. Add `<your_clip>.test.js` (vitest) asserting the HTML-structure invariants — dimensions, props.js wiring, theme link, at least one `class="clip"` element, no CDN scripts. See `release-announcement.test.js` as a template.
-5. `pnpm preview` (alias for `hyperframes preview <file>`) opens the local preview server; `pnpm lint` runs `hyperframes lint` over both orientations; `pnpm test` runs the smoke gate that CI runs. The HyperFrames CLI sends anonymous usage events to PostHog unless `HYPERFRAMES_NO_TELEMETRY=1` (or `DO_NOT_TRACK=1`) is set. The `preview*` and `lint` scripts set it, and so does every agent image; set it yourself when you run `npx hyperframes` directly, as the commands below do.
+5. Preview, lint and test:
+   - `pnpm preview` starts HyperFrames Studio for the whole project at `http://localhost:3002`. Every cut is listed under Compositions; click one to open it on its timeline. When Studio starts it stamps a `data-hf-id` on every element of a composition that has none; commit those ids with the composition (stamping is idempotent, so a second start changes nothing). Its state lives in `motion/.hyperframes/`, which is ignored.
+   - Studio's canvas needs a GPU: in a headless browser without one it stays dark. There, serve the folder (`python3 -m http.server -d motion`) and open `http://localhost:8000/compositions/<id>/vertical.html`. That page loads the real fonts, kit and layout, but not the HyperFrames runtime, so its timing is not the render's (kit typing, clip windows): judge timing from `request_render` frames.
+   - `pnpm lint` lints the whole project, `index.html` and every cut; `pnpm lint compositions/<id>/vertical.html` lints one cut.
+   - `pnpm test` runs the smoke gate that CI runs.
+   - The HyperFrames CLI sends anonymous usage events to PostHog unless `HYPERFRAMES_NO_TELEMETRY=1` (or `DO_NOT_TRACK=1`) is set, and checks npm for its own updates on every run unless `HYPERFRAMES_NO_UPDATE_CHECK=1` is. The `preview` and `lint` scripts set both, and every agent image sets the telemetry one; set them yourself when you run `npx hyperframes` directly.
 
 ## Captions
 
@@ -82,8 +89,9 @@ The story is "three releases shipped in six days": a single intake types "3 rele
 ### Preview / test this composition
 
 ```bash
-HYPERFRAMES_NO_TELEMETRY=1 npx hyperframes preview compositions/release-recap/vertical.html
-HYPERFRAMES_NO_TELEMETRY=1 npx hyperframes preview compositions/release-recap/square.html
+pnpm preview   # then open release-recap/vertical or release-recap/square under Compositions
+pnpm lint compositions/release-recap/vertical.html
+pnpm lint compositions/release-recap/square.html
 pnpm test   # runs vitest on all *.test.js under motion/
 ```
 
@@ -121,7 +129,9 @@ The composition reuses the same `pk-frame` chrome, `pk-column`/`pk-card`, `pk-pi
 ### Preview / test this composition
 
 ```bash
-pnpm preview:release-0.25.0
+pnpm preview   # then open release-0.25.0/vertical or release-0.25.0/square under Compositions
+pnpm lint compositions/release-0.25.0/vertical.html
+pnpm lint compositions/release-0.25.0/square.html
 pnpm test   # release-0.25.0.test.js is picked up by vitest
 ```
 
@@ -174,7 +184,9 @@ The composition reuses the same `pk-frame` chrome, `pk-column`/`pk-card`, `pk-pi
 ### Preview / test this composition
 
 ```bash
-pnpm preview
+pnpm preview   # then open release-0.26.0/vertical or release-0.26.0/square under Compositions
+pnpm lint compositions/release-0.26.0/vertical.html
+pnpm lint compositions/release-0.26.0/square.html
 pnpm test   # release-0.26.0.test.js is picked up by vitest
 ```
 
@@ -227,8 +239,9 @@ The composition reuses the same `pk-frame` chrome, `pk-column`/`pk-card`, `pk-pi
 ### Preview / test this composition
 
 ```bash
-HYPERFRAMES_NO_TELEMETRY=1 npx hyperframes preview compositions/release-0.27.0/vertical.html
-HYPERFRAMES_NO_TELEMETRY=1 npx hyperframes preview compositions/release-0.27.0/square.html
+pnpm preview   # then open release-0.27.0/vertical or release-0.27.0/square under Compositions
+pnpm lint compositions/release-0.27.0/vertical.html
+pnpm lint compositions/release-0.27.0/square.html
 pnpm test   # release-0.27.0.test.js is picked up by vitest
 ```
 
@@ -280,8 +293,9 @@ The composition reuses the same `pk-frame` chrome, `pk-column`/`pk-card`, `pk-pi
 ### Preview / test this composition
 
 ```bash
-HYPERFRAMES_NO_TELEMETRY=1 npx hyperframes preview compositions/release-0.28.0/vertical.html
-HYPERFRAMES_NO_TELEMETRY=1 npx hyperframes preview compositions/release-0.28.0/square.html
+pnpm preview   # then open release-0.28.0/vertical or release-0.28.0/square under Compositions
+pnpm lint compositions/release-0.28.0/vertical.html
+pnpm lint compositions/release-0.28.0/square.html
 pnpm test   # release-0.28.0.test.js is picked up by vitest
 ```
 

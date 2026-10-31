@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>RoboCo motion</title>
+  </head>
+  <body>
+    <!--
+      This file makes motion/ the HyperFrames project root: the CLI takes the
+      nearest folder holding an index.html as the project, so lint and preview
+      resolve every cut's ../../kit and ../../public paths inside motion/, as
+      the video-renderer does. Keep its <head> to charset and title: Studio
+      copies it into every composition it previews. The clips live in
+      compositions/<id>/vertical.html and square.html; never add an index.html
+      under compositions/ (compositions/assets.test.js enforces both).
+    -->
+    <div data-hf-id="hf-t0ww"
+      id="motion-index"
+      data-composition-id="motion-index"
+      data-width="1080"
+      data-height="1080"
+      data-duration="1"
+      data-no-timeline
+    >
+      <p data-hf-id="hf-ayot" id="motion-index-note">
+        RoboCo motion. Each clip is compositions/&lt;id&gt;/vertical.html and
+        square.html.
+      </p>
+    </div>
+  </body>
+</html>
