@@ -21,6 +21,10 @@ from typing import TYPE_CHECKING
 import pytest
 from tests.e2e_smoke.harness import build_e2e_stack
 
+# How long a test's teardown waits for the uvicorn loop to dispose the app's
+# engine.
+_ENGINE_DISPOSE_TIMEOUT_SECONDS = 10.0
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -37,6 +41,35 @@ def pytest_collection_modifyitems(
     for item in items:
         if "tests/e2e_smoke" in str(item.path):
             item.add_marker(skip)
+
+
+@pytest.fixture(autouse=True)
+def _reset_lazy_db_holder() -> Iterator[None]:
+    """Drop the app's lazy ``_DbHolder`` engine/factory between e2e tests.
+
+    Async smoke tests that drive production code using the global lazy engine
+    (``get_db_context`` / ``get_session_factory``) rebind ``_DbHolder`` to
+    their own function-scoped event loop. If a test leaves the holder bound to
+    its (now-dead) loop, the next consumer on a different loop — the uvicorn
+    server thread handling the next test's API call, or the next test itself —
+    reuses a factory bound to a dead loop and asyncpg raises
+    ``RuntimeError: ... Future ... attached to a different loop``. Resetting
+    to ``None`` here makes every test start unbound so the first consumer
+    rebinds to its own loop. An engine still bound to the uvicorn thread's
+    running loop is disposed there first (it can't be awaited away from that
+    loop); left to garbage collection, its pooled connections stay open.
+    """
+    yield
+    from roboco.db import base as db_base
+
+    holder = db_base._DbHolder
+    if holder.engine is not None and holder.loop is not None:
+        disposal = db_base._dispose_on_its_loop(holder.engine, holder.loop())
+        if disposal is not None:
+            disposal.result(timeout=_ENGINE_DISPOSE_TIMEOUT_SECONDS)
+    holder.engine = None
+    holder.session_factory = None
+    holder.loop = None
 
 
 @pytest.fixture(autouse=True)
