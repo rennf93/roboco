@@ -271,7 +271,8 @@ class OrgReportData:
     this from ``MetricsService``/``UsageService`` dataclasses — kept plain
     here so ``VaultWriter`` stays DB-free."""
 
-    week: str  # ISO week, e.g. "2026-W28"
+    # ISO week, e.g. "2026-W28"
+    week: str
     tasks_completed: int
     tasks_created: int
     completion_rate: float
