@@ -2023,7 +2023,8 @@ class ProviderParkingEngine(_Base):
         await self._finalize_spawn_session(agent_id, exit_reason=kind)
         instance.state = AgentState.OFFLINE
         instance.container_id = None
-        instance.error_count = 0  # provider unavailability is not a crash
+        # Provider unavailability is not a crash
+        instance.error_count = 0
         try:
             await self._make_tracker(provider).activate(
                 retry_after=retry_after,

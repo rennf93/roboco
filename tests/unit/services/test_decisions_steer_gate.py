@@ -50,7 +50,8 @@ def test_switch_consideration_note_carries_the_task_list() -> None:
     assert "Pivot to the API redesign first" in note
     assert "Fix nginx mount" in note
     assert "API redesign" in note
-    assert "your PM's" in note  # the switch decision is not the verdict's
+    # The switch decision is not the verdict's
+    assert "your PM's" in note
 
 
 def test_steer_now_note_is_task_scoped() -> None:
@@ -199,7 +200,8 @@ def test_assistant_segments_extraction(
         tmp_path,
         "backend-dev-1",
         [
-            "x" * 250,  # long enough
+            # Long enough
+            "x" * 250,
             "too short",
         ],
     )
