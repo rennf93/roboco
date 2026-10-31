@@ -517,7 +517,8 @@ class QAClaimMixin(_Base):
                 collision_context = build_collision_context(
                     task=t, siblings=siblings, actual_files=files_changed
                 )
-        except Exception as exc:  # best-effort enrichment, never breaks the verb
+        except Exception as exc:
+            # Best-effort enrichment, never breaks the verb
             logger.warning(
                 "qa_collision_context_skip", task_id=str(t.id), error=str(exc)
             )
