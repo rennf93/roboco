@@ -1034,6 +1034,8 @@ class TelegramCallbacks(_Base):
     """A button press: prompting for a reply, consuming it, finishing the action,
     and its audit mark."""
 
+    # ---- callback (button) handling ---------------------------------------
+
     async def _handle_callback(
         self, cq: dict[str, Any], creds: TelegramCredentialsData, client: TelegramClient
     ) -> None:
@@ -1179,6 +1181,13 @@ class TelegramApprovals(_Base):
         return get_video_post_service(
             self.session, x_poster=x_poster, tiktok_poster=tiktok_poster
         )
+
+    # ---- dispatch: same service methods the CEO-gated HTTP routes call ----
+    #
+    # One small `_approve_<kind>`/`_reject_<kind>` handler per kind, looked up
+    # by a dict rather than an if/elif ladder — keeps each handler (and the
+    # two dispatchers themselves) well under the branch/return-count budget
+    # a 5-kind if/elif chain would blow through.
 
     async def _dispatch_approve(
         self, kind: str, id8: str, extra: str, *, notes: str | None
@@ -1687,15 +1696,6 @@ class TelegramInboundEngine(
             await self._route_free_text(chat_id, text, client, creds)
             return
         await self._dispatch_command(cmd, args, client, chat_id=chat_id, creds=creds)
-
-    # ---- callback (button) handling ---------------------------------------
-
-    # ---- dispatch: same service methods the CEO-gated HTTP routes call ----
-    #
-    # One small `_approve_<kind>`/`_reject_<kind>` handler per kind, looked up
-    # by a dict rather than an if/elif ladder — keeps each handler (and the
-    # two dispatchers themselves) well under the branch/return-count budget
-    # a 5-kind if/elif chain would blow through.
 
 
 def get_telegram_inbound_engine(

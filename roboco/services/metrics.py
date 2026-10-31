@@ -207,6 +207,10 @@ class MetricsFlow(_Base):
     """How work flows: cycle time by stage, the bottleneck distribution, rework by
     agent and its cost, and verb latency."""
 
+    # =========================================================================
+    # OBSERVABILITY (cycle-time / bottleneck / rework / scorecard)
+    # =========================================================================
+
     async def get_cycle_time_by_stage(
         self, team: Team | None = None, days: int = 30
     ) -> list[StageTiming]:
@@ -2038,10 +2042,6 @@ class MetricsService(
             "blocked_ratio": round(blocked_ratio, 2),
             "completed_this_week": completed_count,
         }
-
-    # =========================================================================
-    # OBSERVABILITY (cycle-time / bottleneck / rework / scorecard)
-    # =========================================================================
 
 
 # =============================================================================

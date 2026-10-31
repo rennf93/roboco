@@ -768,6 +768,10 @@ class NotificationInbox(_Base):
             "pending_ack": int(row.pending_ack),
         }
 
+    # =========================================================================
+    # ACK OPERATIONS (TASK-017)
+    # =========================================================================
+
     async def acknowledge(
         self,
         notification_id: UUID,
@@ -886,6 +890,10 @@ class NotificationInbox(_Base):
                 continue
         return count
 
+    # =========================================================================
+    # SUMMARY & STATUS
+    # =========================================================================
+
     async def get_ack_status(
         self,
         notification_id: UUID,
@@ -960,6 +968,10 @@ class NotificationInbox(_Base):
             "counts": counts,
             "urgent_notifications": urgent,
         }
+
+    # =========================================================================
+    # API-FACING LIST + CRUD (consumed by api/routes/notifications.py)
+    # =========================================================================
 
     async def list_system_notifications(
         self,
@@ -1109,6 +1121,13 @@ class NotificationInbox(_Base):
 class NotificationHandoffs(_Base):
     """Task handoff notices to PMs, assignees and the auditor, escalation, and
     resolving the PM, CEO and auditor agents they go to."""
+
+    # =========================================================================
+    # TASK HANDOFF NOTIFICATIONS
+    # =========================================================================
+    # These compose the full "resolve recipient + persist + deliver" pattern
+    # that used to live as private helpers inside api/routes/tasks.py. Routes
+    # should only call these — no NotificationTable construction in route modules.
 
     async def notify_pm_of_block(
         self,
@@ -1346,6 +1365,10 @@ class NotificationHandoffs(_Base):
             acked_by=[],
         )
         await self._persist_and_deliver(notification, bypass_purpose_dedup=True)
+
+    # ------------------------------------------------------------------
+    # Private helpers for recipient resolution + persist
+    # ------------------------------------------------------------------
 
     async def _resolve_team_pm(self, task: TaskTable) -> AgentTable | None:
         """Return the PM agent for the task's team, or None if not found."""
@@ -2092,25 +2115,6 @@ class NotificationDeliveryService(
         )
         return result.scalar_one_or_none()
 
-    # =========================================================================
-    # ACK OPERATIONS (TASK-017)
-    # =========================================================================
-
-    # =========================================================================
-    # SUMMARY & STATUS
-    # =========================================================================
-
-    # =========================================================================
-    # TASK HANDOFF NOTIFICATIONS
-    # =========================================================================
-    # These compose the full "resolve recipient + persist + deliver" pattern
-    # that used to live as private helpers inside api/routes/tasks.py. Routes
-    # should only call these — no NotificationTable construction in route modules.
-
-    # ------------------------------------------------------------------
-    # Private helpers for recipient resolution + persist
-    # ------------------------------------------------------------------
-
     async def _get_agent_by_id(self, agent_id: UUID) -> AgentTable | None:
         result = await self.session.execute(
             select(AgentTable).where(AgentTable.id == agent_id)
@@ -2205,10 +2209,6 @@ class NotificationDeliveryService(
         await self.session.flush()
         await self.deliver(require_uuid(notification.id))
         return True
-
-    # =========================================================================
-    # API-FACING LIST + CRUD (consumed by api/routes/notifications.py)
-    # =========================================================================
 
 
 # =============================================================================

@@ -617,6 +617,10 @@ class ModelAssignments(_Base):
     """The routing assignments: listing, getting, upserting and deleting them, and
     the routing mode they add up to."""
 
+    # =========================================================================
+    # ASSIGNMENT CRUD (consumed by api/routes/provider.py)
+    # =========================================================================
+
     async def list_assignments(self) -> list[ModelAssignmentTable]:
         result = await self.session.execute(
             select(ModelAssignmentTable).order_by(
@@ -1470,6 +1474,10 @@ class ModelRoutingPresets(_Base):
     """Routing presets: listing, getting, saving, validating, deleting and applying
     them."""
 
+    # =========================================================================
+    # ROUTING PRESETS (named, full snapshots — consumed by api/routes/provider.py)
+    # =========================================================================
+
     async def list_routing_presets(self) -> list[RoutingPresetTable]:
         """List saved presets, newest first (payload included; the route
         strips it down to id/name/created_at for the list response)."""
@@ -1725,14 +1733,6 @@ class ModelRoutingService(
         if resolved.provider.type == ModelProvider.LOCAL:
             return await self._local_route_or_none(resolved, agent_slug)
         return await self._decrypt_route_or_none(resolved, agent_slug)
-
-    # =========================================================================
-    # ASSIGNMENT CRUD (consumed by api/routes/provider.py)
-    # =========================================================================
-
-    # =========================================================================
-    # ROUTING PRESETS (named, full snapshots — consumed by api/routes/provider.py)
-    # =========================================================================
 
     # =========================================================================
     # INTERNAL

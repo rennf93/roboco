@@ -62,21 +62,21 @@ The organizational-memory + playbooks slice: captures cross-agent learnings and 
 | PLUGIN_REGISTRY | dict | roboco/services/optimal.py:206 | IndexType -> plugin class map (includes LEARNINGS, PLAYBOOKS) |
 | OptimalStartup | class | roboco/services/optimal.py:220 | Mixin of `OptimalService` (8 methods): Starting the service: initializing its plugins, warming the embedder, and indexing the docs on startup. |
 | OptimalPeriodicUpdate | class | roboco/services/optimal.py:570 | Mixin of `OptimalService` (10 methods): The periodic update: scanning the docs root for changed and deleted files, reconciling deletions, and re-indexing. |
-| OptimalDocsIndexing | class | roboco/services/optimal.py:828 | Mixin of `OptimalService` (13 methods): Indexing code, documentation, journal entries, playbooks and vault notes, the tracking rows for what is indexed, and unindexing. |
-| OptimalKnowledgeIndexing | class | roboco/services/optimal.py:1243 | Mixin of `OptimalService` (6 methods): Indexing what the company learns: errors, standards and the standards file, decisions, reviews and learnings. |
-| OptimalSearch | class | roboco/services/optimal.py:1430 | Mixin of `OptimalService` (12 methods): Searching: across indexes and one index, with gaps and citations, and the synthesized answer to a query. |
-| OptimalSpecializedSearch | class | roboco/services/optimal.py:1853 | Mixin of `OptimalService` (5 methods): Searches over one kind of knowledge: errors, standards, decisions, learnings, and a file's reviews. |
-| OptimalIndexStats | class | roboco/services/optimal.py:1924 | Mixin of `OptimalService` (8 methods): Index statistics and staleness: per-index and overall stats, stale source files, and when each index was last refreshed. |
-| OptimalPromptsAndHealth | class | roboco/services/optimal.py:2158 | Mixin of `OptimalService` (12 methods): Prompt templates, clearing and refreshing an index, listing its documents, and the embedding, LLM and vector store health checks. |
+| OptimalDocsIndexing | class | roboco/services/optimal.py:832 | Mixin of `OptimalService` (13 methods): Indexing code, documentation, journal entries, playbooks and vault notes, the tracking rows for what is indexed, and unindexing. |
+| OptimalKnowledgeIndexing | class | roboco/services/optimal.py:1251 | Mixin of `OptimalService` (6 methods): Indexing what the company learns: errors, standards and the standards file, decisions, reviews and learnings. |
+| OptimalSearch | class | roboco/services/optimal.py:1442 | Mixin of `OptimalService` (12 methods): Searching: across indexes and one index, with gaps and citations, and the synthesized answer to a query. |
+| OptimalSpecializedSearch | class | roboco/services/optimal.py:1869 | Mixin of `OptimalService` (5 methods): Searches over one kind of knowledge: errors, standards, decisions, learnings, and a file's reviews. |
+| OptimalIndexStats | class | roboco/services/optimal.py:1944 | Mixin of `OptimalService` (8 methods): Index statistics and staleness: per-index and overall stats, stale source files, and when each index was last refreshed. |
+| OptimalPromptsAndHealth | class | roboco/services/optimal.py:2182 | Mixin of `OptimalService` (12 methods): Prompt templates, clearing and refreshing an index, listing its documents, and the embedding, LLM and vector store health checks. |
 | OptimalService.initialize | method | roboco/services/optimal.py:224 | Graceful-degradation init of all plugins; starts background auto-index + periodic tasks |
-| OptimalService.close | method | roboco/services/optimal.py:2396 | Cancel _indexing_task FIRST, then periodic task, then close plugins (prevent writes to closed plugins) |
-| OptimalService._get_plugin | method | roboco/services/optimal.py:2426 | Typed plugin lookup with a clear RuntimeError when missing/uninitialized |
-| OptimalService.index_playbook | method | roboco/services/optimal.py:1055 | Embed an approved playbook + write the indexed_documents tracking row |
-| OptimalService.unindex_playbook | method | roboco/services/optimal.py:1092 | Delete playbook chunks from vector store AND drop tracking row; both steps best-effort/idempotent |
-| OptimalService.record_learning | method | roboco/services/optimal.py:1373 | Embed a learning via LearningsIndexPlugin + write tracking row (source learn-{md5(full content)}) |
-| OptimalService.search | method | roboco/services/optimal.py:1458 | Embed-once fan-out: concurrent hybrid search across selected indexes; used by similar_memory |
-| OptimalService._aggregate_citations | method | roboco/services/optimal.py:1598 | Embed once + concurrent per-index search into an aggregation buffer for RAG query() |
-| OptimalService.search_learnings | method | roboco/services/optimal.py:1897 | LEARNINGS-only search with optional category/team filter (shareable_only=True default) |
+| OptimalService.close | method | roboco/services/optimal.py:2420 | Cancel _indexing_task FIRST, then periodic task, then close plugins (prevent writes to closed plugins) |
+| OptimalService._get_plugin | method | roboco/services/optimal.py:2450 | Typed plugin lookup with a clear RuntimeError when missing/uninitialized |
+| OptimalService.index_playbook | method | roboco/services/optimal.py:1063 | Embed an approved playbook + write the indexed_documents tracking row |
+| OptimalService.unindex_playbook | method | roboco/services/optimal.py:1100 | Delete playbook chunks from vector store AND drop tracking row; both steps best-effort/idempotent |
+| OptimalService.record_learning | method | roboco/services/optimal.py:1385 | Embed a learning via LearningsIndexPlugin + write tracking row (source learn-{md5(full content)}) |
+| OptimalService.search | method | roboco/services/optimal.py:1474 | Embed-once fan-out: concurrent hybrid search across selected indexes; used by similar_memory |
+| OptimalService._aggregate_citations | method | roboco/services/optimal.py:1614 | Embed once + concurrent per-index search into an aggregation buffer for RAG query() |
+| OptimalService.search_learnings | method | roboco/services/optimal.py:1917 | LEARNINGS-only search with optional category/team filter (shareable_only=True default) |
 | get_optimal_service | function | roboco/services/optimal.py:2508 | The running loop's service, one per event loop (`_OptimalServiceHolder`); lock-guarded, published only after initialize() completes |
 | close_optimal_service | function | roboco/services/optimal.py:2539 | Closes the running loop's service; another loop's is that loop's owner's to close |
 | BaseIndexPlugin.ingest | method | roboco/services/optimal_brain/indexes/base.py:369 | Validate -> metadata -> source URI -> chunk/filter/embed/store pipeline |

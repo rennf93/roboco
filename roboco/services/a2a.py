@@ -369,6 +369,10 @@ class A2AAgentCards(_Base):
 
         return cards
 
+    # =========================================================================
+    # MESSAGE ROUTING
+    # =========================================================================
+
     @staticmethod
     def get_team_from_agent(agent_slug: str) -> Team:
         """Get Team enum from agent slug."""
@@ -627,6 +631,10 @@ class A2ATasks(_Base):
 class A2AMessageHandling(_Base):
     """Handling an inbound A2A message: its text, the task it updates, the requester
     it notifies, and the response event."""
+
+    # =========================================================================
+    # MESSAGE HANDLING
+    # =========================================================================
 
     @staticmethod
     def extract_message_text(message: A2AMessage) -> tuple[str, str, str]:
@@ -899,6 +907,12 @@ class A2AMessageHandling(_Base):
 class A2AConversations(_Base):
     """Persistent conversations: getting or creating one for a pair, listing them
     for an agent and an admin, closing one, and converting rows to models."""
+
+    # =========================================================================
+    # PERSISTENT CONVERSATION MANAGEMENT
+    # =========================================================================
+    # These methods handle persistent A2A conversations stored in the database.
+    # They complement the existing A2A protocol methods above.
 
     @staticmethod
     def _canonical_pair(agent_a: str, agent_b: str) -> tuple[str, str]:
@@ -1275,6 +1289,10 @@ class A2AConversations(_Base):
 
         return list(pairs.values())
 
+    # =========================================================================
+    # MODEL CONVERSIONS
+    # =========================================================================
+
     def _conv_to_model(self, conv: A2AConversationTable) -> A2AConversation:
         """Convert table row to Pydantic model."""
         return A2AConversation(
@@ -1315,6 +1333,10 @@ class A2AConversations(_Base):
             edited_at=msg.edited_at,
             edit_history=msg.edit_history or [],
         )
+
+    # =========================================================================
+    # GATEWAY (CHOREOGRAPHER + CONTENT_ACTIONS) BACKFILL
+    # =========================================================================
 
     async def _resolve_slug_from_id(self, agent_id: UUID) -> str:
         """Look up an agent's slug from its UUID; raise ValueError if missing."""
@@ -1609,6 +1631,10 @@ class A2AChatDelivery(_Base):
                 recipient_context=steer_context,
             )
         await self._maybe_wake_ceo_recipient(from_agent, to_agent, task_id)
+
+    # =========================================================================
+    # DECISIONS STEER GATE (spec 6.6, cognition lane)
+    # =========================================================================
 
     async def _decisions_steer_mode(
         self,
@@ -2445,29 +2471,3 @@ class A2AService(
     def __init__(self, session: AsyncSession):
         """Initialize with database session."""
         self.session = session
-
-    # =========================================================================
-    # MESSAGE ROUTING
-    # =========================================================================
-
-    # =========================================================================
-    # MESSAGE HANDLING
-    # =========================================================================
-
-    # =========================================================================
-    # PERSISTENT CONVERSATION MANAGEMENT
-    # =========================================================================
-    # These methods handle persistent A2A conversations stored in the database.
-    # They complement the existing A2A protocol methods above.
-
-    # =========================================================================
-    # DECISIONS STEER GATE (spec 6.6, cognition lane)
-    # =========================================================================
-
-    # =========================================================================
-    # MODEL CONVERSIONS
-    # =========================================================================
-
-    # =========================================================================
-    # GATEWAY (CHOREOGRAPHER + CONTENT_ACTIONS) BACKFILL
-    # =========================================================================

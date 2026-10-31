@@ -750,6 +750,10 @@ class GitCommits(_Base):
     """Committing: the commit itself and its stats, the task's worktree and branch
     checks, and linking the commit to its task."""
 
+    # =========================================================================
+    # COMMIT METHODS
+    # =========================================================================
+
     @staticmethod
     def _parse_git_url(url: str) -> RepoRef:
         """Parse any accepted GitHub URL form into a :class:`RepoRef`.
@@ -1077,6 +1081,10 @@ class GitCommits(_Base):
 class GitBranches(_Base):
     """Creating branches: the base branch, protected branches, checking out the
     base, dependency lineage merges, branches from a PR head, and a task's branch."""
+
+    # =========================================================================
+    # BRANCH METHODS
+    # =========================================================================
 
     async def _resolve_base_branch(
         self,
@@ -1878,6 +1886,10 @@ class GitCheckoutPush(_Base):
         _branch, pushed = await self.push(workspace, branch=str(task.branch_name))
         return pushed
 
+    # =========================================================================
+    # PULL / FETCH / REBASE METHODS
+    # =========================================================================
+
     async def pull(
         self, workspace: Path
     ) -> tuple[str, bool, list[str], list[str], list[str], int, int]:
@@ -2016,6 +2028,10 @@ class GitPRContext(_Base):
     """What a pull request is built from: root and internal PR context, commits and
     agent slugs, the target branch, title and body, the existing PR, and the repo
     and token."""
+
+    # =========================================================================
+    # PR METHODS
+    # =========================================================================
 
     @staticmethod
     def _collect_root_commits(
@@ -4486,6 +4502,14 @@ class GitMerge(_Base):
 class GitQualityGate(_Base):
     """The pre-submit quality gate and codegen drift: the fast gate commands, the
     codegen run and commit, and a task's toolchain status."""
+
+    # =========================================================================
+    # GATEWAY (CHOREOGRAPHER) BACKFILL
+    #
+    # Branch-keyed entry points. The gateway holds branch_name + pr_number
+    # but not project_slug or workspace path; these methods derive both
+    # from the task that owns the branch.
+    # =========================================================================
 
     async def _task_for_branch(self, branch_name: str) -> TaskTable | None:
         """Find the task whose branch_name matches `branch_name`."""
@@ -7065,30 +7089,6 @@ class GitService(
     # =========================================================================
 
     _PORCELAIN_STATUS_WIDTH: ClassVar[int] = 2
-
-    # =========================================================================
-    # COMMIT METHODS
-    # =========================================================================
-
-    # =========================================================================
-    # BRANCH METHODS
-    # =========================================================================
-
-    # =========================================================================
-    # PULL / FETCH / REBASE METHODS
-    # =========================================================================
-
-    # =========================================================================
-    # PR METHODS
-    # =========================================================================
-
-    # =========================================================================
-    # GATEWAY (CHOREOGRAPHER) BACKFILL
-    #
-    # Branch-keyed entry points. The gateway holds branch_name + pr_number
-    # but not project_slug or workspace path; these methods derive both
-    # from the task that owns the branch.
-    # =========================================================================
 
 
 CONVENTIONS_SCAFFOLD_BRANCH = "chore/roboco-conventions-scaffold"

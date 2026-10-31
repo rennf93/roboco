@@ -1234,6 +1234,10 @@ class TaskListQueries(_Base):
     """Task listings: by project, team, assignee and status, search, recency,
     archive candidates and FIFO order."""
 
+    # =========================================================================
+    # QUERIES
+    # =========================================================================
+
     async def list_recent_for_project(
         self, project_id: UUID, limit: int = 15
     ) -> list[TaskTable]:
@@ -1789,6 +1793,10 @@ class TaskStatistics(_Base):
                     tokens_cache_write=row.tokens_cache_write,
                 )
         return total
+
+    # =========================================================================
+    # STATISTICS
+    # =========================================================================
 
     async def count_by_status(self, team: Team | None = None) -> dict[str, int]:
         """Count tasks by status."""
@@ -3411,6 +3419,10 @@ class TaskCreation(_Base):
     """Creating and activating tasks: parent depth, batch membership, the root
     source, the no-PM-code rule, baseline constraints and the batch shape."""
 
+    # =========================================================================
+    # CRUD OPERATIONS
+    # =========================================================================
+
     async def _validate_parent_depth(self, parent_task_id: UUID) -> None:
         """Enforce MAX_TASK_DEPTH at creation time.
 
@@ -4240,6 +4252,10 @@ class TaskBranches(_Base):
             branch_name = await self._create_branch_in_project(task, agent_id, project)
         return branch_name
 
+    # =========================================================================
+    # GIT WORK SESSION INTEGRATION
+    # =========================================================================
+
     async def _create_work_session_if_needed(
         self,
         task: TaskTable,
@@ -4982,6 +4998,10 @@ class TaskClaimRules(_Base):
     """Whether a task may be claimed: its status and team, self-review, unmet
     dependencies, the sequence bar, an existing claimant, and the original
     developer's context."""
+
+    # =========================================================================
+    # STATUS TRANSITIONS
+    # =========================================================================
 
     def _validate_claim_status(
         self,
@@ -6439,6 +6459,10 @@ class TaskProgress(_Base):
     """Recording progress on a task: progress notes, plan progress, checkpoints and
     commits."""
 
+    # =========================================================================
+    # PROGRESS AND CHECKPOINTS
+    # =========================================================================
+
     async def add_progress(
         self,
         task_id: UUID,
@@ -6570,6 +6594,10 @@ class TaskProgress(_Base):
 class TaskCompletionLearnings(_Base):
     """The learnings a completed task leaves: duration and commit-pattern signals,
     the notes' lessons, and their scope."""
+
+    # =========================================================================
+    # RAG AUTO-INDEXING HOOKS (Fire-and-forget background tasks)
+    # =========================================================================
 
     # Learning extraction thresholds
     # Flag if task took 1.5x expected time
@@ -7117,6 +7145,10 @@ class TaskRagIndexing(_Base):
                 continue
             abspath.parent.mkdir(parents=True, exist_ok=True)
             abspath.write_text(content, encoding="utf-8")
+
+    # =========================================================================
+    # QA AND ERROR INDEXING HOOKS
+    # =========================================================================
 
     def _parse_qa_notes(self, qa_notes: str) -> list[dict[str, str]]:
         """Parse QA notes into structured issues."""
@@ -9359,6 +9391,10 @@ class TaskCompletion(_Base):
 class TaskCEOApproval(_Base):
     """The CEO's gate: escalating to the CEO, approving, approving and starting,
     rejecting, and the handoff journal and Board review mark around them."""
+
+    # =========================================================================
+    # CEO APPROVAL WORKFLOW
+    # =========================================================================
 
     def _escalate_to_ceo_refusal(
         self, task: TaskTable, *, allow_subtask_ceo_merge: bool = False
@@ -13975,14 +14011,6 @@ class TaskService(
                 error=str(e),
             )
 
-    # =========================================================================
-    # CRUD OPERATIONS
-    # =========================================================================
-
-    # =========================================================================
-    # STATUS TRANSITIONS
-    # =========================================================================
-
     # Management roles that can claim tasks from any team. Derived from the
     # spec's _ORG_WIDE_ROLES (devops subtracted: its cross-cell grant is the
     # flag-gated branch below) so this set cannot drift from the doctrine
@@ -14012,34 +14040,6 @@ class TaskService(
     _SINGLE_ACTIVE_TASK_ROLES: ClassVar[frozenset[AgentRole]] = frozenset(
         {AgentRole.DEVELOPER, AgentRole.DEVOPS}
     )
-
-    # =========================================================================
-    # GIT WORK SESSION INTEGRATION
-    # =========================================================================
-
-    # =========================================================================
-    # RAG AUTO-INDEXING HOOKS (Fire-and-forget background tasks)
-    # =========================================================================
-
-    # =========================================================================
-    # QA AND ERROR INDEXING HOOKS
-    # =========================================================================
-
-    # =========================================================================
-    # CEO APPROVAL WORKFLOW
-    # =========================================================================
-
-    # =========================================================================
-    # PROGRESS AND CHECKPOINTS
-    # =========================================================================
-
-    # =========================================================================
-    # QUERIES
-    # =========================================================================
-
-    # =========================================================================
-    # STATISTICS
-    # =========================================================================
 
     # =========================================================================
     # ROUTE-LEVEL ORCHESTRATION

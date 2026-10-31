@@ -599,6 +599,8 @@ class XMentions(_Base):
     """Answering X mentions: the gated poll, the per-cycle cap, skipping a mention,
     the since-id watermark, and originating a reply draft."""
 
+    # ---- mentions (periodic poll) ------------------------------------------
+
     async def _mentions_poll_gated(self) -> bool:
         """True when the mentions-poll cycle must no-op: the engine or the
         mention-reply sub-switch is off, or the ``engines`` maintenance-pause
@@ -795,6 +797,8 @@ class XFeatureSpotlight(_Base):
     """Feature Spotlight: whether an exploration may open, the shipped sections and
     rejected spotlights it weighs, its brief, and opening, cancelling or skipping
     one."""
+
+    # ---- feature spotlight (periodic HoM investigation) --------------------
 
     async def open_feature_spotlight_exploration(self) -> TaskTable | None:
         """Originate ONE held exploration task for the Head of Marketing, or None.
@@ -1123,6 +1127,8 @@ class XPostMaterialization(_Base):
     """Turning approved work into X post drafts: release posts, feature spotlights,
     editorial and campaign posts, and Barfly replies."""
 
+    # ---- release posts (event-driven hook) --------------------------------
+
     async def draft_release_post(
         self, *, version: str, highlights: list[str], project_id: UUID | None = None
     ) -> TaskTable | None:
@@ -1224,6 +1230,8 @@ class XPostMaterialization(_Base):
             draft = None
         body = (draft or "").strip() or _fallback_release_body(version, product_name)
         return _clamp_tweet(body)
+
+    # ---- shared origination -------------------------------------------------
 
     async def _originate_post(
         self, *, title: str, body: str, source: str, project_id: UUID
@@ -1409,6 +1417,8 @@ class XPostMaterialization(_Base):
 class XRedrafts(_Base):
     """Redrafting a rejected post: the redraft lock, its identity and project, the
     revision body and context, and the markers and Barfly link it carries over."""
+
+    # ---- reject -> redraft (CEO feedback loop) -----------------------------
 
     async def redraft_from_rejection(
         self, post_task: TaskTable, reason: str
@@ -1738,10 +1748,6 @@ class XEngine(
                 "x-engine: brand-voice nudge failed (best-effort)", error=str(exc)
             )
 
-    # ---- release posts (event-driven hook) --------------------------------
-
-    # ---- mentions (periodic poll) ------------------------------------------
-
     async def run_cycle(self) -> list[TaskTable]:
         """One mentions-poll pass: fetch, filter, dedup, draft, hold. No-op
         list unless the engine AND the mention-reply sub-switch are on and
@@ -1768,12 +1774,6 @@ class XEngine(
                 await self._since_id_set(str(max(numeric)))
         project = await self._roboco_project()
         return await self._process_mentions(mentions, project, open_count)
-
-    # ---- feature spotlight (periodic HoM investigation) --------------------
-
-    # ---- shared origination -------------------------------------------------
-
-    # ---- reject -> redraft (CEO feedback loop) -----------------------------
 
 
 def get_x_engine(session: AsyncSession, client: XClient | None = None) -> XEngine:

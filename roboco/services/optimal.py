@@ -571,6 +571,10 @@ class OptimalPeriodicUpdate(_Base):
     """The periodic update: scanning the docs root for changed and deleted files,
     reconciling deletions, and re-indexing."""
 
+    # =========================================================================
+    # PERIODIC UPDATE (File Change Detection)
+    # =========================================================================
+
     async def ensure_periodic_update_running(self) -> None:
         """Start the periodic RAG update loop if it isn't already running.
 
@@ -828,6 +832,10 @@ class OptimalPeriodicUpdate(_Base):
 class OptimalDocsIndexing(_Base):
     """Indexing code, documentation, journal entries, playbooks and vault notes, the
     tracking rows for what is indexed, and unindexing."""
+
+    # =========================================================================
+    # INDEXING OPERATIONS (Existing - Backwards Compatible)
+    # =========================================================================
 
     async def index_code(
         self,
@@ -1244,6 +1252,10 @@ class OptimalKnowledgeIndexing(_Base):
     """Indexing what the company learns: errors, standards and the standards file,
     decisions, reviews and learnings."""
 
+    # =========================================================================
+    # INDEXING OPERATIONS (New - Optimal Brain)
+    # =========================================================================
+
     async def index_error(self, params: IndexErrorParams) -> None:
         """Index an error pattern with solution."""
         plugin = self._get_plugin(IndexType.ERRORS)
@@ -1430,6 +1442,10 @@ class OptimalKnowledgeIndexing(_Base):
 class OptimalSearch(_Base):
     """Searching: across indexes and one index, with gaps and citations, and the
     synthesized answer to a query."""
+
+    # =========================================================================
+    # SEARCH OPERATIONS
+    # =========================================================================
 
     @staticmethod
     def _collect_outcomes(
@@ -1854,6 +1870,10 @@ class OptimalSpecializedSearch(_Base):
     """Searches over one kind of knowledge: errors, standards, decisions, learnings,
     and a file's reviews."""
 
+    # =========================================================================
+    # SPECIALIZED SEARCH (Optimal Brain)
+    # =========================================================================
+
     async def search_errors(
         self,
         error_message: str,
@@ -1924,6 +1944,10 @@ class OptimalSpecializedSearch(_Base):
 class OptimalIndexStats(_Base):
     """Index statistics and staleness: per-index and overall stats, stale source
     files, and when each index was last refreshed."""
+
+    # =========================================================================
+    # UTILITY OPERATIONS
+    # =========================================================================
 
     async def get_stats(self) -> dict[str, Any]:
         """Get statistics about all indexes."""
@@ -2159,6 +2183,10 @@ class OptimalPromptsAndHealth(_Base):
     """Prompt templates, clearing and refreshing an index, listing its documents,
     and the embedding, LLM and vector store health checks."""
 
+    # =========================================================================
+    # PROMPT TEMPLATE MANAGEMENT
+    # =========================================================================
+
     def create_prompt_template(self, template_data: dict[str, Any]) -> dict[str, Any]:
         """
         Create a reusable prompt template.
@@ -2387,10 +2415,6 @@ class OptimalService(
         # Cached docs root path
         self._docs_root: Path | None = None
 
-    # =========================================================================
-    # PERIODIC UPDATE (File Change Detection)
-    # =========================================================================
-
     # Continue running despite errors
 
     async def close(self) -> None:
@@ -2451,30 +2475,6 @@ class OptimalService(
         :meth:`_get_plugin`.
         """
         return self._initialized and index_type in self._plugins
-
-    # =========================================================================
-    # INDEXING OPERATIONS (Existing - Backwards Compatible)
-    # =========================================================================
-
-    # =========================================================================
-    # INDEXING OPERATIONS (New - Optimal Brain)
-    # =========================================================================
-
-    # =========================================================================
-    # SEARCH OPERATIONS
-    # =========================================================================
-
-    # =========================================================================
-    # SPECIALIZED SEARCH (Optimal Brain)
-    # =========================================================================
-
-    # =========================================================================
-    # UTILITY OPERATIONS
-    # =========================================================================
-
-    # =========================================================================
-    # PROMPT TEMPLATE MANAGEMENT
-    # =========================================================================
 
 
 class _OptimalServiceHolder:

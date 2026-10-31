@@ -73,6 +73,10 @@ class JournalEntries(_Base):
     """Journal entries: creating one with its vault note and RAG indexing, getting,
     listing and deleting them, and the Board review brief."""
 
+    # =========================================================================
+    # ENTRY CRUD
+    # =========================================================================
+
     async def create_entry(
         self, entry_create: JournalEntryCreate
     ) -> JournalEntry | None:
@@ -459,6 +463,10 @@ class JournalEntryWriters(_Base):
     """Writing a typed entry: task reflections, decision logs, learnings, struggles
     and general entries, and the gateway's struggle, decision and entry writes."""
 
+    # =========================================================================
+    # CONVENIENCE METHODS
+    # =========================================================================
+
     async def add_task_reflection(
         self,
         agent_id: UUID,
@@ -702,6 +710,10 @@ class JournalEntryWriters(_Base):
 class JournalAnalytics(_Base):
     """A journal's statistics, its growth metrics, and semantic search over it."""
 
+    # =========================================================================
+    # ANALYTICS
+    # =========================================================================
+
     async def get_journal_stats(self, journal_id: UUID) -> JournalStats | None:
         """Get statistics for a journal."""
         result = await self.session.execute(
@@ -849,6 +861,13 @@ class JournalAnalytics(_Base):
 class JournalGatewayChecks(_Base):
     """What the gateway asks of a journal: whether a task has a decision, note,
     learning, reflection or struggle entry, the latest decision, and a recent entry."""
+
+    # =========================================================================
+    # GATEWAY (CHOREOGRAPHER) BACKFILL
+    #
+    # Existence checks the gateway uses to enforce tracing requirements
+    # (every transition demands a journal entry of the appropriate type).
+    # =========================================================================
 
     async def _has_entry_of_type(
         self,
@@ -1120,25 +1139,6 @@ class JournalService(
             created_at=journal_row.created_at,
             updated_at=journal_row.updated_at,
         )
-
-    # =========================================================================
-    # ENTRY CRUD
-    # =========================================================================
-
-    # =========================================================================
-    # CONVENIENCE METHODS
-    # =========================================================================
-
-    # =========================================================================
-    # ANALYTICS
-    # =========================================================================
-
-    # =========================================================================
-    # GATEWAY (CHOREOGRAPHER) BACKFILL
-    #
-    # Existence checks the gateway uses to enforce tracing requirements
-    # (every transition demands a journal entry of the appropriate type).
-    # =========================================================================
 
 
 def get_journal_service(db: AsyncSession) -> JournalService:
