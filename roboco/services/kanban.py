@@ -325,7 +325,8 @@ class KanbanService(BaseService, KanbanBoardLayout):
     async def get_dev_board(
         self,
         team: Team,
-        swimlane_by: str | None = None,  # "priority" or "assignee"
+        # "priority" or "assignee"
+        swimlane_by: str | None = None,
     ) -> KanbanBoard:
         """
         Get the developer kanban board for a cell.
@@ -396,8 +397,10 @@ class KanbanService(BaseService, KanbanBoardLayout):
         # so the board shows only the documenter's own pipeline.
         doc_statuses = [
             TaskStatus.AWAITING_DOCUMENTATION,
-            TaskStatus.IN_PROGRESS,  # Gathering
-            TaskStatus.VERIFYING,  # Writing
+            # Gathering
+            TaskStatus.IN_PROGRESS,
+            # Writing
+            TaskStatus.VERIFYING,
             TaskStatus.COMPLETED,
         ]
 
@@ -565,7 +568,8 @@ class KanbanService(BaseService, KanbanBoardLayout):
         # Board sees high-priority tasks and epics
         result = await self.session.execute(
             select(TaskTable)
-            .where(TaskTable.priority <= 1)  # P0 and P1 only
+            # P0 and P1 only
+            .where(TaskTable.priority <= 1)
             .order_by(TaskTable.priority, TaskTable.created_at.desc())
         )
         tasks = result.scalars().all()

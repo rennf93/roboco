@@ -9507,10 +9507,10 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `KanbanService._load_subtask_counts` | method | kanban.py:45 | Batch-count direct children per parent in ONE grouped query (fixes the always-0 stub; #198) |
 | `KanbanService._task_to_card` | method | kanban.py:59 | Task → KanbanCard; accepts optional `subtask_counts` dict for real subtask counts |
 | `KanbanService.get_dev_board` | method | kanban.py:325 | Dev cell board with optional priority/assignee swimlanes |
-| `KanbanService.get_qa_board` / `get_documenter_board` / `get_pm_board` | method | kanban.py:356 / 387 / 421 | Role-filtered flat boards |
-| `KanbanService.get_main_pm_board` / `get_main_pm_board_flat` | method | kanban.py:440 / 456 | Cross-cell view (team swimlanes / team columns) |
-| `KanbanService.get_board_kanban` | method | kanban.py:559 | Board roadmap (P0/P1 only) |
-| `KanbanService.get_board_stats` | method | kanban.py:579 | Status-count aggregation |
+| `KanbanService.get_qa_board` / `get_documenter_board` / `get_pm_board` | method | kanban.py:357 / 388 / 424 | Role-filtered flat boards |
+| `KanbanService.get_main_pm_board` / `get_main_pm_board_flat` | method | kanban.py:443 / 459 | Cross-cell view (team swimlanes / team columns) |
+| `KanbanService.get_board_kanban` | method | kanban.py:562 | Board roadmap (P0/P1 only) |
+| `KanbanService.get_board_stats` | method | kanban.py:583 | Status-count aggregation |
 | `CompanyGoalsService` | class | company_goals.py:50 | Singleton charter CRUD |
 | `SINGLETON_ID` | constant | company_goals.py:25 | Fixed UUID 0…0 — charter is one row |
 | `CompanyGoalsService.get` / `upsert` | method | company_goals.py:53 / 59 | Partial-key upsert; caller commits |
