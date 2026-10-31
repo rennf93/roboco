@@ -9356,700 +9356,9 @@ class TaskCompletion(_Base):
         return task
 
 
-class TaskService(
-    BaseService,
-    TaskAgentQueries,
-    TaskBlocking,
-    TaskBoardProgramCycles,
-    TaskBoardProgramOutputs,
-    TaskBranches,
-    TaskClaim,
-    TaskClaimRules,
-    TaskClaimSequence,
-    TaskCompletion,
-    TaskCompletionLearnings,
-    TaskCreation,
-    TaskDependencies,
-    TaskDocsReview,
-    TaskEngineListings,
-    TaskExternalPRReviews,
-    TaskLineage,
-    TaskListQueries,
-    TaskPMReview,
-    TaskProgress,
-    TaskQAReview,
-    TaskQueueQueries,
-    TaskRagIndexing,
-    TaskRecords,
-    TaskRoleLookup,
-    TaskStalled,
-    TaskStatistics,
-    TaskSupersede,
-    TaskTree,
-    TaskUnclaim,
-    TaskWorkState,
-):
-    """
-    Service for managing tasks.
-
-    Provides:
-    - CRUD operations
-    - Status transitions with validation
-    - Assignment and claiming
-    - Queries by team, status, assignee
-    - Dependency management
-    """
-
-    service_name: ClassVar[str] = "task"
-    _background_tasks: ClassVar[set[asyncio.Task[None]]] = set()
-    # #216: consecutive FS/permission failures during terminal worktree
-    # cleanup. A systemic FS issue (stuck mount, perms) would otherwise leak
-    # per-task worktrees indefinitely with only a warning log; after this many
-    # consecutive OSError failures a CEO alert fires once (suppressed until a
-    # success resets the streak). Class-level so it spans all cleanup calls.
-    _worktree_cleanup_fail_streak: ClassVar[int] = 0
-    _worktree_cleanup_escalated: ClassVar[bool] = False
-    _WORKTREE_CLEANUP_ESCALATE_AFTER: ClassVar[int] = 3
-
-    def __init__(self, session: AsyncSession) -> None:
-        super().__init__(session)
-        # Bridges claim(provision=False)'s _apply_claim_fields to a LATER,
-        # separate provision_claim() call (the verb runner's composed
-        # claim/set_plan/start commits durably, then provisions outside any
-        # savepoint, see provision_claim's docstring). Per-instance and
-        # per-request: the gateway builds one TaskService per request, so
-        # this never survives past the request that populated it. Popped on
-        # use; an entry lingers only if the composed sequence never reaches
-        # provision_claim at all (set_plan/start raises, or returns None on
-        # a concurrent status change), bounded by this instance's request
-        # lifetime, so it never accumulates across requests.
-        self._pending_claim_snapshots: dict[UUID, _ClaimFieldSnapshot] = {}
-
-    # =========================================================================
-    # STATUS TRANSITION HELPER
-    # =========================================================================
-
-    def _validate_and_set_status(
-        self,
-        task: TaskTable,
-        new_status: TaskStatus,
-        agent_role: str | None = None,
-        audit_agent_id: str | UUID | None = None,
-        extra_allowed_roles: tuple[str, ...] = (),
-    ) -> None:
-        """
-        Validate and set task status with lifecycle enforcement.
-
-        This is the single point of truth for status changes. All transitions
-        are validated against VALID_TRANSITIONS, ROLE_RESTRICTED_TRANSITIONS,
-        and git requirements.
-
-        Args:
-            task: The task to update
-            new_status: Target status
-            agent_role: Optional role for role-restricted transitions
-            audit_agent_id: Optional explicit agent_id for the audit row.
-                Required for transitions where the caller has already
-                cleared ``task.claimed_by`` BEFORE invoking this method
-                (e.g. ``submit_for_qa`` clears claimed_by so QA can claim).
-                Without this, the audit writer reads the now-cleared value
-                and stores ``agent_id=NULL`` on rows that should attribute
-                the transition to the developer, QA, or PM who triggered it.
-
-        Raises:
-            TaskLifecycleError: If transition is invalid or role not permitted
-            GitRequirementError: If git requirements not met
-        """
-        current = (
-            task.status.value if isinstance(task.status, TaskStatus) else task.status
-        )
-        target = new_status.value if isinstance(new_status, TaskStatus) else new_status
-
-        # Validate the transition (raises TaskLifecycleError if invalid)
-        validate_task_transition(current, target, agent_role, extra_allowed_roles)
-
-        # Validate git requirements (raises GitRequirementError if not met)
-        git_ctx = GitContext(
-            docs_complete=bool(task.docs_complete),
-            pr_created=bool(task.pr_created),
-            pr_number=task.pr_number,
-            branch_name=str(task.branch_name) if task.branch_name else None,
-            # A branchless coordination task does no git and never gets a branch
-            # — exempt it from the branch gate so it can reach in_progress and
-            # delegate. Two shapes qualify: a product fan-out root (product, no
-            # repo) and a MegaTask umbrella (batch_id, top-level). All four are
-            # plain columns (no lazy load).
-            is_coordination=is_branchless_coordination(
-                project_id=task.project_id,
-                product_id=task.product_id,
-                batch_id=task.batch_id,
-                parent_task_id=task.parent_task_id,
-                has_cell_projects=bool(task.cell_projects),
-            ),
-            # An external-PR review task reviews someone else's PR read-only —
-            # no branch of its own — so it is branch-gate exempt.
-            is_external_review=(getattr(task, "source", "manual") in PR_REVIEW_SOURCES),
-            # A MegaTask umbrella assembles no PR of its own, so it is exempt
-            # from the awaiting_pm_review->awaiting_ceo_approval pr_number gate.
-            is_umbrella=is_batch_umbrella(
-                batch_id=task.batch_id, parent_task_id=task.parent_task_id
-            ),
-            # A PR-waived task (zero commits relative to its parent —
-            # report-only work the verb runner skipped create_pr for) is
-            # exempt from the pr_number CEO-escalation gate the same way an
-            # umbrella is, even though it carries a real branch.
-            is_pr_waived=markers.is_pr_waived(task),
-        )
-        validate_git_requirements(current, target, git_ctx)
-
-        # Apply the status change
-        task.status = new_status
-        self.log.info(
-            "Task status transition",
-            task_id=str(task.id),
-            from_status=current,
-            to_status=target,
-            agent_role=agent_role,
-        )
-
-        # Poke the orchestrator's dispatcher so it reacts immediately to
-        # this transition. Without this, agents wait up to 30 seconds for
-        # the next poll (10 minutes cumulative in the pathological case we
-        # saw on be-dev-1 spawn). Uses lazy import + silent fallback so
-        # code paths that don't have an orchestrator (tests, sync tools)
-        # don't break.
-        try:
-            from roboco.api.deps import get_orchestrator
-
-            get_orchestrator().trigger_dispatch()
-        except Exception as e:
-            # Swallow so task creation succeeds even when the
-            # orchestrator singleton isn't wired (e.g. tests, CLI
-            # scripts) — but log so a real regression is visible.
-            self.log.debug(
-                "Dispatch trigger skipped after task create",
-                error=str(e),
-            )
-
-        self._emit_status_transition_audit(
-            task,
-            from_status=current,
-            to_status=target,
-            agent_role=agent_role,
-            audit_agent_id=audit_agent_id,
-        )
-
-    def _emit_status_transition_audit(
-        self,
-        task: TaskTable,
-        *,
-        from_status: str,
-        to_status: str,
-        agent_role: str | None,
-        audit_agent_id: str | UUID | None,
-    ) -> None:
-        """Emit the ``task.<status>`` audit row for a status transition.
-
-        Extracted from ``_validate_and_set_status`` so transition paths that
-        set ``task.status`` directly — e.g. ``apply_escalation``, which blocks a
-        task without routing through the strict transition validator — record
-        the same audit event. No status change may bypass the audit log.
-
-        The row is written into the CALLER's session (``self.session.add``),
-        so it commits / rolls back ATOMICALLY with the status transition — the
-        audit journey can never diverge from real task state. This closes three
-        facets of the fire-and-forget decoupling gap:
-
-        * F061/F073 — the audit commit is no longer decoupled on a separate
-          connection whose failures were swallowed; a committed transition now
-          ALWAYS has its audit row (same transaction), and a persist failure
-          fails the transition (fail-closed for the metric source of truth)
-          instead of silently dropping the row.
-        * F075 — a transition rolled back inside a verb savepoint
-          (``_verb_runner`` wraps composed actions in ``begin_nested``) now
-          rolls its audit row back too — no phantom ``task.<status>`` row for a
-          transition that did not stick. (The claim-branch-failure rollback in
-          ``_provision_claim`` commits its own reversal explicitly instead,
-          since it runs outside any savepoint by design; the savepoint
-          rollback handles the general case.)
-
-        The ``revision_count`` rework counter is incremented synchronously
-        here (the single chokepoint every transition funnels through).
-
-        The explicit ``audit_agent_id`` (capture-before-mutate) wins: callers
-        like ``submit_for_qa`` clear ``task.claimed_by`` before transitioning
-        but still want the row attributed to the outgoing agent. Otherwise fall
-        back to ``task.claimed_by``. A structurally-invalid id coerces to
-        ``None`` (mirroring ``AuditService._coerce_uuid``) so the row still
-        lands unattributed rather than FK-violating; a valid-but-deleted agent
-        id is a real bug worth surfacing as a transition failure.
-        """
-        from roboco.db.tables import AuditLogTable
-
-        self._clear_stale_stalled_marker(task)
-
-        # Rework counter: a bounce INTO needs_revision (not a re-entry) is one
-        # rework cycle. Incremented at this single chokepoint — every transition
-        # path funnels its audit through here exactly once — so the rework rate
-        # is an O(1) column read. Synchronous (part of this unit of work). The
-        # pre-block RESTORE path undoes this bump when it restores to a
-        # snapshotted needs_revision (same cycle resuming, not a new rejection).
-        if (
-            to_status == TaskStatus.NEEDS_REVISION.value
-            and from_status != TaskStatus.NEEDS_REVISION.value
-        ):
-            task.revision_count = (task.revision_count or 0) + 1
-            self._maybe_schedule_coroner_bounce_hook(task)
-
-        if audit_agent_id is not None:
-            resolved_audit_agent_id: str | None = str(audit_agent_id)
-        elif task.claimed_by is not None:
-            resolved_audit_agent_id = str(task.claimed_by)
-        else:
-            resolved_audit_agent_id = None
-
-        agent_uuid: UUID | None = None
-        if resolved_audit_agent_id:
-            try:
-                agent_uuid = UUID(resolved_audit_agent_id)
-            except (ValueError, AttributeError):
-                agent_uuid = None
-
-        details: dict[str, Any] = {
-            "from_status": from_status,
-            "to_status": to_status,
-            "agent_role": agent_role,
-            "team": (
-                task.team.value if hasattr(task.team, "value") else str(task.team)
-            ),
-        }
-        for event_type in self._audit_events_for(to_status, agent_role):
-            self.session.add(
-                AuditLogTable(
-                    event_type=event_type,
-                    agent_id=agent_uuid,
-                    target_type="task",
-                    target_id=task.id,
-                    severity="info",
-                    details=dict(details),
-                )
-            )
-        self._touch_vault_frontmatter(task, to_status=to_status, team=details["team"])
-
-    @staticmethod
-    def _clear_stale_stalled_marker(task: TaskTable) -> None:
-        """Any status transition is genuine task movement, so a stale
-        breaker-tripped stalled marker (set by
-        ``AgentOrchestrator._pm_respawn_should_gate``) no longer applies —
-        clear it here unconditionally rather than relying solely on the
-        dispatcher's narrower same-key re-observation path
-        (``_respawn_status_change_resets`` -> ``_clear_task_stalled_marker``),
-        which never re-fires once the task's status leaves the dispatcher's
-        own fetch scope (e.g. a dev's task advancing to ``awaiting_qa``).
-        Direct attribute assignment (not the async ``clear_stalled_marker``
-        helper) since the caller is synchronous and already holds the ORM
-        object mid-transaction — it commits/rolls back atomically with the
-        transition itself. Split out of ``_emit_status_transition_audit`` to
-        keep its own complexity down (xenon budget)."""
-        if task.stalled_reason is not None:
-            task.stalled_reason = None
-            task.stalled_since = None
-
-    def _maybe_schedule_coroner_bounce_hook(self, task: TaskTable) -> None:
-        """Coroner (Board Program) bounce trigger (spec §4): fire exactly
-        ONCE, at the 3rd bounce — not on every later re-bounce, which would
-        just re-hit CoronerEngine's own one-open-autopsy dedup for no reason.
-        Best-effort, fire-and-forget on a FRESH DB session (this method is
-        sync and runs mid-transaction — see ``_fire_coroner_bounce_hook``'s
-        docstring for the accepted small race this implies) so a hook
-        failure — or the enclosing transaction later rolling back — can
-        never fail the transition that got us here. Split out of
-        ``_emit_status_transition_audit`` to keep its own complexity down
-        (xenon budget)."""
-        if task.revision_count != _CORONER_BOUNCE_THRESHOLD:
-            return
-        try:
-            bg_task = asyncio.create_task(
-                _fire_coroner_bounce_hook(cast("UUID", task.id))
-            )
-            self._background_tasks.add(bg_task)
-            bg_task.add_done_callback(self._background_tasks.discard)
-        except Exception:
-            # Scheduling itself failing (e.g. no running event loop) must
-            # never break the transition already recorded above —
-            # _fire_coroner_bounce_hook's own body is already try/excepted
-            # for everything past this point.
-            _module_log.warning(
-                "coroner: bounce hook scheduling failed (best-effort)",
-                task_id=str(task.id),
-            )
-
-    def _touch_vault_frontmatter(
-        self, task: TaskTable, *, to_status: str, team: str
-    ) -> None:
-        """Best-effort, cheap Obsidian-vault frontmatter touch (event seam).
-
-        Only patches an EXISTING note's status/team/pr fields — no extra
-        queries (everything used here is already a plain column on ``task``).
-        A vault failure (or a not-yet-materialized note) never blocks the
-        transition; see ``VaultWriter.touch_task_frontmatter``.
-        """
-        from roboco.config import settings
-
-        if not settings.obsidian_vault_enabled:
-            return
-        try:
-            from roboco.services.vault_writer import get_vault_writer
-
-            get_vault_writer().touch_task_frontmatter(
-                task_id=str(task.id),
-                status=to_status,
-                team=team,
-                pr_number=task.pr_number,
-                pr_url=task.pr_url,
-            )
-        except Exception as e:
-            self.log.warning(
-                "Vault frontmatter touch failed (best-effort)",
-                task_id=str(task.id),
-                error=str(e),
-            )
-
-    async def _materialize_vault_note(self, task: TaskTable) -> None:
-        """Best-effort Obsidian-vault materialize-on-create (event seam).
-
-        Deterministic template only — the ``## Narrative`` section stays
-        Auditor-owned (placeholder). Mirrors ``_touch_vault_frontmatter``'s
-        swallow-and-log posture: a vault failure never blocks task creation,
-        and boards stop showing only curated/rebuilt tasks.
-        """
-        from roboco.config import settings
-
-        if not settings.obsidian_vault_enabled:
-            return
-        try:
-            from roboco.services.project import get_project_service
-            from roboco.services.vault_assembly import assemble_task_note_data
-            from roboco.services.vault_writer import get_vault_writer
-
-            data = await assemble_task_note_data(
-                self, get_project_service(self.session), task
-            )
-            get_vault_writer().write_task(data)
-        except Exception as e:
-            self.log.warning(
-                "Vault materialize-on-create failed (best-effort)",
-                task_id=str(task.id),
-                error=str(e),
-            )
-
-    def _emit_escalation_audit(
-        self, task: TaskTable, *, escalator_slug: str, target_slug: str
-    ) -> None:
-        """Emit a ``task.escalated`` audit row (per-member escalation metric).
-
-        Additive to the ``task.blocked`` / pool-release audit of an escalation —
-        it carries WHO escalated (``escalator_slug``) so the member scorecard can
-        charge the escalation to the escalator. Written in the caller's session
-        so it commits atomically with the escalation. Best-effort for metrics:
-        never gates the escalation itself.
-        """
-        from roboco.db.tables import AuditLogTable
-
-        self.session.add(
-            AuditLogTable(
-                event_type="task.escalated",
-                agent_id=None,
-                target_type="task",
-                target_id=task.id,
-                severity="info",
-                details={
-                    "escalator_slug": escalator_slug,
-                    "target_slug": target_slug,
-                },
-            )
-        )
-
-    @staticmethod
-    def _audit_events_for(to_status: str, agent_role: str | None) -> list[str]:
-        """Audit event types to emit for a transition.
-
-        Always the generic ``task.<status>``; plus a rejector-attributed
-        ``task.qa_fail`` / ``task.pr_fail`` / ``task.request_changes`` /
-        ``task.ceo_reject`` when a reviewer bounces a task to needs_revision —
-        so the per-agent rework scorecard can charge the rejection to whoever
-        made it (the audit row carries their agent_id), not the developer who
-        owns the task.
-        """
-        events = [f"task.{to_status}"]
-        if to_status == TaskStatus.NEEDS_REVISION.value:
-            if agent_role == "pr_reviewer":
-                events.append("task.pr_fail")
-            elif agent_role == "qa":
-                events.append("task.qa_fail")
-            elif agent_role in ("cell_pm", "main_pm"):
-                events.append("task.request_changes")
-            elif agent_role == "ceo":
-                events.append("task.ceo_reject")
-        return events
-
-    async def _alert_auditor_of_rework(
-        self,
-        task: TaskTable,
-        *,
-        reason: str,
-        actor_agent_id: UUID | None = None,
-        actor_role: str | None = None,
-    ) -> None:
-        """Best-effort auditor alert when a task bounces to needs_revision.
-
-        Mirrors the other best-effort notification seams in this service: a
-        delivery failure must never block the underlying transition. The
-        orchestrator's ``_dispatch_audit_work`` watches for ``ALERT``
-        notifications targeted at the auditor and spawns an audit pass.
-        """
-        try:
-            from roboco.services.notification_delivery import (
-                get_notification_delivery_service,
-            )
-
-            delivery = get_notification_delivery_service(self.session)
-            await delivery.notify_auditor_of_rework(
-                task=task,
-                task_id=require_uuid(task.id),
-                reason=reason,
-                actor_agent_id=actor_agent_id,
-                actor_role=actor_role,
-            )
-        except Exception as e:
-            self.log.warning(
-                "Auditor rework alert failed (best-effort)",
-                task_id=str(task.id),
-                error=str(e),
-            )
-
-    async def _alert_coroner_of_cancel(self, task: TaskTable) -> None:
-        """Coroner (Board Program) cancel-after-work-started trigger (spec §4).
-
-        Called on ``cancel()``'s own SESSION (unlike the sync-chokepoint
-        bounce hook, ``cancel`` is already async) right after the transition
-        flushes, for the top-level task the caller asked to cancel — not each
-        cascade-cancelled descendant, so a big-subtree cancel opens at most
-        one autopsy attempt. "Work started" is commits or a work session ever
-        having existed on this task; ``CoronerEngine.open_for_incident`` does
-        its own armed+dedup gating, so a false-positive call here is a cheap
-        no-op. Best-effort: never lets a hook failure break the cancel.
-        """
-        if not (task.commits or task.work_session_id is not None):
-            return
-        try:
-            from roboco.services.coroner_engine import get_coroner_engine
-
-            await get_coroner_engine(self.session).open_for_incident(
-                require_uuid(task.id), kind="cancelled"
-            )
-        except Exception as e:
-            self.log.warning(
-                "Coroner cancel-hook failed (best-effort)",
-                task_id=str(task.id),
-                error=str(e),
-            )
-
-    # =========================================================================
-    # CRUD OPERATIONS
-    # =========================================================================
-
-    # =========================================================================
-    # STATUS TRANSITIONS
-    # =========================================================================
-
-    # Management roles that can claim tasks from any team. Derived from the
-    # spec's _ORG_WIDE_ROLES (devops subtracted: its cross-cell grant is the
-    # flag-gated branch below) so this set cannot drift from the doctrine
-    # source the spec team-match gate and the gateway's project-access guard
-    # both use. Until it was derived, this set silently lagged the spec
-    # (no ceo, no pr_reviewer) — latent, but one new claim caller away from
-    # a wedge.
-    _MANAGEMENT_ROLES: frozenset[str] = frozenset(
-        role.value for role in _SPEC_ORG_WIDE_ROLES - {Role.DEVOPS}
-    )
-
-    # Consulted inside _apply_claim_fields's target-status write and inside
-    # _provision_claim's branch-failure rollback's reversal-audit check,
-    # reached only via claim() -> _validate_claim_preconditions ->
-    # _get_valid_claim_statuses, which already screens the pre-claim status
-    # against _ROLE_CLAIM_STATUSES per role. AWAITING_PM_REVIEW is
-    # deliberately absent: no role's _ROLE_CLAIM_STATUSES grants it anymore
-    # (the i_will_plan re-claim loop fix), so claim() can never run with
-    # that pre-claim status; listing it here would be dead weight, not an
-    # independent gate.
-    _CLAIMABLE_STATUSES: ClassVar[set[TaskStatus]] = {
-        TaskStatus.PENDING,
-        TaskStatus.AWAITING_QA,
-        TaskStatus.AWAITING_DOCUMENTATION,
-    }
-
-    _SINGLE_ACTIVE_TASK_ROLES: ClassVar[frozenset[AgentRole]] = frozenset(
-        {AgentRole.DEVELOPER, AgentRole.DEVOPS}
-    )
-
-    # =========================================================================
-    # GIT WORK SESSION INTEGRATION
-    # =========================================================================
-
-    # =========================================================================
-    # RAG AUTO-INDEXING HOOKS (Fire-and-forget background tasks)
-    # =========================================================================
-
-    # =========================================================================
-    # QA AND ERROR INDEXING HOOKS
-    # =========================================================================
-
-    async def _escalation_diverts_to_pool(
-        self, task: TaskTable, target_agent_id: UUID
-    ) -> bool:
-        """True when an escalation target cannot own the task — divert to the pool.
-
-        Two shapes: a board/advisory role assigned work it has no verb for
-        (``_board_cannot_own``), and a Main-PM target handed a main_pm+code task
-        (the 2026-06-27 meltdown shape — a coordinator with no code verb cannot
-        fix the code). Either diverts to a pool release for a role-matched reclaim.
-        """
-        if _board_cannot_own(task) and await self._is_board_advisory_agent(
-            target_agent_id
-        ):
-            return True
-        return main_pm_cannot_own_code(
-            team=task.team, task_type=task.task_type
-        ) and await self._is_main_pm_agent(target_agent_id)
-
-    async def apply_escalation(
-        self,
-        *,
-        task: TaskTable,
-        target_agent_id: UUID,
-        escalator_slug: str,
-        target_slug: str,
-        reason: str,
-    ) -> bool:
-        """Apply the state mutations for a generic chain escalation.
-
-        Sets the task to BLOCKED, reassigns to the escalation target, and
-        appends an [ESCALATED] line to dev_notes. Notification delivery is
-        handled upstream by `NotificationDeliveryService.escalate_and_notify`.
-
-        Records the pre-escalation assignee as `blocker_raised_by` so the
-        subsequent `unblock` call hands the task back to the original dev
-        and the orchestrator re-spawns them. Without this, escalation
-        loses the dev's identity permanently.
-
-        Returns True when the escalation was applied (or diverted to the pool
-        by the board/main-pm guard); False when refused because the task is in
-        a terminal state (COMPLETED / CANCELLED) — a terminal task must not be
-        resurrected to BLOCKED (F043). The gateway ``escalate_up`` path also
-        guards this in the lifecycle spec, but the HTTP escalate route bypasses
-        the spec gate, so the single write primitive refuses it here too.
-
-        Invariant: a board/advisory role is NEVER assigned a task it cannot own
-        — a descendant executable task (code / documentation / design), a cell's
-        own coordination/planning descendant, OR a Main-PM coordination root
-        (see ``_board_cannot_own``). They have no verb to build, delegate,
-        unblock, or complete such work. The escalation chain points main-pm at
-        product-owner, so without the coordination-root arm a Main PM's
-        ``i_am_blocked`` on its own root reassigned the whole root to the board,
-        which then respawn-looped on a blocker it could not resolve. Such an
-        escalation is diverted to a pool release so a role-matched agent reclaims
-        it. Enforced here — the single write primitive — so both the gateway
-        ``escalate`` verb and the HTTP escalate route are covered.
-        """
-        if _is_terminal_task(task):
-            self.log.warning(
-                "Refusing to escalate a terminal task (no resurrection to blocked)",
-                task_id=str(task.id),
-                status=str(task.status),
-                escalator=escalator_slug,
-                target=target_slug,
-            )
-            return False
-        current = (
-            task.status
-            if isinstance(task.status, TaskStatus)
-            else TaskStatus(str(task.status))
-        )
-        if current not in _ESCALATABLE_TO_BLOCKED:
-            # No arbitrary source→BLOCKED write: a status outside the escalation
-            # exemption (e.g. BACKLOG, never activated) has no spec edge into
-            # BLOCKED. Refuse rather than bypass the validator silently.
-            self.log.warning(
-                "Refusing escalation from non-escalatable status",
-                task_id=str(task.id),
-                status=str(task.status),
-                escalator=escalator_slug,
-                target=target_slug,
-            )
-            return False
-        if await self._escalation_diverts_to_pool(task, target_agent_id):
-            # A board/advisory or Main-PM-coordination target cannot own this
-            # task — divert to a pool release so a role-matched agent reclaims
-            # it (see ``_escalation_diverts_to_pool`` for the two shapes).
-            await self._release_code_task_to_pool(
-                task=task,
-                escalator_slug=escalator_slug,
-                blocked_target_slug=target_slug,
-                reason=reason,
-            )
-            self._emit_escalation_audit(
-                task, escalator_slug=escalator_slug, target_slug=target_slug
-            )
-            return True
-        if task.assigned_to and not task.blocker_raised_by:
-            task.blocker_raised_by = cast("Any", task.assigned_to)
-        # Capture before mutating: the audit row must record the real prior
-        # status and attribute the block to the outgoing owner, not the
-        # escalation target we are about to assign.
-        pre_block_status = (
-            task.status.value
-            if isinstance(task.status, TaskStatus)
-            else str(task.status)
-        )
-        pre_block_owner = cast("Any", task.claimed_by)
-        self._snapshot_pre_block(task)
-        task.assigned_to = cast("Any", target_agent_id)
-        task.claimed_by = cast("Any", target_agent_id)
-        task.status = TaskStatus.BLOCKED
-        # Record the escalation as a structured marker — NOT appended to
-        # dev_notes (the developer's space). The old append polluted dev_notes
-        # and, on a re-escalation loop, grew it unboundedly (a cell PM stuck on
-        # needs_revision escalated 5x → 8KB of [ESCALATED] blocks). The target
-        # learns the reason from the escalate notification (escalate_and_notify).
-        markers.set_escalation(
-            task, from_slug=escalator_slug, to_slug=target_slug, reason=reason
-        )
-        await self.session.flush()
-        # This path sets BLOCKED directly (bypassing the strict transition
-        # validator), so emit the task.blocked audit explicitly — no status
-        # change may skip the audit log.
-        self._emit_status_transition_audit(
-            task,
-            from_status=pre_block_status,
-            to_status=TaskStatus.BLOCKED.value,
-            agent_role=None,
-            audit_agent_id=pre_block_owner,
-        )
-        self._emit_escalation_audit(
-            task, escalator_slug=escalator_slug, target_slug=target_slug
-        )
-        self.log.info(
-            "Task escalated and blocked",
-            task_id=str(task.id),
-            escalator=escalator_slug,
-            target=target_slug,
-        )
-        return True
-
-    # =========================================================================
-    # CEO APPROVAL WORKFLOW
-    # =========================================================================
+class TaskCEOApproval(_Base):
+    """The CEO's gate: escalating to the CEO, approving, approving and starting,
+    rejecting, and the handoff journal and Board review mark around them."""
 
     def _escalate_to_ceo_refusal(
         self, task: TaskTable, *, allow_subtask_ceo_merge: bool = False
@@ -10695,6 +10004,11 @@ class TaskService(
         )
         return task
 
+
+class TaskTerminalCleanup(_Base):
+    """Best-effort cleanup when a task ends: its work session, branch, pull request,
+    worktree and previews, and the CEO alert after repeated worktree failures."""
+
     async def _abandon_work_session_for_task(
         self, task: TaskTable, reason: str
     ) -> None:
@@ -10947,6 +10261,11 @@ class TaskService(
         ws_service = get_work_session_service(self.session)
         await ws_service.close(require_uuid(task.work_session_id), reason=reason)
 
+
+class TaskCancel(_Base):
+    """Cancelling a task: the cascade to its descendants, pruning dependencies on
+    it, the cancel note and event, and the parent criteria it orphans."""
+
     async def cancel(
         self,
         task_id: UUID,
@@ -11188,6 +10507,11 @@ class TaskService(
             )
         )
 
+
+class TaskDependentsRevival(_Base):
+    """What a completed task releases: the completion notice and event, and the
+    dependents it unblocks or revives."""
+
     async def _notify_completion(self, task: TaskTable, task_id: UUID) -> None:
         """Best-effort CEO completion notification (granular effort breakdown).
 
@@ -11354,41 +10678,10 @@ class TaskService(
         else:
             self._validate_and_set_status(task, TaskStatus.IN_PROGRESS, None)
 
-    # =========================================================================
-    # PROGRESS AND CHECKPOINTS
-    # =========================================================================
 
-    # =========================================================================
-    # QUERIES
-    # =========================================================================
-
-    # =========================================================================
-    # STATISTICS
-    # =========================================================================
-
-    # =========================================================================
-    # ROUTE-LEVEL ORCHESTRATION
-    #
-    # These methods encapsulate the full flow for each task-lifecycle HTTP
-    # endpoint. Routes stay thin adapters: parse input → call one of these
-    # → translate ServiceError → format response. Business logic and
-    # notifications live here.
-    # =========================================================================
-
-    # Minimum character count for notes fields that must be substantive
-    # (QA pass notes, doc-complete notes, escalation notes).
-    MIN_NOTES_CHARS: ClassVar[int] = 20
-    # Max descendant IDs shown inline in an error before truncating.
-    MAX_ERR_IDS: ClassVar[int] = 5
-    # Substitute reason → target status table.
-    _SUBSTITUTE_REASON_TO_STATUS: ClassVar[dict[str, TaskStatus]] = {
-        "task_complete": TaskStatus.AWAITING_QA,
-        "low_context": TaskStatus.PENDING,
-        "out_of_scope_team": TaskStatus.PENDING,
-        "out_of_scope_role": TaskStatus.PENDING,
-        "max_retries": TaskStatus.PENDING,
-        "blocked_external": TaskStatus.BLOCKED,
-    }
+class TaskRouteClaims(_Base):
+    """The route-level flows for claiming, soft-blocking, escalating to the CEO and
+    substituting a task, with the checks the routes share."""
 
     async def _load_task_or_raise(self, task_id: UUID) -> TaskTable:
         task = await self.get(task_id)
@@ -11569,155 +10862,6 @@ class TaskService(
         )
         await self.session.commit()
         return blocked
-
-    async def docs_complete_for_task(
-        self,
-        task_id: UUID,
-        agent: AgentContext,
-        notes: str | None,
-    ) -> TaskTable:
-        """Mark documentation complete (documenter role only)."""
-        task = await self._load_task_or_raise(task_id)
-
-        if agent.role != AgentRole.DOCUMENTER:
-            raise UnauthorizedError(
-                action="docs_complete",
-                reason="Only documenters can mark documentation as complete",
-            )
-
-        original_dev = extract_original_developer(task)
-        if original_dev and str(agent.agent_id) == original_dev:
-            from roboco.services.audit import get_audit_service
-
-            audit = get_audit_service()
-            await audit.log_task_action_denial(
-                agent_id=agent.agent_id,
-                agent_role=agent.role.value,
-                task_id=task_id,
-                action="docs_complete",
-                reason="Self-documentation not permitted",
-            )
-            raise UnauthorizedError(
-                action="docs_complete", reason="Cannot document your own task"
-            )
-
-        if not notes or len(notes.strip()) < self.MIN_NOTES_CHARS:
-            raise ValidationError(
-                f"DOC_NOTES_REQUIRED: docs_complete must include notes "
-                f"(>={self.MIN_NOTES_CHARS} chars) listing what was "
-                "documented and where. "
-                "Use i_documented(notes='...')."
-            )
-
-        completed = await self.docs_complete(task_id, notes)
-        if not completed:
-            raise ValidationError(
-                "Cannot mark docs complete - invalid status for documenter workflow"
-            )
-
-        from roboco.services.notification_delivery import (
-            get_notification_delivery_service,
-        )
-
-        delivery = get_notification_delivery_service(self.session)
-        await delivery.notify_pm_of_docs_complete(
-            task=completed, task_id=task_id, submitter_agent_id=agent.agent_id
-        )
-        await self.session.commit()
-        return completed
-
-    def _format_id_list(self, ids: list[str]) -> str:
-        shown = ", ".join(ids[: self.MAX_ERR_IDS])
-        extra = (
-            f" (+{len(ids) - self.MAX_ERR_IDS} more)"
-            if len(ids) > self.MAX_ERR_IDS
-            else ""
-        )
-        return f"{shown}{extra}"
-
-    async def _explain_complete_failure(
-        self, task_id: UUID, original_status: str
-    ) -> str:
-        """Diagnose why `complete` returned None, to surface a clear error."""
-        refetch = await self.get(task_id)
-        if refetch:
-            descendants = await self.get_all_descendants(task_id)
-            incomplete = [
-                str(d.id)[:8]
-                for d in descendants
-                if self._task_status_value(d) not in ("completed", "cancelled")
-            ]
-            if incomplete:
-                return (
-                    f"Cannot complete task - {len(incomplete)} subtask(s) "
-                    f"still in progress: {self._format_id_list(incomplete)}. "
-                    "Monitor and help unblock stuck tasks."
-                )
-            if original_status not in ("awaiting_pm_review", "in_progress"):
-                return (
-                    f"Cannot complete - status is '{original_status}'. "
-                    "Must be 'awaiting_pm_review' or 'in_progress'."
-                )
-        return "Cannot complete task - check task status and subtasks."
-
-    async def complete_task_for_agent(
-        self,
-        task_id: UUID,
-        agent: AgentContext,
-        permissions: "PermissionService",
-        force_with_cancelled: bool = False,
-        justification: str | None = None,
-    ) -> TaskTable:
-        """Complete a task (PM/CEO). Includes self-approval + force gates."""
-        task = await self._load_task_or_raise(task_id)
-
-        if not permissions.can_perform_task_action(agent, TaskAction.CLOSE, task.team):
-            raise UnauthorizedError(
-                action="complete", reason="Only PMs can complete tasks"
-            )
-
-        # PM self-approval block: the PM who kicked off a task can't also
-        # sign off at awaiting_pm_review. CEO is exempt.
-        if (
-            self._task_status_value(task) == "awaiting_pm_review"
-            and task.created_by == agent.agent_id
-            and agent.role != AgentRole.CEO
-        ):
-            raise UnauthorizedError(
-                action="complete",
-                reason=(
-                    "SELF_APPROVAL: You created this task; a different PM "
-                    "must complete it from awaiting_pm_review. Escalate or "
-                    "hand off to another PM."
-                ),
-            )
-
-        if force_with_cancelled:
-            if agent.role != AgentRole.CEO:
-                raise UnauthorizedError(
-                    action="force_complete",
-                    reason=(
-                        "force_with_cancelled requires CEO approval. Only "
-                        "CEO can complete tasks when subtasks are not all "
-                        "completed."
-                    ),
-                )
-            if not justification:
-                raise ValidationError("force_with_cancelled requires justification")
-
-        original_status = self._task_status_value(task)
-        completed = await self.complete(
-            task_id,
-            agent_id=agent.agent_id,
-            force_with_cancelled=force_with_cancelled,
-            justification=justification,
-        )
-        if not completed:
-            raise ValidationError(
-                await self._explain_complete_failure(task_id, original_status)
-            )
-        await self.session.commit()
-        return completed
 
     async def _validate_escalation_preconditions(
         self,
@@ -11917,79 +11061,164 @@ class TaskService(
                 update_data["assigned_to"] = pm_uuid
         return update_data, target_pm_slug
 
-    # =========================================================================
-    # GATEWAY (CHOREOGRAPHER) BACKFILL
-    #
-    # Thin wrappers + queries the gateway Choreographer composes into
-    # intent-verb sequences. Most are aliases over canonical service
-    # methods; a handful (qa_claim, doc_claim, qa_pass, qa_fail, escalate,
-    # cell_pm_complete) are flow-specific variants that don't fit cleanly
-    # into the existing API.
-    # =========================================================================
 
-    # Active states a developer counts as "current work" for an agent.
-    _DEV_ACTIVE_STATUSES: ClassVar[set[TaskStatus]] = {
-        TaskStatus.CLAIMED,
-        TaskStatus.IN_PROGRESS,
-        TaskStatus.VERIFYING,
-        TaskStatus.AWAITING_QA,
-        TaskStatus.AWAITING_DOCUMENTATION,
-    }
+class TaskRouteCompletion(_Base):
+    """The route-level flows for completing the docs step and the task, with the
+    explanation a refused completion returns."""
 
-    # States in which the agent still owns the task for content / journal
-    # context, even if it isn't progressing. Used by note / dm /
-    # evidence so journal entries written from blocked or paused get the
-    # task_id auto-attached (otherwise the C8 + tracing gates never see
-    # the agent's decisions and the agent spirals).
-    _JOURNAL_CONTEXT_STATUSES: ClassVar[set[TaskStatus]] = {
-        # PENDING belongs here: board-program tasks (decisions_audit et al)
-        # are worked WITHOUT claiming and sit pending their whole life - the
-        # auditor's note() on such a task auto-attached nothing, the
-        # complete-at-note seam never saw the task id, and a9739b1c could
-        # not advance for days (2026-09-29).
-        TaskStatus.PENDING,
-        TaskStatus.CLAIMED,
-        TaskStatus.IN_PROGRESS,
-        TaskStatus.VERIFYING,
-        TaskStatus.AWAITING_QA,
-        TaskStatus.AWAITING_DOCUMENTATION,
-        TaskStatus.BLOCKED,
-        TaskStatus.PAUSED,
-        TaskStatus.NEEDS_REVISION,
-    }
+    async def docs_complete_for_task(
+        self,
+        task_id: UUID,
+        agent: AgentContext,
+        notes: str | None,
+    ) -> TaskTable:
+        """Mark documentation complete (documenter role only)."""
+        task = await self._load_task_or_raise(task_id)
 
-    # Statuses that count as "still assignable to the agent" for triage.
-    _AGENT_NON_TERMINAL_STATUSES: ClassVar[set[TaskStatus]] = {
-        TaskStatus.PENDING,
-        TaskStatus.CLAIMED,
-        TaskStatus.IN_PROGRESS,
-        TaskStatus.NEEDS_REVISION,
-        TaskStatus.VERIFYING,
-        TaskStatus.AWAITING_QA,
-        TaskStatus.AWAITING_DOCUMENTATION,
-        TaskStatus.AWAITING_PM_REVIEW,
-        TaskStatus.PAUSED,
-    }
+        if agent.role != AgentRole.DOCUMENTER:
+            raise UnauthorizedError(
+                action="docs_complete",
+                reason="Only documenters can mark documentation as complete",
+            )
 
-    async def submit_verification(
-        self, agent_id: UUID, task_id: UUID, notes: str
-    ) -> TaskTable | None:
-        """Submit task for self-verification (gateway alias of submit_for_verification).
+        original_dev = extract_original_developer(task)
+        if original_dev and str(agent.agent_id) == original_dev:
+            from roboco.services.audit import get_audit_service
 
-        `notes` is currently advisory — recorded as a progress entry for
-        the audit trail. The underlying transition does not require notes.
-        """
-        if notes:
-            await self.add_progress(task_id, agent_id, notes)
-        return await self.submit_for_verification(task_id, agent_role="developer")
+            audit = get_audit_service()
+            await audit.log_task_action_denial(
+                agent_id=agent.agent_id,
+                agent_role=agent.role.value,
+                task_id=task_id,
+                action="docs_complete",
+                reason="Self-documentation not permitted",
+            )
+            raise UnauthorizedError(
+                action="docs_complete", reason="Cannot document your own task"
+            )
 
-    async def submit_qa(
-        self, agent_id: UUID, task_id: UUID, notes: str
-    ) -> TaskTable | None:
-        """Submit task for QA review (gateway alias of submit_for_qa)."""
-        if notes:
-            await self.add_progress(task_id, agent_id, notes)
-        return await self.submit_for_qa(task_id, agent_role="developer")
+        if not notes or len(notes.strip()) < self.MIN_NOTES_CHARS:
+            raise ValidationError(
+                f"DOC_NOTES_REQUIRED: docs_complete must include notes "
+                f"(>={self.MIN_NOTES_CHARS} chars) listing what was "
+                "documented and where. "
+                "Use i_documented(notes='...')."
+            )
+
+        completed = await self.docs_complete(task_id, notes)
+        if not completed:
+            raise ValidationError(
+                "Cannot mark docs complete - invalid status for documenter workflow"
+            )
+
+        from roboco.services.notification_delivery import (
+            get_notification_delivery_service,
+        )
+
+        delivery = get_notification_delivery_service(self.session)
+        await delivery.notify_pm_of_docs_complete(
+            task=completed, task_id=task_id, submitter_agent_id=agent.agent_id
+        )
+        await self.session.commit()
+        return completed
+
+    def _format_id_list(self, ids: list[str]) -> str:
+        shown = ", ".join(ids[: self.MAX_ERR_IDS])
+        extra = (
+            f" (+{len(ids) - self.MAX_ERR_IDS} more)"
+            if len(ids) > self.MAX_ERR_IDS
+            else ""
+        )
+        return f"{shown}{extra}"
+
+    async def _explain_complete_failure(
+        self, task_id: UUID, original_status: str
+    ) -> str:
+        """Diagnose why `complete` returned None, to surface a clear error."""
+        refetch = await self.get(task_id)
+        if refetch:
+            descendants = await self.get_all_descendants(task_id)
+            incomplete = [
+                str(d.id)[:8]
+                for d in descendants
+                if self._task_status_value(d) not in ("completed", "cancelled")
+            ]
+            if incomplete:
+                return (
+                    f"Cannot complete task - {len(incomplete)} subtask(s) "
+                    f"still in progress: {self._format_id_list(incomplete)}. "
+                    "Monitor and help unblock stuck tasks."
+                )
+            if original_status not in ("awaiting_pm_review", "in_progress"):
+                return (
+                    f"Cannot complete - status is '{original_status}'. "
+                    "Must be 'awaiting_pm_review' or 'in_progress'."
+                )
+        return "Cannot complete task - check task status and subtasks."
+
+    async def complete_task_for_agent(
+        self,
+        task_id: UUID,
+        agent: AgentContext,
+        permissions: "PermissionService",
+        force_with_cancelled: bool = False,
+        justification: str | None = None,
+    ) -> TaskTable:
+        """Complete a task (PM/CEO). Includes self-approval + force gates."""
+        task = await self._load_task_or_raise(task_id)
+
+        if not permissions.can_perform_task_action(agent, TaskAction.CLOSE, task.team):
+            raise UnauthorizedError(
+                action="complete", reason="Only PMs can complete tasks"
+            )
+
+        # PM self-approval block: the PM who kicked off a task can't also
+        # sign off at awaiting_pm_review. CEO is exempt.
+        if (
+            self._task_status_value(task) == "awaiting_pm_review"
+            and task.created_by == agent.agent_id
+            and agent.role != AgentRole.CEO
+        ):
+            raise UnauthorizedError(
+                action="complete",
+                reason=(
+                    "SELF_APPROVAL: You created this task; a different PM "
+                    "must complete it from awaiting_pm_review. Escalate or "
+                    "hand off to another PM."
+                ),
+            )
+
+        if force_with_cancelled:
+            if agent.role != AgentRole.CEO:
+                raise UnauthorizedError(
+                    action="force_complete",
+                    reason=(
+                        "force_with_cancelled requires CEO approval. Only "
+                        "CEO can complete tasks when subtasks are not all "
+                        "completed."
+                    ),
+                )
+            if not justification:
+                raise ValidationError("force_with_cancelled requires justification")
+
+        original_status = self._task_status_value(task)
+        completed = await self.complete(
+            task_id,
+            agent_id=agent.agent_id,
+            force_with_cancelled=force_with_cancelled,
+            justification=justification,
+        )
+        if not completed:
+            raise ValidationError(
+                await self._explain_complete_failure(task_id, original_status)
+            )
+        await self.session.commit()
+        return completed
+
+
+class TaskReviewClaims(_Base):
+    """Review claims: QA and documenter claims, listing open review claims, and
+    releasing them, including the reaper's release."""
 
     async def list_open_review_claims(self, agent_id: UUID) -> list[TaskTable]:
         """Tasks where the agent holds an OPEN specialized claim (QA / doc /
@@ -12106,6 +11335,96 @@ class TaskService(
         task.claimed_at = cast("Any", None)
         task.last_heartbeat_at = cast("Any", None)
         await self.session.flush()
+
+    async def _qa_or_doc_claim(
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        expected_status: TaskStatus,
+        enforce_competing_claimant: bool = True,
+    ) -> TaskTable | None:
+        """Claim-without-transition for QA / Documenter review states.
+
+        Status stays at expected_status (it's a review state, not an
+        active dev state). Sets assigned_to + claimed_by + claimed_at so
+        the gateway can route subsequent verbs to the right agent.
+
+        The row is locked ``FOR UPDATE`` so concurrent claim attempts
+        serialize at the DB level, mirroring ``claim`` and ``pr_gate_claim``:
+        a second claimant sees the first's committed ``active_claimant_id``
+        and returns None instead of overwriting it (last-write-wins would
+        otherwise actor-mismatch the first claimant's later pass_review /
+        fail_review / i_documented).
+
+        ``enforce_competing_claimant`` defaults True (QA/doc path). The
+        ``pr_gate_claim`` path passes False — it carries its own
+        role-scoped guard that only blocks a competing PR_REVIEWER claim;
+        a PM owning the root (non-reviewer claim) is intentionally
+        overridable by the first reviewer.
+
+        Also flips agent.status/current_task_id to ACTIVE/this-task
+        (``_mark_agent_active_for_claim``, mirroring ``_apply_claim_fields``),
+        this is the QA/Documenter/in-path-PR-reviewer claim chokepoint
+        (backs ``qa_claim``, ``doc_claim``, ``pr_gate_claim``), so without it
+        those three roles could never show as active in the fleet. No
+        branch-creation step follows (unlike ``claim()``'s ``_provision_claim``
+        half), so there
+        is no failure path afterward to roll the marker back from.
+        """
+        lock_result = await self.session.execute(
+            select(TaskTable)
+            .where(TaskTable.id == task_id)
+            .with_for_update(of=TaskTable)
+        )
+        task = lock_result.scalar_one_or_none()
+        if task is None:
+            return None
+        if task.status != expected_status:
+            return None
+        existing = to_python_uuid(task.active_claimant_id)
+        if enforce_competing_claimant and existing is not None and existing != agent_id:
+            self.log.warning(
+                "qa_or_doc_claim rejected - task already claimed by another agent",
+                task_id=str(task_id),
+                expected_status=expected_status.value,
+                existing_claimant=str(existing),
+                requesting_agent=str(agent_id),
+            )
+            return None
+        now = datetime.now(UTC)
+        task.assigned_to = cast("Any", agent_id)
+        task.claimed_by = cast("Any", agent_id)
+        task.claimed_at = now
+        # Seed the heartbeat, same rationale as _apply_claim_fields.
+        # `claimant_lock.is_stale` and the reaper both treat
+        # last_heartbeat_at IS NULL as stale; without this seed a QA/Doc
+        # claim is "stale" the moment it's recorded and any code that
+        # consults claimant_lock for awaiting_qa / awaiting_documentation
+        # tasks will misclassify the live claim as abandoned.
+        task.last_heartbeat_at = now
+        # Single-claimant invariant, see _apply_claim_fields. Same column
+        # used by claimant_lock. Cleared by QA pass/fail
+        # and doc-complete when the review hand-off finishes.
+        task.active_claimant_id = cast("Any", agent_id)
+        agent = await self.session.get(AgentTable, agent_id)
+        self._mark_agent_active_for_claim(agent, task.id)
+        await self.session.flush()
+        return task
+
+    async def qa_claim(self, qa_agent_id: UUID, task_id: UUID) -> TaskTable | None:
+        """QA claims a task in awaiting_qa (no state transition)."""
+        return await self._qa_or_doc_claim(qa_agent_id, task_id, TaskStatus.AWAITING_QA)
+
+    async def doc_claim(self, doc_agent_id: UUID, task_id: UUID) -> TaskTable | None:
+        """Documenter claims a task in awaiting_documentation."""
+        return await self._qa_or_doc_claim(
+            doc_agent_id, task_id, TaskStatus.AWAITING_DOCUMENTATION
+        )
+
+
+class TaskAcceptanceCriteria(_Base):
+    """Acceptance criteria across the tree: normalizing references, the parent
+    criteria children cover or leave unclaimed, coverage, and a criterion's status."""
 
     async def self_heal_ac_ids(self, parent: TaskTable) -> None:
         """Re-stamp ``acceptance_criteria_ids`` in place when it's empty or out
@@ -12370,6 +11689,55 @@ class TaskService(
             for idx, ac_id in enumerate(ids)
         ]
 
+    async def set_acceptance_criteria_status(
+        self, task_id: UUID, status: list[dict[str, Any]]
+    ) -> TaskTable | None:
+        """Persist per-criterion addressing status.
+
+        Replaces the full acceptance_criteria_status list with `status`.
+        Each entry must have the shape:
+            {
+                "criterion": str,
+                "addressed": bool,
+                "artifact_ref": str | None,
+                "checked_at": str,  # ISO-8601 UTC
+            }
+
+        Returns the updated task, or None if the task no longer exists.
+        """
+        task = await self.get(task_id)
+        if task is None:
+            return None
+        task.acceptance_criteria_status = status
+        await self.session.flush()
+        return task
+
+
+class TaskGatewayWork(_Base):
+    """The gateway's work verbs over a task: verification and QA submissions, the
+    plan, the work session, inspected evidence, pausing, PM review, subtasks, and an
+    idle agent."""
+
+    async def submit_verification(
+        self, agent_id: UUID, task_id: UUID, notes: str
+    ) -> TaskTable | None:
+        """Submit task for self-verification (gateway alias of submit_for_verification).
+
+        `notes` is currently advisory — recorded as a progress entry for
+        the audit trail. The underlying transition does not require notes.
+        """
+        if notes:
+            await self.add_progress(task_id, agent_id, notes)
+        return await self.submit_for_verification(task_id, agent_role="developer")
+
+    async def submit_qa(
+        self, agent_id: UUID, task_id: UUID, notes: str
+    ) -> TaskTable | None:
+        """Submit task for QA review (gateway alias of submit_for_qa)."""
+        if notes:
+            await self.add_progress(task_id, agent_id, notes)
+        return await self.submit_for_qa(task_id, agent_role="developer")
+
     async def set_plan(
         self, task_id: UUID, plan: str | dict[str, Any]
     ) -> TaskTable | None:
@@ -12422,28 +11790,141 @@ class TaskService(
         task.qa_evidence_inspected = True
         await self.session.flush()
 
-    async def set_acceptance_criteria_status(
-        self, task_id: UUID, status: list[dict[str, Any]]
-    ) -> TaskTable | None:
-        """Persist per-criterion addressing status.
+    async def mark_agent_idle(self, agent_id: UUID) -> None:
+        """Set agent.status = IDLE, clear current_task_id, + emit an
+        ``agent.idle`` audit row.
 
-        Replaces the full acceptance_criteria_status list with `status`.
-        Each entry must have the shape:
-            {
-                "criterion": str,
-                "addressed": bool,
-                "artifact_ref": str | None,
-                "checked_at": str,  # ISO-8601 UTC
-            }
+        Clearing ``current_task_id`` matters now that ``_apply_claim_fields`` /
+        ``_retarget_agent_claim`` actually populate it on claim: without this,
+        an agent that goes idle (container about to shut down) would keep
+        reporting its last task as "currently working" forever, since
+        nothing else ever clears the column.
 
-        Returns the updated task, or None if the task no longer exists.
+        The audit row (target = the agent, details.agent_slug) is the idle
+        signal the member scorecard needs — it lets the sweeper compute idle
+        time as the gap from an idle mark to the member's next spawn. Written in
+        the same session so it commits with the status change.
         """
-        task = await self.get(task_id)
-        if task is None:
-            return None
-        task.acceptance_criteria_status = status
+        result = await self.session.execute(
+            select(AgentTable).where(AgentTable.id == agent_id)
+        )
+        agent = result.scalar_one_or_none()
+        if agent is None:
+            return
+        agent.status = AgentStatus.IDLE
+        agent.current_task_id = None
+        from roboco.db.tables import AuditLogTable
+
+        self.session.add(
+            AuditLogTable(
+                event_type="agent.idle",
+                agent_id=agent_id,
+                target_type="agent",
+                target_id=agent_id,
+                severity="info",
+                details={"agent_slug": agent.slug},
+            )
+        )
         await self.session.flush()
-        return task
+
+    async def pause_for_agent(
+        self, agent_id: UUID, task_id: UUID, agent_role: str | None = None
+    ) -> TaskTable | None:
+        """Gateway-flavored pause: only succeeds when caller owns the task."""
+        task = await self.get(task_id)
+        if task is None or task.assigned_to != agent_id:
+            return None
+        return await self.pause(task_id, agent_role=agent_role)
+
+    async def submit_pm_review(
+        self, agent_id: UUID, task_id: UUID, notes: str
+    ) -> TaskTable | None:
+        """Gateway alias of submit_for_pm_review for cell-PM submit_up.
+
+        Flushes any progress note then transitions in_progress →
+        awaiting_pm_review with the agent's role inferred from agent_id so
+        the lifecycle validator allows the transition.
+        """
+        if notes:
+            await self.add_progress(task_id, agent_id, notes)
+        agent = await self.agent_for(agent_id)
+        agent_role = agent.role if agent else "cell_pm"
+        return await self.submit_for_pm_review(
+            task_id, agent_role=agent_role, notes=notes or None
+        )
+
+    async def create_subtask(self, req: TaskCreateRequest) -> TaskTable:
+        """PM-friendly subtask creation; sets status from assignee presence.
+
+        When ``assigned_to`` is provided the task is created in ``pending`` so
+        the orchestrator can spawn the assignee immediately. Without an
+        assignee it stays in ``backlog`` and a PM must run ``activate`` later.
+        Caller-supplied status takes precedence; otherwise we infer from the
+        presence of an assignee.
+
+        Foundation rule: no task without acceptance_criteria. The silent
+        fallback that substituted ``["completed and reviewed by assignee"]``
+        was deleted on 2026-05-10 (spec §5.2) — it was the proximate cause
+        of every skeleton task in the same-day smoke run. Defense-in-depth:
+        the gateway and route-layer schemas reject under-filled tasks
+        earlier, but this service-layer guard remains as a hard backstop
+        for non-gateway / non-route callers.
+        """
+        from roboco.foundation.policy.task_completeness import (
+            TASK_AT_CREATE,
+            TaskCompletenessError,
+            check,
+        )
+
+        if req.parent_task_id is None:
+            raise ValueError("create_subtask requires parent_task_id")
+
+        result = check(TASK_AT_CREATE, req)
+        if not result.passed:
+            raise TaskCompletenessError(
+                missing=result.missing,
+                field_hints=result.field_hints,
+                message=(
+                    "create_subtask: task missing required fields: "
+                    f"{result.missing}. The silent fallback at "
+                    "services/task.py:5061 was removed 2026-05-10 (spec §5.2)."
+                ),
+            )
+
+        inferred_status = TaskStatus.PENDING if req.assigned_to else TaskStatus.BACKLOG
+        prepared = TaskCreateRequest(
+            title=req.title,
+            description=req.description,
+            acceptance_criteria=req.acceptance_criteria,
+            parent_ac_refs=req.parent_ac_refs,
+            team=req.team,
+            created_by=req.created_by,
+            project_id=req.project_id,
+            product_id=req.product_id,
+            parent_task_id=req.parent_task_id,
+            assigned_to=req.assigned_to,
+            estimated_complexity=req.estimated_complexity,
+            task_type=req.task_type,
+            nature=req.nature,
+            status=req.status or inferred_status,
+            # Forward ordering + collision surface so a dev task delegated with
+            # surfaces/dependencies keeps them (multi-level sequencing — edge
+            # kinds 3 & 4). Previously dropped here, which is why dev-task
+            # dependency_ids was always [] and the only ordering was the weak
+            # assignee-keyed spawn barrier (live 2026-06-27 out-of-order break).
+            sequence=req.sequence,
+            dependency_ids=list(req.dependency_ids) if req.dependency_ids else [],
+            batch_id=req.batch_id,
+            intends_to_touch=req.intends_to_touch,
+            adds_migration=req.adds_migration,
+            touches_shared=req.touches_shared,
+        )
+        return await self.create(prepared)
+
+
+class TaskReassignment(_Base):
+    """Reassigning a task or its active claim, with the diversions for Board
+    advisory and Main PM code ownership and the cell PM redirect."""
 
     async def _maybe_divert_board_advisory_reassign(
         self, task: TaskTable, task_id: UUID, new_assignee: UUID | None
@@ -12652,33 +12133,6 @@ class TaskService(
                 "Reassignment notify failed", task_id=str(task_id), error=str(e)
             )
 
-    @dataclass(frozen=True)
-    class _CellPmRedirect:
-        """Outcome of an `_resolve_cell_pm_redirect` call.
-
-        ``effective_assignee`` is the UUID the caller should persist (possibly
-        ``None`` when the task was queued for a missing cell PM).
-        ``redirected`` is ``True`` iff ``effective_assignee`` differs from the
-        caller's requested assignee — used by callers to decide whether to log
-        a redirect. ``reason`` is a short tag that names the redirect reason
-        ("to_cell_pm", "queued_no_cell_pm"). ``dev_notes_line`` is the audit
-        text to append to ``task.dev_notes`` (only set when a redirect
-        happened) so a redirect is visible in the task body, not just in logs.
-        """
-
-        effective_assignee: UUID | None
-        redirected: bool
-        reason: str
-        dev_notes_line: str | None
-
-    _REVIEW_HANDOFF_STATUSES = frozenset(
-        {
-            TaskStatus.AWAITING_QA,
-            TaskStatus.AWAITING_DOCUMENTATION,
-            TaskStatus.AWAITING_PR_REVIEW,
-        }
-    )
-
     async def _resolve_cell_pm_redirect(
         self, task: TaskTable, requested_assignee: UUID | None
     ) -> "TaskService._CellPmRedirect":
@@ -12869,127 +12323,11 @@ class TaskService(
             new_agent.status = AgentStatus.ACTIVE
             new_agent.current_task_id = cast("Any", task_id)
 
-    async def mark_agent_idle(self, agent_id: UUID) -> None:
-        """Set agent.status = IDLE, clear current_task_id, + emit an
-        ``agent.idle`` audit row.
 
-        Clearing ``current_task_id`` matters now that ``_apply_claim_fields`` /
-        ``_retarget_agent_claim`` actually populate it on claim: without this,
-        an agent that goes idle (container about to shut down) would keep
-        reporting its last task as "currently working" forever, since
-        nothing else ever clears the column.
-
-        The audit row (target = the agent, details.agent_slug) is the idle
-        signal the member scorecard needs — it lets the sweeper compute idle
-        time as the gap from an idle mark to the member's next spawn. Written in
-        the same session so it commits with the status change.
-        """
-        result = await self.session.execute(
-            select(AgentTable).where(AgentTable.id == agent_id)
-        )
-        agent = result.scalar_one_or_none()
-        if agent is None:
-            return
-        agent.status = AgentStatus.IDLE
-        agent.current_task_id = None
-        from roboco.db.tables import AuditLogTable
-
-        self.session.add(
-            AuditLogTable(
-                event_type="agent.idle",
-                agent_id=agent_id,
-                target_type="agent",
-                target_id=agent_id,
-                severity="info",
-                details={"agent_slug": agent.slug},
-            )
-        )
-        await self.session.flush()
-
-    async def _qa_or_doc_claim(
-        self,
-        agent_id: UUID,
-        task_id: UUID,
-        expected_status: TaskStatus,
-        enforce_competing_claimant: bool = True,
-    ) -> TaskTable | None:
-        """Claim-without-transition for QA / Documenter review states.
-
-        Status stays at expected_status (it's a review state, not an
-        active dev state). Sets assigned_to + claimed_by + claimed_at so
-        the gateway can route subsequent verbs to the right agent.
-
-        The row is locked ``FOR UPDATE`` so concurrent claim attempts
-        serialize at the DB level, mirroring ``claim`` and ``pr_gate_claim``:
-        a second claimant sees the first's committed ``active_claimant_id``
-        and returns None instead of overwriting it (last-write-wins would
-        otherwise actor-mismatch the first claimant's later pass_review /
-        fail_review / i_documented).
-
-        ``enforce_competing_claimant`` defaults True (QA/doc path). The
-        ``pr_gate_claim`` path passes False — it carries its own
-        role-scoped guard that only blocks a competing PR_REVIEWER claim;
-        a PM owning the root (non-reviewer claim) is intentionally
-        overridable by the first reviewer.
-
-        Also flips agent.status/current_task_id to ACTIVE/this-task
-        (``_mark_agent_active_for_claim``, mirroring ``_apply_claim_fields``),
-        this is the QA/Documenter/in-path-PR-reviewer claim chokepoint
-        (backs ``qa_claim``, ``doc_claim``, ``pr_gate_claim``), so without it
-        those three roles could never show as active in the fleet. No
-        branch-creation step follows (unlike ``claim()``'s ``_provision_claim``
-        half), so there
-        is no failure path afterward to roll the marker back from.
-        """
-        lock_result = await self.session.execute(
-            select(TaskTable)
-            .where(TaskTable.id == task_id)
-            .with_for_update(of=TaskTable)
-        )
-        task = lock_result.scalar_one_or_none()
-        if task is None:
-            return None
-        if task.status != expected_status:
-            return None
-        existing = to_python_uuid(task.active_claimant_id)
-        if enforce_competing_claimant and existing is not None and existing != agent_id:
-            self.log.warning(
-                "qa_or_doc_claim rejected - task already claimed by another agent",
-                task_id=str(task_id),
-                expected_status=expected_status.value,
-                existing_claimant=str(existing),
-                requesting_agent=str(agent_id),
-            )
-            return None
-        now = datetime.now(UTC)
-        task.assigned_to = cast("Any", agent_id)
-        task.claimed_by = cast("Any", agent_id)
-        task.claimed_at = now
-        # Seed the heartbeat, same rationale as _apply_claim_fields.
-        # `claimant_lock.is_stale` and the reaper both treat
-        # last_heartbeat_at IS NULL as stale; without this seed a QA/Doc
-        # claim is "stale" the moment it's recorded and any code that
-        # consults claimant_lock for awaiting_qa / awaiting_documentation
-        # tasks will misclassify the live claim as abandoned.
-        task.last_heartbeat_at = now
-        # Single-claimant invariant, see _apply_claim_fields. Same column
-        # used by claimant_lock. Cleared by QA pass/fail
-        # and doc-complete when the review hand-off finishes.
-        task.active_claimant_id = cast("Any", agent_id)
-        agent = await self.session.get(AgentTable, agent_id)
-        self._mark_agent_active_for_claim(agent, task.id)
-        await self.session.flush()
-        return task
-
-    async def qa_claim(self, qa_agent_id: UUID, task_id: UUID) -> TaskTable | None:
-        """QA claims a task in awaiting_qa (no state transition)."""
-        return await self._qa_or_doc_claim(qa_agent_id, task_id, TaskStatus.AWAITING_QA)
-
-    async def doc_claim(self, doc_agent_id: UUID, task_id: UUID) -> TaskTable | None:
-        """Documenter claims a task in awaiting_documentation."""
-        return await self._qa_or_doc_claim(
-            doc_agent_id, task_id, TaskStatus.AWAITING_DOCUMENTATION
-        )
+class TaskGateReviews(_Base):
+    """The review gates' verdicts: QA pass and fail, the PR gate and DevOps co-
+    review claims, PR pass and fail, PM review assignment, requested changes, and
+    the cell PM's completion."""
 
     async def qa_pass(
         self, qa_agent_id: UUID, task_id: UUID, notes: str
@@ -13459,6 +12797,43 @@ class TaskService(
         )
         return task
 
+    async def cell_pm_complete(
+        self,
+        pm_agent_id: UUID,
+        task_id: UUID,
+        notes: str,
+        merge_commit: str | None = None,
+    ) -> TaskTable | None:
+        """Cell PM completes a task; records the parent-branch merge commit.
+
+        Wraps the canonical complete() to also annotate the task with the
+        merge commit SHA on its parent branch. Merge SHA is appended to
+        `task.commits` as a synthetic entry tagged 'merge' so downstream
+        PR-tracking surfaces it without a separate column.
+        """
+        task = await self.get(task_id)
+        if task is None:
+            return None
+        if notes:
+            self._record_completion_notes(task, notes)
+        if merge_commit:
+            merge_entry = {
+                "hash": merge_commit,
+                "message": f"[merge] PR for task {task_id}",
+                "timestamp": datetime.now(UTC).isoformat(),
+                "author_agent_id": str(pm_agent_id),
+                "kind": "merge",
+            }
+            task.commits = [*(task.commits or []), merge_entry]
+            await self.session.flush()
+        return await self.complete(task_id, agent_id=pm_agent_id)
+
+
+class TaskAdminOverride(_Base):
+    """The admin status override's effects: restoring a blocked task's pre-block
+    state and ownership, refusing to resurrect a terminal task, and the override's
+    audit."""
+
     async def unblock_with_restore(
         self,
         pm_agent_id: UUID,
@@ -13773,36 +13148,152 @@ class TaskService(
             )
         )
 
-    async def cell_pm_complete(
-        self,
-        pm_agent_id: UUID,
-        task_id: UUID,
-        notes: str,
-        merge_commit: str | None = None,
-    ) -> TaskTable | None:
-        """Cell PM completes a task; records the parent-branch merge commit.
 
-        Wraps the canonical complete() to also annotate the task with the
-        merge commit SHA on its parent branch. Merge SHA is appended to
-        `task.commits` as a synthetic entry tagged 'merge' so downstream
-        PR-tracking surfaces it without a separate column.
+class TaskEscalation(_Base):
+    """Escalation: up the chain to a role, and diverting a task its owner can't hold
+    to the pool."""
+
+    async def _escalation_diverts_to_pool(
+        self, task: TaskTable, target_agent_id: UUID
+    ) -> bool:
+        """True when an escalation target cannot own the task — divert to the pool.
+
+        Two shapes: a board/advisory role assigned work it has no verb for
+        (``_board_cannot_own``), and a Main-PM target handed a main_pm+code task
+        (the 2026-06-27 meltdown shape — a coordinator with no code verb cannot
+        fix the code). Either diverts to a pool release for a role-matched reclaim.
         """
-        task = await self.get(task_id)
-        if task is None:
-            return None
-        if notes:
-            self._record_completion_notes(task, notes)
-        if merge_commit:
-            merge_entry = {
-                "hash": merge_commit,
-                "message": f"[merge] PR for task {task_id}",
-                "timestamp": datetime.now(UTC).isoformat(),
-                "author_agent_id": str(pm_agent_id),
-                "kind": "merge",
-            }
-            task.commits = [*(task.commits or []), merge_entry]
-            await self.session.flush()
-        return await self.complete(task_id, agent_id=pm_agent_id)
+        if _board_cannot_own(task) and await self._is_board_advisory_agent(
+            target_agent_id
+        ):
+            return True
+        return main_pm_cannot_own_code(
+            team=task.team, task_type=task.task_type
+        ) and await self._is_main_pm_agent(target_agent_id)
+
+    async def apply_escalation(
+        self,
+        *,
+        task: TaskTable,
+        target_agent_id: UUID,
+        escalator_slug: str,
+        target_slug: str,
+        reason: str,
+    ) -> bool:
+        """Apply the state mutations for a generic chain escalation.
+
+        Sets the task to BLOCKED, reassigns to the escalation target, and
+        appends an [ESCALATED] line to dev_notes. Notification delivery is
+        handled upstream by `NotificationDeliveryService.escalate_and_notify`.
+
+        Records the pre-escalation assignee as `blocker_raised_by` so the
+        subsequent `unblock` call hands the task back to the original dev
+        and the orchestrator re-spawns them. Without this, escalation
+        loses the dev's identity permanently.
+
+        Returns True when the escalation was applied (or diverted to the pool
+        by the board/main-pm guard); False when refused because the task is in
+        a terminal state (COMPLETED / CANCELLED) — a terminal task must not be
+        resurrected to BLOCKED (F043). The gateway ``escalate_up`` path also
+        guards this in the lifecycle spec, but the HTTP escalate route bypasses
+        the spec gate, so the single write primitive refuses it here too.
+
+        Invariant: a board/advisory role is NEVER assigned a task it cannot own
+        — a descendant executable task (code / documentation / design), a cell's
+        own coordination/planning descendant, OR a Main-PM coordination root
+        (see ``_board_cannot_own``). They have no verb to build, delegate,
+        unblock, or complete such work. The escalation chain points main-pm at
+        product-owner, so without the coordination-root arm a Main PM's
+        ``i_am_blocked`` on its own root reassigned the whole root to the board,
+        which then respawn-looped on a blocker it could not resolve. Such an
+        escalation is diverted to a pool release so a role-matched agent reclaims
+        it. Enforced here — the single write primitive — so both the gateway
+        ``escalate`` verb and the HTTP escalate route are covered.
+        """
+        if _is_terminal_task(task):
+            self.log.warning(
+                "Refusing to escalate a terminal task (no resurrection to blocked)",
+                task_id=str(task.id),
+                status=str(task.status),
+                escalator=escalator_slug,
+                target=target_slug,
+            )
+            return False
+        current = (
+            task.status
+            if isinstance(task.status, TaskStatus)
+            else TaskStatus(str(task.status))
+        )
+        if current not in _ESCALATABLE_TO_BLOCKED:
+            # No arbitrary source→BLOCKED write: a status outside the escalation
+            # exemption (e.g. BACKLOG, never activated) has no spec edge into
+            # BLOCKED. Refuse rather than bypass the validator silently.
+            self.log.warning(
+                "Refusing escalation from non-escalatable status",
+                task_id=str(task.id),
+                status=str(task.status),
+                escalator=escalator_slug,
+                target=target_slug,
+            )
+            return False
+        if await self._escalation_diverts_to_pool(task, target_agent_id):
+            # A board/advisory or Main-PM-coordination target cannot own this
+            # task — divert to a pool release so a role-matched agent reclaims
+            # it (see ``_escalation_diverts_to_pool`` for the two shapes).
+            await self._release_code_task_to_pool(
+                task=task,
+                escalator_slug=escalator_slug,
+                blocked_target_slug=target_slug,
+                reason=reason,
+            )
+            self._emit_escalation_audit(
+                task, escalator_slug=escalator_slug, target_slug=target_slug
+            )
+            return True
+        if task.assigned_to and not task.blocker_raised_by:
+            task.blocker_raised_by = cast("Any", task.assigned_to)
+        # Capture before mutating: the audit row must record the real prior
+        # status and attribute the block to the outgoing owner, not the
+        # escalation target we are about to assign.
+        pre_block_status = (
+            task.status.value
+            if isinstance(task.status, TaskStatus)
+            else str(task.status)
+        )
+        pre_block_owner = cast("Any", task.claimed_by)
+        self._snapshot_pre_block(task)
+        task.assigned_to = cast("Any", target_agent_id)
+        task.claimed_by = cast("Any", target_agent_id)
+        task.status = TaskStatus.BLOCKED
+        # Record the escalation as a structured marker — NOT appended to
+        # dev_notes (the developer's space). The old append polluted dev_notes
+        # and, on a re-escalation loop, grew it unboundedly (a cell PM stuck on
+        # needs_revision escalated 5x → 8KB of [ESCALATED] blocks). The target
+        # learns the reason from the escalate notification (escalate_and_notify).
+        markers.set_escalation(
+            task, from_slug=escalator_slug, to_slug=target_slug, reason=reason
+        )
+        await self.session.flush()
+        # This path sets BLOCKED directly (bypassing the strict transition
+        # validator), so emit the task.blocked audit explicitly — no status
+        # change may skip the audit log.
+        self._emit_status_transition_audit(
+            task,
+            from_status=pre_block_status,
+            to_status=TaskStatus.BLOCKED.value,
+            agent_role=None,
+            audit_agent_id=pre_block_owner,
+        )
+        self._emit_escalation_audit(
+            task, escalator_slug=escalator_slug, target_slug=target_slug
+        )
+        self.log.info(
+            "Task escalated and blocked",
+            task_id=str(task.id),
+            escalator=escalator_slug,
+            target=target_slug,
+        )
+        return True
 
     async def escalate(
         self, agent_id: UUID, task_id: UUID, reason: str
@@ -13971,99 +13462,689 @@ class TaskService(
         # contract so the gateway emits a clean invalid_state envelope.
         return task if applied else None
 
-    async def pause_for_agent(
-        self, agent_id: UUID, task_id: UUID, agent_role: str | None = None
-    ) -> TaskTable | None:
-        """Gateway-flavored pause: only succeeds when caller owns the task."""
-        task = await self.get(task_id)
-        if task is None or task.assigned_to != agent_id:
-            return None
-        return await self.pause(task_id, agent_role=agent_role)
 
-    async def submit_pm_review(
-        self, agent_id: UUID, task_id: UUID, notes: str
-    ) -> TaskTable | None:
-        """Gateway alias of submit_for_pm_review for cell-PM submit_up.
+class TaskService(
+    BaseService,
+    TaskAcceptanceCriteria,
+    TaskAdminOverride,
+    TaskAgentQueries,
+    TaskBlocking,
+    TaskBoardProgramCycles,
+    TaskBoardProgramOutputs,
+    TaskBranches,
+    TaskCEOApproval,
+    TaskCancel,
+    TaskClaim,
+    TaskClaimRules,
+    TaskClaimSequence,
+    TaskCompletion,
+    TaskCompletionLearnings,
+    TaskCreation,
+    TaskDependencies,
+    TaskDependentsRevival,
+    TaskDocsReview,
+    TaskEngineListings,
+    TaskEscalation,
+    TaskExternalPRReviews,
+    TaskGateReviews,
+    TaskGatewayWork,
+    TaskLineage,
+    TaskListQueries,
+    TaskPMReview,
+    TaskProgress,
+    TaskQAReview,
+    TaskQueueQueries,
+    TaskRagIndexing,
+    TaskReassignment,
+    TaskRecords,
+    TaskReviewClaims,
+    TaskRoleLookup,
+    TaskRouteClaims,
+    TaskRouteCompletion,
+    TaskStalled,
+    TaskStatistics,
+    TaskSupersede,
+    TaskTerminalCleanup,
+    TaskTree,
+    TaskUnclaim,
+    TaskWorkState,
+):
+    """
+    Service for managing tasks.
 
-        Flushes any progress note then transitions in_progress →
-        awaiting_pm_review with the agent's role inferred from agent_id so
-        the lifecycle validator allows the transition.
+    Provides:
+    - CRUD operations
+    - Status transitions with validation
+    - Assignment and claiming
+    - Queries by team, status, assignee
+    - Dependency management
+    """
+
+    service_name: ClassVar[str] = "task"
+    _background_tasks: ClassVar[set[asyncio.Task[None]]] = set()
+    # #216: consecutive FS/permission failures during terminal worktree
+    # cleanup. A systemic FS issue (stuck mount, perms) would otherwise leak
+    # per-task worktrees indefinitely with only a warning log; after this many
+    # consecutive OSError failures a CEO alert fires once (suppressed until a
+    # success resets the streak). Class-level so it spans all cleanup calls.
+    _worktree_cleanup_fail_streak: ClassVar[int] = 0
+    _worktree_cleanup_escalated: ClassVar[bool] = False
+    _WORKTREE_CLEANUP_ESCALATE_AFTER: ClassVar[int] = 3
+
+    def __init__(self, session: AsyncSession) -> None:
+        super().__init__(session)
+        # Bridges claim(provision=False)'s _apply_claim_fields to a LATER,
+        # separate provision_claim() call (the verb runner's composed
+        # claim/set_plan/start commits durably, then provisions outside any
+        # savepoint, see provision_claim's docstring). Per-instance and
+        # per-request: the gateway builds one TaskService per request, so
+        # this never survives past the request that populated it. Popped on
+        # use; an entry lingers only if the composed sequence never reaches
+        # provision_claim at all (set_plan/start raises, or returns None on
+        # a concurrent status change), bounded by this instance's request
+        # lifetime, so it never accumulates across requests.
+        self._pending_claim_snapshots: dict[UUID, _ClaimFieldSnapshot] = {}
+
+    # =========================================================================
+    # STATUS TRANSITION HELPER
+    # =========================================================================
+
+    def _validate_and_set_status(
+        self,
+        task: TaskTable,
+        new_status: TaskStatus,
+        agent_role: str | None = None,
+        audit_agent_id: str | UUID | None = None,
+        extra_allowed_roles: tuple[str, ...] = (),
+    ) -> None:
         """
-        if notes:
-            await self.add_progress(task_id, agent_id, notes)
-        agent = await self.agent_for(agent_id)
-        agent_role = agent.role if agent else "cell_pm"
-        return await self.submit_for_pm_review(
-            task_id, agent_role=agent_role, notes=notes or None
+        Validate and set task status with lifecycle enforcement.
+
+        This is the single point of truth for status changes. All transitions
+        are validated against VALID_TRANSITIONS, ROLE_RESTRICTED_TRANSITIONS,
+        and git requirements.
+
+        Args:
+            task: The task to update
+            new_status: Target status
+            agent_role: Optional role for role-restricted transitions
+            audit_agent_id: Optional explicit agent_id for the audit row.
+                Required for transitions where the caller has already
+                cleared ``task.claimed_by`` BEFORE invoking this method
+                (e.g. ``submit_for_qa`` clears claimed_by so QA can claim).
+                Without this, the audit writer reads the now-cleared value
+                and stores ``agent_id=NULL`` on rows that should attribute
+                the transition to the developer, QA, or PM who triggered it.
+
+        Raises:
+            TaskLifecycleError: If transition is invalid or role not permitted
+            GitRequirementError: If git requirements not met
+        """
+        current = (
+            task.status.value if isinstance(task.status, TaskStatus) else task.status
+        )
+        target = new_status.value if isinstance(new_status, TaskStatus) else new_status
+
+        # Validate the transition (raises TaskLifecycleError if invalid)
+        validate_task_transition(current, target, agent_role, extra_allowed_roles)
+
+        # Validate git requirements (raises GitRequirementError if not met)
+        git_ctx = GitContext(
+            docs_complete=bool(task.docs_complete),
+            pr_created=bool(task.pr_created),
+            pr_number=task.pr_number,
+            branch_name=str(task.branch_name) if task.branch_name else None,
+            # A branchless coordination task does no git and never gets a branch
+            # — exempt it from the branch gate so it can reach in_progress and
+            # delegate. Two shapes qualify: a product fan-out root (product, no
+            # repo) and a MegaTask umbrella (batch_id, top-level). All four are
+            # plain columns (no lazy load).
+            is_coordination=is_branchless_coordination(
+                project_id=task.project_id,
+                product_id=task.product_id,
+                batch_id=task.batch_id,
+                parent_task_id=task.parent_task_id,
+                has_cell_projects=bool(task.cell_projects),
+            ),
+            # An external-PR review task reviews someone else's PR read-only —
+            # no branch of its own — so it is branch-gate exempt.
+            is_external_review=(getattr(task, "source", "manual") in PR_REVIEW_SOURCES),
+            # A MegaTask umbrella assembles no PR of its own, so it is exempt
+            # from the awaiting_pm_review->awaiting_ceo_approval pr_number gate.
+            is_umbrella=is_batch_umbrella(
+                batch_id=task.batch_id, parent_task_id=task.parent_task_id
+            ),
+            # A PR-waived task (zero commits relative to its parent —
+            # report-only work the verb runner skipped create_pr for) is
+            # exempt from the pr_number CEO-escalation gate the same way an
+            # umbrella is, even though it carries a real branch.
+            is_pr_waived=markers.is_pr_waived(task),
+        )
+        validate_git_requirements(current, target, git_ctx)
+
+        # Apply the status change
+        task.status = new_status
+        self.log.info(
+            "Task status transition",
+            task_id=str(task.id),
+            from_status=current,
+            to_status=target,
+            agent_role=agent_role,
         )
 
-    async def create_subtask(self, req: TaskCreateRequest) -> TaskTable:
-        """PM-friendly subtask creation; sets status from assignee presence.
+        # Poke the orchestrator's dispatcher so it reacts immediately to
+        # this transition. Without this, agents wait up to 30 seconds for
+        # the next poll (10 minutes cumulative in the pathological case we
+        # saw on be-dev-1 spawn). Uses lazy import + silent fallback so
+        # code paths that don't have an orchestrator (tests, sync tools)
+        # don't break.
+        try:
+            from roboco.api.deps import get_orchestrator
 
-        When ``assigned_to`` is provided the task is created in ``pending`` so
-        the orchestrator can spawn the assignee immediately. Without an
-        assignee it stays in ``backlog`` and a PM must run ``activate`` later.
-        Caller-supplied status takes precedence; otherwise we infer from the
-        presence of an assignee.
-
-        Foundation rule: no task without acceptance_criteria. The silent
-        fallback that substituted ``["completed and reviewed by assignee"]``
-        was deleted on 2026-05-10 (spec §5.2) — it was the proximate cause
-        of every skeleton task in the same-day smoke run. Defense-in-depth:
-        the gateway and route-layer schemas reject under-filled tasks
-        earlier, but this service-layer guard remains as a hard backstop
-        for non-gateway / non-route callers.
-        """
-        from roboco.foundation.policy.task_completeness import (
-            TASK_AT_CREATE,
-            TaskCompletenessError,
-            check,
-        )
-
-        if req.parent_task_id is None:
-            raise ValueError("create_subtask requires parent_task_id")
-
-        result = check(TASK_AT_CREATE, req)
-        if not result.passed:
-            raise TaskCompletenessError(
-                missing=result.missing,
-                field_hints=result.field_hints,
-                message=(
-                    "create_subtask: task missing required fields: "
-                    f"{result.missing}. The silent fallback at "
-                    "services/task.py:5061 was removed 2026-05-10 (spec §5.2)."
-                ),
+            get_orchestrator().trigger_dispatch()
+        except Exception as e:
+            # Swallow so task creation succeeds even when the
+            # orchestrator singleton isn't wired (e.g. tests, CLI
+            # scripts) — but log so a real regression is visible.
+            self.log.debug(
+                "Dispatch trigger skipped after task create",
+                error=str(e),
             )
 
-        inferred_status = TaskStatus.PENDING if req.assigned_to else TaskStatus.BACKLOG
-        prepared = TaskCreateRequest(
-            title=req.title,
-            description=req.description,
-            acceptance_criteria=req.acceptance_criteria,
-            parent_ac_refs=req.parent_ac_refs,
-            team=req.team,
-            created_by=req.created_by,
-            project_id=req.project_id,
-            product_id=req.product_id,
-            parent_task_id=req.parent_task_id,
-            assigned_to=req.assigned_to,
-            estimated_complexity=req.estimated_complexity,
-            task_type=req.task_type,
-            nature=req.nature,
-            status=req.status or inferred_status,
-            # Forward ordering + collision surface so a dev task delegated with
-            # surfaces/dependencies keeps them (multi-level sequencing — edge
-            # kinds 3 & 4). Previously dropped here, which is why dev-task
-            # dependency_ids was always [] and the only ordering was the weak
-            # assignee-keyed spawn barrier (live 2026-06-27 out-of-order break).
-            sequence=req.sequence,
-            dependency_ids=list(req.dependency_ids) if req.dependency_ids else [],
-            batch_id=req.batch_id,
-            intends_to_touch=req.intends_to_touch,
-            adds_migration=req.adds_migration,
-            touches_shared=req.touches_shared,
+        self._emit_status_transition_audit(
+            task,
+            from_status=current,
+            to_status=target,
+            agent_role=agent_role,
+            audit_agent_id=audit_agent_id,
         )
-        return await self.create(prepared)
+
+    def _emit_status_transition_audit(
+        self,
+        task: TaskTable,
+        *,
+        from_status: str,
+        to_status: str,
+        agent_role: str | None,
+        audit_agent_id: str | UUID | None,
+    ) -> None:
+        """Emit the ``task.<status>`` audit row for a status transition.
+
+        Extracted from ``_validate_and_set_status`` so transition paths that
+        set ``task.status`` directly — e.g. ``apply_escalation``, which blocks a
+        task without routing through the strict transition validator — record
+        the same audit event. No status change may bypass the audit log.
+
+        The row is written into the CALLER's session (``self.session.add``),
+        so it commits / rolls back ATOMICALLY with the status transition — the
+        audit journey can never diverge from real task state. This closes three
+        facets of the fire-and-forget decoupling gap:
+
+        * F061/F073 — the audit commit is no longer decoupled on a separate
+          connection whose failures were swallowed; a committed transition now
+          ALWAYS has its audit row (same transaction), and a persist failure
+          fails the transition (fail-closed for the metric source of truth)
+          instead of silently dropping the row.
+        * F075 — a transition rolled back inside a verb savepoint
+          (``_verb_runner`` wraps composed actions in ``begin_nested``) now
+          rolls its audit row back too — no phantom ``task.<status>`` row for a
+          transition that did not stick. (The claim-branch-failure rollback in
+          ``_provision_claim`` commits its own reversal explicitly instead,
+          since it runs outside any savepoint by design; the savepoint
+          rollback handles the general case.)
+
+        The ``revision_count`` rework counter is incremented synchronously
+        here (the single chokepoint every transition funnels through).
+
+        The explicit ``audit_agent_id`` (capture-before-mutate) wins: callers
+        like ``submit_for_qa`` clear ``task.claimed_by`` before transitioning
+        but still want the row attributed to the outgoing agent. Otherwise fall
+        back to ``task.claimed_by``. A structurally-invalid id coerces to
+        ``None`` (mirroring ``AuditService._coerce_uuid``) so the row still
+        lands unattributed rather than FK-violating; a valid-but-deleted agent
+        id is a real bug worth surfacing as a transition failure.
+        """
+        from roboco.db.tables import AuditLogTable
+
+        self._clear_stale_stalled_marker(task)
+
+        # Rework counter: a bounce INTO needs_revision (not a re-entry) is one
+        # rework cycle. Incremented at this single chokepoint — every transition
+        # path funnels its audit through here exactly once — so the rework rate
+        # is an O(1) column read. Synchronous (part of this unit of work). The
+        # pre-block RESTORE path undoes this bump when it restores to a
+        # snapshotted needs_revision (same cycle resuming, not a new rejection).
+        if (
+            to_status == TaskStatus.NEEDS_REVISION.value
+            and from_status != TaskStatus.NEEDS_REVISION.value
+        ):
+            task.revision_count = (task.revision_count or 0) + 1
+            self._maybe_schedule_coroner_bounce_hook(task)
+
+        if audit_agent_id is not None:
+            resolved_audit_agent_id: str | None = str(audit_agent_id)
+        elif task.claimed_by is not None:
+            resolved_audit_agent_id = str(task.claimed_by)
+        else:
+            resolved_audit_agent_id = None
+
+        agent_uuid: UUID | None = None
+        if resolved_audit_agent_id:
+            try:
+                agent_uuid = UUID(resolved_audit_agent_id)
+            except (ValueError, AttributeError):
+                agent_uuid = None
+
+        details: dict[str, Any] = {
+            "from_status": from_status,
+            "to_status": to_status,
+            "agent_role": agent_role,
+            "team": (
+                task.team.value if hasattr(task.team, "value") else str(task.team)
+            ),
+        }
+        for event_type in self._audit_events_for(to_status, agent_role):
+            self.session.add(
+                AuditLogTable(
+                    event_type=event_type,
+                    agent_id=agent_uuid,
+                    target_type="task",
+                    target_id=task.id,
+                    severity="info",
+                    details=dict(details),
+                )
+            )
+        self._touch_vault_frontmatter(task, to_status=to_status, team=details["team"])
+
+    @staticmethod
+    def _clear_stale_stalled_marker(task: TaskTable) -> None:
+        """Any status transition is genuine task movement, so a stale
+        breaker-tripped stalled marker (set by
+        ``AgentOrchestrator._pm_respawn_should_gate``) no longer applies —
+        clear it here unconditionally rather than relying solely on the
+        dispatcher's narrower same-key re-observation path
+        (``_respawn_status_change_resets`` -> ``_clear_task_stalled_marker``),
+        which never re-fires once the task's status leaves the dispatcher's
+        own fetch scope (e.g. a dev's task advancing to ``awaiting_qa``).
+        Direct attribute assignment (not the async ``clear_stalled_marker``
+        helper) since the caller is synchronous and already holds the ORM
+        object mid-transaction — it commits/rolls back atomically with the
+        transition itself. Split out of ``_emit_status_transition_audit`` to
+        keep its own complexity down (xenon budget)."""
+        if task.stalled_reason is not None:
+            task.stalled_reason = None
+            task.stalled_since = None
+
+    def _maybe_schedule_coroner_bounce_hook(self, task: TaskTable) -> None:
+        """Coroner (Board Program) bounce trigger (spec §4): fire exactly
+        ONCE, at the 3rd bounce — not on every later re-bounce, which would
+        just re-hit CoronerEngine's own one-open-autopsy dedup for no reason.
+        Best-effort, fire-and-forget on a FRESH DB session (this method is
+        sync and runs mid-transaction — see ``_fire_coroner_bounce_hook``'s
+        docstring for the accepted small race this implies) so a hook
+        failure — or the enclosing transaction later rolling back — can
+        never fail the transition that got us here. Split out of
+        ``_emit_status_transition_audit`` to keep its own complexity down
+        (xenon budget)."""
+        if task.revision_count != _CORONER_BOUNCE_THRESHOLD:
+            return
+        try:
+            bg_task = asyncio.create_task(
+                _fire_coroner_bounce_hook(cast("UUID", task.id))
+            )
+            self._background_tasks.add(bg_task)
+            bg_task.add_done_callback(self._background_tasks.discard)
+        except Exception:
+            # Scheduling itself failing (e.g. no running event loop) must
+            # never break the transition already recorded above —
+            # _fire_coroner_bounce_hook's own body is already try/excepted
+            # for everything past this point.
+            _module_log.warning(
+                "coroner: bounce hook scheduling failed (best-effort)",
+                task_id=str(task.id),
+            )
+
+    def _touch_vault_frontmatter(
+        self, task: TaskTable, *, to_status: str, team: str
+    ) -> None:
+        """Best-effort, cheap Obsidian-vault frontmatter touch (event seam).
+
+        Only patches an EXISTING note's status/team/pr fields — no extra
+        queries (everything used here is already a plain column on ``task``).
+        A vault failure (or a not-yet-materialized note) never blocks the
+        transition; see ``VaultWriter.touch_task_frontmatter``.
+        """
+        from roboco.config import settings
+
+        if not settings.obsidian_vault_enabled:
+            return
+        try:
+            from roboco.services.vault_writer import get_vault_writer
+
+            get_vault_writer().touch_task_frontmatter(
+                task_id=str(task.id),
+                status=to_status,
+                team=team,
+                pr_number=task.pr_number,
+                pr_url=task.pr_url,
+            )
+        except Exception as e:
+            self.log.warning(
+                "Vault frontmatter touch failed (best-effort)",
+                task_id=str(task.id),
+                error=str(e),
+            )
+
+    async def _materialize_vault_note(self, task: TaskTable) -> None:
+        """Best-effort Obsidian-vault materialize-on-create (event seam).
+
+        Deterministic template only — the ``## Narrative`` section stays
+        Auditor-owned (placeholder). Mirrors ``_touch_vault_frontmatter``'s
+        swallow-and-log posture: a vault failure never blocks task creation,
+        and boards stop showing only curated/rebuilt tasks.
+        """
+        from roboco.config import settings
+
+        if not settings.obsidian_vault_enabled:
+            return
+        try:
+            from roboco.services.project import get_project_service
+            from roboco.services.vault_assembly import assemble_task_note_data
+            from roboco.services.vault_writer import get_vault_writer
+
+            data = await assemble_task_note_data(
+                self, get_project_service(self.session), task
+            )
+            get_vault_writer().write_task(data)
+        except Exception as e:
+            self.log.warning(
+                "Vault materialize-on-create failed (best-effort)",
+                task_id=str(task.id),
+                error=str(e),
+            )
+
+    def _emit_escalation_audit(
+        self, task: TaskTable, *, escalator_slug: str, target_slug: str
+    ) -> None:
+        """Emit a ``task.escalated`` audit row (per-member escalation metric).
+
+        Additive to the ``task.blocked`` / pool-release audit of an escalation —
+        it carries WHO escalated (``escalator_slug``) so the member scorecard can
+        charge the escalation to the escalator. Written in the caller's session
+        so it commits atomically with the escalation. Best-effort for metrics:
+        never gates the escalation itself.
+        """
+        from roboco.db.tables import AuditLogTable
+
+        self.session.add(
+            AuditLogTable(
+                event_type="task.escalated",
+                agent_id=None,
+                target_type="task",
+                target_id=task.id,
+                severity="info",
+                details={
+                    "escalator_slug": escalator_slug,
+                    "target_slug": target_slug,
+                },
+            )
+        )
+
+    @staticmethod
+    def _audit_events_for(to_status: str, agent_role: str | None) -> list[str]:
+        """Audit event types to emit for a transition.
+
+        Always the generic ``task.<status>``; plus a rejector-attributed
+        ``task.qa_fail`` / ``task.pr_fail`` / ``task.request_changes`` /
+        ``task.ceo_reject`` when a reviewer bounces a task to needs_revision —
+        so the per-agent rework scorecard can charge the rejection to whoever
+        made it (the audit row carries their agent_id), not the developer who
+        owns the task.
+        """
+        events = [f"task.{to_status}"]
+        if to_status == TaskStatus.NEEDS_REVISION.value:
+            if agent_role == "pr_reviewer":
+                events.append("task.pr_fail")
+            elif agent_role == "qa":
+                events.append("task.qa_fail")
+            elif agent_role in ("cell_pm", "main_pm"):
+                events.append("task.request_changes")
+            elif agent_role == "ceo":
+                events.append("task.ceo_reject")
+        return events
+
+    async def _alert_auditor_of_rework(
+        self,
+        task: TaskTable,
+        *,
+        reason: str,
+        actor_agent_id: UUID | None = None,
+        actor_role: str | None = None,
+    ) -> None:
+        """Best-effort auditor alert when a task bounces to needs_revision.
+
+        Mirrors the other best-effort notification seams in this service: a
+        delivery failure must never block the underlying transition. The
+        orchestrator's ``_dispatch_audit_work`` watches for ``ALERT``
+        notifications targeted at the auditor and spawns an audit pass.
+        """
+        try:
+            from roboco.services.notification_delivery import (
+                get_notification_delivery_service,
+            )
+
+            delivery = get_notification_delivery_service(self.session)
+            await delivery.notify_auditor_of_rework(
+                task=task,
+                task_id=require_uuid(task.id),
+                reason=reason,
+                actor_agent_id=actor_agent_id,
+                actor_role=actor_role,
+            )
+        except Exception as e:
+            self.log.warning(
+                "Auditor rework alert failed (best-effort)",
+                task_id=str(task.id),
+                error=str(e),
+            )
+
+    async def _alert_coroner_of_cancel(self, task: TaskTable) -> None:
+        """Coroner (Board Program) cancel-after-work-started trigger (spec §4).
+
+        Called on ``cancel()``'s own SESSION (unlike the sync-chokepoint
+        bounce hook, ``cancel`` is already async) right after the transition
+        flushes, for the top-level task the caller asked to cancel — not each
+        cascade-cancelled descendant, so a big-subtree cancel opens at most
+        one autopsy attempt. "Work started" is commits or a work session ever
+        having existed on this task; ``CoronerEngine.open_for_incident`` does
+        its own armed+dedup gating, so a false-positive call here is a cheap
+        no-op. Best-effort: never lets a hook failure break the cancel.
+        """
+        if not (task.commits or task.work_session_id is not None):
+            return
+        try:
+            from roboco.services.coroner_engine import get_coroner_engine
+
+            await get_coroner_engine(self.session).open_for_incident(
+                require_uuid(task.id), kind="cancelled"
+            )
+        except Exception as e:
+            self.log.warning(
+                "Coroner cancel-hook failed (best-effort)",
+                task_id=str(task.id),
+                error=str(e),
+            )
+
+    # =========================================================================
+    # CRUD OPERATIONS
+    # =========================================================================
+
+    # =========================================================================
+    # STATUS TRANSITIONS
+    # =========================================================================
+
+    # Management roles that can claim tasks from any team. Derived from the
+    # spec's _ORG_WIDE_ROLES (devops subtracted: its cross-cell grant is the
+    # flag-gated branch below) so this set cannot drift from the doctrine
+    # source the spec team-match gate and the gateway's project-access guard
+    # both use. Until it was derived, this set silently lagged the spec
+    # (no ceo, no pr_reviewer) — latent, but one new claim caller away from
+    # a wedge.
+    _MANAGEMENT_ROLES: frozenset[str] = frozenset(
+        role.value for role in _SPEC_ORG_WIDE_ROLES - {Role.DEVOPS}
+    )
+
+    # Consulted inside _apply_claim_fields's target-status write and inside
+    # _provision_claim's branch-failure rollback's reversal-audit check,
+    # reached only via claim() -> _validate_claim_preconditions ->
+    # _get_valid_claim_statuses, which already screens the pre-claim status
+    # against _ROLE_CLAIM_STATUSES per role. AWAITING_PM_REVIEW is
+    # deliberately absent: no role's _ROLE_CLAIM_STATUSES grants it anymore
+    # (the i_will_plan re-claim loop fix), so claim() can never run with
+    # that pre-claim status; listing it here would be dead weight, not an
+    # independent gate.
+    _CLAIMABLE_STATUSES: ClassVar[set[TaskStatus]] = {
+        TaskStatus.PENDING,
+        TaskStatus.AWAITING_QA,
+        TaskStatus.AWAITING_DOCUMENTATION,
+    }
+
+    _SINGLE_ACTIVE_TASK_ROLES: ClassVar[frozenset[AgentRole]] = frozenset(
+        {AgentRole.DEVELOPER, AgentRole.DEVOPS}
+    )
+
+    # =========================================================================
+    # GIT WORK SESSION INTEGRATION
+    # =========================================================================
+
+    # =========================================================================
+    # RAG AUTO-INDEXING HOOKS (Fire-and-forget background tasks)
+    # =========================================================================
+
+    # =========================================================================
+    # QA AND ERROR INDEXING HOOKS
+    # =========================================================================
+
+    # =========================================================================
+    # CEO APPROVAL WORKFLOW
+    # =========================================================================
+
+    # =========================================================================
+    # PROGRESS AND CHECKPOINTS
+    # =========================================================================
+
+    # =========================================================================
+    # QUERIES
+    # =========================================================================
+
+    # =========================================================================
+    # STATISTICS
+    # =========================================================================
+
+    # =========================================================================
+    # ROUTE-LEVEL ORCHESTRATION
+    #
+    # These methods encapsulate the full flow for each task-lifecycle HTTP
+    # endpoint. Routes stay thin adapters: parse input → call one of these
+    # → translate ServiceError → format response. Business logic and
+    # notifications live here.
+    # =========================================================================
+
+    # Minimum character count for notes fields that must be substantive
+    # (QA pass notes, doc-complete notes, escalation notes).
+    MIN_NOTES_CHARS: ClassVar[int] = 20
+    # Max descendant IDs shown inline in an error before truncating.
+    MAX_ERR_IDS: ClassVar[int] = 5
+    # Substitute reason → target status table.
+    _SUBSTITUTE_REASON_TO_STATUS: ClassVar[dict[str, TaskStatus]] = {
+        "task_complete": TaskStatus.AWAITING_QA,
+        "low_context": TaskStatus.PENDING,
+        "out_of_scope_team": TaskStatus.PENDING,
+        "out_of_scope_role": TaskStatus.PENDING,
+        "max_retries": TaskStatus.PENDING,
+        "blocked_external": TaskStatus.BLOCKED,
+    }
+
+    # =========================================================================
+    # GATEWAY (CHOREOGRAPHER) BACKFILL
+    #
+    # Thin wrappers + queries the gateway Choreographer composes into
+    # intent-verb sequences. Most are aliases over canonical service
+    # methods; a handful (qa_claim, doc_claim, qa_pass, qa_fail, escalate,
+    # cell_pm_complete) are flow-specific variants that don't fit cleanly
+    # into the existing API.
+    # =========================================================================
+
+    # Active states a developer counts as "current work" for an agent.
+    _DEV_ACTIVE_STATUSES: ClassVar[set[TaskStatus]] = {
+        TaskStatus.CLAIMED,
+        TaskStatus.IN_PROGRESS,
+        TaskStatus.VERIFYING,
+        TaskStatus.AWAITING_QA,
+        TaskStatus.AWAITING_DOCUMENTATION,
+    }
+
+    # States in which the agent still owns the task for content / journal
+    # context, even if it isn't progressing. Used by note / dm /
+    # evidence so journal entries written from blocked or paused get the
+    # task_id auto-attached (otherwise the C8 + tracing gates never see
+    # the agent's decisions and the agent spirals).
+    _JOURNAL_CONTEXT_STATUSES: ClassVar[set[TaskStatus]] = {
+        # PENDING belongs here: board-program tasks (decisions_audit et al)
+        # are worked WITHOUT claiming and sit pending their whole life - the
+        # auditor's note() on such a task auto-attached nothing, the
+        # complete-at-note seam never saw the task id, and a9739b1c could
+        # not advance for days (2026-09-29).
+        TaskStatus.PENDING,
+        TaskStatus.CLAIMED,
+        TaskStatus.IN_PROGRESS,
+        TaskStatus.VERIFYING,
+        TaskStatus.AWAITING_QA,
+        TaskStatus.AWAITING_DOCUMENTATION,
+        TaskStatus.BLOCKED,
+        TaskStatus.PAUSED,
+        TaskStatus.NEEDS_REVISION,
+    }
+
+    # Statuses that count as "still assignable to the agent" for triage.
+    _AGENT_NON_TERMINAL_STATUSES: ClassVar[set[TaskStatus]] = {
+        TaskStatus.PENDING,
+        TaskStatus.CLAIMED,
+        TaskStatus.IN_PROGRESS,
+        TaskStatus.NEEDS_REVISION,
+        TaskStatus.VERIFYING,
+        TaskStatus.AWAITING_QA,
+        TaskStatus.AWAITING_DOCUMENTATION,
+        TaskStatus.AWAITING_PM_REVIEW,
+        TaskStatus.PAUSED,
+    }
+
+    @dataclass(frozen=True)
+    class _CellPmRedirect:
+        """Outcome of an `_resolve_cell_pm_redirect` call.
+
+        ``effective_assignee`` is the UUID the caller should persist (possibly
+        ``None`` when the task was queued for a missing cell PM).
+        ``redirected`` is ``True`` iff ``effective_assignee`` differs from the
+        caller's requested assignee — used by callers to decide whether to log
+        a redirect. ``reason`` is a short tag that names the redirect reason
+        ("to_cell_pm", "queued_no_cell_pm"). ``dev_notes_line`` is the audit
+        text to append to ``task.dev_notes`` (only set when a redirect
+        happened) so a redirect is visible in the task body, not just in logs.
+        """
+
+        effective_assignee: UUID | None
+        redirected: bool
+        reason: str
+        dev_notes_line: str | None
+
+    _REVIEW_HANDOFF_STATUSES = frozenset(
+        {
+            TaskStatus.AWAITING_QA,
+            TaskStatus.AWAITING_DOCUMENTATION,
+            TaskStatus.AWAITING_PR_REVIEW,
+        }
+    )
 
 
 # =============================================================================
