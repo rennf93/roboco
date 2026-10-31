@@ -23,8 +23,9 @@ if TYPE_CHECKING:
 
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from roboco.db.tables import TaskTable
+    from roboco.db.tables import AgentTable, TaskTable
     from roboco.models.base import TaskStatus, Team
+    from roboco.models.task import TaskCreateRequest
     from roboco.services.task import _ClaimFieldSnapshot
     from roboco.services.uptime import UptimeLedger
 
@@ -46,7 +47,31 @@ class TaskSurface(Protocol):
     _JOURNAL_CONTEXT_STATUSES: ClassVar[set[TaskStatus]]
 
     async def _claim_blocked_by_sequence(self, task: TaskTable) -> str | None: ...
+    async def _clear_agent_current_task(
+        self, agent_id: UUID | None, task_id: UUID
+    ) -> None: ...
     async def _load_uptime_ledger(self, now: datetime) -> UptimeLedger | None: ...
+    def _mark_agent_active_for_claim(
+        self, agent: AgentTable | None, task_id: Any
+    ) -> None: ...
+    @staticmethod
+    def _record_pr_review(
+        task: TaskTable,
+        *,
+        summary: str | None,
+        verdict: str,
+        issues: list[str] | None = ...,
+    ) -> None: ...
+    def _validate_and_set_status(
+        self,
+        task: TaskTable,
+        new_status: TaskStatus,
+        agent_role: str | None = ...,
+        audit_agent_id: str | UUID | None = ...,
+        extra_allowed_roles: tuple[str, ...] = ...,
+    ) -> None: ...
+    async def create(self, req: TaskCreateRequest) -> TaskTable: ...
+    async def get(self, task_id: UUID) -> TaskTable | None: ...
     async def unmet_dependency_ids(self, dependency_ids: list[UUID]) -> list[UUID]: ...
 
 

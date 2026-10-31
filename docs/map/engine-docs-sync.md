@@ -32,7 +32,7 @@ A default-off, release-triggered task-origination engine that keeps the public d
 | `DocsSyncEngine._open_task` | method | `roboco/services/docs_sync_engine.py:144` | Builds the `TaskCreateRequest` (Main-PM planning root, `confirmed_by_human=True`, source `docs_sync`) and stamps the release-version marker. |
 | `get_docs_sync_engine` | function | `roboco/services/docs_sync_engine.py:190` | Factory constructing a `DocsSyncEngine` bound to a session. |
 | `DOCS_SYNC_SOURCE` | constant | `roboco/services/task.py:739` | Source tag value `"docs_sync"` used for dedupe queries and task creation. |
-| `list_open_docs_sync_tasks` | method | `roboco/services/task.py:3330` | Returns non-terminal `docs_sync` tasks, optionally scoped to one release version via JSONB marker filtering in SQL. |
+| `list_open_docs_sync_tasks` | method | `roboco/services/task.py:2370` | Returns non-terminal `docs_sync` tasks, optionally scoped to one release version via JSONB marker filtering in SQL. |
 | `get_docs_sync_release_version` / `set_docs_sync_release_version` | functions | `roboco/foundation/policy/content/markers.py:757,762` | Read/write the `docs_sync_release_version` marker used for per-release dedupe. |
 
 ## Data Flow
