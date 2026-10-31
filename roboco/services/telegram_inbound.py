@@ -89,6 +89,13 @@ if TYPE_CHECKING:
     from roboco.db.tables import TaskTable
     from roboco.services.telegram_credentials import TelegramCredentialsData
 
+if TYPE_CHECKING:
+    from roboco.services._telegram_inbound_types import (
+        TelegramInboundEngineSelf as _Base,
+    )
+else:
+    _Base = object
+
 logger = structlog.get_logger()
 
 # Reuses the system_settings KV store instead of a dedicated table (see
@@ -452,130 +459,9 @@ def _sweep_expired_replies() -> None:
         _PENDING_REPLIES.pop(key, None)
 
 
-class TelegramInboundEngine(BaseService):
-    """Poll Telegram for commands/callbacks and act on them."""
-
-    service_name = "telegram_inbound"
-
-    # Once-per-process latch for the setMyCommands menu sync — class-level
-    # because the engine is re-instantiated every poll cycle.
-    _commands_synced: ClassVar[bool] = False
-
-    def __init__(
-        self, session: AsyncSession, client: TelegramClient | None = None
-    ) -> None:
-        super().__init__(session)
-        self._injected_client = client
-
-    async def _ensure_commands_menu(self, client: TelegramClient) -> None:
-        """Sync the bot's command menu from BOT_COMMANDS, once per process."""
-        if TelegramInboundEngine._commands_synced:
-            return
-        await client.set_my_commands(list(BOT_COMMANDS))
-        TelegramInboundEngine._commands_synced = True
-
-    async def _client(self, creds: TelegramCredentialsData) -> TelegramClient:
-        if self._injected_client is not None:
-            return self._injected_client
-        return build_telegram_client(creds, timeout=settings.telegram_timeout_seconds)
-
-    # ---- poll cycle ----------------------------------------------------
-
-    async def run_cycle(self) -> None:
-        """One poll pass: fetch updates since the stored offset, dispatch
-        each, advance the offset. Never raises — every step is best-effort;
-        a single bad update is logged and skipped rather than wedging the
-        whole cycle (and the offset still advances past it)."""
-        if not (settings.telegram_enabled and settings.telegram_inbound_enabled):
-            return
-        creds = await get_telegram_credentials_service(self.session).get_decrypted()
-        if creds is None:
-            return
-        client = await self._client(creds)
-        if not client.configured:
-            return
-        await self._ensure_commands_menu(client)
-        offset = await get_settings_service(self.session).get_int(_OFFSET_KEY, 0)
-        cap = settings.telegram_max_updates_per_cycle
-        updates = await client.get_updates(
-            offset=offset or None,
-            timeout=settings.telegram_poll_timeout_seconds,
-            limit=cap,
-        )
-        max_seen = offset - 1
-        for update in updates[:cap]:
-            update_id = int(update.get("update_id") or 0)
-            max_seen = max(max_seen, update_id)
-            try:
-                await self._process_update(update, creds, client)
-            except Exception:
-                # A handler that raised mid-write (past its own except, or
-                # one that has none) poisons this shared session for every
-                # remaining update in the batch, and for the offset-advance
-                # commit below — roll back so one bad update can't take the
-                # rest of the cycle down with it. Handlers that already
-                # commit their own work along the way are unaffected (a
-                # rollback here only discards THIS update's own uncommitted
-                # partial writes).
-                await self.session.rollback()
-                self.log.exception(
-                    "telegram update processing failed", update_id=update_id
-                )
-        if max_seen >= offset:
-            await get_settings_service(self.session).set(_OFFSET_KEY, str(max_seen + 1))
-            await self.session.commit()
-        await bridge.sweep_idle()
-
-    async def _process_update(
-        self,
-        update: dict[str, Any],
-        creds: TelegramCredentialsData,
-        client: TelegramClient,
-    ) -> None:
-        if "callback_query" in update:
-            await self._handle_callback(update["callback_query"], creds, client)
-        elif "message" in update:
-            await self._handle_message(update["message"], creds, client)
-        # else: edited_message / channel_post / other update kinds — ignored.
-
-    # ---- commands --------------------------------------------------------
-
-    async def _handle_message(
-        self,
-        message: dict[str, Any],
-        creds: TelegramCredentialsData,
-        client: TelegramClient,
-    ) -> None:
-        chat = message.get("chat") or {}
-        chat_id = str(chat.get("id", ""))
-        if not _authorized_chat(chat_id, creds.chat_id):
-            self.log.debug(
-                "telegram message from unauthorized chat dropped", chat_id=chat_id
-            )
-            return
-        if not _authorized_sender(message.get("from"), chat_id):
-            self.log.debug(
-                "telegram message from mismatched sender dropped", chat_id=chat_id
-            )
-            return
-        text = str(message.get("text") or "")
-        reply_to = message.get("reply_to_message") or {}
-        reply_to_id = reply_to.get("message_id")
-        if reply_to_id is not None:
-            pending = _PENDING_REPLIES.pop((chat_id, int(reply_to_id)), None)
-            if pending is not None:
-                if pending.expires_at > time.monotonic():
-                    await self._consume_reply(pending, text, client)
-                    return
-                await client.send_message(
-                    "That prompt expired — tap the button again.", parse_mode="HTML"
-                )
-                return
-        cmd, args = parse_command(text)
-        if not cmd:
-            await self._route_free_text(chat_id, text, client, creds)
-            return
-        await self._dispatch_command(cmd, args, client, chat_id=chat_id, creds=creds)
+class TelegramCommands(_Base):
+    """The CEO's commands and free text: routing unrouted text to the decisions
+    lane, dispatching a command, and the status, agents and usage replies."""
 
     async def _route_free_text(
         self,
@@ -759,6 +645,44 @@ class TelegramInboundEngine(BaseService):
         ]
         return _truncate("\n".join(lines))
 
+    async def _render_agents(self) -> str:
+        """Who's mid-task right now — the Today brief's fleet block as text."""
+        fleet = await get_tg_cockpit_service(self.session).fleet()
+        by_status = ", ".join(
+            f"{count} {status}"
+            for status, count in sorted(fleet.get("by_status", {}).items())
+        )
+        header = f"<b>🤖 Agents</b> — {fleet.get('total', 0)} total"
+        if by_status:
+            header += f" ({_esc(by_status)})"
+        lines = [header]
+        working = fleet.get("working", [])
+        if not working:
+            lines.append("No one is mid-task.")
+        for agent in working:
+            task_title = agent.get("task_title")
+            suffix = f" — {_esc(task_title)}" if task_title else ""
+            lines.append(f"• <b>{_esc(agent.get('name', ''))}</b>{suffix}")
+        return _truncate("\n".join(lines))
+
+    async def _render_usage(self) -> str:
+        """Today's spend — the Today brief's own number (display-timezone
+        bucketed), so the bot and the Mini App never disagree on "today"."""
+        summary = await get_tg_cockpit_service(self.session).today_spend()
+        tokens = int(summary.get("tokens_today", 0))
+        if summary.get("subscription_billed"):
+            return (
+                f"<b>💸 Spend today</b>\n≈$0 — subscription (untracked) · "
+                f"{tokens:,} tokens"
+            )
+        cost = float(summary.get("cost_today_usd", 0.0))
+        return f"<b>💸 Spend today</b>\n${cost:,.2f} · {tokens:,} tokens"
+
+
+class TelegramBridge(_Base):
+    """The Secretary and Intake bridge: its commands, its callbacks, starting a
+    picked intake and confirming its draft."""
+
     async def _dispatch_bridge_command(
         self,
         cmd: str,
@@ -908,38 +832,10 @@ class TelegramInboundEngine(BaseService):
             "here in this chat."
         )
 
-    async def _render_agents(self) -> str:
-        """Who's mid-task right now — the Today brief's fleet block as text."""
-        fleet = await get_tg_cockpit_service(self.session).fleet()
-        by_status = ", ".join(
-            f"{count} {status}"
-            for status, count in sorted(fleet.get("by_status", {}).items())
-        )
-        header = f"<b>🤖 Agents</b> — {fleet.get('total', 0)} total"
-        if by_status:
-            header += f" ({_esc(by_status)})"
-        lines = [header]
-        working = fleet.get("working", [])
-        if not working:
-            lines.append("No one is mid-task.")
-        for agent in working:
-            task_title = agent.get("task_title")
-            suffix = f" — {_esc(task_title)}" if task_title else ""
-            lines.append(f"• <b>{_esc(agent.get('name', ''))}</b>{suffix}")
-        return _truncate("\n".join(lines))
 
-    async def _render_usage(self) -> str:
-        """Today's spend — the Today brief's own number (display-timezone
-        bucketed), so the bot and the Mini App never disagree on "today"."""
-        summary = await get_tg_cockpit_service(self.session).today_spend()
-        tokens = int(summary.get("tokens_today", 0))
-        if summary.get("subscription_billed"):
-            return (
-                f"<b>💸 Spend today</b>\n≈$0 — subscription (untracked) · "
-                f"{tokens:,} tokens"
-            )
-        cost = float(summary.get("cost_today_usd", 0.0))
-        return f"<b>💸 Spend today</b>\n${cost:,.2f} · {tokens:,} tokens"
+class TelegramQueueViews(_Base):
+    """What the CEO's queue shows: the blocked list, queue items per kind of held
+    work, the queue message, and a task's detail."""
 
     def _task_link_line(self, task: TaskTable) -> str:
         id8 = str(task.id)[:8]
@@ -1122,7 +1018,10 @@ class TelegramInboundEngine(BaseService):
             lines.append(f'<a href="{_esc_attr(link)}">Open in panel</a>')
         return "\n".join(lines)
 
-    # ---- callback (button) handling ---------------------------------------
+
+class TelegramCallbacks(_Base):
+    """A button press: prompting for a reply, consuming it, finishing the action,
+    and its audit mark."""
 
     async def _handle_callback(
         self, cq: dict[str, Any], creds: TelegramCredentialsData, client: TelegramClient
@@ -1246,6 +1145,11 @@ class TelegramInboundEngine(BaseService):
             )
         )
 
+
+class TelegramApprovals(_Base):
+    """Approving held work from Telegram: tasks, releases, X posts, videos, and each
+    Board Program's proposals."""
+
     async def _real_video_post_service(self) -> VideoPostService:
         """Mirrors the video route's own ``_real_video_post_service`` — only
         approve needs live posters; list/reject use the inert Null default."""
@@ -1264,13 +1168,6 @@ class TelegramInboundEngine(BaseService):
         return get_video_post_service(
             self.session, x_poster=x_poster, tiktok_poster=tiktok_poster
         )
-
-    # ---- dispatch: same service methods the CEO-gated HTTP routes call ----
-    #
-    # One small `_approve_<kind>`/`_reject_<kind>` handler per kind, looked up
-    # by a dict rather than an if/elif ladder — keeps each handler (and the
-    # two dispatchers themselves) well under the branch/return-count budget
-    # a 5-kind if/elif chain would blow through.
 
     async def _dispatch_approve(
         self, kind: str, id8: str, extra: str, *, notes: str | None
@@ -1448,6 +1345,11 @@ class TelegramInboundEngine(BaseService):
         await self.session.commit()
         ok = result.status in ("approved", "already_approved")
         return ok, f"Friction-fix item {result.status}: {result.detail}"
+
+
+class TelegramRejections(_Base):
+    """Rejecting held work from Telegram: tasks, releases, X posts, videos, and each
+    Board Program's proposals."""
 
     async def _dispatch_reject(
         self, kind: str, id8: str, extra: str, reason: str
@@ -1640,6 +1542,149 @@ class TelegramInboundEngine(BaseService):
         await self.session.commit()
         ok = result.status in ("rejected", "already_rejected")
         return ok, f"Friction-fix item {result.status}: {result.detail}"
+
+
+class TelegramInboundEngine(
+    BaseService,
+    TelegramApprovals,
+    TelegramBridge,
+    TelegramCallbacks,
+    TelegramCommands,
+    TelegramQueueViews,
+    TelegramRejections,
+):
+    """Poll Telegram for commands/callbacks and act on them."""
+
+    service_name = "telegram_inbound"
+
+    # Once-per-process latch for the setMyCommands menu sync — class-level
+    # because the engine is re-instantiated every poll cycle.
+    _commands_synced: ClassVar[bool] = False
+
+    def __init__(
+        self, session: AsyncSession, client: TelegramClient | None = None
+    ) -> None:
+        super().__init__(session)
+        self._injected_client = client
+
+    async def _ensure_commands_menu(self, client: TelegramClient) -> None:
+        """Sync the bot's command menu from BOT_COMMANDS, once per process."""
+        if TelegramInboundEngine._commands_synced:
+            return
+        await client.set_my_commands(list(BOT_COMMANDS))
+        TelegramInboundEngine._commands_synced = True
+
+    async def _client(self, creds: TelegramCredentialsData) -> TelegramClient:
+        if self._injected_client is not None:
+            return self._injected_client
+        return build_telegram_client(creds, timeout=settings.telegram_timeout_seconds)
+
+    # ---- poll cycle ----------------------------------------------------
+
+    async def run_cycle(self) -> None:
+        """One poll pass: fetch updates since the stored offset, dispatch
+        each, advance the offset. Never raises — every step is best-effort;
+        a single bad update is logged and skipped rather than wedging the
+        whole cycle (and the offset still advances past it)."""
+        if not (settings.telegram_enabled and settings.telegram_inbound_enabled):
+            return
+        creds = await get_telegram_credentials_service(self.session).get_decrypted()
+        if creds is None:
+            return
+        client = await self._client(creds)
+        if not client.configured:
+            return
+        await self._ensure_commands_menu(client)
+        offset = await get_settings_service(self.session).get_int(_OFFSET_KEY, 0)
+        cap = settings.telegram_max_updates_per_cycle
+        updates = await client.get_updates(
+            offset=offset or None,
+            timeout=settings.telegram_poll_timeout_seconds,
+            limit=cap,
+        )
+        max_seen = offset - 1
+        for update in updates[:cap]:
+            update_id = int(update.get("update_id") or 0)
+            max_seen = max(max_seen, update_id)
+            try:
+                await self._process_update(update, creds, client)
+            except Exception:
+                # A handler that raised mid-write (past its own except, or
+                # one that has none) poisons this shared session for every
+                # remaining update in the batch, and for the offset-advance
+                # commit below — roll back so one bad update can't take the
+                # rest of the cycle down with it. Handlers that already
+                # commit their own work along the way are unaffected (a
+                # rollback here only discards THIS update's own uncommitted
+                # partial writes).
+                await self.session.rollback()
+                self.log.exception(
+                    "telegram update processing failed", update_id=update_id
+                )
+        if max_seen >= offset:
+            await get_settings_service(self.session).set(_OFFSET_KEY, str(max_seen + 1))
+            await self.session.commit()
+        await bridge.sweep_idle()
+
+    async def _process_update(
+        self,
+        update: dict[str, Any],
+        creds: TelegramCredentialsData,
+        client: TelegramClient,
+    ) -> None:
+        if "callback_query" in update:
+            await self._handle_callback(update["callback_query"], creds, client)
+        elif "message" in update:
+            await self._handle_message(update["message"], creds, client)
+        # else: edited_message / channel_post / other update kinds — ignored.
+
+    # ---- commands --------------------------------------------------------
+
+    async def _handle_message(
+        self,
+        message: dict[str, Any],
+        creds: TelegramCredentialsData,
+        client: TelegramClient,
+    ) -> None:
+        chat = message.get("chat") or {}
+        chat_id = str(chat.get("id", ""))
+        if not _authorized_chat(chat_id, creds.chat_id):
+            self.log.debug(
+                "telegram message from unauthorized chat dropped", chat_id=chat_id
+            )
+            return
+        if not _authorized_sender(message.get("from"), chat_id):
+            self.log.debug(
+                "telegram message from mismatched sender dropped", chat_id=chat_id
+            )
+            return
+        text = str(message.get("text") or "")
+        reply_to = message.get("reply_to_message") or {}
+        reply_to_id = reply_to.get("message_id")
+        if reply_to_id is not None:
+            pending = _PENDING_REPLIES.pop((chat_id, int(reply_to_id)), None)
+            if pending is not None:
+                if pending.expires_at > time.monotonic():
+                    await self._consume_reply(pending, text, client)
+                    return
+                await client.send_message(
+                    "That prompt expired — tap the button again.", parse_mode="HTML"
+                )
+                return
+        cmd, args = parse_command(text)
+        if not cmd:
+            await self._route_free_text(chat_id, text, client, creds)
+            return
+        await self._dispatch_command(cmd, args, client, chat_id=chat_id, creds=creds)
+
+    # ---- callback (button) handling ---------------------------------------
+
+    # ---- dispatch: same service methods the CEO-gated HTTP routes call ----
+    #
+    # One small `_approve_<kind>`/`_reject_<kind>` handler per kind, looked up
+    # by a dict rather than an if/elif ladder — keeps each handler (and the
+    # two dispatchers themselves) well under the branch/return-count budget
+    # a 5-kind if/elif chain would blow through.
 
 
 def get_telegram_inbound_engine(
