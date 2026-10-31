@@ -337,6 +337,8 @@ class VaultTaskNotes(_Base):
     its narrative back, writing it whole, and touching its frontmatter on a status
     change."""
 
+    # --- tasks ------------------------------------------------------------ #
+
     def _task_directory(self, data: TaskNoteData) -> Path:
         project = data.project_slug or "unassigned"
         if data.archive_year is not None:
@@ -440,6 +442,8 @@ class VaultActivityNotes(_Base):
     """The notes beside the tasks: one per journal entry, a digest per A2A thread,
     an identity hub per agent, and one per weekly org report."""
 
+    # --- journals ----------------------------------------------------------- #
+
     def write_journal_entry(self, data: JournalNoteData) -> Path:
         """One file per entry (immutable once written — always safe to
         re-render the same entry id in place)."""
@@ -468,6 +472,8 @@ class VaultActivityNotes(_Base):
 
         path.write_text(_render_note(frontmatter, "\n".join(body)), encoding="utf-8")
         return path
+
+    # --- A2A ---------------------------------------------------------------- #
 
     def append_a2a_message(self, data: A2AMessageData) -> Path:
         """Per-thread digest file, appended to on every message. Idempotent
@@ -513,6 +519,8 @@ class VaultActivityNotes(_Base):
             fh.write(block)
         return path
 
+    # --- agents --------------------------------------------------------------- #
+
     def write_agent(self, data: AgentNoteData) -> Path:
         """Identity hub note; backlinks (Obsidian-native) collect this
         agent's tasks/journal-entries/A2A threads — no explicit index kept
@@ -524,6 +532,8 @@ class VaultActivityNotes(_Base):
         body = f"# {data.name}\n\nRole: {data.role}\nTeam: {data.team or '(none)'}\n"
         path.write_text(_render_note(frontmatter, body), encoding="utf-8")
         return path
+
+    # --- reports -------------------------------------------------------------- #
 
     def write_org_report(self, data: OrgReportData) -> Path:
         """Deterministic weekly org-report note — one file per ISO week
@@ -580,16 +590,6 @@ class VaultWriter(VaultActivityNotes, VaultTaskNotes):
 
     def _agents_root(self) -> Path:
         return self.root / "RoboCo" / "Agents"
-
-    # --- tasks ------------------------------------------------------------ #
-
-    # --- journals ----------------------------------------------------------- #
-
-    # --- A2A ---------------------------------------------------------------- #
-
-    # --- agents --------------------------------------------------------------- #
-
-    # --- reports -------------------------------------------------------------- #
 
 
 def get_vault_writer() -> VaultWriter:
