@@ -403,7 +403,8 @@ class _RenderSource:
     root: Path
     head_sha: str | None
     dirty: bool
-    kind: str  # "workspace" (dev's own tree) | "branch" (QA's read-only export)
+    # "workspace" (dev's own tree) | "branch" (QA's read-only export)
+    kind: str
     cleanup: Callable[[], None] | None = None
 
 
@@ -436,7 +437,8 @@ _MARKET_BRIEF_FINDING_CLAIM_MAX_CHARS = 500
 _MARKET_BRIEF_FINDING_SOURCE_URL_MAX_CHARS = 300
 _MARKET_BRIEF_FINDING_RELEVANCE_MAX_CHARS = 300
 _MARKET_BRIEF_POSITIONING_NOTE_MAX_CHARS = 500
-_MARKET_BRIEF_LIST_MAX_ITEMS = 5  # threats / opportunities cap
+# The threats / opportunities cap.
+_MARKET_BRIEF_LIST_MAX_ITEMS = 5
 _MARKET_BRIEF_LIST_ITEM_MAX_CHARS = 300
 
 # Coroner postmortems are Auditor-authored — the one program the Auditor
@@ -467,9 +469,10 @@ _QUALITY_REPORT_AREAS: frozenset[str] = frozenset(
 # Librarian (Board Program) playbook drafts are Auditor-authored, mirroring
 # _SENTINEL_ROLES. Each draft is created directly via PlaybookService (the
 # Coroner _draft_coroner_playbook precedent) — the Auditor does NOT also gain
-# draft_playbook (see _DRAFT_PLAYBOOK_ROLES above / role_config.py).
+# draft_playbook (see _DRAFT_PLAYBOOK_ROLES below / role_config.py).
 _LIBRARIAN_ROLES: frozenset[str] = frozenset({"auditor"})
-_PLAYBOOK_DRAFT_TITLE_MAX_CHARS = 200  # matches PlaybookCreate.title's own cap
+# Matches PlaybookCreate.title's own cap.
+_PLAYBOOK_DRAFT_TITLE_MAX_CHARS = 200
 _PLAYBOOK_DRAFT_BODY_MAX_CHARS = 4000
 _PLAYBOOK_DRAFT_PATTERN_EVIDENCE_MAX_CHARS = 500
 
@@ -5498,7 +5501,8 @@ class ContentActions(
         ``task_id`` accepts the full UUID or the 8+ char hex prefix the task
         cards display - see ``_resolve_task_ref``.
         """
-        del agent_id  # read-only telemetry, no ownership check
+        # Read-only telemetry: no ownership check.
+        del agent_id
         resolved = await self._resolve_task_ref(str(task_id))
         if isinstance(resolved, Envelope):
             return resolved
