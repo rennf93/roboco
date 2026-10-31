@@ -53,7 +53,8 @@ class LiveIntakeSession:
     """One live chat: a queue of outbound events + the container to deliver to."""
 
     session_id: str
-    agent_id: str  # container agent id, e.g. "intake-3f9c1a2b"
+    # Container agent id, e.g. "intake-3f9c1a2b"
+    agent_id: str
     queue: asyncio.Queue[Any] = field(default_factory=asyncio.Queue)
     closed: bool = False
     # Set when the chat is *parked* awaiting board review of this task: the
@@ -164,7 +165,8 @@ class PrompterLiveBridge(_Base):
             # container's boot, and the exhaustion path warns once upstream
             # (_deliver_when_ready) — a per-attempt warning here is spam.
             return False
-        session.last_activity = time.monotonic()  # human turn = activity
+        # Human turn = activity
+        session.last_activity = time.monotonic()
         url = f"http://roboco-agent-{session.agent_id}:{SDK_PORT}/turn"
         client = self._client or httpx.AsyncClient(timeout=10.0)
         try:
