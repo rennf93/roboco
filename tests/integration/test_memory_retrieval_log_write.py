@@ -14,7 +14,7 @@ from uuid import UUID, uuid4
 import pytest
 from roboco.db.tables import MemoryRetrievalLogTable
 from roboco.foundation.identity import AGENTS
-from roboco.services.gateway.choreographer import _impl
+from roboco.services.gateway.choreographer import Choreographer
 from sqlalchemy import select
 
 if TYPE_CHECKING:
@@ -31,9 +31,7 @@ async def _log(db_session: AsyncSession, agent_id: UUID) -> list[str | None]:
     task = MagicMock(id=uuid4())
     items = [{"source": "roboco://learnings/lrn-abc123"}]
     with patch("roboco.db.base.get_session_factory", return_value=_session):
-        await _impl.Choreographer._log_memory_retrievals(
-            MagicMock(), agent_id, task, items
-        )
+        await Choreographer._log_memory_retrievals(MagicMock(), agent_id, task, items)
     rows = await db_session.execute(select(MemoryRetrievalLogTable.agent_slug))
     return list(rows.scalars())
 

@@ -17,7 +17,6 @@ from uuid import uuid4
 
 import pytest
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
-from roboco.services.gateway.choreographer._impl import Choreographer as _Impl
 from roboco.services.gateway.envelope import Envelope
 
 # --------------------------------------------------------------------------- #
@@ -27,25 +26,25 @@ from roboco.services.gateway.envelope import Envelope
 
 @pytest.mark.parametrize("clean", ["a real substantive reason", "rate_limited"])
 def test_free_text_soup_passes_substantive(clean: str) -> None:
-    assert _Impl._free_text_soup((("reason", clean, 8),)) is None
+    assert Choreographer._free_text_soup((("reason", clean, 8),)) is None
 
 
 @pytest.mark.parametrize("skip", [None, "", "   "])
 def test_free_text_soup_skips_empty_and_none(skip: str | None) -> None:
     # Empty / None means "not supplied" — presence is gated elsewhere.
-    assert _Impl._free_text_soup((("notes", skip, 8),)) is None
+    assert Choreographer._free_text_soup((("notes", skip, 8),)) is None
 
 
 @pytest.mark.parametrize("soup", ["wip", "asdf", "tbd", "...", "x", "wip wip"])
 def test_free_text_soup_rejects_filler(soup: str) -> None:
-    env = _Impl._free_text_soup((("reason", soup, 3),))
+    env = Choreographer._free_text_soup((("reason", soup, 3),))
     assert env is not None
     assert env.error == "invalid_state"
 
 
 def test_free_text_soup_walks_list_items() -> None:
     # The second issue is filler — the list form must catch it.
-    env = _Impl._free_text_soup(
+    env = Choreographer._free_text_soup(
         (("issues", ["a genuine actionable issue", "asdf"], 8),)
     )
     assert env is not None
@@ -54,7 +53,7 @@ def test_free_text_soup_walks_list_items() -> None:
 
 
 def test_free_text_soup_clean_list_passes() -> None:
-    env = _Impl._free_text_soup(
+    env = Choreographer._free_text_soup(
         (("issues", ["first real issue", "second real issue"], 8),)
     )
     assert env is None
@@ -80,19 +79,19 @@ def _deny() -> MagicMock:
 
 def test_soup_or_decision_prefers_soup() -> None:
     soup = Envelope.invalid_state(message="soup", remediate="fix", context_briefing={})
-    out = _Impl._soup_or_decision_env(soup, _deny(), {})
+    out = Choreographer._soup_or_decision_env(soup, _deny(), {})
     assert out is soup  # soup wins even when the decision also rejects
 
 
 def test_soup_or_decision_falls_back_to_decision() -> None:
-    out = _Impl._soup_or_decision_env(None, _deny(), {})
+    out = Choreographer._soup_or_decision_env(None, _deny(), {})
     assert out is not None
     assert out.error == "invalid_state"
     assert out.message == "bad state"
 
 
 def test_soup_or_decision_none_when_all_clean() -> None:
-    assert _Impl._soup_or_decision_env(None, _allow(), {}) is None
+    assert Choreographer._soup_or_decision_env(None, _allow(), {}) is None
 
 
 # --------------------------------------------------------------------------- #

@@ -9,7 +9,7 @@ in the success envelope (the nudge). `planning` briefs are exempt.
 
 from __future__ import annotations
 
-from roboco.services.gateway.choreographer._impl import Choreographer, DelegateInputs
+from roboco.services.gateway.choreographer import Choreographer, DelegateInputs
 
 
 def _inputs(*, task_type: str, ac_count: int) -> DelegateInputs:

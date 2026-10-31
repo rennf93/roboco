@@ -86,12 +86,12 @@ from roboco.services.repositories.review_findings import (
 logger = structlog.get_logger()
 
 if TYPE_CHECKING:
-    # The composed ``Choreographer`` resolves mixin helpers (``_project_slug_for``,
-    # etc.) via MRO, but ``_LegacyChoreographer`` itself does not inherit
-    # ``ChoreographerHelpers`` — so mypy can't see those names on ``self`` here.
-    # The cast below reaches the typed view the mixins use (``_Base`` pattern).
     from roboco.models.base import TaskNature
     from roboco.services.gateway.choreographer._protocol import ChoreographerHelpers
+
+    _Base = ChoreographerHelpers
+else:
+    _Base = object
 
 # _ensure_pm_decision's result: "fresh" (a recent decision already satisfies
 # the window, nothing written), "wrote" (recorded now), "transient_failure"
@@ -425,12 +425,14 @@ class DelegateInputs:
     depends_on: list[UUID] | None = None
 
 
-class Choreographer:
+class BaseChoreographer(_Base):
     """Composes existing services into intent-verb sequences.
 
     Constructor takes a ``ChoreographerDeps`` bundle (DI). Verb methods are
-    async. Each returns a standardized Envelope. Implementations land
-    progressively: see __init__ docstring.
+    async. Each returns a standardized Envelope. The package's
+    ``Choreographer`` composes the role mixins onto this class; under
+    ``TYPE_CHECKING`` it inherits ``ChoreographerHelpers`` like every mixin,
+    so a call into a mixin method is typed here too.
 
     Service deps are typed as ``Any`` in Phase 1 — per-service Protocol typing
     lands alongside the verb implementations that exercise the methods.
@@ -1738,7 +1740,7 @@ class Choreographer:
         if raw_role is None:
             return False
         role = raw_role.value if hasattr(raw_role, "value") else raw_role
-        return role in Choreographer._ORG_WIDE_EXEMPT_ROLES
+        return role in BaseChoreographer._ORG_WIDE_EXEMPT_ROLES
 
     async def _sequencing_claim_guard(self, task: Any) -> Envelope | None:
         """Both halves of the claim-time sequencing bar in one call — an
@@ -6865,7 +6867,7 @@ class Choreographer:
         """
         if not plan or not rich_plan:
             return plan
-        if any(rich_plan.get(k) for k in Choreographer._RICH_PLAN_FIELDS):
+        if any(rich_plan.get(k) for k in BaseChoreographer._RICH_PLAN_FIELDS):
             return _build_panel_shaped_plan(plan, rich_plan)
         return plan
 
@@ -7672,7 +7674,7 @@ class Choreographer:
           to review PRs of code changes).
         - Delegating to a Documenter requires ``task_type='documentation'``.
         """
-        pm_err = Choreographer._pm_task_type_error(assigned_to, task_type)
+        pm_err = BaseChoreographer._pm_task_type_error(assigned_to, task_type)
         if pm_err is not None:
             return pm_err
         from roboco.foundation.identity import AGENTS, Role, Team
@@ -7681,7 +7683,7 @@ class Choreographer:
         if agent is None:
             return None
         if agent.role is Role.DEVELOPER:
-            dev_err = Choreographer._developer_task_type_error(
+            dev_err = BaseChoreographer._developer_task_type_error(
                 assigned_to, agent.team is Team.UX_UI, task_type
             )
             if dev_err is not None:

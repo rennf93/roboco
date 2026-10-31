@@ -20,10 +20,7 @@ from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType
 from roboco.models.product import ProductCellMapping
 from roboco.models.task import TaskCreateRequest
-from roboco.services.gateway.choreographer._impl import (
-    Choreographer,
-    ChoreographerDeps,
-)
+from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 from roboco.services.task import TaskService
 
 if TYPE_CHECKING:

@@ -2,7 +2,7 @@
 
 The role mixins (`board.py`, `doc.py`, `qa.py`, …) call methods like
 ``self.task.get(...)`` and ``self._emit_rejection(...)`` that live on
-the legacy ``Choreographer`` class in ``_impl.py``. Without a typed
+``BaseChoreographer`` in ``_impl.py`` or on another mixin. Without a typed
 reference, mypy reports each of those calls as ``attr-defined``, and silencing
 that leaves an ``Any`` which then bubbles up as ``no-any-return`` errors at
 every Envelope-returning verb.
@@ -11,10 +11,19 @@ This module gives mypy a typed view of those helpers. ``ChoreographerHelpers``
 is **not** a Protocol — Protocol with abstract members causes the
 composed ``Choreographer`` class to be flagged as instantiating an
 abstract class. Instead it's a plain class with stub signatures used
-ONLY under ``TYPE_CHECKING``; at runtime mixins inherit from ``object``
-so there's no abstract-method baggage. The real implementations live
-on ``_LegacyChoreographer`` and are picked up by Python's MRO when the
-composed ``Choreographer`` runs.
+ONLY under ``TYPE_CHECKING``; at runtime the mixins and ``BaseChoreographer``
+inherit from ``object`` so there's no abstract-method baggage. The real
+implementations are picked up by Python's MRO when the composed
+``Choreographer`` runs.
+
+The stubs are grouped by the class that defines each method: ``FooSurface``
+declares what ``FooMixin`` (or, for ``BaseChoreographerSurface``,
+``BaseChoreographer``) offers the other classes, each stub with the real
+signature so every call across classes stays fully checked.
+``ChoreographerHelpers`` composes the surfaces and declares the service
+attributes. A method that moves to another class takes its stub to that
+class's surface: ``tests/unit/services/test_choreographer_protocol.py`` fails
+on a stub its class does not define.
 """
 
 from __future__ import annotations
@@ -28,20 +37,8 @@ if TYPE_CHECKING:
     from roboco.services.gateway.envelope import Envelope
 
 
-class ChoreographerHelpers:
-    """Typed stub of attributes + helpers role mixins call on ``self``.
-
-    Stub bodies (``...``) are never executed; the real methods live on
-    ``_LegacyChoreographer`` and resolve via MRO at runtime.
-    """
-
-    task: Any
-    work_session: Any
-    git: Any
-    a2a: Any
-    journal: Any
-    audit: Any
-    evidence_repo: Any
+class BaseChoreographerSurface:
+    """``BaseChoreographer``'s methods that the mixins call."""
 
     async def _emit_rejection(
         self,
@@ -105,9 +102,6 @@ class ChoreographerHelpers:
     ) -> dict[str, Any]:
         raise NotImplementedError
 
-    async def _project_slug_for(self, t: Any) -> str | None:
-        raise NotImplementedError
-
     @staticmethod
     def _with_briefing(
         env: Envelope,
@@ -143,8 +137,39 @@ class ChoreographerHelpers:
     ) -> Envelope:
         raise NotImplementedError
 
+
+class PRGatePassSurface:
+    """``PRGatePassMixin``'s methods that the other classes call."""
+
     async def _resolve_ci_status(self, task_id: UUID, t: Any) -> dict[str, Any] | None:
         raise NotImplementedError
+
+
+class PRReviewerSurface:
+    """``PRReviewerMixin``'s methods that the other classes call."""
+
+    async def _project_slug_for(self, t: Any) -> str | None:
+        raise NotImplementedError
+
+
+class ChoreographerHelpers(
+    BaseChoreographerSurface,
+    PRGatePassSurface,
+    PRReviewerSurface,
+):
+    """Typed stub of attributes + helpers role mixins call on ``self``.
+
+    Stub bodies are never executed; the real methods live on the class each
+    surface names and resolve via MRO at runtime.
+    """
+
+    task: Any
+    work_session: Any
+    git: Any
+    a2a: Any
+    journal: Any
+    audit: Any
+    evidence_repo: Any
 
 
 def actor_context_fields(agent: Any) -> tuple[str | None, str | None]:
