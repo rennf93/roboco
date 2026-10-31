@@ -21,7 +21,7 @@ The revision-findings ledger: the structured replacement for prose-only QA/PR-ga
 | `roboco/services/gateway/choreographer/pr_gate.py` | `pr_fail` — pr_gate-origin producer | (slice within a shared file) |
 | `roboco/services/gateway/choreographer/pr_gate_pass.py` | `_stamp_gate_findings_verified_or_rejection` — `pr_pass`'s verify-stamp; `_run_second_review_pass` — advisory second_review-origin producer (no verify-stamp) | (slice within a shared file) |
 | `roboco/services/gateway/choreographer/second_review_gate.py` | `SECOND_REVIEW_ORIGIN="second_review"`; `insert_second_review_findings` — thin wrapper over `findings_lib.insert_and_render` for this origin | 181 |
-| `roboco/services/gateway/choreographer/_impl.py` | `request_changes` — pm-origin producer; `i_am_done`/`submit_up`/`submit_root` — `resolved_findings` resolution; `complete` — verify-stamp | (slice within a shared file) |
+| `roboco/services/gateway/choreographer/pm.py`, `dev.py`, `_impl.py` | `request_changes` — pm-origin producer (`pm.py`); `i_am_done` (`dev.py`), `submit_up`/`submit_root` (`pm.py`) — `resolved_findings` resolution, through `_impl.py`'s `_apply_resolved_findings_for`; `complete` — verify-stamp (`pm.py`) | (slice within a shared file) |
 | `roboco/services/task.py` | `ceo_reject` — ceo-origin producer + reason validation; `ceo_approve` — best-effort verify-stamp; `_audit_events_for` — `task.request_changes`/`task.ceo_reject`; `qa_fail`/`request_changes` dev_notes-append removal | (slice within an 8.7k-line file) |
 | `roboco/foundation/policy/tracing.py` | `Requirement.FINDINGS_ADDRESSED`, `GateContext.open_finding_ids`, `_check_findings_addressed` | (slice within a shared file) |
 | `roboco/services/gateway/evidence_builder.py` | `EvidencePayload.revision_findings`/`.prior_findings`, `build_task_handoff` findings, `render_findings`, `_extract_qa_review`/`_extract_pm_review` | 480 |
@@ -57,7 +57,7 @@ The revision-findings ledger: the structured replacement for prose-only QA/PR-ga
 | `stamp_addressed_verified` | function | `roboco/services/gateway/choreographer/findings.py:334` | Bulk-promotes `addressed→verified` for one `origin` on a task, passing `verified_by` (the QA / PR-gate / PM reviewer's slug, or `ceo`) through to `mark_verified`; not best-effort except at the `ceo_approve` call site. |
 | `fail_review` | async verb | `roboco/services/gateway/choreographer/qa.py` | QA-origin producer: `(qa_agent_id, task_id, issues=None, findings=None)`. |
 | `pr_fail` | async verb | `roboco/services/gateway/choreographer/pr_gate.py` | pr_gate-origin producer, same shape; findings insert happens before `_record_gate_verdict_for` so the verdict note reads real ledger ids. |
-| `request_changes` | async verb | `roboco/services/gateway/choreographer/_impl.py` | pm-origin producer, same shape; writes `PmReviewContent` → `pm_notes`. |
+| `request_changes` | async verb | `roboco/services/gateway/choreographer/pm.py` | pm-origin producer, same shape; writes `PmReviewContent` → `pm_notes`. |
 | `ceo_reject` | method | `roboco/services/task.py` | ceo-origin producer — NOT a choreographer verb (no gateway wrapper; the CEO-approval route calls `TaskService.ceo_reject` directly). Validates `reason` via `reject_trivial` (previously an uncaught Pydantic `ValidationError` → 500 on empty/trivial input) and converts it into one `severity=blocker` Finding. |
 | `_bump_coordination_ceo_reject` | method | `roboco/services/task.py` | Manually bumps `revision_count` + inserts a `task.ceo_reject` audit row for a branchless-coordination reject, since that path routes to `PENDING` via `admin_set_status` and never reaches the normal `_emit_status_transition_audit` chokepoint. |
 | `_audit_events_for` | staticmethod | `roboco/services/task.py:1611` | Gains `task.request_changes` (agent_role `cell_pm`/`main_pm`) and `task.ceo_reject` (agent_role `ceo`) branches alongside the existing `task.qa_fail`/`task.pr_fail`. |
@@ -115,7 +115,7 @@ review-findings slice
 ├── Producers
 │   ├── fail_review (qa.py, origin=qa)
 │   ├── pr_fail (pr_gate.py, origin=pr_gate)
-│   ├── request_changes (_impl.py, origin=pm) -> pm_notes
+│   ├── request_changes (pm.py, origin=pm) -> pm_notes
 │   ├── ceo_reject (task.py, origin=ceo) -> reason validation + coordination-root bump
 │   └── _run_second_review_pass (pr_gate_pass.py + second_review_gate.py, origin=second_review) -> advisory, no transition/bump/verdict-note; inserts pre-STATUS_ADDRESSED, no verify-stamp call site (see Gotchas)
 ├── Resolution
@@ -149,9 +149,9 @@ review-findings slice
 |---|---|---|
 | `fail_review` | `choreographer/qa.py` | QA calls `fail(task_id, findings=[...])` via `roboco-flow` MCP / HTTP |
 | `pr_fail` | `choreographer/pr_gate.py` | PR reviewer calls `pr_fail(task_id, findings=[...])` on a claimed gate review |
-| `request_changes` | `choreographer/_impl.py` | Cell/Main PM calls `request_changes(task_id, findings=[...])` on an `awaiting_pm_review` task |
+| `request_changes` | `choreographer/pm.py` | Cell/Main PM calls `request_changes(task_id, findings=[...])` on an `awaiting_pm_review` task |
 | `ceo_reject` (`TaskService` method, no verb) | `roboco/services/task.py` | CEO-approval-chain route on `awaiting_ceo_approval` |
-| `i_am_done` / `submit_up` / `submit_root` | `choreographer/dev.py` (`i_am_done`), `choreographer/_impl.py` (`submit_up`, `submit_root`) | Dev/PM resolves findings via `resolved_findings=[...]` on resubmit |
+| `i_am_done` / `submit_up` / `submit_root` | `choreographer/dev.py` (`i_am_done`), `choreographer/pm.py` (`submit_up`, `submit_root`) | Dev/PM resolves findings via `resolved_findings=[...]` on resubmit |
 | `GET /api/tasks/{id}/findings` | `roboco/api/routes/tasks.py` | Panel's `useTaskFindings` hook, any authenticated agent context |
 
 ## Config Flags

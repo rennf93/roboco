@@ -28,14 +28,17 @@ on a stub its class does not define.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 if TYPE_CHECKING:
+    from typing import Any
     from uuid import UUID
 
     from roboco.foundation.policy import lifecycle as spec_module
     from roboco.services.gateway.choreographer._impl import (
         ChoreographerDeps,
+        DelegateInputs,
+        PmDecisionOutcome,
         _ClaimPlanStartContext,
         _IAmDoneContext,
         _ReassignedCtx,
@@ -217,6 +220,63 @@ class BaseChoreographerSurface:
     def _soup_reason(value: str, field: str, min_chars: int) -> Envelope | None:
         raise NotImplementedError
 
+    async def _apply_resolved_findings_for(
+        self, task_id: UUID, resolved_findings: list[dict[str, Any]] | None
+    ) -> None:
+        raise NotImplementedError
+
+    async def _assembled_submit_guards(
+        self, t: Any, task_id: UUID, verb: str
+    ) -> tuple[Envelope | None, int | None]:
+        raise NotImplementedError
+
+    async def _budget_unblock_guard(self, t: Any) -> Envelope | None:
+        raise NotImplementedError
+
+    async def _check_complete_gates(
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        notes: str,
+        *,
+        pm_decision_outcome: PmDecisionOutcome | None = None,
+    ) -> Envelope | None:
+        raise NotImplementedError
+
+    async def _check_pm_decision_required(
+        self,
+        verb: str,
+        agent_id: UUID,
+        task_id: UUID,
+        t: Any,
+        *,
+        pm_decision_outcome: PmDecisionOutcome | None = None,
+    ) -> Envelope | None:
+        raise NotImplementedError
+
+    async def _check_submit_up_gates(
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        notes: str,
+        *,
+        pm_decision_outcome: PmDecisionOutcome | None = None,
+    ) -> Envelope | None:
+        raise NotImplementedError
+
+    async def _ensure_pm_decision(
+        self, agent_id: UUID, task_id: UUID, rationale: str | None
+    ) -> PmDecisionOutcome:
+        raise NotImplementedError
+
+
+class DelegateSurface:
+    """``DelegateMixin``'s methods that the other classes call."""
+
+    @staticmethod
+    def _resolve_delegate_enums(inputs: DelegateInputs) -> tuple[Any, Any, Any]:
+        raise NotImplementedError
+
 
 class DoneChecksSurface:
     """``DoneChecksMixin``'s methods that the other classes call."""
@@ -272,6 +332,13 @@ class OpenPRSurface:
         raise NotImplementedError
 
 
+class PMWorkSurface:
+    """``PMWorkMixin``'s methods that the other classes call."""
+
+    async def _own_review_hint(self, pm_agent_id: UUID, exclude_task_id: UUID) -> str:
+        raise NotImplementedError
+
+
 class PRGatePassSurface:
     """``PRGatePassMixin``'s methods that the other classes call."""
 
@@ -286,14 +353,102 @@ class PRReviewerSurface:
         raise NotImplementedError
 
 
+class SiblingDedupSurface:
+    """``SiblingDedupMixin``'s methods that the other classes call."""
+
+    async def _delegate_sibling_dedup_guard(
+        self,
+        parent_task_id: UUID,
+        inputs: DelegateInputs,
+    ) -> Envelope | None:
+        raise NotImplementedError
+
+    @classmethod
+    def _delegate_sizing_guard(cls, inputs: DelegateInputs) -> Envelope | None:
+        raise NotImplementedError
+
+    @classmethod
+    def _sizing_hint(cls, inputs: DelegateInputs) -> str | None:
+        raise NotImplementedError
+
+
+class SubmitRootSurface:
+    """``SubmitRootMixin``'s methods that the other classes call."""
+
+    async def _unchanged_pr_guard(
+        self,
+        t: Any,
+        briefing: dict[str, Any],
+        *,
+        verb: str,
+        pr_scope: str,
+        delegate_target: str,
+        subtask_noun: str,
+        work_noun: str,
+    ) -> Envelope | None:
+        raise NotImplementedError
+
+
+class SubmitUpSurface:
+    """``SubmitUpMixin``'s methods that the other classes call."""
+
+    async def _notify_pr_reviewer(self, task_id: UUID, t: Any) -> None:
+        raise NotImplementedError
+
+    async def _parent_acs_covered_envelope(
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        *,
+        context_phrase: str,
+    ) -> Envelope | None:
+        raise NotImplementedError
+
+    async def _submit_up_guard(
+        self, pm_agent_id: UUID, task_id: UUID, t: Any, notes: str
+    ) -> Envelope | None:
+        raise NotImplementedError
+
+    async def _subtasks_not_terminal_envelope(
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        *,
+        context_phrase: str,
+    ) -> Envelope | None:
+        raise NotImplementedError
+
+
+class SubtaskCreateSurface:
+    """``SubtaskCreateMixin``'s methods that the other classes call."""
+
+    async def _create_subtask_from_inputs(
+        self,
+        pm_agent_id: UUID,
+        parent_task_id: UUID,
+        parent: Any,
+        inputs: DelegateInputs,
+    ) -> Any:
+        raise NotImplementedError
+
+    async def _wire_ux_frontend_dependency(self, new_task: Any, parent: Any) -> None:
+        raise NotImplementedError
+
+
 class ChoreographerHelpers(
     BaseChoreographerSurface,
+    DelegateSurface,
     DoneChecksSurface,
     GiveMeWorkSurface,
     IAmDoneSurface,
     OpenPRSurface,
+    PMWorkSurface,
     PRGatePassSurface,
     PRReviewerSurface,
+    SiblingDedupSurface,
+    SubmitRootSurface,
+    SubmitUpSurface,
+    SubtaskCreateSurface,
 ):
     """Typed stub of attributes + helpers role mixins call on ``self``.
 
@@ -301,6 +456,8 @@ class ChoreographerHelpers(
     surface names and resolve via MRO at runtime.
     """
 
+    _COVERS_PARENT_CRITERIA_HINT: ClassVar[str]
+    _TERMINAL_STATUSES: ClassVar[frozenset[str]]
     _deps: ChoreographerDeps
     task: Any
     work_session: Any
@@ -309,6 +466,7 @@ class ChoreographerHelpers(
     journal: Any
     audit: Any
     evidence_repo: Any
+    product: Any
 
 
 def actor_context_fields(agent: Any) -> tuple[str | None, str | None]:

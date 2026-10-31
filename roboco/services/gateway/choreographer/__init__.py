@@ -28,6 +28,16 @@ from roboco.services.gateway.choreographer.dev import (
     OpenPRMixin,
 )
 from roboco.services.gateway.choreographer.doc import DocMixin
+from roboco.services.gateway.choreographer.pm import (
+    CompleteMixin,
+    DelegateMixin,
+    PMReviewMixin,
+    PMWorkMixin,
+    SiblingDedupMixin,
+    SubmitRootMixin,
+    SubmitUpMixin,
+    SubtaskCreateMixin,
+)
 from roboco.services.gateway.choreographer.pr_gate import PRGateMixin
 from roboco.services.gateway.choreographer.pr_review import PRReviewerMixin
 from roboco.services.gateway.choreographer.qa import QAMixin
@@ -44,6 +54,14 @@ class Choreographer(
     GiveMeWorkMixin,
     IAmDoneMixin,
     OpenPRMixin,
+    CompleteMixin,
+    DelegateMixin,
+    PMReviewMixin,
+    PMWorkMixin,
+    SiblingDedupMixin,
+    SubmitRootMixin,
+    SubmitUpMixin,
+    SubtaskCreateMixin,
     BaseChoreographer,
 ):
     """Composed choreographer.
