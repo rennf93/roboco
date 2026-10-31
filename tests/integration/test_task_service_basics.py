@@ -491,7 +491,8 @@ async def test_list_recent_for_project_respects_limit(task_setup: dict) -> None:
 
     tasks = [await svc.create(_req(task_setup, title=f"t{i}")) for i in range(3)]
     for i, t in enumerate(tasks):
-        t.created_at = now - timedelta(days=10 - i)  # t0 oldest, t2 newest
+        # T0 oldest, t2 newest
+        t.created_at = now - timedelta(days=10 - i)
         t.updated_at = None
     await db.flush()
 
@@ -1003,9 +1004,12 @@ async def test_update_acceptance_criteria_restamps_ids_1to1(
     updated = await svc.update(task.id, acceptance_criteria=["a", "c", "d"])
     assert updated is not None
     assert len(updated.acceptance_criteria_ids) == _N
-    assert updated.acceptance_criteria_ids[0] == old_ids[0]  # "a" unchanged
-    assert updated.acceptance_criteria_ids[1] == old_ids[2]  # "c" unchanged
-    assert updated.acceptance_criteria_ids[2] not in old_ids  # "d" is new
+    # "a" unchanged
+    assert updated.acceptance_criteria_ids[0] == old_ids[0]
+    # "c" unchanged
+    assert updated.acceptance_criteria_ids[1] == old_ids[2]
+    # "d" is new
+    assert updated.acceptance_criteria_ids[2] not in old_ids
     assert len(set(updated.acceptance_criteria_ids)) == _N
 
 
@@ -1183,7 +1187,8 @@ async def test_pause_returns_none_for_missing(task_setup: dict) -> None:
 @pytest.mark.asyncio
 async def test_pause_returns_none_when_not_in_progress(task_setup: dict) -> None:
     svc = task_setup["svc"]
-    task = await svc.create(_req(task_setup))  # PENDING — can't pause.
+    # PENDING — can't pause.
+    task = await svc.create(_req(task_setup))
     assert await svc.pause(task.id) is None
 
 
@@ -1211,7 +1216,8 @@ async def test_resume_returns_none_for_missing(task_setup: dict) -> None:
 @pytest.mark.asyncio
 async def test_resume_returns_none_when_not_paused(task_setup: dict) -> None:
     svc = task_setup["svc"]
-    task = await svc.create(_req(task_setup))  # PENDING — can't resume.
+    # PENDING — can't resume.
+    task = await svc.create(_req(task_setup))
     assert await svc.resume(task.id) is None
 
 
@@ -1327,7 +1333,8 @@ async def test_submit_for_verification_returns_none_when_not_in_progress(
     task_setup: dict,
 ) -> None:
     svc = task_setup["svc"]
-    task = await svc.create(_req(task_setup))  # PENDING.
+    # PENDING.
+    task = await svc.create(_req(task_setup))
     assert await svc.submit_for_verification(task.id) is None
 
 
@@ -1357,7 +1364,8 @@ async def test_pass_qa_returns_none_when_invalid_status(
     task_setup: dict,
 ) -> None:
     svc = task_setup["svc"]
-    task = await svc.create(_req(task_setup))  # PENDING — can't pass QA.
+    # PENDING — can't pass QA.
+    task = await svc.create(_req(task_setup))
     assert await svc.pass_qa(task.id, agent_role="qa") is None
 
 
@@ -1713,7 +1721,8 @@ async def test_fail_qa_returns_none_when_not_awaiting_qa(
     task_setup: dict,
 ) -> None:
     svc = task_setup["svc"]
-    task = await svc.create(_req(task_setup))  # PENDING
+    # PENDING
+    task = await svc.create(_req(task_setup))
     assert await svc.fail_qa(task.id, notes="x") is None
 
 
@@ -1944,7 +1953,8 @@ async def test_claim_pending_with_unmet_dependency_returns_none(
     task = await svc.create(_req(task_setup, title="wave-1 dependent"))
     task.branch_name = "feature/backend/abcd1234"
     await db_session.flush()
-    await svc.add_dependency(task.id, dep.id)  # task depends_on dep (still PENDING)
+    # Task depends_on dep (still PENDING)
+    await svc.add_dependency(task.id, dep.id)
 
     assert await svc.claim(task.id, task_setup["agent_id"]) is None
 
@@ -2364,7 +2374,8 @@ async def test_list_pending_for_agent_sequence_bar_still_excludes_oldest(
     )
     blocker.status = TaskStatus.IN_PROGRESS
     now = datetime.now(UTC)
-    blocked.created_at = now - timedelta(days=2)  # oldest, but sequence-held
+    # Oldest, but sequence-held
+    blocked.created_at = now - timedelta(days=2)
     eligible.created_at = now - timedelta(days=1)
     await db_session.flush()
 
@@ -2679,8 +2690,10 @@ async def test_stamp_wave_sequence_preserves_stamps_and_ignores_nonsibling_deps(
     )
     await svc.stamp_wave_sequence(new.id)
     authored_stamp = 3
-    assert new.sequence == 0  # non-sibling dep excluded from the wave
-    assert authored.sequence == authored_stamp  # PM-authored stamp untouched
+    # Non-sibling dep excluded from the wave
+    assert new.sequence == 0
+    # PM-authored stamp untouched
+    assert authored.sequence == authored_stamp
 
 
 @pytest.mark.asyncio
@@ -2710,8 +2723,10 @@ async def test_stamp_wave_sequence_after_collision_wiring_matches_delegate_flow(
     b = await _delegate("touches b.py", ["roboco/api/b.py"])
     c = await _delegate("touches a.py too", ["roboco/api/a.py"])
 
-    assert (a.sequence, b.sequence) == (0, 0)  # disjoint → parallel
-    assert c.sequence == 1  # collides with a → next wave
+    # Disjoint → parallel
+    assert (a.sequence, b.sequence) == (0, 0)
+    # Collides with a → next wave
+    assert c.sequence == 1
     assert await svc._claim_blocked_by_sequence(c) is not None
 
 
@@ -3482,7 +3497,8 @@ async def test_mark_pr_created_audit_attributed_to_developer(
     row.docs_complete = True
     row.pr_created = False
     row.branch_name = "feature/x"
-    row.claimed_by = None  # already cleared by submit_for_qa
+    # Already cleared by submit_for_qa
+    row.claimed_by = None
     await db_session.flush()
 
     dev_id = uuid4()

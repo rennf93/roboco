@@ -93,8 +93,10 @@ if TYPE_CHECKING:
     from roboco.services.permissions import PermissionService
 
 # UUID format constants for validation
-_UUID_LENGTH = 36  # Standard UUID string length
-_UUID_HYPHEN_COUNT = 4  # Number of hyphens in a UUID
+# Standard UUID string length
+_UUID_LENGTH = 36
+# Number of hyphens in a UUID
+_UUID_HYPHEN_COUNT = 4
 
 
 def _repo_key_expr(column: Any) -> Any:
@@ -1824,7 +1826,8 @@ class TaskService(BaseService):
                 "exactly one); refusing a stray batch_id on any other task."
             )
         if req.parent_task_id is None:
-            return  # a well-formed umbrella
+            # A well-formed umbrella
+            return
         parent = await self.get(req.parent_task_id)
         if (
             parent is None
@@ -1906,8 +1909,10 @@ class TaskService(BaseService):
             estimated_complexity=req.estimated_complexity,
             nature=req.nature,
             status=req.status if req.status else TaskStatus.PENDING,
-            sequence=req.sequence,  # Task ordering within siblings
-            dependency_ids=req.dependency_ids,  # Task IDs that must complete first
+            # Task ordering within siblings
+            sequence=req.sequence,
+            # Task IDs that must complete first
+            dependency_ids=req.dependency_ids,
             # Sequenced batch intake collision surface
             batch_id=req.batch_id,
             intends_to_touch=req.intends_to_touch,
@@ -3320,7 +3325,8 @@ class TaskService(BaseService):
             Branch name of nearest ancestor, or None if no ancestor has one.
         """
         current_parent_id = task.parent_task_id
-        visited: set[str] = set()  # Prevent infinite loops
+        # Prevent infinite loops
+        visited: set[str] = set()
 
         while current_parent_id:
             parent_id_str = str(current_parent_id)
@@ -3573,7 +3579,8 @@ class TaskService(BaseService):
 
         dep_task = await self.get(UUID(str(dep_id)))
         if dep_task is None or dep_task.project_id != ctx.project.id:
-            return  # missing, or a cross-repo edge: no shared git history
+            # Missing, or a cross-repo edge: no shared git history
+            return
         source_branch = await resolve_parent_branch(dep_task, self)
         branch_name = str(task.branch_name)
         if not source_branch or source_branch == branch_name:
@@ -4223,7 +4230,8 @@ class TaskService(BaseService):
         # Delete all descendants first (children, grandchildren, etc.)
         # Process in reverse order to delete leaves before parents
         descendants = await self.get_all_descendants(task_id)
-        descendants.reverse()  # Delete deepest children first
+        # Delete deepest children first
+        descendants.reverse()
         removed_ids = [task_id, *(getattr(d, "id", None) for d in descendants)]
 
         for descendant in descendants:
@@ -5330,8 +5338,10 @@ class TaskService(BaseService):
                     task_id=cast("UUID", task.id),
                     agent_id=agent_id,
                     branch_name=branch_name,
-                    base_branch=target_branch,  # Created from target
-                    target_branch=target_branch,  # Will merge back to target
+                    # Created from target
+                    base_branch=target_branch,
+                    # Will merge back to target
+                    target_branch=target_branch,
                 )
             )
         except ConflictError:
@@ -5361,10 +5371,14 @@ class TaskService(BaseService):
     # =========================================================================
 
     # Learning extraction thresholds
-    _DURATION_OVER_RATIO = 1.5  # Flag if task took 1.5x expected time
-    _DURATION_UNDER_RATIO = 0.3  # Flag if task took less than 30% expected
-    _MIN_COMMITS_GOOD = 5  # Minimum commits for "good granularity" pattern
-    _MIN_NOTES_LENGTH = 50  # Minimum notes length to extract learnings
+    # Flag if task took 1.5x expected time
+    _DURATION_OVER_RATIO = 1.5
+    # Flag if task took less than 30% expected
+    _DURATION_UNDER_RATIO = 0.3
+    # Minimum commits for "good granularity" pattern
+    _MIN_COMMITS_GOOD = 5
+    # Minimum notes length to extract learnings
+    _MIN_NOTES_LENGTH = 50
 
     def _duration_learning(
         self,
@@ -6092,7 +6106,8 @@ class TaskService(BaseService):
                 {
                     "content": content,
                     "entry_id": str(synthetic_entry_id),
-                    "agent_id": None,  # System event, no specific agent
+                    # System event, no specific agent
+                    "agent_id": None,
                     "entry_type": f"lifecycle_{event_type}",
                     "task_id": str(task_id),
                     "tags": [event_type, task_team.value if task_team else "default"],
@@ -7557,7 +7572,8 @@ class TaskService(BaseService):
 
         ready_for_pm = check_parallel_completion(
             docs_complete=task.docs_complete,
-            pr_created=True,  # We just set this
+            # We just set this
+            pr_created=True,
         )
 
         if ready_for_pm:
@@ -10146,7 +10162,8 @@ class TaskService(BaseService):
         if task is None:
             return False
         if depends_on_id in (task.dependency_ids or []):
-            return False  # idempotent re-add
+            # Idempotent re-add
+            return False
         if await self._would_create_cycle(task_id, depends_on_id):
             raise ConflictError(
                 f"adding {depends_on_id} as a dependency of {task_id} would "
@@ -12408,7 +12425,8 @@ class TaskService(BaseService):
             return noop
         if not _is_cell_pm_owned_task(task):
             return noop
-        assert task.team is not None  # guarded by _is_cell_pm_owned_task
+        # Guarded by _is_cell_pm_owned_task
+        assert task.team is not None
         team_enum = Team(str(getattr(task.team, "value", task.team)))
         cell_pm = await self.cell_pm_for_team(team_enum)
         if cell_pm is None:
@@ -13175,7 +13193,8 @@ class TaskService(BaseService):
         moves the task to in_progress and hands it back to the original
         raiser.
         """
-        del pm_agent_id  # gateway already validated PM authority
+        # Gateway already validated PM authority
+        del pm_agent_id
         task = await self.get(task_id)
         if task is None:
             return None

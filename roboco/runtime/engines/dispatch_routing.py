@@ -41,9 +41,8 @@ class DispatchRoutingEngine(_Base):
     @staticmethod
     def _route_by_task_type(task_type: str, team: str | None) -> str | None:
         """Route based on task_type field alone; returns None if no match."""
-        cell_teams = tuple(
-            sorted(t.value for t in CELL_TEAMS)
-        )  # ("backend", "frontend", "ux_ui")
+        # ("backend", "frontend", "ux_ui")
+        cell_teams = tuple(sorted(t.value for t in CELL_TEAMS))
         if task_type in ("planning", "research", "administrative"):
             return "cell_pm" if team in cell_teams else "main_pm"
         if task_type == "design" and team not in ("backend", "frontend"):

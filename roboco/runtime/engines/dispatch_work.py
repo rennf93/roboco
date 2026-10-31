@@ -282,7 +282,8 @@ class DispatchWorkEngine(_Base):
         task_id = str(task.get("id"))
         markers_dict = task.get("orchestration_markers") or {}
         if markers_dict.get(_markers.ROADMAP_CYCLE) is not None:
-            return  # already authored — the CEO roadmap queue owns the rest
+            # Already authored — the CEO roadmap queue owns the rest
+            return
         po_slug = "product-owner"
         if self._is_agent_active(po_slug):
             return
@@ -362,7 +363,8 @@ class DispatchWorkEngine(_Base):
         task_id = str(task.get("id"))
         markers_dict = task.get("orchestration_markers") or {}
         if markers_dict.get(_markers.PEST_HUNT) is not None:
-            return  # already authored — the CEO pest-control queue owns the rest
+            # Already authored — the CEO pest-control queue owns the rest
+            return
         po_slug = "product-owner"
         if self._is_agent_active(po_slug):
             return
@@ -421,7 +423,8 @@ class DispatchWorkEngine(_Base):
         task_id = str(task.get("id"))
         markers_dict = task.get("orchestration_markers") or {}
         if markers_dict.get(_markers.REBALANCE_PLAN) is not None:
-            return  # already authored — the CEO Scales queue owns the rest
+            # Already authored — the CEO Scales queue owns the rest
+            return
         po_slug = "product-owner"
         if self._is_agent_active(po_slug):
             return
@@ -568,7 +571,8 @@ class DispatchWorkEngine(_Base):
         task_id = str(task.get("id"))
         markers_dict = task.get("orchestration_markers") or {}
         if markers_dict.get(_markers.GAP_FILL) is not None:
-            return  # already authored — the CEO spackle queue owns the rest
+            # Already authored — the CEO spackle queue owns the rest
+            return
         po_slug = "product-owner"
         if self._is_agent_active(po_slug):
             return
@@ -603,7 +607,8 @@ class DispatchWorkEngine(_Base):
         task_id = str(task.get("id"))
         markers_dict = task.get("orchestration_markers") or {}
         if markers_dict.get(_markers.MESSAGING_FIXES) is not None:
-            return  # already authored — the CEO mirror queue owns the rest
+            # Already authored — the CEO mirror queue owns the rest
+            return
         hom_slug = "head-marketing"
         if self._is_agent_active(hom_slug):
             return
@@ -638,7 +643,8 @@ class DispatchWorkEngine(_Base):
         task_id = str(task.get("id"))
         markers_dict = task.get("orchestration_markers") or {}
         if markers_dict.get(_markers.FRICTION_FIXES) is not None:
-            return  # already authored — the CEO dogfood queue owns the rest
+            # Already authored — the CEO dogfood queue owns the rest
+            return
         po_slug = "product-owner"
         if self._is_agent_active(po_slug):
             return

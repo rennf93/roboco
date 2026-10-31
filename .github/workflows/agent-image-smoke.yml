@@ -1,10 +1,12 @@
 name: Agent Image Smoke (Playwright)
 
-# Builds the two images that carry Playwright + chromium-headless-shell
-# (agent-qa-fe, agent-ux) with a real Docker daemon, verifies a headless
+# Builds the three images that carry Playwright + chromium-headless-shell
+# (agent-qa-fe, agent-ux, and agent-pm, whose Product Owner dogfood walk gets
+# the same browser tools) with a real Docker daemon, verifies a headless
 # chromium launch actually works inside each, verifies the `playwright` MCP
-# server (registered for fe-qa/ux-qa only, see orchestrator.py
-# _generate_mcp_config) is installed and wired to the baked browser, takes a
+# server (registered for fe-qa/ux-qa and the dogfood spawn only, see
+# orchestrator.py _generate_mcp_config) is installed and wired to the baked
+# browser, takes a
 # real headless screenshot of a live panel page from inside the ux-qa image,
 # and reports the real before/after image size delta against origin/master.
 # This exists because dev/QA agent sandboxes have no Docker daemon of their
@@ -18,6 +20,7 @@ on:
       - 'docker/npm/agent-base/**'
       - 'docker/agent-qa-fe.Dockerfile'
       - 'docker/agent-ux.Dockerfile'
+      - 'docker/agent-pm.Dockerfile'
       - 'docker/agent-devops.Dockerfile'
       - 'docker/scripts/entrypoints/playwright-mcp-entrypoint.sh'
       - '.github/workflows/agent-image-smoke.yml'
@@ -68,6 +71,7 @@ jobs:
             docker/npm/agent-base/**
             docker/agent-qa-fe.Dockerfile
             docker/agent-ux.Dockerfile
+            docker/agent-pm.Dockerfile
             docker/agent-devops.Dockerfile
             docker/scripts/entrypoints/playwright-mcp-entrypoint.sh
             .github/workflows/agent-image-smoke.yml
@@ -89,13 +93,14 @@ jobs:
           # against the pre-change baseline for the size-delta report below.
           fetch-depth: 0
 
-      - name: Build agent-base (shared FROM target for both variants)
+      - name: Build agent-base (shared FROM target for every variant)
         run: docker build -f docker/agent-base.Dockerfile -t roboco-agent-base .
 
       - name: Build "after" images (this branch)
         run: |
           docker build -f docker/agent-qa-fe.Dockerfile -t agent-qa-fe:after .
           docker build -f docker/agent-ux.Dockerfile -t agent-ux:after .
+          docker build -f docker/agent-pm.Dockerfile -t agent-pm:after .
 
       - name: Build "before" images (origin/master baseline)
         run: |
@@ -106,6 +111,7 @@ jobs:
           git worktree add /tmp/before-src origin/master
           docker build -f /tmp/before-src/docker/agent-qa-fe.Dockerfile -t agent-qa-fe:before /tmp/before-src
           docker build -f /tmp/before-src/docker/agent-ux.Dockerfile -t agent-ux:before /tmp/before-src
+          docker build -f /tmp/before-src/docker/agent-pm.Dockerfile -t agent-pm:before /tmp/before-src
 
       - name: Report real before/after image size delta
         run: |
@@ -114,7 +120,7 @@ jobs:
             echo
             echo "| image | before | after | delta |"
             echo "|---|---|---|---|"
-            for name in agent-qa-fe agent-ux; do
+            for name in agent-qa-fe agent-ux agent-pm; do
               before_bytes=$(docker inspect -f '{{.Size}}' "${name}:before")
               after_bytes=$(docker inspect -f '{{.Size}}' "${name}:after")
               delta_mb=$(( (after_bytes - before_bytes) / 1024 / 1024 ))
@@ -129,7 +135,7 @@ jobs:
             echo "### Headless chromium launch smoke check"
             echo
           } | tee -a /tmp/smoke-report.md
-          for name in agent-qa-fe agent-ux; do
+          for name in agent-qa-fe agent-ux agent-pm; do
             echo "::group::${name} headless launch smoke"
             docker run --rm --entrypoint /app/.venv/bin/python "${name}:after" -c '
           from playwright.sync_api import sync_playwright
@@ -151,7 +157,7 @@ jobs:
             echo "### Playwright MCP server smoke check"
             echo
           } | tee -a /tmp/smoke-report.md
-          for name in agent-qa-fe agent-ux; do
+          for name in agent-qa-fe agent-ux agent-pm; do
             echo "::group::${name} playwright-mcp binary"
             docker run --rm --entrypoint playwright-mcp "${name}:after" --version | tee -a /tmp/smoke-report.md
             # The exact chromium-headless-shell path the wrapper entrypoint
