@@ -2256,13 +2256,1169 @@ class TaskRoleLookup(_Base):
         return role == AgentRole.MAIN_PM
 
 
+class TaskEngineListings(_Base):
+    """The autonomy engines' task listings: self-heal, CI watch, dependency update,
+    env sync, docs sync, release proposals, X posts and the video pipeline."""
+
+    async def list_open_self_heal_tasks(self) -> list[TaskTable]:
+        """Non-terminal self-heal fix tasks — the dedupe + open-cap basis.
+
+        A self-heal task is "open" until it reaches a terminal state. While one
+        exists for a regression's fingerprint the loop must not originate a
+        second, and the rolling open-task cap counts these.
+        """
+        result = await self.session.execute(
+            select(TaskTable).where(
+                TaskTable.source == SELF_HEAL_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+        )
+        return list(result.scalars().all())
+
+    async def list_open_ci_watch_tasks(
+        self, git_url: str | None = None, workflow: str | None = None
+    ) -> list[TaskTable]:
+        """Non-terminal ci_watch fix tasks — the dedupe + open-cap basis.
+
+        Optionally scoped to one repo by ``git_url``: a monorepo registers
+        several cell-projects on ONE git_url, so CI-watch dedupe must key on the
+        repo, not the project slug — otherwise a red monorepo would open one fix
+        task per cell-project. Optionally further scoped by ``workflow``: the
+        dedupe key is ``(git_url, effective workflow)`` so a multi-workflow
+        monorepo with two RED workflows gets a fix task per workflow, not one
+        collapsed task that silently leaves the second workflow un-remediated
+        (#44). The effective workflow is
+        ``COALESCE(NULLIF(ci_watch_workflow, ''), default)`` so a NULL OR
+        empty-string workflow row matches the default workflow — the engine and
+        orchestrator collapse an empty string to the default via Python
+        truthiness, and the DB dedupe must match that semantics or a
+        ''-workflow repo opens a duplicate fix task every red cycle (#148). The
+        git_url scope is matched on the normalized repo key (case / ``.git`` /
+        trailing ``/``), mirroring the orchestrator's poll-set collapse (#1267).
+        """
+        stmt = select(TaskTable).where(
+            TaskTable.source == CI_WATCH_SOURCE,
+            TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+        )
+        if git_url is not None or workflow is not None:
+            stmt = stmt.join(ProjectTable, TaskTable.project_id == ProjectTable.id)
+            if git_url is not None:
+                stmt = stmt.where(
+                    _repo_key_expr(ProjectTable.git_url) == repo_key(git_url)
+                )
+            if workflow is not None:
+                from roboco.config import settings
+
+                effective = func.coalesce(
+                    func.nullif(ProjectTable.ci_watch_workflow, ""),
+                    settings.ci_watch_default_workflow,
+                )
+                stmt = stmt.where(effective == workflow)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_open_dep_update_tasks(
+        self,
+        git_url: str | None = None,
+        *,
+        dep_update_command: str | None = None,
+    ) -> list[TaskTable]:
+        """Non-terminal dep_update tasks — the dedupe + open-cap basis.
+
+        Optionally scoped to one repo by ``git_url`` and/or one
+        ``dep_update_command``. A monorepo with two distinct commands (different
+        ecosystems / lockfiles) gets one open task per command, not one for the
+        whole repo blocking the second. The git_url scope is matched on the
+        normalized repo key (case / ``.git`` / trailing ``/``), mirroring the
+        orchestrator's poll-set collapse (#1267).
+        """
+        stmt = select(TaskTable).where(
+            TaskTable.source == DEP_UPDATE_SOURCE,
+            TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+        )
+        if git_url is not None or dep_update_command is not None:
+            stmt = stmt.join(ProjectTable, TaskTable.project_id == ProjectTable.id)
+            if git_url is not None:
+                stmt = stmt.where(
+                    _repo_key_expr(ProjectTable.git_url) == repo_key(git_url)
+                )
+            if dep_update_command is not None:
+                stmt = stmt.where(ProjectTable.dep_update_command == dep_update_command)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_open_env_sync_tasks(
+        self, git_url: str | None = None
+    ) -> list[TaskTable]:
+        """Non-terminal env_sync conflict tasks — the dedupe + open-cap basis.
+
+        Optionally scoped to one repo by ``git_url`` (matched on the normalized
+        repo key). A conflict stops the cascade at that rung, so at most one
+        open env_sync task exists per repo: while it is open the repo's cascade
+        is paused and the engine skips it until the PR resolves.
+        """
+        stmt = select(TaskTable).where(
+            TaskTable.source == ENV_SYNC_SOURCE,
+            TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+        )
+        if git_url is not None:
+            stmt = stmt.join(ProjectTable, TaskTable.project_id == ProjectTable.id)
+            stmt = stmt.where(_repo_key_expr(ProjectTable.git_url) == repo_key(git_url))
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_open_docs_sync_tasks(
+        self, version: str | None = None
+    ) -> list[TaskTable]:
+        """Non-terminal docs_sync tasks — the dedupe + open-cap basis.
+
+        Optionally scoped to one release ``version`` via the
+        ``docs_sync_release_version`` marker so a release never gets a second
+        docs-update task while the first is still open.
+        """
+        stmt = select(TaskTable).where(
+            TaskTable.source == DOCS_SYNC_SOURCE,
+            TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+        )
+        if version is not None:
+            # Filter by marker in SQL so the database applies the predicate
+            # and avoids hauling every open docs_sync row into Python.
+            # .as_string() is the generic JSON comparator; .astext is JSONB-only.
+            stmt = stmt.where(
+                TaskTable.orchestration_markers[
+                    markers.DOCS_SYNC_RELEASE_VERSION
+                ].as_string()
+                == version
+            )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_open_release_proposals(self) -> list[TaskTable]:
+        """Non-terminal release-manager proposals — the one-open-at-a-time basis.
+
+        The release manager holds at most one proposal open at a time; while one
+        is awaiting the CEO the loop originates no second. A proposal leaves this
+        set when the CEO approves (it completes) or rejects-and-cancels it.
+        """
+        result = await self.session.execute(
+            select(TaskTable).where(
+                TaskTable.source == RELEASE_MANAGER_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+        )
+        return list(result.scalars().all())
+
+    async def list_completed_release_proposals(self) -> list[TaskTable]:
+        """Published (COMPLETED) release proposals, oldest completion first.
+
+        The release certificate's release boundary: each COMPLETED proposal's
+        ``completed_at`` is the CEO-approval/publication timestamp, and a
+        proposal's stored readiness report carries its ``proposed_version``,
+        so a caller can locate a version and the previous publication before it.
+        """
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == RELEASE_MANAGER_SOURCE,
+                TaskTable.status == TaskStatus.COMPLETED,
+            )
+            .order_by(TaskTable.completed_at, TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_x_posts(self) -> list[TaskTable]:
+        """Non-terminal X post/reply proposals (both sources) — the open-cap +
+        panel-queue basis. Ordered oldest-first so the queue reads chronologically."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source.in_(X_SOURCES),
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_video_posts(self) -> list[TaskTable]:
+        """Non-terminal video tasks (authoring + held draft) — the open-cap +
+        dedup basis for VideoEngine. Ordered oldest-first so the queue reads
+        chronologically."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source.in_((VIDEO_SOURCE, *VIDEO_HELD_SOURCES)),
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_completed_video_tasks(self) -> list[TaskTable]:
+        """Completed video-authoring tasks — the render loop's scan basis.
+
+        Source=VIDEO_SOURCE only (a held video_post draft is never itself
+        rendered). composition_id/render_status live in the JSON marker, not
+        a column, so the caller filters those in Python after this query.
+        Bounded to the most recent ``video_render_scan_limit`` rows so the
+        scan doesn't re-read the growing completed-history set every pass;
+        backed by ``ix_tasks_source_status_created``.
+        """
+        from roboco.config import settings
+
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == VIDEO_SOURCE,
+                TaskTable.status == TaskStatus.COMPLETED,
+            )
+            .order_by(TaskTable.created_at.desc())
+            .limit(settings.video_render_scan_limit)
+        )
+        return list(result.scalars().all())
+
+    async def list_video_pipeline_tasks(self) -> list[TaskTable]:
+        """Every source=VIDEO_SOURCE authoring task still visible in the
+        Social page's pipeline strip: any non-terminal status, plus
+        COMPLETED tasks the render loop hasn't finished with (render_status
+        unset — pending/retrying — or terminally "failed"). A rendered
+        COMPLETED task already materialized its video_post draft and drops
+        out of view. composition_id/render_status/render_attempts live in
+        the JSON marker, not a column, so that half of the filter runs in
+        Python on this bounded scan (mirrors list_completed_video_tasks).
+        Newest-first + bounded, so a large old backlog can't crowd a
+        currently-active item out of the scanned window; the panel can
+        re-order for display.
+        """
+        from roboco.config import settings
+
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == VIDEO_SOURCE,
+                TaskTable.status != TaskStatus.CANCELLED,
+            )
+            .order_by(TaskTable.created_at.desc())
+            .limit(settings.video_render_scan_limit)
+        )
+        tasks = list(result.scalars().all())
+        return [
+            t
+            for t in tasks
+            if t.status != TaskStatus.COMPLETED
+            or (markers.get_video_draft(t) or {}).get("render_status")
+            in (None, "failed")
+        ]
+
+    async def list_open_video_post_drafts(self) -> list[TaskTable]:
+        """Non-terminal video_post held drafts only (excludes the video
+        authoring source) — the panel-queue basis for VideoPostService,
+        mirroring list_open_x_posts. Ordered oldest-first so the queue reads
+        chronologically."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == VIDEO_POST_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_x_post_history(self, *, limit: int = 50) -> list[TaskTable]:
+        """Acted-on X drafts (posted or rejected, both sources) — the panel
+        history basis. Newest-acted-first (updated_at, bumped by the
+        approve/reject status write) so the most recent decision reads
+        first; bounded by ``limit``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source.in_(X_SOURCES),
+                TaskTable.status.in_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.updated_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def list_video_post_history(self, *, limit: int = 50) -> list[TaskTable]:
+        """Acted-on video_post drafts (posted or rejected) — the panel
+        history basis, mirroring list_x_post_history. Newest-acted-first,
+        bounded by ``limit``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == VIDEO_POST_SOURCE,
+                TaskTable.status.in_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.updated_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+
+class TaskBoardProgramCycles(_Base):
+    """Each Board Program's open cycles."""
+
+    async def list_open_roadmap_cycles(self) -> list[TaskTable]:
+        """Non-terminal board-roadmap exploration tasks — the one-open-cycle
+        dedup + panel-queue basis. Includes a cycle before AND after the
+        Product Owner authors it (``propose_roadmap``); ordered oldest-first."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == ROADMAP_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_pest_control_cycles(self) -> list[TaskTable]:
+        """Non-terminal pest-control exploration tasks — the one-open-cycle
+        dedup + panel-queue basis. Includes a cycle before AND after the
+        Product Owner authors it (``propose_bug_hunt``); ordered oldest-first.
+        Mirrors ``list_open_roadmap_cycles``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == PEST_CONTROL_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_coroner_cycles(self) -> list[TaskTable]:
+        """Non-terminal Coroner postmortem-exploration tasks — the one-open-
+        autopsy-at-a-time dedup basis. Mirrors ``list_open_pest_control_cycles``;
+        unlike it there is no separate authored-vs-not split (``propose_
+        postmortem`` completes the task atomically), so this is purely the
+        dedup gate, not also a panel-queue basis."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == CORONER_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_spackle_cycles(self) -> list[TaskTable]:
+        """Non-terminal spackle exploration tasks — the one-open-cycle dedup
+        + panel-queue basis. Includes a cycle before AND after the Product
+        Owner authors it (``propose_gap_fill``); ordered oldest-first.
+        Mirrors ``list_open_pest_control_cycles``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == SPACKLE_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_mirror_cycles(self) -> list[TaskTable]:
+        """Non-terminal mirror exploration tasks — the one-open-cycle dedup
+        + panel-queue basis. Includes a cycle before AND after the Head of
+        Marketing authors it (``propose_messaging_fixes``); ordered
+        oldest-first. Mirrors ``list_open_spackle_cycles``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == MIRROR_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_dogfood_cycles(self) -> list[TaskTable]:
+        """Non-terminal dogfood exploration tasks — the one-open-cycle dedup
+        + panel-queue basis. Includes a cycle before AND after the Product
+        Owner authors it (``propose_friction_fixes``); ordered oldest-first.
+        Mirrors ``list_open_spackle_cycles``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == DOGFOOD_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_feature_explorations(self) -> list[TaskTable]:
+        """Non-terminal feature-spotlight exploration tasks — the one-open-cycle
+        dedup + propose_feature_spotlight's task lookup. Ordered oldest-first."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == X_FEATURE_EXPLORATION_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_periscope_cycles(self) -> list[TaskTable]:
+        """Non-terminal Periscope exploration tasks — the one-open-cycle dedup
+        + ``propose_market_brief``'s task lookup. Mirrors
+        ``list_open_feature_explorations``: complete-at-propose, so a task
+        found here is always pre-brief (never authored yet)."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == PERISCOPE_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_megaphone_cycles(self) -> list[TaskTable]:
+        """Non-terminal Megaphone exploration tasks — the one-open-cycle dedup
+        + ``propose_editorial_post``'s task lookup. Mirrors
+        ``list_open_periscope_cycles``: complete-at-propose, so a task found
+        here is always pre-draft (never authored yet)."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == MEGAPHONE_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_sentinel_cycles(self) -> list[TaskTable]:
+        """Non-terminal Sentinel exploration tasks — the one-open-cycle dedup
+        + ``propose_quality_report``'s task lookup. Mirrors
+        ``list_open_periscope_cycles``: complete-at-propose, so a task found
+        here is always pre-report (never authored yet)."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == SENTINEL_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_scales_cycles(self) -> list[TaskTable]:
+        """Non-terminal Scales exploration tasks — the one-open-cycle dedup +
+        panel-queue basis. Includes a cycle before AND after the Product
+        Owner authors it (``propose_rebalance``); ordered oldest-first.
+        Mirrors ``list_open_pest_control_cycles``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == SCALES_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_librarian_cycles(self) -> list[TaskTable]:
+        """Non-terminal Librarian exploration tasks — the one-open-cycle
+        dedup + ``propose_playbook_drafts``'s task lookup. Mirrors
+        ``list_open_sentinel_cycles``: complete-at-propose, so a task found
+        here is always pre-drafts (never authored yet)."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == LIBRARIAN_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_war_room_cycles(self) -> list[TaskTable]:
+        """Non-terminal War Room campaign-planning exploration tasks — the
+        one-open-campaign-at-a-time dedup basis. Mirrors
+        ``list_open_coroner_cycles``: complete-at-propose (``propose_campaign``
+        completes the task atomically), so this is purely the dedup gate, not
+        also a panel-queue basis — the materialized posts themselves live
+        under X_CAMPAIGN_SOURCE and ride the normal X post queue."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == WAR_ROOM_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_barfly_cycles(self) -> list[TaskTable]:
+        """Non-terminal Barfly exploration tasks — the one-open-cycle dedup +
+        ``propose_conversation_replies``'s task lookup. Mirrors
+        ``list_open_periscope_cycles``: complete-at-propose, so a task found
+        here is always pre-authored."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == BARFLY_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+
+class TaskBoardProgramOutputs(_Base):
+    """What the Board Programs produce: coroner postmortems, Periscope briefs,
+    Sentinel reports, Feature Spotlight and vault note drafts, and the Scales task
+    reference."""
+
+    async def list_completed_coroner_postmortems(
+        self, limit: int = 50
+    ) -> list[TaskTable]:
+        """Completed Coroner postmortem tasks, newest first — backs the
+        panel's read-only Postmortems list."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == CORONER_SOURCE,
+                TaskTable.status == TaskStatus.COMPLETED,
+            )
+            .order_by(TaskTable.updated_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def list_periscope_briefs(self, *, limit: int = 20) -> list[TaskTable]:
+        """Completed Periscope exploration tasks (each carries a ``market_
+        brief`` marker) — the panel's Market Briefs list + the roadmap
+        prompt's "latest brief" injection basis. Newest-first, bounded by
+        ``limit``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == PERISCOPE_SOURCE,
+                TaskTable.status == TaskStatus.COMPLETED,
+            )
+            .order_by(TaskTable.updated_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def list_sentinel_reports(self, *, limit: int = 20) -> list[TaskTable]:
+        """Completed Sentinel exploration tasks (each carries a
+        ``quality_report`` marker) — the panel's Quality Reports list basis.
+        Newest-first, bounded by ``limit``. Mirrors ``list_periscope_briefs``."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == SENTINEL_SOURCE,
+                TaskTable.status == TaskStatus.COMPLETED,
+            )
+            .order_by(TaskTable.updated_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def list_open_feature_spotlight_drafts(self) -> list[TaskTable]:
+        """Non-terminal MATERIALIZED spotlight drafts only (source=x_feature,
+        excludes the exploration source) — the "never stack a second draft"
+        basis for XEngine.open_feature_spotlight_exploration. Distinct from
+        list_open_x_posts' shared numeric cap: this is a one-open-draft rule
+        specific to the spotlight source, mirroring list_open_video_post_drafts'
+        narrower filter over list_open_video_posts. Ordered oldest-first."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == X_FEATURE_SOURCE,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+    async def resolve_scales_task_ref(self, ref: str) -> TaskTable | None:
+        """Resolve a Scales rebalance item's ``task_ref`` — an id8 prefix or
+        an exact task title — to a live BACKLOG/PENDING task.
+
+        Mirrors the revision-findings ledger's "by id or exact text" match
+        (``unmatched_criteria``), applied to tasks instead of acceptance
+        criteria: an id8 prefix is tried first (the ``search_tasks`` id-cast
+        idiom), then an exact title match. None when nothing live matches —
+        the caller (``propose_rebalance``) rejects the item naming the ref.
+        """
+        ref = ref.strip()
+        if not ref:
+            return None
+        live = TaskTable.status.in_([TaskStatus.BACKLOG, TaskStatus.PENDING])
+        by_id = await self.session.execute(
+            select(TaskTable)
+            .where(live, cast("Any", TaskTable.id).cast(String).ilike(f"{ref}%"))
+            .order_by(TaskTable.created_at)
+            .limit(1)
+        )
+        task = by_id.scalar_one_or_none()
+        if task is not None:
+            return task
+        by_title = await self.session.execute(
+            select(TaskTable)
+            .where(live, TaskTable.title == ref)
+            .order_by(TaskTable.created_at)
+            .limit(1)
+        )
+        return by_title.scalar_one_or_none()
+
+    async def list_open_vault_note_drafts(self) -> list[TaskTable]:
+        """Vault-note drafts still awaiting board review / CEO approval — the
+        vault-intake watcher's open-cap basis. Keys on ``team == BOARD``:
+        ``approve_and_start`` flips the team to MAIN_PM (draft leaves the cap)
+        and a cancelled/rejected draft goes terminal (leaves too), so the cap
+        counts only drafts actually pending a human decision — it can never
+        permanently brick the engine. Ordered oldest-first."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.source == VAULT_NOTE_SOURCE,
+                TaskTable.team == Team.BOARD,
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+            .order_by(TaskTable.created_at)
+        )
+        return list(result.scalars().all())
+
+
+class TaskExternalPRReviews(_Base):
+    """Inbound external pull requests: ingesting one as a review task, listing and
+    dismissing them, and the review claim and completion."""
+
+    async def external_review_task_exists(
+        self, project_id: UUID, pr_number: int, head_sha: str | None = None
+    ) -> bool:
+        """True if this REPO's external PR at this head commit is already reviewed.
+
+        De-dupe key for inbound external-PR ingestion. The scope is the **repo**
+        (``git_url``), not a single project: a monorepo registers several
+        cell-projects on one repo (the poll already collapses to one canonical
+        project per repo), and a review task may be re-pointed to a sibling
+        project — so a project-scoped check would open a second review per
+        cell-project / after a re-point. Re-review is driven by the PR's head
+        commit, recorded as an ``external_pr_head=<sha>`` marker. So:
+
+        - no review task for this PR on any project in this repo -> False;
+        - a task already covers THIS ``head_sha`` -> True (nothing changed);
+        - a legacy/markerless task exists, or ``head_sha`` is unknown -> True;
+        - tasks exist but all cover OTHER SHAs -> False (new commits — re-review).
+        """
+        scope_ids = await self._repo_sibling_project_ids(project_id)
+        result = await self.session.execute(
+            select(TaskTable.orchestration_markers).where(
+                TaskTable.project_id.in_(scope_ids),
+                TaskTable.source.in_(PR_REVIEW_SOURCES),
+                TaskTable.pr_number == pr_number,
+            )
+        )
+        marker_rows = result.scalars().all()
+        if not marker_rows:
+            return False
+        if not head_sha:
+            return True
+        for om in marker_rows:
+            stored = (om or {}).get("external_pr_head")
+            if not stored or stored == head_sha:
+                return True
+        return False
+
+    async def ingest_external_pr(
+        self,
+        *,
+        project_id: UUID,
+        pr: dict[str, Any],
+        created_by: UUID,
+        team: Team,
+        source: str = "external_pr",
+    ) -> TaskTable | None:
+        """Create one review task for a newly-seen inbound PR; ``None`` if it exists.
+
+        ``pr`` is a normalized record from ``GitService.list_open_prs`` (number,
+        url, title, head_sha). De-duped per ``(project_id, pr_number, head_sha)``
+        across both review sources — re-polling an unchanged PR is skipped, but
+        new commits (a new head SHA) open a fresh review (see
+        ``external_review_task_exists``). ``source`` is ``external_pr`` (fork /
+        untrusted) or ``internal_pr`` (an org-repo PR opened outside the agent
+        task-flow). Both are CODE-typed with ``confirmed_by_human=False``. Caller
+        commits.
+        """
+        pr_number = int(pr["number"])
+        pr_url = str(pr.get("url") or "")
+        pr_title = str(pr.get("title") or "")
+        head_sha = str(pr.get("head_sha") or "")
+        author_login = str(pr.get("user_login") or "")
+        if await self.external_review_task_exists(project_id, pr_number, head_sha):
+            return None
+        kind = "internal" if source == "internal_pr" else "external"
+        title = f"Review {kind} PR #{pr_number}: {pr_title}".strip()
+        if source == "internal_pr":
+            description = (
+                f"An internal PR #{pr_number} ({pr_url}) was opened on an org repo "
+                "outside the agent task-flow — no active task owns its branch. "
+                "Review it adversarially and post a single, complete change-request "
+                "with per-criterion findings."
+            )
+        else:
+            description = (
+                f"An external contributor opened PR #{pr_number} ({pr_url}).\n\n"
+                "Review it adversarially and post a single, complete change-request "
+                "with per-criterion findings. Do not fetch, check out, or run the "
+                "contributor's code until a human has confirmed this PR."
+            )
+        req = TaskCreateRequest(
+            title=title[:200],
+            description=description,
+            acceptance_criteria=[
+                "Exactly one complete GitHub review is posted with per-criterion "
+                "findings",
+            ],
+            team=team,
+            created_by=created_by,
+            task_type=TaskType.CODE,
+            nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.MEDIUM,
+            project_id=project_id,
+            source=source,
+            confirmed_by_human=False,
+        )
+        task = await self.create(req)
+        task.pr_number = pr_number
+        task.pr_url = pr_url
+        # Record the reviewed head commit so a later push (new SHA) re-reviews,
+        # while an unchanged PR is skipped (see external_review_task_exists).
+        if head_sha:
+            markers.set_external_pr_head(task, head_sha)
+        # Capture the contributor's login so the supersede comments can tag
+        # them (@login) without a per-comment PR fetch.
+        if author_login:
+            markers.set_external_pr_author(task, author_login)
+        await self.session.flush()
+        return task
+
+    async def _repo_sibling_project_ids(self, project_id: UUID) -> list[UUID]:
+        """Every project id sharing ``project_id``'s repo (``git_url``).
+
+        The inbound-PR poll collapses a monorepo's cell-projects to one
+        canonical project per repo, so any repo-level lookup keyed by the
+        canonical id must widen back out to the siblings — a branch/review
+        owned by a sibling cell-project is still "this repo's". Falls back to
+        ``[project_id]`` when the project is unknown or has no git_url.
+        """
+        git_url = (
+            await self.session.execute(
+                select(ProjectTable.git_url).where(ProjectTable.id == project_id)
+            )
+        ).scalar_one_or_none()
+        if not git_url:
+            return [project_id]
+        sibling_ids = (
+            (
+                await self.session.execute(
+                    select(ProjectTable.id).where(ProjectTable.git_url == git_url)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        return list(sibling_ids) or [project_id]
+
+    async def active_task_owns_branch(self, branch_name: str, project_id: UUID) -> bool:
+        """True if a non-terminal task on this REPO already owns this branch.
+
+        Lets the inbound-PR reviewer skip the org's own in-flight integration
+        PRs — those whose head branch a live task created via the agent
+        task-flow (and which therefore already pass QA + PM review) — and review
+        only org-repo PRs opened outside that flow.
+
+        Scoped to the REPO (every project sharing ``project_id``'s git_url),
+        not the single polled project: the poll collapses a monorepo's
+        cell-projects to one canonical project, so a fleet PR whose owning
+        task lives on a sibling cell-project must still count as ours.
+        Cross-REPO branch-name collisions stay excluded — a different repo's
+        task can never own this repo's branch.
+        """
+        if not branch_name:
+            return False
+        scope_ids = await self._repo_sibling_project_ids(project_id)
+        result = await self.session.execute(
+            select(TaskTable.id).where(
+                TaskTable.branch_name == branch_name,
+                TaskTable.project_id.in_(scope_ids),
+                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
+            )
+        )
+        return result.first() is not None
+
+    async def list_external_pr_reviews_awaiting_decision(self) -> list[TaskTable]:
+        """Completed external-PR reviews still awaiting the CEO's decision.
+
+        A review is awaiting decision once the reviewer has posted (status
+        COMPLETED) and the CEO has neither superseded it (supersede sets
+        ``confirmed_by_human=True``) nor dismissed it (a ``dismissed=1`` marker
+        in quick_context). This backs the panel's PR-review decision queue.
+        """
+        result = await self.session.execute(
+            select(TaskTable).where(
+                TaskTable.source.in_(PR_REVIEW_SOURCES),
+                TaskTable.status == TaskStatus.COMPLETED,
+                TaskTable.confirmed_by_human.is_(False),
+            )
+        )
+        return [t for t in result.scalars().all() if not markers.is_dismissed(t)]
+
+    async def list_external_pr_reviews(self) -> list[TaskTable]:
+        """Live external-PR reviews for the panel: in-flight PLUS awaiting-decision.
+
+        Every ``source='external_pr'`` task that is not finished-and-decided:
+        active reviews (the reviewer is still working — pending / claimed /
+        in_progress / verifying / blocked / paused) AND completed reviews the CEO
+        has neither superseded (``confirmed_by_human=True``) nor dismissed
+        (``dismissed=1`` in quick_context). Cancelled tasks are excluded.
+
+        Active reviews are surfaced on purpose: the reviewer posts its
+        change-request to the PR itself, so the panel must show that a review is
+        underway and link to that PR rather than going dark until the review
+        finishes. Each task carries its ``status`` so the panel can tell
+        "reviewing" apart from "awaiting your decision".
+        """
+        result = await self.session.execute(
+            select(TaskTable).where(
+                TaskTable.source.in_(PR_REVIEW_SOURCES),
+                TaskTable.status != TaskStatus.CANCELLED,
+                or_(
+                    TaskTable.status != TaskStatus.COMPLETED,
+                    TaskTable.confirmed_by_human.is_(False),
+                ),
+            )
+        )
+        return [t for t in result.scalars().all() if not markers.is_dismissed(t)]
+
+    async def dismiss_external_pr_review(self, task_id: UUID) -> TaskTable | None:
+        """CEO declines to act on a reviewed external PR — drop it from the queue.
+
+        Appends a ``dismissed=1`` marker to quick_context so the review leaves
+        ``list_external_pr_reviews_awaiting_decision``. Returns None if the task
+        is missing or is not an external-PR review.
+        """
+        task = await self.get(task_id)
+        if task is None or getattr(task, "source", "") not in PR_REVIEW_SOURCES:
+            return None
+        if not markers.is_dismissed(task):
+            markers.mark_dismissed(task)
+        await self.session.flush()
+        return task
+
+    async def pr_review_claim(
+        self, reviewer_agent_id: UUID, task_id: UUID
+    ) -> TaskTable | None:
+        """Claim an external-PR review task: pending -> in_progress, no plan, no branch.
+
+        The review is read-only and does no git of its own, so it must NOT route
+        through claim()/start() — those would require a plan (start() returns
+        None for a planless task) and auto-create + push a branch. Mirrors
+        qa_claim's specialized-claim pattern (the verb body owns dispatch instead
+        of the generic verb runner). The ``is_external_review`` branch-gate
+        exemption (from source='external_pr') keeps claimed->in_progress valid
+        with no branch. Returns None if the task is not PENDING (already taken).
+        """
+        task = await self.get(task_id)
+        if task is None or task.status != TaskStatus.PENDING:
+            return None
+        now = datetime.now(UTC)
+        task.assigned_to = cast("Any", reviewer_agent_id)
+        task.claimed_by = cast("Any", reviewer_agent_id)
+        task.claimed_at = now
+        # Single-claimant invariant (mirrors _qa_or_doc_claim / _apply_claim_fields):
+        # active_claimant_id is what _active_claim_violation checks for content
+        # writes (note/evidence). Without it the reviewer can claim + read the PR
+        # but every note() returns _not_active_claimant, so the journal:learning
+        # entry post_pr_review's tracing gate requires can never be recorded ->
+        # the reviewer deadlocks at post_pr_review (tracing_gap) and burns tokens
+        # into the do-server breaker. Cleared by complete_review.
+        task.active_claimant_id = cast("Any", reviewer_agent_id)
+        # Flip agent.status/current_task_id to ACTIVE/this-task (mirrors
+        # _apply_claim_fields / _qa_or_doc_claim), the external-PR-review
+        # claim chokepoint (claim_pr_review), otherwise the reviewer never
+        # shows as active in the fleet either.
+        reviewer_agent = await self.session.get(AgentTable, reviewer_agent_id)
+        self._mark_agent_active_for_claim(reviewer_agent, task.id)
+        self._validate_and_set_status(
+            task, TaskStatus.CLAIMED, "pr_reviewer", audit_agent_id=reviewer_agent_id
+        )
+        self._validate_and_set_status(
+            task,
+            TaskStatus.IN_PROGRESS,
+            "pr_reviewer",
+            audit_agent_id=reviewer_agent_id,
+        )
+        # Seed the heartbeat at claim time, same invariant as _apply_claim_fields
+        # and the QA/Doc claims. The reaper treats last_heartbeat_at IS NULL as
+        # a stale claim, and for a GROK reviewer the idle-kill watchdog bypasses
+        # the live-container skip on a NULL heartbeat: without this seed the
+        # container is killed before the reviewer can post_pr_review, churning
+        # the task back to pending on a respawn loop.
+        task.last_heartbeat_at = datetime.now(UTC)
+        await self.session.flush()
+        self.log.info("External PR review claimed", task_id=str(task_id))
+        return task
+
+    async def complete_review(
+        self, reviewer_agent_id: UUID, task_id: UUID, notes: str | None = None
+    ) -> TaskTable | None:
+        """Mark an external-PR review task complete (in_progress -> completed).
+
+        The terminal for the pr_reviewer's ``post_pr_review`` verb: the review
+        has been posted, so the review task is done. Attributed to the reviewer.
+        Mirrors ``qa_pass``'s validated-transition shape; the ``pr_review_done``
+        transition (in_progress -> completed, role pr_reviewer) is defined in the
+        lifecycle spec and is git-gate exempt (the review task has no branch).
+        """
+        task = await self.get(task_id)
+        if task is None:
+            return None
+        if task.status != TaskStatus.IN_PROGRESS:
+            return None
+        self._record_pr_review(task, summary=notes, verdict="changes_requested")
+        reviewer_id = to_python_uuid(task.claimed_by) or reviewer_agent_id
+        task.assigned_to = None
+        task.claimed_by = None
+        task.active_claimant_id = cast("Any", None)
+        # The external-PR reviewer's claim ends here — release the fleet
+        # marker (mirrors pr_review_claim's own ACTIVE-marking).
+        await self._clear_agent_current_task(reviewer_id, task_id)
+        self._validate_and_set_status(
+            task,
+            TaskStatus.COMPLETED,
+            "pr_reviewer",
+            audit_agent_id=reviewer_id,
+        )
+        await self.session.flush()
+        self.log.info("External PR review complete", task_id=str(task_id))
+        return task
+
+
+class TaskSupersede(_Base):
+    """Supersede umbrellas: the task that replaces an open pull request, and closing
+    the old one once the replacement lands."""
+
+    async def create_supersede_umbrella(
+        self, *, review_task_id: UUID, branch_name: str, created_by: UUID
+    ) -> TaskTable | None:
+        """Create the supersede coordination task for a reviewed external PR.
+
+        A ROOT planning task on the same repo (NOT parented to the review task —
+        that would burn a MAX_TASK_DEPTH level and block the cell->dev
+        decomposition), handed to Main PM to delegate the code work to a cell.
+        The contributor PR number + review-task id are carried in
+        ``quick_context`` (so close-on-land and dedup don't need a parent walk).
+        ``branch_name`` is the roboco-owned branch already cut from the
+        contributor's fork head, so the delegated code subtask builds on the
+        contributor's commits (we never push to the fork). ``confirmed_by_human``
+        is True — the CEO authorized this supersede. Returns None if the review
+        task is missing or is not an external-PR review.
+        """
+        review = await self.get(review_task_id)
+        if review is None or getattr(review, "source", "") not in PR_REVIEW_SOURCES:
+            return None
+        pr_number = review.pr_number
+        req = TaskCreateRequest(
+            title=f"Supersede external PR #{pr_number}: finish + harden it ourselves",
+            description=(
+                f"The org reviewed external PR #{pr_number} and is taking it over. "
+                f"A roboco-owned branch ('{branch_name}') has been cut from the "
+                "contributor's commits. Delegate the work to the appropriate cell "
+                "to finish + harden it to our standards on that branch, open our "
+                "own PR, and merge it; the contributor PR is closed and linked on "
+                "land. Never push to the contributor's fork."
+            ),
+            acceptance_criteria=[
+                "The contributor's PR is superseded by our own merged PR",
+                "The work meets the project's quality standards",
+            ],
+            team=Team.MAIN_PM,
+            created_by=created_by,
+            task_type=TaskType.PLANNING,
+            nature=TaskNature.TECHNICAL,
+            estimated_complexity=Complexity.MEDIUM,
+            project_id=cast("UUID", review.project_id),
+            source="external_pr_supersede",
+            confirmed_by_human=True,
+        )
+        umbrella = await self.create(req)
+        # Carry the pre-cut fork branch so the delegated code subtask cuts off
+        # the contributor's commits (via _resolve_base_branch's parent-branch
+        # rule), not the default branch. The marker links back to the review +
+        # contributor PR for dedup and close-on-land (no parent link needed).
+        # The contributor's login rides along (author=) so the supersede
+        # comments can tag them without an extra PR fetch.
+        umbrella.branch_name = branch_name
+        author = markers.get_external_pr_author(review) or ""
+        marker = f"pr={pr_number} review={review_task_id}"
+        if author:
+            marker += f" author={author}"
+        markers.set_external_pr_supersede(umbrella, marker)
+        await self.session.flush()
+        self.log.info(
+            "Supersede umbrella created",
+            task_id=str(umbrella.id),
+            review_task_id=str(review_task_id),
+            pr_number=pr_number,
+        )
+        return umbrella
+
+    async def find_supersede_umbrella(
+        self, project_id: UUID, pr_number: int
+    ) -> TaskTable | None:
+        """The existing (non-cancelled) supersede umbrella for this PR, or None.
+
+        Idempotency for the supersede trigger — a repeat CEO call must not cut a
+        second branch or spawn a second umbrella. Matches the ``quick_context``
+        marker exactly (``pr={n} review=`` won't false-match pr=50 for pr=5).
+        """
+        result = await self.session.execute(
+            select(TaskTable).where(
+                TaskTable.project_id == project_id,
+                TaskTable.source == "external_pr_supersede",
+                TaskTable.status != TaskStatus.CANCELLED,
+            )
+        )
+        needle = f"pr={pr_number} review="
+        for task in result.scalars().all():
+            if needle in supersede_marker_line(task):
+                return task
+        return None
+
+    async def supersede_umbrellas_pending_close(self) -> list[tuple[TaskTable, int]]:
+        """Landed supersede umbrellas whose contributor PR hasn't been closed yet.
+
+        A supersede umbrella reaching COMPLETED is necessary but not sufficient
+        proof that our replacement PR merged — the CEO can force-complete the
+        root over a *cancelled* code subtask, in which case the team abandoned
+        the work and the contributor's still-valid PR must NOT be retired. So we
+        additionally require a non-cancelled descendant that landed a PR (see
+        :meth:`_supersede_replacement_landed`). The ``closed=1`` token on the
+        marker line makes close-on-land idempotent (closed only once).
+
+        Returns ``(umbrella, replacement_pr_number)`` pairs so the caller can
+        link the merged replacement PR in the close comment.
+        """
+        result = await self.session.execute(
+            select(TaskTable).where(
+                TaskTable.source == "external_pr_supersede",
+                TaskTable.status == TaskStatus.COMPLETED,
+            )
+        )
+        pending: list[tuple[TaskTable, int]] = []
+        for task in result.scalars().all():
+            if "closed=1" in supersede_marker_line(task).split():
+                continue
+            replacement_pr = await self._supersede_replacement_landed(task)
+            if replacement_pr is None:
+                continue
+            pending.append((task, replacement_pr))
+        return pending
+
+    async def supersede_umbrellas_branch_pending(self) -> list[TaskTable]:
+        """Supersede umbrellas whose branch cut is still in progress or needs retry.
+
+        A ``branch_pending`` marker means the CEO's supersede action committed
+        the umbrella but the background branch cut (fetch
+        ``refs/pull/{n}/head`` + push) has not completed yet. A
+        ``branch_cut_failed`` marker on a non-BLOCKED, non-CANCELLED umbrella
+        means the CEO unblocked it after exhaustion and the sweep should
+        re-run the cut. The reconciliation sweep re-runs the cut for both so
+        an orchestrator restart does not strand the umbrella.
+        """
+        result = await self.session.execute(
+            select(TaskTable).where(
+                TaskTable.source == "external_pr_supersede",
+                TaskTable.status != TaskStatus.CANCELLED,
+            )
+        )
+        pending: list[TaskTable] = []
+        for task in result.scalars().all():
+            if markers.is_branch_pending(task) or (
+                markers.is_branch_cut_failed(task) and task.status != TaskStatus.BLOCKED
+            ):
+                pending.append(task)
+        return pending
+
+    async def _supersede_replacement_landed(self, umbrella: TaskTable) -> int | None:
+        """The replacement PR number for a landed supersede umbrella.
+
+        Prefers the umbrella's OWN ``pr_number``: the umbrella is a real
+        Main-PM coordination root and ``submit_root`` stamps its merged root
+        PR directly on it, so this is the canonical replacement PR the
+        close-on-land comment should link (previously never consulted, so
+        the comment could point at an internal cell PR instead, or find no
+        qualifying descendant and skip closing the contributor PR forever).
+        Falls back to walking the umbrella's subtree (bounded by
+        MAX_TASK_DEPTH) for a COMPLETED descendant carrying a ``pr_number``,
+        needed only when the umbrella itself has none (e.g. the CEO
+        force-completed it over a cancelled code subtask). The descendant
+        query is ordered (creation time, then id) so multiple qualifying
+        siblings resolve the same way on every call instead of depending on
+        unspecified row order.
+        """
+        if umbrella.pr_number is not None:
+            return int(umbrella.pr_number)
+        frontier: list[UUID] = [cast("UUID", umbrella.id)]
+        seen: set[UUID] = set()
+        while frontier:
+            result = await self.session.execute(
+                select(TaskTable)
+                .where(TaskTable.parent_task_id.in_(frontier))
+                .order_by(TaskTable.created_at.asc(), TaskTable.id.asc())
+            )
+            frontier = []
+            for child in result.scalars().all():
+                # Use string-literal cast('UUID', ...) to avoid a typing-only UUID
+                # import and to keep ruff/mypy happy without an inline suppression.
+                child_id = cast("UUID", child.id)
+                if child_id in seen:
+                    continue
+                seen.add(child_id)
+                if child.status == TaskStatus.COMPLETED and child.pr_number is not None:
+                    return int(child.pr_number)
+                frontier.append(child_id)
+        return None
+
+    async def mark_supersede_pr_closed(self, task_id: UUID) -> None:
+        """Record that a landed supersede's contributor PR has been closed.
+
+        Appends ``closed=1`` to the marker LINE (not the end of the whole
+        multi-writer field) so the idempotency token stays anchored to the
+        marker and survives appended CEO notes.
+        """
+        task = await self.get(task_id)
+        if task is None:
+            return
+        current = markers.get_external_pr_supersede(task) or ""
+        if "closed=1" not in current.split():
+            markers.set_external_pr_supersede(task, f"{current} closed=1".strip())
+        await self.session.flush()
+
+
 class TaskService(
     BaseService,
     TaskAgentQueries,
+    TaskBoardProgramCycles,
+    TaskBoardProgramOutputs,
+    TaskEngineListings,
+    TaskExternalPRReviews,
     TaskListQueries,
     TaskQueueQueries,
     TaskRoleLookup,
     TaskStatistics,
+    TaskSupersede,
 ):
     """
     Service for managing tasks.
@@ -3055,1132 +4211,6 @@ class TaskService(
                 error=str(exc),
             )
             return []
-
-    async def external_review_task_exists(
-        self, project_id: UUID, pr_number: int, head_sha: str | None = None
-    ) -> bool:
-        """True if this REPO's external PR at this head commit is already reviewed.
-
-        De-dupe key for inbound external-PR ingestion. The scope is the **repo**
-        (``git_url``), not a single project: a monorepo registers several
-        cell-projects on one repo (the poll already collapses to one canonical
-        project per repo), and a review task may be re-pointed to a sibling
-        project — so a project-scoped check would open a second review per
-        cell-project / after a re-point. Re-review is driven by the PR's head
-        commit, recorded as an ``external_pr_head=<sha>`` marker. So:
-
-        - no review task for this PR on any project in this repo -> False;
-        - a task already covers THIS ``head_sha`` -> True (nothing changed);
-        - a legacy/markerless task exists, or ``head_sha`` is unknown -> True;
-        - tasks exist but all cover OTHER SHAs -> False (new commits — re-review).
-        """
-        scope_ids = await self._repo_sibling_project_ids(project_id)
-        result = await self.session.execute(
-            select(TaskTable.orchestration_markers).where(
-                TaskTable.project_id.in_(scope_ids),
-                TaskTable.source.in_(PR_REVIEW_SOURCES),
-                TaskTable.pr_number == pr_number,
-            )
-        )
-        marker_rows = result.scalars().all()
-        if not marker_rows:
-            return False
-        if not head_sha:
-            return True
-        for om in marker_rows:
-            stored = (om or {}).get("external_pr_head")
-            if not stored or stored == head_sha:
-                return True
-        return False
-
-    async def ingest_external_pr(
-        self,
-        *,
-        project_id: UUID,
-        pr: dict[str, Any],
-        created_by: UUID,
-        team: Team,
-        source: str = "external_pr",
-    ) -> TaskTable | None:
-        """Create one review task for a newly-seen inbound PR; ``None`` if it exists.
-
-        ``pr`` is a normalized record from ``GitService.list_open_prs`` (number,
-        url, title, head_sha). De-duped per ``(project_id, pr_number, head_sha)``
-        across both review sources — re-polling an unchanged PR is skipped, but
-        new commits (a new head SHA) open a fresh review (see
-        ``external_review_task_exists``). ``source`` is ``external_pr`` (fork /
-        untrusted) or ``internal_pr`` (an org-repo PR opened outside the agent
-        task-flow). Both are CODE-typed with ``confirmed_by_human=False``. Caller
-        commits.
-        """
-        pr_number = int(pr["number"])
-        pr_url = str(pr.get("url") or "")
-        pr_title = str(pr.get("title") or "")
-        head_sha = str(pr.get("head_sha") or "")
-        author_login = str(pr.get("user_login") or "")
-        if await self.external_review_task_exists(project_id, pr_number, head_sha):
-            return None
-        kind = "internal" if source == "internal_pr" else "external"
-        title = f"Review {kind} PR #{pr_number}: {pr_title}".strip()
-        if source == "internal_pr":
-            description = (
-                f"An internal PR #{pr_number} ({pr_url}) was opened on an org repo "
-                "outside the agent task-flow — no active task owns its branch. "
-                "Review it adversarially and post a single, complete change-request "
-                "with per-criterion findings."
-            )
-        else:
-            description = (
-                f"An external contributor opened PR #{pr_number} ({pr_url}).\n\n"
-                "Review it adversarially and post a single, complete change-request "
-                "with per-criterion findings. Do not fetch, check out, or run the "
-                "contributor's code until a human has confirmed this PR."
-            )
-        req = TaskCreateRequest(
-            title=title[:200],
-            description=description,
-            acceptance_criteria=[
-                "Exactly one complete GitHub review is posted with per-criterion "
-                "findings",
-            ],
-            team=team,
-            created_by=created_by,
-            task_type=TaskType.CODE,
-            nature=TaskNature.TECHNICAL,
-            estimated_complexity=Complexity.MEDIUM,
-            project_id=project_id,
-            source=source,
-            confirmed_by_human=False,
-        )
-        task = await self.create(req)
-        task.pr_number = pr_number
-        task.pr_url = pr_url
-        # Record the reviewed head commit so a later push (new SHA) re-reviews,
-        # while an unchanged PR is skipped (see external_review_task_exists).
-        if head_sha:
-            markers.set_external_pr_head(task, head_sha)
-        # Capture the contributor's login so the supersede comments can tag
-        # them (@login) without a per-comment PR fetch.
-        if author_login:
-            markers.set_external_pr_author(task, author_login)
-        await self.session.flush()
-        return task
-
-    async def _repo_sibling_project_ids(self, project_id: UUID) -> list[UUID]:
-        """Every project id sharing ``project_id``'s repo (``git_url``).
-
-        The inbound-PR poll collapses a monorepo's cell-projects to one
-        canonical project per repo, so any repo-level lookup keyed by the
-        canonical id must widen back out to the siblings — a branch/review
-        owned by a sibling cell-project is still "this repo's". Falls back to
-        ``[project_id]`` when the project is unknown or has no git_url.
-        """
-        git_url = (
-            await self.session.execute(
-                select(ProjectTable.git_url).where(ProjectTable.id == project_id)
-            )
-        ).scalar_one_or_none()
-        if not git_url:
-            return [project_id]
-        sibling_ids = (
-            (
-                await self.session.execute(
-                    select(ProjectTable.id).where(ProjectTable.git_url == git_url)
-                )
-            )
-            .scalars()
-            .all()
-        )
-        return list(sibling_ids) or [project_id]
-
-    async def active_task_owns_branch(self, branch_name: str, project_id: UUID) -> bool:
-        """True if a non-terminal task on this REPO already owns this branch.
-
-        Lets the inbound-PR reviewer skip the org's own in-flight integration
-        PRs — those whose head branch a live task created via the agent
-        task-flow (and which therefore already pass QA + PM review) — and review
-        only org-repo PRs opened outside that flow.
-
-        Scoped to the REPO (every project sharing ``project_id``'s git_url),
-        not the single polled project: the poll collapses a monorepo's
-        cell-projects to one canonical project, so a fleet PR whose owning
-        task lives on a sibling cell-project must still count as ours.
-        Cross-REPO branch-name collisions stay excluded — a different repo's
-        task can never own this repo's branch.
-        """
-        if not branch_name:
-            return False
-        scope_ids = await self._repo_sibling_project_ids(project_id)
-        result = await self.session.execute(
-            select(TaskTable.id).where(
-                TaskTable.branch_name == branch_name,
-                TaskTable.project_id.in_(scope_ids),
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-        )
-        return result.first() is not None
-
-    async def list_open_self_heal_tasks(self) -> list[TaskTable]:
-        """Non-terminal self-heal fix tasks — the dedupe + open-cap basis.
-
-        A self-heal task is "open" until it reaches a terminal state. While one
-        exists for a regression's fingerprint the loop must not originate a
-        second, and the rolling open-task cap counts these.
-        """
-        result = await self.session.execute(
-            select(TaskTable).where(
-                TaskTable.source == SELF_HEAL_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-        )
-        return list(result.scalars().all())
-
-    async def list_open_ci_watch_tasks(
-        self, git_url: str | None = None, workflow: str | None = None
-    ) -> list[TaskTable]:
-        """Non-terminal ci_watch fix tasks — the dedupe + open-cap basis.
-
-        Optionally scoped to one repo by ``git_url``: a monorepo registers
-        several cell-projects on ONE git_url, so CI-watch dedupe must key on the
-        repo, not the project slug — otherwise a red monorepo would open one fix
-        task per cell-project. Optionally further scoped by ``workflow``: the
-        dedupe key is ``(git_url, effective workflow)`` so a multi-workflow
-        monorepo with two RED workflows gets a fix task per workflow, not one
-        collapsed task that silently leaves the second workflow un-remediated
-        (#44). The effective workflow is
-        ``COALESCE(NULLIF(ci_watch_workflow, ''), default)`` so a NULL OR
-        empty-string workflow row matches the default workflow — the engine and
-        orchestrator collapse an empty string to the default via Python
-        truthiness, and the DB dedupe must match that semantics or a
-        ''-workflow repo opens a duplicate fix task every red cycle (#148). The
-        git_url scope is matched on the normalized repo key (case / ``.git`` /
-        trailing ``/``), mirroring the orchestrator's poll-set collapse (#1267).
-        """
-        stmt = select(TaskTable).where(
-            TaskTable.source == CI_WATCH_SOURCE,
-            TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-        )
-        if git_url is not None or workflow is not None:
-            stmt = stmt.join(ProjectTable, TaskTable.project_id == ProjectTable.id)
-            if git_url is not None:
-                stmt = stmt.where(
-                    _repo_key_expr(ProjectTable.git_url) == repo_key(git_url)
-                )
-            if workflow is not None:
-                from roboco.config import settings
-
-                effective = func.coalesce(
-                    func.nullif(ProjectTable.ci_watch_workflow, ""),
-                    settings.ci_watch_default_workflow,
-                )
-                stmt = stmt.where(effective == workflow)
-        result = await self.session.execute(stmt)
-        return list(result.scalars().all())
-
-    async def list_open_dep_update_tasks(
-        self,
-        git_url: str | None = None,
-        *,
-        dep_update_command: str | None = None,
-    ) -> list[TaskTable]:
-        """Non-terminal dep_update tasks — the dedupe + open-cap basis.
-
-        Optionally scoped to one repo by ``git_url`` and/or one
-        ``dep_update_command``. A monorepo with two distinct commands (different
-        ecosystems / lockfiles) gets one open task per command, not one for the
-        whole repo blocking the second. The git_url scope is matched on the
-        normalized repo key (case / ``.git`` / trailing ``/``), mirroring the
-        orchestrator's poll-set collapse (#1267).
-        """
-        stmt = select(TaskTable).where(
-            TaskTable.source == DEP_UPDATE_SOURCE,
-            TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-        )
-        if git_url is not None or dep_update_command is not None:
-            stmt = stmt.join(ProjectTable, TaskTable.project_id == ProjectTable.id)
-            if git_url is not None:
-                stmt = stmt.where(
-                    _repo_key_expr(ProjectTable.git_url) == repo_key(git_url)
-                )
-            if dep_update_command is not None:
-                stmt = stmt.where(ProjectTable.dep_update_command == dep_update_command)
-        result = await self.session.execute(stmt)
-        return list(result.scalars().all())
-
-    async def list_open_env_sync_tasks(
-        self, git_url: str | None = None
-    ) -> list[TaskTable]:
-        """Non-terminal env_sync conflict tasks — the dedupe + open-cap basis.
-
-        Optionally scoped to one repo by ``git_url`` (matched on the normalized
-        repo key). A conflict stops the cascade at that rung, so at most one
-        open env_sync task exists per repo: while it is open the repo's cascade
-        is paused and the engine skips it until the PR resolves.
-        """
-        stmt = select(TaskTable).where(
-            TaskTable.source == ENV_SYNC_SOURCE,
-            TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-        )
-        if git_url is not None:
-            stmt = stmt.join(ProjectTable, TaskTable.project_id == ProjectTable.id)
-            stmt = stmt.where(_repo_key_expr(ProjectTable.git_url) == repo_key(git_url))
-        result = await self.session.execute(stmt)
-        return list(result.scalars().all())
-
-    async def list_open_docs_sync_tasks(
-        self, version: str | None = None
-    ) -> list[TaskTable]:
-        """Non-terminal docs_sync tasks — the dedupe + open-cap basis.
-
-        Optionally scoped to one release ``version`` via the
-        ``docs_sync_release_version`` marker so a release never gets a second
-        docs-update task while the first is still open.
-        """
-        stmt = select(TaskTable).where(
-            TaskTable.source == DOCS_SYNC_SOURCE,
-            TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-        )
-        if version is not None:
-            # Filter by marker in SQL so the database applies the predicate
-            # and avoids hauling every open docs_sync row into Python.
-            # .as_string() is the generic JSON comparator; .astext is JSONB-only.
-            stmt = stmt.where(
-                TaskTable.orchestration_markers[
-                    markers.DOCS_SYNC_RELEASE_VERSION
-                ].as_string()
-                == version
-            )
-        result = await self.session.execute(stmt)
-        return list(result.scalars().all())
-
-    async def list_open_release_proposals(self) -> list[TaskTable]:
-        """Non-terminal release-manager proposals — the one-open-at-a-time basis.
-
-        The release manager holds at most one proposal open at a time; while one
-        is awaiting the CEO the loop originates no second. A proposal leaves this
-        set when the CEO approves (it completes) or rejects-and-cancels it.
-        """
-        result = await self.session.execute(
-            select(TaskTable).where(
-                TaskTable.source == RELEASE_MANAGER_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-        )
-        return list(result.scalars().all())
-
-    async def list_completed_release_proposals(self) -> list[TaskTable]:
-        """Published (COMPLETED) release proposals, oldest completion first.
-
-        The release certificate's release boundary: each COMPLETED proposal's
-        ``completed_at`` is the CEO-approval/publication timestamp, and a
-        proposal's stored readiness report carries its ``proposed_version``,
-        so a caller can locate a version and the previous publication before it.
-        """
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == RELEASE_MANAGER_SOURCE,
-                TaskTable.status == TaskStatus.COMPLETED,
-            )
-            .order_by(TaskTable.completed_at, TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_open_x_posts(self) -> list[TaskTable]:
-        """Non-terminal X post/reply proposals (both sources) — the open-cap +
-        panel-queue basis. Ordered oldest-first so the queue reads chronologically."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source.in_(X_SOURCES),
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_open_video_posts(self) -> list[TaskTable]:
-        """Non-terminal video tasks (authoring + held draft) — the open-cap +
-        dedup basis for VideoEngine. Ordered oldest-first so the queue reads
-        chronologically."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source.in_((VIDEO_SOURCE, *VIDEO_HELD_SOURCES)),
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_completed_video_tasks(self) -> list[TaskTable]:
-        """Completed video-authoring tasks — the render loop's scan basis.
-
-        Source=VIDEO_SOURCE only (a held video_post draft is never itself
-        rendered). composition_id/render_status live in the JSON marker, not
-        a column, so the caller filters those in Python after this query.
-        Bounded to the most recent ``video_render_scan_limit`` rows so the
-        scan doesn't re-read the growing completed-history set every pass;
-        backed by ``ix_tasks_source_status_created``.
-        """
-        from roboco.config import settings
-
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == VIDEO_SOURCE,
-                TaskTable.status == TaskStatus.COMPLETED,
-            )
-            .order_by(TaskTable.created_at.desc())
-            .limit(settings.video_render_scan_limit)
-        )
-        return list(result.scalars().all())
-
-    async def list_video_pipeline_tasks(self) -> list[TaskTable]:
-        """Every source=VIDEO_SOURCE authoring task still visible in the
-        Social page's pipeline strip: any non-terminal status, plus
-        COMPLETED tasks the render loop hasn't finished with (render_status
-        unset — pending/retrying — or terminally "failed"). A rendered
-        COMPLETED task already materialized its video_post draft and drops
-        out of view. composition_id/render_status/render_attempts live in
-        the JSON marker, not a column, so that half of the filter runs in
-        Python on this bounded scan (mirrors list_completed_video_tasks).
-        Newest-first + bounded, so a large old backlog can't crowd a
-        currently-active item out of the scanned window; the panel can
-        re-order for display.
-        """
-        from roboco.config import settings
-
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == VIDEO_SOURCE,
-                TaskTable.status != TaskStatus.CANCELLED,
-            )
-            .order_by(TaskTable.created_at.desc())
-            .limit(settings.video_render_scan_limit)
-        )
-        tasks = list(result.scalars().all())
-        return [
-            t
-            for t in tasks
-            if t.status != TaskStatus.COMPLETED
-            or (markers.get_video_draft(t) or {}).get("render_status")
-            in (None, "failed")
-        ]
-
-    async def list_open_video_post_drafts(self) -> list[TaskTable]:
-        """Non-terminal video_post held drafts only (excludes the video
-        authoring source) — the panel-queue basis for VideoPostService,
-        mirroring list_open_x_posts. Ordered oldest-first so the queue reads
-        chronologically."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == VIDEO_POST_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_x_post_history(self, *, limit: int = 50) -> list[TaskTable]:
-        """Acted-on X drafts (posted or rejected, both sources) — the panel
-        history basis. Newest-acted-first (updated_at, bumped by the
-        approve/reject status write) so the most recent decision reads
-        first; bounded by ``limit``."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source.in_(X_SOURCES),
-                TaskTable.status.in_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.updated_at.desc())
-            .limit(limit)
-        )
-        return list(result.scalars().all())
-
-    async def list_video_post_history(self, *, limit: int = 50) -> list[TaskTable]:
-        """Acted-on video_post drafts (posted or rejected) — the panel
-        history basis, mirroring list_x_post_history. Newest-acted-first,
-        bounded by ``limit``."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == VIDEO_POST_SOURCE,
-                TaskTable.status.in_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.updated_at.desc())
-            .limit(limit)
-        )
-        return list(result.scalars().all())
-
-    async def list_open_roadmap_cycles(self) -> list[TaskTable]:
-        """Non-terminal board-roadmap exploration tasks — the one-open-cycle
-        dedup + panel-queue basis. Includes a cycle before AND after the
-        Product Owner authors it (``propose_roadmap``); ordered oldest-first."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == ROADMAP_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_open_pest_control_cycles(self) -> list[TaskTable]:
-        """Non-terminal pest-control exploration tasks — the one-open-cycle
-        dedup + panel-queue basis. Includes a cycle before AND after the
-        Product Owner authors it (``propose_bug_hunt``); ordered oldest-first.
-        Mirrors ``list_open_roadmap_cycles``."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == PEST_CONTROL_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_open_coroner_cycles(self) -> list[TaskTable]:
-        """Non-terminal Coroner postmortem-exploration tasks — the one-open-
-        autopsy-at-a-time dedup basis. Mirrors ``list_open_pest_control_cycles``;
-        unlike it there is no separate authored-vs-not split (``propose_
-        postmortem`` completes the task atomically), so this is purely the
-        dedup gate, not also a panel-queue basis."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == CORONER_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_open_spackle_cycles(self) -> list[TaskTable]:
-        """Non-terminal spackle exploration tasks — the one-open-cycle dedup
-        + panel-queue basis. Includes a cycle before AND after the Product
-        Owner authors it (``propose_gap_fill``); ordered oldest-first.
-        Mirrors ``list_open_pest_control_cycles``."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == SPACKLE_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_open_mirror_cycles(self) -> list[TaskTable]:
-        """Non-terminal mirror exploration tasks — the one-open-cycle dedup
-        + panel-queue basis. Includes a cycle before AND after the Head of
-        Marketing authors it (``propose_messaging_fixes``); ordered
-        oldest-first. Mirrors ``list_open_spackle_cycles``."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == MIRROR_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_open_dogfood_cycles(self) -> list[TaskTable]:
-        """Non-terminal dogfood exploration tasks — the one-open-cycle dedup
-        + panel-queue basis. Includes a cycle before AND after the Product
-        Owner authors it (``propose_friction_fixes``); ordered oldest-first.
-        Mirrors ``list_open_spackle_cycles``."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == DOGFOOD_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_completed_coroner_postmortems(
-        self, limit: int = 50
-    ) -> list[TaskTable]:
-        """Completed Coroner postmortem tasks, newest first — backs the
-        panel's read-only Postmortems list."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == CORONER_SOURCE,
-                TaskTable.status == TaskStatus.COMPLETED,
-            )
-            .order_by(TaskTable.updated_at.desc())
-            .limit(limit)
-        )
-        return list(result.scalars().all())
-
-    async def list_open_feature_explorations(self) -> list[TaskTable]:
-        """Non-terminal feature-spotlight exploration tasks — the one-open-cycle
-        dedup + propose_feature_spotlight's task lookup. Ordered oldest-first."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == X_FEATURE_EXPLORATION_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_open_periscope_cycles(self) -> list[TaskTable]:
-        """Non-terminal Periscope exploration tasks — the one-open-cycle dedup
-        + ``propose_market_brief``'s task lookup. Mirrors
-        ``list_open_feature_explorations``: complete-at-propose, so a task
-        found here is always pre-brief (never authored yet)."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == PERISCOPE_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_periscope_briefs(self, *, limit: int = 20) -> list[TaskTable]:
-        """Completed Periscope exploration tasks (each carries a ``market_
-        brief`` marker) — the panel's Market Briefs list + the roadmap
-        prompt's "latest brief" injection basis. Newest-first, bounded by
-        ``limit``."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == PERISCOPE_SOURCE,
-                TaskTable.status == TaskStatus.COMPLETED,
-            )
-            .order_by(TaskTable.updated_at.desc())
-            .limit(limit)
-        )
-        return list(result.scalars().all())
-
-    async def list_open_megaphone_cycles(self) -> list[TaskTable]:
-        """Non-terminal Megaphone exploration tasks — the one-open-cycle dedup
-        + ``propose_editorial_post``'s task lookup. Mirrors
-        ``list_open_periscope_cycles``: complete-at-propose, so a task found
-        here is always pre-draft (never authored yet)."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == MEGAPHONE_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_open_sentinel_cycles(self) -> list[TaskTable]:
-        """Non-terminal Sentinel exploration tasks — the one-open-cycle dedup
-        + ``propose_quality_report``'s task lookup. Mirrors
-        ``list_open_periscope_cycles``: complete-at-propose, so a task found
-        here is always pre-report (never authored yet)."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == SENTINEL_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_sentinel_reports(self, *, limit: int = 20) -> list[TaskTable]:
-        """Completed Sentinel exploration tasks (each carries a
-        ``quality_report`` marker) — the panel's Quality Reports list basis.
-        Newest-first, bounded by ``limit``. Mirrors ``list_periscope_briefs``."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == SENTINEL_SOURCE,
-                TaskTable.status == TaskStatus.COMPLETED,
-            )
-            .order_by(TaskTable.updated_at.desc())
-            .limit(limit)
-        )
-        return list(result.scalars().all())
-
-    async def list_open_feature_spotlight_drafts(self) -> list[TaskTable]:
-        """Non-terminal MATERIALIZED spotlight drafts only (source=x_feature,
-        excludes the exploration source) — the "never stack a second draft"
-        basis for XEngine.open_feature_spotlight_exploration. Distinct from
-        list_open_x_posts' shared numeric cap: this is a one-open-draft rule
-        specific to the spotlight source, mirroring list_open_video_post_drafts'
-        narrower filter over list_open_video_posts. Ordered oldest-first."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == X_FEATURE_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_open_scales_cycles(self) -> list[TaskTable]:
-        """Non-terminal Scales exploration tasks — the one-open-cycle dedup +
-        panel-queue basis. Includes a cycle before AND after the Product
-        Owner authors it (``propose_rebalance``); ordered oldest-first.
-        Mirrors ``list_open_pest_control_cycles``."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == SCALES_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_open_librarian_cycles(self) -> list[TaskTable]:
-        """Non-terminal Librarian exploration tasks — the one-open-cycle
-        dedup + ``propose_playbook_drafts``'s task lookup. Mirrors
-        ``list_open_sentinel_cycles``: complete-at-propose, so a task found
-        here is always pre-drafts (never authored yet)."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == LIBRARIAN_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_open_war_room_cycles(self) -> list[TaskTable]:
-        """Non-terminal War Room campaign-planning exploration tasks — the
-        one-open-campaign-at-a-time dedup basis. Mirrors
-        ``list_open_coroner_cycles``: complete-at-propose (``propose_campaign``
-        completes the task atomically), so this is purely the dedup gate, not
-        also a panel-queue basis — the materialized posts themselves live
-        under X_CAMPAIGN_SOURCE and ride the normal X post queue."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == WAR_ROOM_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_open_barfly_cycles(self) -> list[TaskTable]:
-        """Non-terminal Barfly exploration tasks — the one-open-cycle dedup +
-        ``propose_conversation_replies``'s task lookup. Mirrors
-        ``list_open_periscope_cycles``: complete-at-propose, so a task found
-        here is always pre-authored."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == BARFLY_SOURCE,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def resolve_scales_task_ref(self, ref: str) -> TaskTable | None:
-        """Resolve a Scales rebalance item's ``task_ref`` — an id8 prefix or
-        an exact task title — to a live BACKLOG/PENDING task.
-
-        Mirrors the revision-findings ledger's "by id or exact text" match
-        (``unmatched_criteria``), applied to tasks instead of acceptance
-        criteria: an id8 prefix is tried first (the ``search_tasks`` id-cast
-        idiom), then an exact title match. None when nothing live matches —
-        the caller (``propose_rebalance``) rejects the item naming the ref.
-        """
-        ref = ref.strip()
-        if not ref:
-            return None
-        live = TaskTable.status.in_([TaskStatus.BACKLOG, TaskStatus.PENDING])
-        by_id = await self.session.execute(
-            select(TaskTable)
-            .where(live, cast("Any", TaskTable.id).cast(String).ilike(f"{ref}%"))
-            .order_by(TaskTable.created_at)
-            .limit(1)
-        )
-        task = by_id.scalar_one_or_none()
-        if task is not None:
-            return task
-        by_title = await self.session.execute(
-            select(TaskTable)
-            .where(live, TaskTable.title == ref)
-            .order_by(TaskTable.created_at)
-            .limit(1)
-        )
-        return by_title.scalar_one_or_none()
-
-    async def list_open_vault_note_drafts(self) -> list[TaskTable]:
-        """Vault-note drafts still awaiting board review / CEO approval — the
-        vault-intake watcher's open-cap basis. Keys on ``team == BOARD``:
-        ``approve_and_start`` flips the team to MAIN_PM (draft leaves the cap)
-        and a cancelled/rejected draft goes terminal (leaves too), so the cap
-        counts only drafts actually pending a human decision — it can never
-        permanently brick the engine. Ordered oldest-first."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.source == VAULT_NOTE_SOURCE,
-                TaskTable.team == Team.BOARD,
-                TaskTable.status.notin_([TaskStatus.COMPLETED, TaskStatus.CANCELLED]),
-            )
-            .order_by(TaskTable.created_at)
-        )
-        return list(result.scalars().all())
-
-    async def list_external_pr_reviews_awaiting_decision(self) -> list[TaskTable]:
-        """Completed external-PR reviews still awaiting the CEO's decision.
-
-        A review is awaiting decision once the reviewer has posted (status
-        COMPLETED) and the CEO has neither superseded it (supersede sets
-        ``confirmed_by_human=True``) nor dismissed it (a ``dismissed=1`` marker
-        in quick_context). This backs the panel's PR-review decision queue.
-        """
-        result = await self.session.execute(
-            select(TaskTable).where(
-                TaskTable.source.in_(PR_REVIEW_SOURCES),
-                TaskTable.status == TaskStatus.COMPLETED,
-                TaskTable.confirmed_by_human.is_(False),
-            )
-        )
-        return [t for t in result.scalars().all() if not markers.is_dismissed(t)]
-
-    async def list_external_pr_reviews(self) -> list[TaskTable]:
-        """Live external-PR reviews for the panel: in-flight PLUS awaiting-decision.
-
-        Every ``source='external_pr'`` task that is not finished-and-decided:
-        active reviews (the reviewer is still working — pending / claimed /
-        in_progress / verifying / blocked / paused) AND completed reviews the CEO
-        has neither superseded (``confirmed_by_human=True``) nor dismissed
-        (``dismissed=1`` in quick_context). Cancelled tasks are excluded.
-
-        Active reviews are surfaced on purpose: the reviewer posts its
-        change-request to the PR itself, so the panel must show that a review is
-        underway and link to that PR rather than going dark until the review
-        finishes. Each task carries its ``status`` so the panel can tell
-        "reviewing" apart from "awaiting your decision".
-        """
-        result = await self.session.execute(
-            select(TaskTable).where(
-                TaskTable.source.in_(PR_REVIEW_SOURCES),
-                TaskTable.status != TaskStatus.CANCELLED,
-                or_(
-                    TaskTable.status != TaskStatus.COMPLETED,
-                    TaskTable.confirmed_by_human.is_(False),
-                ),
-            )
-        )
-        return [t for t in result.scalars().all() if not markers.is_dismissed(t)]
-
-    async def dismiss_external_pr_review(self, task_id: UUID) -> TaskTable | None:
-        """CEO declines to act on a reviewed external PR — drop it from the queue.
-
-        Appends a ``dismissed=1`` marker to quick_context so the review leaves
-        ``list_external_pr_reviews_awaiting_decision``. Returns None if the task
-        is missing or is not an external-PR review.
-        """
-        task = await self.get(task_id)
-        if task is None or getattr(task, "source", "") not in PR_REVIEW_SOURCES:
-            return None
-        if not markers.is_dismissed(task):
-            markers.mark_dismissed(task)
-        await self.session.flush()
-        return task
-
-    async def pr_review_claim(
-        self, reviewer_agent_id: UUID, task_id: UUID
-    ) -> TaskTable | None:
-        """Claim an external-PR review task: pending -> in_progress, no plan, no branch.
-
-        The review is read-only and does no git of its own, so it must NOT route
-        through claim()/start() — those would require a plan (start() returns
-        None for a planless task) and auto-create + push a branch. Mirrors
-        qa_claim's specialized-claim pattern (the verb body owns dispatch instead
-        of the generic verb runner). The ``is_external_review`` branch-gate
-        exemption (from source='external_pr') keeps claimed->in_progress valid
-        with no branch. Returns None if the task is not PENDING (already taken).
-        """
-        task = await self.get(task_id)
-        if task is None or task.status != TaskStatus.PENDING:
-            return None
-        now = datetime.now(UTC)
-        task.assigned_to = cast("Any", reviewer_agent_id)
-        task.claimed_by = cast("Any", reviewer_agent_id)
-        task.claimed_at = now
-        # Single-claimant invariant (mirrors _qa_or_doc_claim / _apply_claim_fields):
-        # active_claimant_id is what _active_claim_violation checks for content
-        # writes (note/evidence). Without it the reviewer can claim + read the PR
-        # but every note() returns _not_active_claimant, so the journal:learning
-        # entry post_pr_review's tracing gate requires can never be recorded ->
-        # the reviewer deadlocks at post_pr_review (tracing_gap) and burns tokens
-        # into the do-server breaker. Cleared by complete_review.
-        task.active_claimant_id = cast("Any", reviewer_agent_id)
-        # Flip agent.status/current_task_id to ACTIVE/this-task (mirrors
-        # _apply_claim_fields / _qa_or_doc_claim), the external-PR-review
-        # claim chokepoint (claim_pr_review), otherwise the reviewer never
-        # shows as active in the fleet either.
-        reviewer_agent = await self.session.get(AgentTable, reviewer_agent_id)
-        self._mark_agent_active_for_claim(reviewer_agent, task.id)
-        self._validate_and_set_status(
-            task, TaskStatus.CLAIMED, "pr_reviewer", audit_agent_id=reviewer_agent_id
-        )
-        self._validate_and_set_status(
-            task,
-            TaskStatus.IN_PROGRESS,
-            "pr_reviewer",
-            audit_agent_id=reviewer_agent_id,
-        )
-        # Seed the heartbeat at claim time, same invariant as _apply_claim_fields
-        # and the QA/Doc claims. The reaper treats last_heartbeat_at IS NULL as
-        # a stale claim, and for a GROK reviewer the idle-kill watchdog bypasses
-        # the live-container skip on a NULL heartbeat: without this seed the
-        # container is killed before the reviewer can post_pr_review, churning
-        # the task back to pending on a respawn loop.
-        task.last_heartbeat_at = datetime.now(UTC)
-        await self.session.flush()
-        self.log.info("External PR review claimed", task_id=str(task_id))
-        return task
-
-    async def complete_review(
-        self, reviewer_agent_id: UUID, task_id: UUID, notes: str | None = None
-    ) -> TaskTable | None:
-        """Mark an external-PR review task complete (in_progress -> completed).
-
-        The terminal for the pr_reviewer's ``post_pr_review`` verb: the review
-        has been posted, so the review task is done. Attributed to the reviewer.
-        Mirrors ``qa_pass``'s validated-transition shape; the ``pr_review_done``
-        transition (in_progress -> completed, role pr_reviewer) is defined in the
-        lifecycle spec and is git-gate exempt (the review task has no branch).
-        """
-        task = await self.get(task_id)
-        if task is None:
-            return None
-        if task.status != TaskStatus.IN_PROGRESS:
-            return None
-        self._record_pr_review(task, summary=notes, verdict="changes_requested")
-        reviewer_id = to_python_uuid(task.claimed_by) or reviewer_agent_id
-        task.assigned_to = None
-        task.claimed_by = None
-        task.active_claimant_id = cast("Any", None)
-        # The external-PR reviewer's claim ends here — release the fleet
-        # marker (mirrors pr_review_claim's own ACTIVE-marking).
-        await self._clear_agent_current_task(reviewer_id, task_id)
-        self._validate_and_set_status(
-            task,
-            TaskStatus.COMPLETED,
-            "pr_reviewer",
-            audit_agent_id=reviewer_id,
-        )
-        await self.session.flush()
-        self.log.info("External PR review complete", task_id=str(task_id))
-        return task
-
-    async def create_supersede_umbrella(
-        self, *, review_task_id: UUID, branch_name: str, created_by: UUID
-    ) -> TaskTable | None:
-        """Create the supersede coordination task for a reviewed external PR.
-
-        A ROOT planning task on the same repo (NOT parented to the review task —
-        that would burn a MAX_TASK_DEPTH level and block the cell->dev
-        decomposition), handed to Main PM to delegate the code work to a cell.
-        The contributor PR number + review-task id are carried in
-        ``quick_context`` (so close-on-land and dedup don't need a parent walk).
-        ``branch_name`` is the roboco-owned branch already cut from the
-        contributor's fork head, so the delegated code subtask builds on the
-        contributor's commits (we never push to the fork). ``confirmed_by_human``
-        is True — the CEO authorized this supersede. Returns None if the review
-        task is missing or is not an external-PR review.
-        """
-        review = await self.get(review_task_id)
-        if review is None or getattr(review, "source", "") not in PR_REVIEW_SOURCES:
-            return None
-        pr_number = review.pr_number
-        req = TaskCreateRequest(
-            title=f"Supersede external PR #{pr_number}: finish + harden it ourselves",
-            description=(
-                f"The org reviewed external PR #{pr_number} and is taking it over. "
-                f"A roboco-owned branch ('{branch_name}') has been cut from the "
-                "contributor's commits. Delegate the work to the appropriate cell "
-                "to finish + harden it to our standards on that branch, open our "
-                "own PR, and merge it; the contributor PR is closed and linked on "
-                "land. Never push to the contributor's fork."
-            ),
-            acceptance_criteria=[
-                "The contributor's PR is superseded by our own merged PR",
-                "The work meets the project's quality standards",
-            ],
-            team=Team.MAIN_PM,
-            created_by=created_by,
-            task_type=TaskType.PLANNING,
-            nature=TaskNature.TECHNICAL,
-            estimated_complexity=Complexity.MEDIUM,
-            project_id=cast("UUID", review.project_id),
-            source="external_pr_supersede",
-            confirmed_by_human=True,
-        )
-        umbrella = await self.create(req)
-        # Carry the pre-cut fork branch so the delegated code subtask cuts off
-        # the contributor's commits (via _resolve_base_branch's parent-branch
-        # rule), not the default branch. The marker links back to the review +
-        # contributor PR for dedup and close-on-land (no parent link needed).
-        # The contributor's login rides along (author=) so the supersede
-        # comments can tag them without an extra PR fetch.
-        umbrella.branch_name = branch_name
-        author = markers.get_external_pr_author(review) or ""
-        marker = f"pr={pr_number} review={review_task_id}"
-        if author:
-            marker += f" author={author}"
-        markers.set_external_pr_supersede(umbrella, marker)
-        await self.session.flush()
-        self.log.info(
-            "Supersede umbrella created",
-            task_id=str(umbrella.id),
-            review_task_id=str(review_task_id),
-            pr_number=pr_number,
-        )
-        return umbrella
-
-    async def find_supersede_umbrella(
-        self, project_id: UUID, pr_number: int
-    ) -> TaskTable | None:
-        """The existing (non-cancelled) supersede umbrella for this PR, or None.
-
-        Idempotency for the supersede trigger — a repeat CEO call must not cut a
-        second branch or spawn a second umbrella. Matches the ``quick_context``
-        marker exactly (``pr={n} review=`` won't false-match pr=50 for pr=5).
-        """
-        result = await self.session.execute(
-            select(TaskTable).where(
-                TaskTable.project_id == project_id,
-                TaskTable.source == "external_pr_supersede",
-                TaskTable.status != TaskStatus.CANCELLED,
-            )
-        )
-        needle = f"pr={pr_number} review="
-        for task in result.scalars().all():
-            if needle in supersede_marker_line(task):
-                return task
-        return None
-
-    async def supersede_umbrellas_pending_close(self) -> list[tuple[TaskTable, int]]:
-        """Landed supersede umbrellas whose contributor PR hasn't been closed yet.
-
-        A supersede umbrella reaching COMPLETED is necessary but not sufficient
-        proof that our replacement PR merged — the CEO can force-complete the
-        root over a *cancelled* code subtask, in which case the team abandoned
-        the work and the contributor's still-valid PR must NOT be retired. So we
-        additionally require a non-cancelled descendant that landed a PR (see
-        :meth:`_supersede_replacement_landed`). The ``closed=1`` token on the
-        marker line makes close-on-land idempotent (closed only once).
-
-        Returns ``(umbrella, replacement_pr_number)`` pairs so the caller can
-        link the merged replacement PR in the close comment.
-        """
-        result = await self.session.execute(
-            select(TaskTable).where(
-                TaskTable.source == "external_pr_supersede",
-                TaskTable.status == TaskStatus.COMPLETED,
-            )
-        )
-        pending: list[tuple[TaskTable, int]] = []
-        for task in result.scalars().all():
-            if "closed=1" in supersede_marker_line(task).split():
-                continue
-            replacement_pr = await self._supersede_replacement_landed(task)
-            if replacement_pr is None:
-                continue
-            pending.append((task, replacement_pr))
-        return pending
-
-    async def supersede_umbrellas_branch_pending(self) -> list[TaskTable]:
-        """Supersede umbrellas whose branch cut is still in progress or needs retry.
-
-        A ``branch_pending`` marker means the CEO's supersede action committed
-        the umbrella but the background branch cut (fetch
-        ``refs/pull/{n}/head`` + push) has not completed yet. A
-        ``branch_cut_failed`` marker on a non-BLOCKED, non-CANCELLED umbrella
-        means the CEO unblocked it after exhaustion and the sweep should
-        re-run the cut. The reconciliation sweep re-runs the cut for both so
-        an orchestrator restart does not strand the umbrella.
-        """
-        result = await self.session.execute(
-            select(TaskTable).where(
-                TaskTable.source == "external_pr_supersede",
-                TaskTable.status != TaskStatus.CANCELLED,
-            )
-        )
-        pending: list[TaskTable] = []
-        for task in result.scalars().all():
-            if markers.is_branch_pending(task) or (
-                markers.is_branch_cut_failed(task) and task.status != TaskStatus.BLOCKED
-            ):
-                pending.append(task)
-        return pending
-
-    async def _supersede_replacement_landed(self, umbrella: TaskTable) -> int | None:
-        """The replacement PR number for a landed supersede umbrella.
-
-        Prefers the umbrella's OWN ``pr_number``: the umbrella is a real
-        Main-PM coordination root and ``submit_root`` stamps its merged root
-        PR directly on it, so this is the canonical replacement PR the
-        close-on-land comment should link (previously never consulted, so
-        the comment could point at an internal cell PR instead, or find no
-        qualifying descendant and skip closing the contributor PR forever).
-        Falls back to walking the umbrella's subtree (bounded by
-        MAX_TASK_DEPTH) for a COMPLETED descendant carrying a ``pr_number``,
-        needed only when the umbrella itself has none (e.g. the CEO
-        force-completed it over a cancelled code subtask). The descendant
-        query is ordered (creation time, then id) so multiple qualifying
-        siblings resolve the same way on every call instead of depending on
-        unspecified row order.
-        """
-        if umbrella.pr_number is not None:
-            return int(umbrella.pr_number)
-        frontier: list[UUID] = [cast("UUID", umbrella.id)]
-        seen: set[UUID] = set()
-        while frontier:
-            result = await self.session.execute(
-                select(TaskTable)
-                .where(TaskTable.parent_task_id.in_(frontier))
-                .order_by(TaskTable.created_at.asc(), TaskTable.id.asc())
-            )
-            frontier = []
-            for child in result.scalars().all():
-                # Use string-literal cast('UUID', ...) to avoid a typing-only UUID
-                # import and to keep ruff/mypy happy without an inline suppression.
-                child_id = cast("UUID", child.id)
-                if child_id in seen:
-                    continue
-                seen.add(child_id)
-                if child.status == TaskStatus.COMPLETED and child.pr_number is not None:
-                    return int(child.pr_number)
-                frontier.append(child_id)
-        return None
-
-    async def mark_supersede_pr_closed(self, task_id: UUID) -> None:
-        """Record that a landed supersede's contributor PR has been closed.
-
-        Appends ``closed=1`` to the marker LINE (not the end of the whole
-        multi-writer field) so the idempotency token stays anchored to the
-        marker and survives appended CEO notes.
-        """
-        task = await self.get(task_id)
-        if task is None:
-            return
-        current = markers.get_external_pr_supersede(task) or ""
-        if "closed=1" not in current.split():
-            markers.set_external_pr_supersede(task, f"{current} closed=1".strip())
-        await self.session.flush()
 
     async def activate(self, task_id: UUID, agent_role: str = "cell_pm") -> TaskTable:
         """
