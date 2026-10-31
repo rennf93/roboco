@@ -859,7 +859,8 @@ class A2AMessageHandling(_Base):
                 )
             )
         except Exception:
-            pass  # Don't fail if event bus unavailable
+            # Don't fail if event bus unavailable
+            pass
 
     async def _notify_original_requester(
         self,
@@ -875,7 +876,8 @@ class A2AMessageHandling(_Base):
         """
         dev_notes = task.dev_notes or ""
         if "A2A Request" not in dev_notes:
-            return  # Not an A2A task
+            # Not an A2A task
+            return
 
         created_by = task.created_by
         if not created_by:
