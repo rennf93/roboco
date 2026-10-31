@@ -32,7 +32,8 @@ This slice is the git substrate every delivery agent works on. `GitService` runs
 | `roboco/services/forge/gitea.py` | Self-hosted Gitea REST transport, adapting the wire contract back into GitHub shapes | 535 |
 | `roboco/services/forge/gitlab.py` | GitLab REST v4 transport — heaviest adaptation (MR `iid`, diff reassembly, pipelines) | 679 |
 | `roboco/services/forge/registry.py` | Host↔provider(+scheme) map + `provider_for(project)` resolution, self-healing per-process | 104 |
-| `roboco/services/forge/router.py` | `ForgeRouter` — implements `GitProvider` by picking a transport per call from `RepoRef.host` | 223 |
+| `roboco/services/forge/router.py` | `ForgeRouter` — implements `GitProvider` by picking a transport per call from `RepoRef.host` | 269 |
+| `roboco/services/forge/_forge_router_types.py` | `ForgeRouterSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `ForgeRouter` mixins reach through `self`, plus its instance attributes; `tests/unit/services/forge/test_forge_router_mixins.py` fails on a stray stub or a member defined twice | 33 |
 | `roboco/services/forge/shaping.py` | `ShapedResponse` — an `httpx.Response`-compatible stand-in a non-GitHub provider returns when it must synthesize a status the wire call didn't produce (e.g. a shaped 501 for `merge_branch`); `not_implemented(origin, message)` builds that shaped 501 | 66 |
 | `roboco/foundation/policy/forge.py` | Pure host/provider detection (`extract_host`, `detect_provider`) + registration-time validation (`validate_project_forge`) | 99 |
 | `roboco/foundation/policy/pr_labels.py` | `derive_pr_labels` — the org-structure label vocabulary (`to <base_branch>`, `root`, `MegaTask`, layer labels) applied at every PR-open site | ~69 |
@@ -170,8 +171,14 @@ This slice is the git substrate every delivery agent works on. `GitService` runs
 | `ForgeCI` | ABC | forge/base.py:226 | Role interface of `GitProvider` (3 abstract): CI on the forge: a branch's workflow runs, a commit's check runs, and the repo's workflows. |
 | `ForgeReleases` | ABC | forge/base.py:254 | Role interface of `GitProvider` (1 abstract): Publishing a release. |
 | `GitService._forge` | property | git.py:6850 | A fresh `ForgeRouter()` per access (cheap, no I/O — built this way, not `__init__`-cached, so tests can `GitService.__new__` bypass the constructor) |
-| `ForgeRouter` | class | forge/router.py:37 | Implements `GitProvider` by picking a transport per call from `RepoRef.host` |
-| `ForgeRouter._provider_for_ref` | staticmethod | forge/router.py:41 | `None` host → `GitHubProvider()`; a registered `"gitea"`/`"gitlab"` host → that provider constructed with its remembered scheme; unregistered → `GitError` naming the fix |
+| `ForgeRouter` | class | forge/router.py:242 | Implements `GitProvider` by picking a transport per call from `RepoRef.host` |
+| `ForgeRouterRepository` | class | forge/router.py:51 | Mixin of `ForgeRouter` (4 methods): ForgeRepository, delegated per call to the provider for the ref's host. |
+| `ForgeRouterPullRequests` | class | forge/router.py:110 | Mixin of `ForgeRouter` (7 methods): ForgePullRequests, delegated per call to the provider for the ref's host. |
+| `ForgeRouterReviews` | class | forge/router.py:151 | Mixin of `ForgeRouter` (4 methods): ForgeReviews, delegated per call to the provider for the ref's host. |
+| `ForgeRouterBranches` | class | forge/router.py:183 | Mixin of `ForgeRouter` (5 methods): ForgeBranches, delegated per call to the provider for the ref's host. |
+| `ForgeRouterCI` | class | forge/router.py:218 | Mixin of `ForgeRouter` (3 methods): ForgeCI, delegated per call to the provider for the ref's host. |
+| `ForgeRouterReleases` | class | forge/router.py:235 | Mixin of `ForgeRouter` (1 method): ForgeReleases, delegated per call to the provider for the ref's host. |
+| `ForgeRouter._provider_for_ref` | staticmethod | forge/router.py:254 | `None` host → `GitHubProvider()`; a registered `"gitea"`/`"gitlab"` host → that provider constructed with its remembered scheme; unregistered → `GitError` naming the fix |
 | `register_project_forge` | func | forge/registry.py:50 | Records a project's host→provider(+scheme) mapping; called from `ProjectService.create`/`update`/`get`/`get_by_slug` — in-memory, per-process, self-healing (a restart forgets it; the next project read re-registers) |
 | `provider_for` | func | forge/registry.py:77 | Resolve a `GitProvider` for a project (duck-typed on `.git_provider`/`.git_url`) |
 | `GitHubProvider` | class | forge/github.py:84 | GitHub.com/GHE REST transport — the pre-existing inline `httpx` logic, byte-for-byte; owns the sole retry policy in the package (`list_ci_runs`, 3 attempts/0.5s backoff, retryable on 429+5xx) |
@@ -431,6 +438,8 @@ Baseline: `fd10cc862c2020b3f639cdb686d427b0198a2441` (master tip before the metr
 > **2026-10-31** (Planning trail #51, wave 3): `WorkSessionService` splits in place into 3 mixins in `work_session.py`, every method body byte-identical: `WorkSessionQueries` (6), `WorkSessionCommits` (4), `WorkSessionPRs` (3). `WorkSessionService` keeps its CRUD and lifecycle (`create`, `get`, `get_or_raise`, `task_team_for_session`, `update`, `complete`, `abandon`, `close`), composes them, and is no longer a god class. Rows naming `WorkSessionService.<method>` still hold through inheritance. Each mixin's TYPE_CHECKING-only base is `WorkSessionServiceSelf` (`roboco/services/_work_session_types.py`).
 
 > **2026-11-01** (Planning trail #51, wave 4): `GitProvider` is segregated into six role interfaces in `forge/base.py`, each an ABC holding its abstract methods verbatim: `ForgeRepository` (4), `ForgePullRequests` (7), `ForgeReviews` (4), `ForgeBranches` (5), `ForgeCI` (3), `ForgeReleases` (1). `GitProvider` keeps its name and docstring as their composition, so every `GitProvider` annotation and `isinstance` check holds; its abstract surface is unchanged. `tests/unit/services/forge/test_git_provider_roles.py` fails on a method two roles declare, one declared on `GitProvider` itself, or an abstract surface that is no longer the roles' union.
+
+> **2026-11-01** (Planning trail #51, wave 4): `ForgeRouter` splits in place into 6 mixins in `router.py`, one per `GitProvider` role, every method body byte-identical: `ForgeRouterRepository` (4), `ForgeRouterPullRequests` (7), `ForgeRouterReviews` (4), `ForgeRouterBranches` (5), `ForgeRouterCI` (3), `ForgeRouterReleases` (1). `ForgeRouter` keeps _provider_for_ref, which picks the provider for a ref's host, composes them, and is no longer a god class. Rows naming `ForgeRouter.<method>` still hold through inheritance. Each mixin's TYPE_CHECKING-only base is `ForgeRouterSelf` (`roboco/services/forge/_forge_router_types.py`). Each mixin subclasses the role it implements (`ForgeRouterPullRequests(ForgePullRequests, _Base)`), so mypy checks it against that role's signatures, and `ForgeRouter` lists its mixins before `GitProvider`, so no abstract role method precedes its implementation in the MRO.
 
 ## Regression Risks
 
