@@ -9502,10 +9502,10 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `ProductService.distinct_project_ids` | method | product.py:198 | Distinct repos a product spans (one Main-PM integration branch each) |
 | `ProductService._replace_cells` | method | product.py:217 | Idempotent full cell-map replace via cascade collection; flushes DELETEs before INSERTs to avoid `uq_product_projects_product_team` 409 |
 | `get_product_service` | factory | product.py:245 | Session-bound constructor |
-| `KanbanService` | class | kanban.py:304 | Role-specific board generation with optional swimlanes |
+| `KanbanService` | class | kanban.py:308 | Role-specific board generation with optional swimlanes |
 | `KanbanBoardLayout` | class | kanban.py:40 | Mixin of `KanbanService` (9 methods): How tasks become a board: each task as a card with its subtask count, laid out in plain columns or in swimlanes by priority or assignee, with the board's and each lane's title. |
-| `KanbanService._load_subtask_counts` | method | kanban.py:45 | Batch-count direct children per parent in ONE grouped query (fixes the always-0 stub; #198) |
-| `KanbanService._task_to_card` | method | kanban.py:59 | Task → KanbanCard; accepts optional `subtask_counts` dict for real subtask counts |
+| `KanbanService._load_subtask_counts` | method | kanban.py:49 | Batch-count direct children per parent in ONE grouped query (fixes the always-0 stub; #198) |
+| `KanbanService._task_to_card` | method | kanban.py:63 | Task → KanbanCard; accepts optional `subtask_counts` dict for real subtask counts |
 | `KanbanService.get_dev_board` | method | kanban.py:325 | Dev cell board with optional priority/assignee swimlanes |
 | `KanbanService.get_qa_board` / `get_documenter_board` / `get_pm_board` | method | kanban.py:357 / 388 / 424 | Role-filtered flat boards |
 | `KanbanService.get_main_pm_board` / `get_main_pm_board_flat` | method | kanban.py:443 / 459 | Cross-cell view (team swimlanes / team columns) |
