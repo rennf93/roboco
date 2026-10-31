@@ -176,7 +176,8 @@ async def test_create_seam_materializes_note_flag_on_and_off(
                 _create_request(created_by, project_id, "Vault smoke: seam off")
             )
             await session.commit()
-            assert len(list(vault.rglob("*.md"))) == 1  # nothing new
+            # Nothing new
+            assert len(list(vault.rglob("*.md"))) == 1
     finally:
         await engine.dispose()
 
@@ -349,11 +350,13 @@ async def test_kb_cycle_ingests_clean_quarantines_flagged_dedups_second_run(
     assert len(stub.index_calls) == 1
     call = stub.index_calls[0]
     assert call["path"] == "RoboCo/Notes/clean.md"
-    assert call["content"] == _CLEAN_BODY  # raw body: no frontmatter, no envelope
+    # Raw body: no frontmatter, no envelope
+    assert call["content"] == _CLEAN_BODY
 
     flagged_text = (notes_dir / "flagged.md").read_text(encoding="utf-8")
     assert flagged_text.count("> [!warning] RoboCo: quarantined") == 1
-    assert stub.unindex_calls == []  # never indexed, so nothing to unindex
+    # Never indexed, so nothing to unindex
+    assert stub.unindex_calls == []
 
     # Second run: clean note hash-deduped, flagged note stays quarantined
     # without a second callout, nothing new reaches the index.

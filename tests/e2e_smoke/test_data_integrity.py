@@ -60,7 +60,8 @@ if TYPE_CHECKING:
 # so seeding a fake chunk must match that dimension, not a fabricated small
 # one, or the insert fails with "expected N dimensions, not _SMOKE_DIM".
 _SMOKE_DIM = settings.embedding_dimensions
-_EXPECTED_H12_ROWS = 2  # first (be-pm) + second (be-pm, main-pm) both persist
+# First (be-pm) + second (be-pm, main-pm) both persist
+_EXPECTED_H12_ROWS = 2
 
 
 def _chunk_dsn(db_url: str) -> str:

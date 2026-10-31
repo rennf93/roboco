@@ -182,8 +182,10 @@ async def test_h25_sweep_deletes_orphan_release_locks(
 
         await rp.sweep_orphan_release_locks()
 
-        assert await conn.get(orphan_key) is None  # orphan deleted
-        assert await conn.get(in_flight_key) is not None  # in-flight preserved
+        # Orphan deleted
+        assert await conn.get(orphan_key) is None
+        # In-flight preserved
+        assert await conn.get(in_flight_key) is not None
     finally:
         rp._INFLIGHT_APPROVES.clear()
         await conn.flushdb()
@@ -433,7 +435,8 @@ async def test_m21_render_cycle_commits_per_task(
             # Retryable, not terminal: one failed attempt, next cycle retries.
             assert b_draft.get("render_status") is None
             assert b_draft.get("render_attempts") == 1
-            assert post_row.confirmed_by_human is False  # held for CEO
+            # Held for CEO
+            assert post_row.confirmed_by_human is False
             post_draft = markers.get_video_draft(post_row) or {}
             assert post_draft.get("source_task_id") == str(a_id)
             assert post_draft.get("render_status") == "rendered"

@@ -100,7 +100,8 @@ def test_background_pool_caches_independently_of_primary() -> None:
         get_engine("primary")
         get_engine("background")
         get_engine("background")
-    assert ce.call_count == _TWO  # one per pool, each cached on repeat access
+    # One per pool, each cached on repeat access
+    assert ce.call_count == _TWO
 
 
 def test_each_event_loop_gets_its_own_background_engine() -> None:
@@ -277,18 +278,22 @@ async def test_defer_after_commit_is_engine_agnostic_on_background_pool(
             async def _work() -> None:
                 ran.append("ran")
 
-            await db.execute(select(1))  # force a real root transaction to open
+            # Force a real root transaction to open
+            await db.execute(select(1))
             defer_after_commit(db, _work)
 
             async with db.begin_nested():
-                pass  # savepoint opens and releases; root transaction stays open
+                # Savepoint opens and releases; root transaction stays open
+                pass
 
-            assert ran == []  # not drained at the savepoint boundary
+            # Not drained at the savepoint boundary
+            assert ran == []
 
             await db.commit()
             drain_tasks = list(db.info.get("_roboco_drain_tasks", []))
             if drain_tasks:
                 await asyncio.gather(*drain_tasks, return_exceptions=True)
-            assert ran == ["ran"]  # drained at the real root commit
+            # Drained at the real root commit
+            assert ran == ["ran"]
     finally:
         await close_db()
