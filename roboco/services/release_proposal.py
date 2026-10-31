@@ -69,7 +69,8 @@ class TaskAlreadyCompletedError(Exception):
 # it while the execute owns the lock, and a fencing token makes the release
 # compare-and-del so a late first-finally can't delete a usurper's lock.
 _RELEASE_LOCK_PREFIX = "roboco:release_proposal:"
-_RELEASE_LOCK_TTL_SECONDS = 3000  # 50 min > 40 min CI ceiling; crash backstop
+# 50 min > 40 min CI ceiling; crash backstop
+_RELEASE_LOCK_TTL_SECONDS = 3000
 _RELEASE_LOCK_HEARTBEAT_SECONDS = 60.0
 # Only delete/extend the lock when its value still equals our fencing token.
 _RELEASE_LOCK_RELEASE_SCRIPT = """
@@ -556,7 +557,8 @@ class ReleaseProposalService(BaseService, ReleaseProposalDrafts, ReleaseProposal
             logger.error("release reject lock unavailable (redis down): %s", exc)
             return None
         if lock_token is None:
-            return None  # a concurrent approve is mid-execute; refuse the reject
+            # A concurrent approve is mid-execute; refuse the reject
+            return None
         try:
             # Re-read under the lock: a concurrent approve may have committed
             # COMPLETED between the pre-lock check and here.
