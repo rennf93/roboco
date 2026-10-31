@@ -10,7 +10,8 @@ The per-project architectural-conventions standard for RoboCo: a service layer (
 |------|------|-----------:|
 | `roboco/services/conventions.py` | `ConventionsService` — cache/render/scaffold/restore the effective conventions map; record + read findings | 586 |
 | `roboco/services/_conventions_service_types.py` | `ConventionsServiceSelf`, a TYPE_CHECKING-only Protocol declaring the attributes the `ConventionsService` mixin reads through `self` (no moved body calls across classes, so it has no `<Class>Surface` yet); `tests/unit/services/test_conventions_service_mixins.py` fails on a stray stub or a member defined twice | 29 |
-| `roboco/services/docs.py` | `DocsService` — write/read/list/delete docs, RAG dedup, commit doc to repo, path-traversal containment | 737 |
+| `roboco/services/docs.py` | `DocsService` — write/read/list/delete docs, RAG dedup, commit doc to repo, path-traversal containment | 825 |
+| `roboco/services/_docs_service_types.py` | `DocsServiceSelf`, a TYPE_CHECKING-only Protocol declaring the attributes the `DocsService` mixins read through `self` (no moved body calls across classes, so it has no `<Class>Surface` yet); `tests/unit/services/test_docs_service_mixins.py` fails on a stray stub or a member defined twice | 28 |
 | `roboco/conventions/__init__.py` | Package public API re-exports (`run`, `Finding`, `check_*`, `get_parser`, `GrammarUnavailable`, `ValidatorCouldNotRun`) | 30 |
 | `roboco/conventions/__main__.py` | argparse CLI entrypoint (`check --root <dir> --files ...`), JSONL output, exit-0/exit-3 fail-loud | 69 |
 | `roboco/conventions/runner.py` | `run()` orchestrator: per-file dispatch by suffix, waiver filtering, `ValidatorCouldNotRun` on grammar failure | 107 |
@@ -80,17 +81,19 @@ The per-project architectural-conventions standard for RoboCo: a service layer (
 | `_seed_rules` | fn | `conventions/scan.py:137` | Seed hygiene + placement + modularity rules (stack-scoped) |
 | `_lift_claude_md` | fn | `conventions/scan.py:220` | Lift imperative CLAUDE.md code-spans into warn custom rules |
 | `render_yaml` | fn | `conventions/scan.py:307` | Render a standard to commented YAML (round-trips via parse_yaml) |
-| `DocsService` | class | `services/docs.py:187` | Documentation file management |
-| `DocsService.write_doc` | method | `services/docs.py:192` | Write/update a doc with RAG dedup + repo commit |
-| `DocsService.read_doc` | method | `services/docs.py:530` | Read a doc (role-gated, path-contained) |
-| `DocsService.list_docs` | method | `services/docs.py:566` | List docs (by task or by team filesystem scan) |
-| `DocsService.delete_doc` | method | `services/docs.py:605` | Delete a doc (role-gated, path-contained) |
-| `DocsService._commit_doc_to_repo` | method | `services/docs.py:292` | Best-effort commit the doc onto the task branch via `GitService` |
-| `DocsService._find_similar_doc` | method | `services/docs.py:370` | RAG content-similarity dedup (≥0.75, same team) |
-| `_resolve_contained_path` | fn | `services/docs.py:156` | Containment-prove `base / rel` (anti path-traversal, absolute-escape) |
-| `_coerce_doc_ref` | fn | `services/docs.py:140` | Defensive DocRef coercion from str/dict/DocRef |
-| `WriteDocInput` | dataclass | `services/docs.py:35` | Route DTO for write_doc |
-| `get_docs_service` | fn | `services/docs.py:808` | Factory for `DocsService(session)` |
+| `DocsService` | class | `services/docs.py:417` | Documentation file management |
+| `DocsFiles` | class | docs.py:192 | Mixin of `DocsService` (5 methods): The docs tree on disk: reading, writing and deleting a file off the event loop, listing a team's docs, and inferring a doc's type from its path. |
+| `DocsRecords` | class | docs.py:274 | Mixin of `DocsService` (4 methods): Where a doc is recorded besides its file: the RAG search for a similar doc, the task's documents list, and the RAG index. |
+| `DocsService.write_doc` | method | `services/docs.py:422` | Write/update a doc with RAG dedup + repo commit |
+| `DocsService.read_doc` | method | `services/docs.py:697` | Read a doc (role-gated, path-contained) |
+| `DocsService.list_docs` | method | `services/docs.py:733` | List docs (by task or by team filesystem scan) |
+| `DocsService.delete_doc` | method | `services/docs.py:772` | Delete a doc (role-gated, path-contained) |
+| `DocsService._commit_doc_to_repo` | method | `services/docs.py:522` | Best-effort commit the doc onto the task branch via `GitService` |
+| `DocsService._find_similar_doc` | method | `services/docs.py:278` | RAG content-similarity dedup (≥0.75, same team) |
+| `_resolve_contained_path` | fn | `services/docs.py:161` | Containment-prove `base / rel` (anti path-traversal, absolute-escape) |
+| `_coerce_doc_ref` | fn | `services/docs.py:145` | Defensive DocRef coercion from str/dict/DocRef |
+| `WriteDocInput` | dataclass | `services/docs.py:40` | Route DTO for write_doc |
+| `get_docs_service` | fn | `services/docs.py:823` | Factory for `DocsService(session)` |
 
 ## Data Flow
 
@@ -259,6 +262,8 @@ No other logic-touching commits in the range.
 > Post-snapshot updates (since 2026-06-29): **536bbb64** "Chore/all/logical gaps sweep (#286)" touched five files in this slice:
 
 > **2026-10-31** (Planning trail #51, wave 3): `ConventionsService` splits in place into a mixin in `conventions.py`, every method body byte-identical: `ConventionsMapResolution` (13). `ConventionsService` keeps its public surface (`get_map`, the infra globs, baseline constraints, the ambient block, `scaffold`, `restore`, `commit_standard`, `health`, recording and reading findings), composes it, and is no longer a god class. Rows naming `ConventionsService.<method>` still hold through inheritance. The mixin's TYPE_CHECKING-only base is `ConventionsServiceSelf` (`roboco/services/_conventions_service_types.py`).
+
+> **2026-10-31** (Planning trail #51, wave 3): `DocsService` splits in place into 2 mixins in `docs.py`, every method body byte-identical: `DocsFiles` (5), `DocsRecords` (4). `DocsService` keeps the doc flow itself: writing (deduplicated against RAG, then committed into the project's clone, with new and updated docs), reading, listing and deleting, composes them, and is no longer a god class. Rows naming `DocsService.<method>` still hold through inheritance. Each mixin's TYPE_CHECKING-only base is `DocsServiceSelf` (`roboco/services/_docs_service_types.py`).
 > - `conventions/custom.py` (+14 lines): added `_KNOWN_LANGUAGES` frozenset and `unrecognized_rule_languages()` — surfaces typo language tags on custom rules.
 > - `conventions/runner.py` (+28 lines): imported `Finding` directly (not TYPE_CHECKING); added `_LANGUAGE_SCOPE_RULE`/`_LANGUAGE_SCOPE_FILE` constants and `_language_scope_findings()` helper; `run()` now prepends language-scope warn findings before per-file dispatch.
 > - `conventions/modularity.py` (+2 lines): added `"stream"` and `"stream_scalars"` to `_DB_METHODS` (SA 2.0 streaming gap, #35).
@@ -274,8 +279,8 @@ No other logic-touching commits in the range.
 | ~~Cache put savepoint swallows all IntegrityError~~ | `services/conventions.py:451-465` | ~~The `except IntegrityError` swallows any integrity error, not only a duplicate-key.~~ **FIXED 536bbb64**: `_is_unique_violation` now narrows the catch to SQLSTATE 23505 only; any other IntegrityError (FK / NOT NULL / check constraint) is logged at ERROR and re-raised. The savepoint still rolls back only the failed insert, leaving the outer session usable. | low |
 | Backfill writes project row on a read path | `services/conventions.py:303-307` | `_resolve` mutates `project.workspace_path`/`head_commit` during `get_map` (a read). If the caller's session is not the one that commits, the backfill is lost; if it is, a read has a write side effect that can race with a concurrent project update. | low |
 | ~~Degraded fallback caches last-good as `degraded`~~ | `services/conventions.py:95-108` | ~~On a corrupted file, the last-good map is re-cached with `status="degraded"`.~~ **FIXED 536bbb64**: `get_map` now skips the cache when `status=="degraded"` (never pins a degraded row); `health()` re-reads the live file instead of consulting the cache, so an in-place repair is immediately visible. | low |
-| ~~write_doc filename guard not containment-checked~~ | `services/docs.py:192-290` | ~~`write_doc` does NOT call `_resolve_contained_path` on the built path.~~ **FIXED 536bbb64**: `_create_new_doc` and `_update_existing_doc` both now call `_resolve_contained_path` on their resolved path before writing — the built `{team}/{subfolder}/{filename}` and the RAG-sourced `existing_path` are both containment-checked. | medium |
-| _commit_doc_to_repo swallows all exceptions | `services/docs.py:292-357` | Broad `except Exception` catches all git failures. **REDUCED 536bbb64**: now returns `"committed"` / `"skipped"` / `"failed"` (instead of `None`); `write_doc` attaches the string to `doc_ref.commit_status` so the caller can surface it. The exception is still caught (the doc write must not fail), but the outcome is no longer invisible. | low |
+| ~~write_doc filename guard not containment-checked~~ | `services/docs.py:422-520` | ~~`write_doc` does NOT call `_resolve_contained_path` on the built path.~~ **FIXED 536bbb64**: `_create_new_doc` and `_update_existing_doc` both now call `_resolve_contained_path` on their resolved path before writing — the built `{team}/{subfolder}/{filename}` and the RAG-sourced `existing_path` are both containment-checked. | medium |
+| _commit_doc_to_repo swallows all exceptions | `services/docs.py:522-587` | Broad `except Exception` catches all git failures. **REDUCED 536bbb64**: now returns `"committed"` / `"skipped"` / `"failed"` (instead of `None`); `write_doc` attaches the string to `doc_ref.commit_status` so the caller can surface it. The exception is still caught (the doc write must not fail), but the outcome is no longer invisible. | low |
 | RAG dedup overwrites similar docs | `services/docs.py:221` | `_find_similar_doc` matches ≥0.75 content similarity in the same team. **REDUCED 536bbb64**: `write_doc` now only calls `_update_existing_doc` when the similar doc's filename exactly matches `req.filename` — a different filename always creates a new file. Still possible for same-filename, same-team, similar content to collapse silently. | low |
 | ~~Modularity DB-method set excludes stream/stream_scalars~~ | `conventions/modularity.py:45-57` | ~~`await session.stream(...)` / `stream_scalars(...)` were missing from `_DB_METHODS` — thin-route false negative.~~ **FIXED 536bbb64**: `"stream"` and `"stream_scalars"` added to `_DB_METHODS`. Legacy `query` was already present. Other hypothetical future SA 2.0 constructs not in the set remain a low-severity under-enforcement non-issue. | low |
 | Grammar import failure is fail-loud per-language | `conventions/grammars.py:43-45` | A missing `tree_sitter_typescript` import raises `GrammarUnavailable` → `ValidatorCouldNotRun` → exit 3 → block gate. Correct, but if the agent image is missing a grammar wheel, every TS task in that container is blocked until the image is fixed — a single missing dep halts all TS delivery. | low |
