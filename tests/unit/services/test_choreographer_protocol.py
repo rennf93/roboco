@@ -1,4 +1,4 @@
-"""ChoreographerHelpers: the typed surfaces the choreographer's classes inherit.
+"""The composed Choreographer and the typed surfaces its classes inherit.
 
 Under TYPE_CHECKING every mixin and ``BaseChoreographer`` inherit
 ``ChoreographerHelpers``, which composes one surface per class: ``FooSurface``
@@ -7,12 +7,15 @@ declares the methods ``FooMixin`` (``BaseChoreographer`` for
 classes and resolve via MRO; a stub raises NotImplementedError when called
 directly. One test keeps every surface naming only methods its class defines,
 so a method that moves takes its stub along; the other calls every stub, so
-each raises and the file shows up in coverage.
+each raises and the file shows up in coverage. A third keeps any two of the
+composed classes from defining the same method, which the MRO would
+otherwise resolve silently.
 """
 
 from __future__ import annotations
 
 import inspect
+from collections import defaultdict
 from typing import Any
 
 import pytest
@@ -47,6 +50,25 @@ def _placeholder_arguments(member: Any) -> tuple[list[None], dict[str, None]]:
         ):
             args.append(None)
     return args, kwargs
+
+
+def _methods(cls: type) -> set[str]:
+    return {
+        name
+        for name, value in vars(cls).items()
+        if inspect.isfunction(value)
+        or isinstance(value, staticmethod | classmethod | property)
+    }
+
+
+def test_no_two_composed_classes_define_the_same_method() -> None:
+    owners: dict[str, list[str]] = defaultdict(list)
+    for cls in Choreographer.__mro__[1:]:
+        if cls.__module__.startswith("roboco.services.gateway.choreographer"):
+            for name in _methods(cls) - {"__init__"}:
+                owners[name].append(cls.__name__)
+    shared = {name: names for name, names in owners.items() if len(names) > 1}
+    assert shared == {}
 
 
 def test_each_surface_declares_only_methods_its_class_defines() -> None:

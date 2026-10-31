@@ -1,10 +1,10 @@
 """Gateway choreographer package.
 
-The single-file 2,540-line ``choreographer.py`` is being split into
-per-role mixins composed onto a single ``Choreographer`` class.
-``board.py`` was the first extraction (Board + Auditor verbs); the verbs
-not yet split out live on ``BaseChoreographer`` in ``_impl.py`` and move
-incrementally.
+The single-file ``choreographer.py`` is split into mixins composed onto a
+single ``Choreographer`` class, none over the conventions check's 15-method
+limit: the per-role verbs (``board.py``, ``doc.py``, ``qa.py``,
+``pr_review.py``, ``pr_gate*.py``, ``dev.py``, ``pm.py``), and in ``_impl.py``
+``BaseChoreographer`` with the mixins every role shares.
 
 The public surface (``Choreographer``, ``ChoreographerDeps``,
 ``DelegateInputs``) is re-exported here so every caller's import path
@@ -92,10 +92,9 @@ class Choreographer(
 ):
     """Composed choreographer.
 
-    MRO walks left-to-right: extracted mixins resolve first, then
-    ``BaseChoreographer`` supplies everything not yet split out (helpers,
-    deps, __init__, the remaining role verbs). Future per-role splits add
-    mixins to the left of ``BaseChoreographer`` in this declaration.
+    MRO walks left-to-right: the mixins resolve first, then
+    ``BaseChoreographer`` supplies the deps, ``__init__`` and the service
+    properties. No two classes define the same method.
     """
 
 

@@ -1,12 +1,17 @@
-"""Choreographer — composes existing services into intent-verb sequences.
+"""Choreographer base: composes existing services into intent-verb sequences.
 
-This module has interface signatures only in Phase 0. Each verb's full
-implementation lands in its respective phase (Phase 1: dev verbs, Phase 2:
-QA verbs, Phase 3: doc + PM verbs, Phase 4: board verbs).
+``ChoreographerDeps`` and ``BaseChoreographer`` (the deps, the service
+properties, the heartbeat and the verb runner), the verb contexts and
+module helpers, and the mixins every role shares: the rejection and
+briefing helpers, the claim guards and claim-plan-start sequence, the
+tracing and quality gates, findings resolution, branch sync, and the
+cross-role verbs (``i_am_blocked``/``escalate_*``, ``unclaim``/``resume``/
+``reassign``, ``declare_coverage``/``cancel_leaf``, ``i_am_idle``). The role
+verbs live in ``dev.py``, ``pm.py`` and the other per-role modules;
+``__init__.py`` composes them all into ``Choreographer``.
 
-The signatures are stable contracts that the MCP servers and the
-/api/v1/flow/* endpoints will call into. Phase 0 wires the dependency
-injection so later phases just fill in the bodies.
+The verb signatures are stable contracts that the MCP servers and the
+/api/v1/flow/* endpoints call into.
 """
 
 from __future__ import annotations
@@ -416,13 +421,14 @@ class DelegateInputs:
 
 
 class BaseChoreographer(_Base):
-    """Composes existing services into intent-verb sequences.
+    """The deps-injected base the role mixins compose onto.
 
-    Constructor takes a ``ChoreographerDeps`` bundle (DI). Verb methods are
-    async. Each returns a standardized Envelope. The package's
-    ``Choreographer`` composes the role mixins onto this class; under
-    ``TYPE_CHECKING`` it inherits ``ChoreographerHelpers`` like every mixin,
-    so a call into a mixin method is typed here too.
+    Constructor takes a ``ChoreographerDeps`` bundle (DI); this class holds
+    the service properties, the heartbeat, milestone progress, the verb
+    runner and the class attributes several mixins share. Verb methods live
+    on the mixins, are async, and each returns a standardized Envelope. The
+    package's ``Choreographer`` composes the mixins onto this class; under
+    ``TYPE_CHECKING`` it inherits ``ChoreographerHelpers`` like every mixin.
 
     Service deps are typed as ``Any`` in Phase 1 — per-service Protocol typing
     lands alongside the verb implementations that exercise the methods.
@@ -511,8 +517,6 @@ class BaseChoreographer(_Base):
                 percentage=percentage,
             )
 
-    # --- Phase 1 (developer) verbs ---
-
     # PM coordinator roles plan + delegate many roots in parallel; the actual
     # work then runs in the delegated children/cells, not in the PM's own hands.
     # So the single-active-task concurrency invariants (already_active / paused)
@@ -531,12 +535,6 @@ class BaseChoreographer(_Base):
         """
         return VerbRunner(task_service=self.task, git_service=self.git)
 
-    # --- QA verbs moved to ``qa.py``. ---
-
-    # --- Phase 3 (documenter + PM) verbs ---
-
-    # claim_doc_task + i_documented moved to ``doc.py``.
-
     # Proactive nudge surfaced alongside ``parent_ac_coverage`` in the
     # planning briefing and the delegate success envelope, ahead of any
     # rejection — delegate() enforces covers_parent_criteria on every call
@@ -552,12 +550,6 @@ class BaseChoreographer(_Base):
 
     _TERMINAL_STATUSES: ClassVar[frozenset[str]] = frozenset({"completed", "cancelled"})
 
-    # --- Phase 4 (board) verbs ---
-
-    # board_triage + auditor_triage moved to ``board.py`` as the first
-    # per-role mixin extraction. The Choreographer class is
-    # composed in ``__init__.py`` from BoardMixin + the rest of this
-    # _impl. Methods now resolve via Python's MRO.
 
 
 class RejectionMixin(_Base):
