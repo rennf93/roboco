@@ -1,18 +1,16 @@
 """Structural type for the composed BoardProgramEngine, TYPE_CHECKING-only.
 
 ``BoardProgramEngine`` is composed from mixins (``roboco/services/board_programs.py``)
-whose
-methods were moved verbatim out of the one class. mypy checks each mixin
-against its own bases only, so a call into a sibling mixin, or into
-BoardProgramEngine's own members, would not resolve.
+whose methods were moved verbatim out of the one class. mypy checks each mixin against
+its own bases only, so a call into a sibling mixin, or into BoardProgramEngine's own
+members, would not resolve.
 
 Each mixin gives its class a TYPE_CHECKING-only base of ``BoardProgramEngineSelf``,
-which declares that cross-class surface: ``FooSurface`` holds what ``Foo``
-offers the other classes (``BoardProgramEngineSurface`` what ``BoardProgramEngine``
-itself does),
-with each method's own decorators, parameters and return type, so no moved
-body changes. ``tests/unit/services/test_board_program_engine_mixins.py`` fails on a
-stub its surface's class does not define.
+which declares that cross-class surface: ``FooSurface`` holds what ``Foo`` offers the
+other classes (``BoardProgramEngineSurface`` what ``BoardProgramEngine`` itself does),
+with each method's own decorators, parameters and return type, so no moved body changes.
+``tests/unit/services/test_board_program_engine_mixins.py`` fails on a stub its
+surface's class does not define.
 """
 
 from __future__ import annotations
