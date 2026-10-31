@@ -209,7 +209,8 @@ class GitLabRepository(ForgeRepository, _Base):
             org, headers=headers, client=client, timeout=timeout
         )
         if isinstance(namespace_id, httpx.Response | ShapedResponse):
-            return namespace_id  # group lookup itself errored (not a 404)
+            # Group lookup itself errored (not a 404)
+            return namespace_id
 
         payload: dict[str, Any] = {
             "name": name,
