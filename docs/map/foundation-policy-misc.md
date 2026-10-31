@@ -13,7 +13,7 @@ The "misc" foundation-policy slice holds the pure, service-agnostic rule catalog
 | roboco/foundation/policy/content/__init__.py | Public surface re-export for the content schema package | 55 |
 | roboco/foundation/policy/content/enums.py | Severity + Verdict controlled vocabularies for PR-review/QA content | 35 |
 | roboco/foundation/policy/content/markers.py | Typed accessors for Task.orchestration_markers JSON column (original_developer, documenter, escalation, release report, transition notes, etc.) | 1086 |
-| roboco/foundation/policy/content/models.py | Pydantic content models (PrReviewContent, TaskDescription, ResumptionNote, DeveloperNote, QaNote, DocNote, AuditorNote) + CONTENT_MODELS registry + validate_content + pr_review_conflict + required_shape | 667 |
+| roboco/foundation/policy/content/models.py | Pydantic content models (PrReviewContent, TaskDescription, ResumptionNote, DeveloperNote, QaNote, DocNote, AuditorNote) + CONTENT_MODELS registry + validate_content + pr_review_conflict + required_shape | 669 |
 | roboco/foundation/policy/content/validators.py | Shared validation primitives: BANNED_PHRASES, reject_trivial, coerce_to_list, coerce_str_list, ContentValidationError | 158 |
 | `roboco/foundation/policy/display_time.py` | Display-timezone day bucketing, pure and DB-free: resolve the `display_timezone` setting to a `ZoneInfo` (UTC fallback), the local date of an instant, trailing calendar dates, and a day's UTC bounds | 53 |
 | `roboco/foundation/policy/flow_timeouts.py` | Flow-verb timeout budgets: `SLOW_VERBS` (i_am_done, submit_up, submit_root, open_pr, i_will_work_on) and `CLIENT_HEADROOM_SECONDS`, imported by both the server `FlowVerbTimeoutMiddleware` and the agent-side MCP flow client so the client wall always outlasts the server's 504 | 35 |
@@ -99,22 +99,22 @@ The "misc" foundation-policy slice holds the pure, service-agnostic rule catalog
 | TRANSITION_NOTES | constant | roboco/foundation/policy/content/markers.py:734 | Marker key for lifecycle transition notes dict |
 | get_transition_note | function | roboco/foundation/policy/content/markers.py:737 | Read one transition note by event name |
 | set_transition_note | function | roboco/foundation/policy/content/markers.py:745 | Write one transition note keyed by event |
-| _Base | class | roboco/foundation/policy/content/models.py:74 | Pydantic base: extra=ignore, validate_assignment=True |
-| _Content | class | roboco/foundation/policy/content/models.py:80 | Content base class declaring render_markdown() contract |
-| Finding | class | roboco/foundation/policy/content/models.py:110 | One PR-review finding (file/line/severity/criterion/expected/actual) with trivial-rejection |
-| WorkUnit | class | roboco/foundation/policy/content/models.py:164 | One cell's slice of a task description (cell team/summary/items); rejects non-cell teams |
-| AcVerdict | class | roboco/foundation/policy/content/models.py:199 | One acceptance-criterion verdict (criterion/status/how) |
-| PrReviewContent | class | roboco/foundation/policy/content/models.py:217 | PR-review comment/verdict model (summary/findings/issues/verdict/head_sha) with markdown render |
-| pr_review_conflict | function | roboco/foundation/policy/content/models.py:284 | Return (message,remediate) when APPROVE/REQUEST_CHANGES event contradicts findings, else None |
-| TaskDescription | class | roboco/foundation/policy/content/models.py:353 | Well-formed task description (objective/what_this_builds/the_work/notes/constraints/AC) shared by PM delegate + Intake |
-| ResumptionNote | class | roboco/foundation/policy/content/models.py:415 | Human handoff in quick_context (done/next/where_to_look) |
-| DeveloperNote | class | roboco/foundation/policy/content/models.py:439 | Developer task note (summary/changes/risks/follow_ups) |
-| QaNote | class | roboco/foundation/policy/content/models.py:468 | QA review note (summary/ac_verdicts/verdict restricted to passed/failed) |
-| DocNote | class | roboco/foundation/policy/content/models.py:542 | Documenter note (summary/documented/skipped) |
-| AuditorNote | class | roboco/foundation/policy/content/models.py:568 | Auditor confidential observation (summary/concerns/severity info/watch/risk) |
-| CONTENT_MODELS | constant | roboco/foundation/policy/content/models.py:599 | Registry mapping content-type key to model class (pr_review/task_description/resumption/developer/qa/doc/auditor) |
-| validate_content | function | roboco/foundation/policy/content/models.py:612 | Validate payload against model for content_type; passthrough if already instance; raise ContentValidationError on failure |
-| required_shape | function | roboco/foundation/policy/content/models.py:658 | Return {field:type-hint} map for a content type for remediation hints |
+| _Base | class | roboco/foundation/policy/content/models.py:75 | Pydantic base: extra=ignore, validate_assignment=True |
+| _Content | class | roboco/foundation/policy/content/models.py:81 | Content base class declaring render_markdown() contract |
+| Finding | class | roboco/foundation/policy/content/models.py:112 | One PR-review finding (file/line/severity/criterion/expected/actual) with trivial-rejection |
+| WorkUnit | class | roboco/foundation/policy/content/models.py:166 | One cell's slice of a task description (cell team/summary/items); rejects non-cell teams |
+| AcVerdict | class | roboco/foundation/policy/content/models.py:201 | One acceptance-criterion verdict (criterion/status/how) |
+| PrReviewContent | class | roboco/foundation/policy/content/models.py:219 | PR-review comment/verdict model (summary/findings/issues/verdict/head_sha) with markdown render |
+| pr_review_conflict | function | roboco/foundation/policy/content/models.py:286 | Return (message,remediate) when APPROVE/REQUEST_CHANGES event contradicts findings, else None |
+| TaskDescription | class | roboco/foundation/policy/content/models.py:355 | Well-formed task description (objective/what_this_builds/the_work/notes/constraints/AC) shared by PM delegate + Intake |
+| ResumptionNote | class | roboco/foundation/policy/content/models.py:417 | Human handoff in quick_context (done/next/where_to_look) |
+| DeveloperNote | class | roboco/foundation/policy/content/models.py:441 | Developer task note (summary/changes/risks/follow_ups) |
+| QaNote | class | roboco/foundation/policy/content/models.py:470 | QA review note (summary/ac_verdicts/verdict restricted to passed/failed) |
+| DocNote | class | roboco/foundation/policy/content/models.py:544 | Documenter note (summary/documented/skipped) |
+| AuditorNote | class | roboco/foundation/policy/content/models.py:570 | Auditor confidential observation (summary/concerns/severity info/watch/risk) |
+| CONTENT_MODELS | constant | roboco/foundation/policy/content/models.py:601 | Registry mapping content-type key to model class (pr_review/task_description/resumption/developer/qa/doc/auditor) |
+| validate_content | function | roboco/foundation/policy/content/models.py:614 | Validate payload against model for content_type; passthrough if already instance; raise ContentValidationError on failure |
+| required_shape | function | roboco/foundation/policy/content/models.py:660 | Return {field:type-hint} map for a content type for remediation hints |
 | BANNED_PHRASES | constant | roboco/foundation/policy/content/validators.py:22 | frozenset of placeholder tokens never acceptable as a whole field value |
 | ContentValidationError | exception | roboco/foundation/policy/content/validators.py:45 | Public gateway-facing exception carrying (field, reason) |
 | _all_tokens_filler | function | roboco/foundation/policy/content/validators.py:58 | True when every whitespace token (sans punctuation) is a placeholder |
@@ -231,7 +231,7 @@ foundation/policy (misc slice)
 | check (task_completeness) | roboco/foundation/policy/task_completeness.py:283 | Called by TaskService.create / PrompterService.create_task_from_draft / choreographer._impl._create_subtask_from_inputs at task construction |
 | check_requirements (tracing) | roboco/foundation/policy/tracing.py:270 | Called by gateway choreographer (_impl/qa/doc/pr_gate/pr_review) before each gated verb's state transition |
 | requirements_for (tracing) | roboco/foundation/policy/tracing.py:467 | Called by choreographer to resolve a verb's required-set; parity test iterates every intent verb |
-| validate_content | roboco/foundation/policy/content/models.py:612 | Called by gateway content_actions / choreographer / prompter / intake_driver / flow_server when an agent submits a structured-content payload |
+| validate_content | roboco/foundation/policy/content/models.py:614 | Called by gateway content_actions / choreographer / prompter / intake_driver / flow_server when an agent submits a structured-content payload |
 | retry_limit_for (agent_loop) | roboco/foundation/policy/agent_loop.py:141 | Called by agent_sdk/server per-verb circuit breaker on /verb/attempted |
 | parse_priority (communications) | roboco/foundation/policy/communications.py:26 | Called by services/a2a.py + notification_delivery on A2A urgency resolution |
 | markers accessors | roboco/foundation/policy/content/markers.py | Called by task.py, orchestrator, self_heal_engine, release_proposal, release_manager_engine whenever reading/writing orchestration_markers |
