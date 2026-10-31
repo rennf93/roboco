@@ -135,7 +135,7 @@ The current revision runs **40 seconds** total (up from an earlier 14s cut) so e
 3. **Metrics donut** — enters at 15.0s, completes at 16.6s ("90 days of real task flow.").
 4. **Notification bell** — enters at 20.0s, completes at 21.6s ("Real read/ack actions on every alert.").
 
-Each card gets roughly five seconds of fully visible time before the next card enters. A cursor clicks the column at 22.0s, the stats overlay shows "1 release / 25 agents / 1 human" from 24.0s to 32.0s, the toast "v0.25.0 shipped / I approved once. 25 agents did the rest." runs from 30.0s to 38.0s, and the "roboco.tech" outro lands at 36.0s and holds through the end.
+Each card gets roughly five seconds of fully visible time before the next card enters. The cursor clicks the intake field at 4.8s to submit the task, then follows the cards: it reaches the Notification bell card at 20.4s, rests on it through its 21.6s flip until 22.0s, and leaves the frame by 23.9s, before the stats overlay shows "1 release / 25 agents / 1 human" from 24.0s until it fades at 32.0s. The toast "v0.25.0 shipped / I approved once. 25 agents did the rest." slides in at 30.0s under that overlay, shows once it fades, and holds through the end; in the vertical the cursor comes back at 32.9s and clicks it at 33.3s. The "roboco.tech" outro lands at 36.0s and holds through the end.
 
 The composition reuses the same `pk-frame` chrome, `pk-column`/`pk-card`, `pk-pill`, `pk-cursor`, `pk-toast`, and `pk-outro` pieces from `kit/`, plus the typing reveal wired through `props.js`. Each feature card uses the `pk-pill--swap-out` / `pk-pill--swap-in` pattern from `panel-demo` and `release-recap` to replace the `in progress` pill with `completed` on the same beat.
 
