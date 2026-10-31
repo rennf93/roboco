@@ -34,7 +34,7 @@ from roboco.runtime.engines.dispatch_work import (
     PRReviewDispatchEngine,
     QADispatchEngine,
 )
-from roboco.runtime.engines.spawn_exit import SpawnExitEngine
+from roboco.runtime.engines.spawn_exit import ContainerExitEngine
 from roboco.runtime.engines.sweeps import SweepsEngine
 from roboco.services.decisions import pilots_dispatch
 from roboco.services.decisions.schemas import DecisionAnswer, DecisionResult
@@ -1353,7 +1353,7 @@ async def test_b40_confident_cause_line_applies(
 @pytest.mark.asyncio
 async def test_b40_engine_off_records_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     _flag_on(monkeypatch, False)
-    engine = _bare(SpawnExitEngine)
+    engine = _bare(ContainerExitEngine)
     engine._assistant_segments_from_transcript = staticmethod(lambda _a: [])
     await engine._decisions_record_exit_cause(
         "a", SimpleNamespace(current_task_id=None), 1
@@ -1366,7 +1366,7 @@ async def test_b40_engine_stashes_cause_for_notification(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _flag_on(monkeypatch)
-    engine = _bare(SpawnExitEngine)
+    engine = _bare(ContainerExitEngine)
     engine._assistant_segments_from_transcript = staticmethod(lambda _a: ["tail"])
 
     async def fake_cause(

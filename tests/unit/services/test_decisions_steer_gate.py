@@ -17,12 +17,12 @@ def _svc() -> A2AService:
 
 
 def _bare_engine() -> Any:
-    """A SpawnExitEngine without __init__ (no DB). The class carries a
+    """A TranscriptNotesEngine without __init__ (no DB). The class carries a
     TYPE_CHECKING-only Protocol base (abstract at type-check time), so the
     class object is routed through a type[Any] intermediate."""
-    from roboco.runtime.engines.spawn_exit import SpawnExitEngine
+    from roboco.runtime.engines.spawn_exit import TranscriptNotesEngine
 
-    cls: type[Any] = SpawnExitEngine
+    cls: type[Any] = TranscriptNotesEngine
     return object.__new__(cls)
 
 
@@ -193,7 +193,7 @@ def _write_fake_transcript(home: Path, agent_id: str, segments: list[str]) -> Pa
 def test_assistant_segments_extraction(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from roboco.runtime.engines.spawn_exit import SpawnExitEngine
+    from roboco.runtime.engines.spawn_exit import TranscriptNotesEngine
 
     _write_fake_transcript(
         tmp_path,
@@ -204,7 +204,9 @@ def test_assistant_segments_extraction(
         ],
     )
     monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
-    segments = SpawnExitEngine._assistant_segments_from_transcript("backend-dev-1")
+    segments = TranscriptNotesEngine._assistant_segments_from_transcript(
+        "backend-dev-1"
+    )
     assert len(segments) == 1
     assert segments[0] == "x" * 250
 

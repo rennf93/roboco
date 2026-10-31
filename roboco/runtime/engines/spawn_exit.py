@@ -1,5 +1,9 @@
-"""Auto-extracted engine mixin -- see decomp/extract.py. Method bodies below are
-moved verbatim from AgentOrchestrator (family: spawn_exit)."""
+"""When an agent's container ends: the exit handling and crash retry, the
+usage it captured and the spawn session it closes, the B28 transcript
+notes, and parking its provider on a rate limit, overload or dead
+credential.
+
+Engine mixins composed into AgentOrchestrator."""
 
 from __future__ import annotations
 
@@ -19,10 +23,7 @@ import httpx
 from fastapi import status as http_status
 
 from roboco.config import settings
-from roboco.models.runtime import (
-    AgentInstance,
-    WaitingRecord,
-)
+from roboco.models.runtime import AgentInstance, WaitingRecord
 from roboco.runtime.orchestrator import (
     _ANTHROPIC_AUTH_MARKERS,
     _ANTHROPIC_AUTH_RETRY_AFTER_S,
@@ -69,19 +70,14 @@ from roboco.runtime.orchestrator import (
 from roboco.services import decisions
 
 if TYPE_CHECKING:
-    # Also bound into this module's real (non-TYPE_CHECKING) globals at
-    # runtime by orchestrator.py, right after the class is defined -- see
-    # its bottom-of-file comment.
-    from roboco.runtime.orchestrator import (
-        AgentOrchestrator,
-    )
-
+    from roboco.models.runtime import SpawnGitContext
+    from roboco.runtime.orchestrator import AgentOrchestrator
 
 if TYPE_CHECKING:
-    from roboco.models.runtime import SpawnGitContext
     from roboco.runtime.engines._types import AgentOrchestratorSelf as _Base
 else:
     _Base = object
+
 
 # Decisions pilot 6.2 (parking): the retry_soon lane caps the park at this
 # window (a rolling limit that just reset should be re-probed quickly).
@@ -118,73 +114,10 @@ def _assistant_texts_from_transcript_entry(entry: object) -> str:
     return "\n".join(_assistant_block_texts(message.get("content"))).strip()
 
 
-class SpawnExitEngine(_Base):
-    """Mixin holding the "spawn_exit" methods moved out of AgentOrchestrator."""
-
-    # Re-declared (not just inherited from _Base above): mypy's Protocol
-    # attribute inference cannot determine the type of an inherited member
-    # that a method both reads AND assigns within the same method body
-    # (read-then-write in one scope; see _park_grok_rate_limited and
-    # _park_gemini_rate_limited below) without a bare re-declaration
-    # directly on the concrete class.
-    if TYPE_CHECKING:
-        _grok_last_park_at: datetime | None
-        _grok_repark_count: int
-        _gemini_last_park_at: datetime | None
-        _gemini_repark_count: int
-
-    @staticmethod
-    def _grok_usage_root() -> Path:
-        """The base dir all per-agent grok usage dirs live under (no agent id).
-
-        Branched compose-vs-local: in compose the orchestrator sees the mounted
-        host dir at ``GROK_USAGE_DATA_DIR``; in local mode usage.json lands under
-        the shared tempdir. The single fixed anchor the per-agent dir hangs off,
-        and the safe root a finalize read is checked to stay within.
-        """
-        if PROJECT_HOST_PATH:
-            return Path(GROK_USAGE_DATA_DIR)
-        return Path(tempfile.gettempdir()) / "roboco-grok-usage"
-
-    @staticmethod
-    def _codex_usage_root() -> Path:
-        """The base dir all per-agent codex usage dirs live under (no agent id).
-
-        Same compose-vs-local branch as :meth:`_grok_usage_root`.
-        """
-        if PROJECT_HOST_PATH:
-            return Path(CODEX_USAGE_DATA_DIR)
-        return Path(tempfile.gettempdir()) / "roboco-codex-usage"
-
-    @staticmethod
-    def _gemini_usage_root() -> Path:
-        """The base dir all per-agent gemini usage dirs live under (no agent id).
-
-        Branched compose-vs-local exactly like :meth:`_grok_usage_root`.
-        """
-        if PROJECT_HOST_PATH:
-            return Path(GEMINI_USAGE_DATA_DIR)
-        return Path(tempfile.gettempdir()) / "roboco-gemini-usage"
-
-    @staticmethod
-    def _kimi_usage_root() -> Path:
-        """The base dir all per-agent kimi usage dirs live under (no agent id).
-
-        Same compose-vs-local branch as :meth:`_grok_usage_root`.
-        """
-        if PROJECT_HOST_PATH:
-            return Path(KIMI_USAGE_DATA_DIR)
-        return Path(tempfile.gettempdir()) / "roboco-kimi-usage"
-
-    @staticmethod
-    def _hummin_usage_root() -> Path:
-        """The base dir all per-agent hummin usage dirs live under (no agent id).
-
-        Same compose-vs-local branch as :meth:`_kimi_usage_root`.
-        """
-        if PROJECT_HOST_PATH:
-            return Path(HUMMIN_USAGE_DATA_DIR)
-        return Path(tempfile.gettempdir()) / "roboco-hummin-usage"
+class ContainerExitEngine(_Base):
+    """A stopped container: the expected-stop breadcrumbs, its state, exit
+    diagnostics and log dump, its removal, the crash retry or escalation,
+    the B40 exit cause, and the stranded-agent notice."""
 
     def _record_expected_stop(self, agent_id: str, reason: str) -> None:
         """Breadcrumb an orchestrator-initiated stop/kill for ``agent_id``.
@@ -364,6 +297,344 @@ class SpawnExitEngine(_Base):
             if cache is not None:
                 cache.pop(slug, None)
 
+    @staticmethod
+    async def _inspect_container_state(
+        container_name: str,
+    ) -> tuple[bool, int | None]:
+        """Return (is_running, exit_code) from `docker container inspect`.
+
+        exit_code is None when the output is missing or unparseable; the
+        caller treats None as a crash for safety.
+        """
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "container",
+            "inspect",
+            "-f",
+            "{{.State.Running}} {{.State.ExitCode}}",
+            container_name,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            stdout, _ = await asyncio.wait_for(
+                proc.communicate(), timeout=_DOCKER_INSPECT_TIMEOUT_SECONDS
+            )
+        except TimeoutError:
+            proc.kill()
+            raise
+        parts = stdout.decode().strip().split()
+        is_running = bool(parts) and parts[0] == "true"
+        try:
+            exit_code = int(parts[1]) if len(parts) > 1 and parts[1] else None
+        except ValueError:
+            exit_code = None
+        return is_running, exit_code
+
+    async def _handle_stopped_container(
+        self, agent_id: str, instance: Any, exit_code: int | None
+    ) -> None:
+        """Update state + auto-restart only when the exit was non-zero.
+
+        Graceful exits (exit 0 — agent called i_am_idle)
+        were treated as crashes by the old logic. The health check bumped
+        error_count and respawned the agent with the prior task_id even if
+        the task had since moved into a state the role can't claim from
+        (e.g. QA → needs_revision). Now: clean exits reset error_count and
+        do nothing; non-zero exits keep the existing crash-retry behaviour.
+        """
+        cid = instance.container_id[:12] if instance.container_id else None
+        # Grok/Codex/Gemini/Kimi rate-limit + auth-missing parking: each
+        # one-shot CLI mirrors the same "recognized exit code -> park the
+        # provider" shape (see the individual _is_*_exit / _park_* pairs), so
+        # a single dispatch loop replaces what would otherwise be 8
+        # near-identical early returns (keeps this function's branching flat
+        # for PLR0911).
+        if await self._maybe_park_for_known_exit(agent_id, instance, exit_code):
+            return
+        graceful = exit_code == 0
+        # Park the provider on a session/usage limit or a server overload detected
+        # in the dead container's output instead of crash-retrying into it. The
+        # probe-resume loop revives the task when the limit lifts / overload clears.
+        if await self._maybe_park_for_exit_error(agent_id, instance, graceful):
+            return
+        # B40 park_cause: when the deterministic park ladders declined and the
+        # exit was a crash, ask the classifier for the one-line cause that the
+        # stranded/waiting notification will carry (additive only - the
+        # ladders keep first refusal on parking, so the verdict never changes
+        # today's classification).
+        if not graceful:
+            await self._decisions_record_exit_cause(agent_id, instance, exit_code)
+        if graceful:
+            logger.info(
+                "Agent container exited gracefully",
+                agent_id=agent_id,
+                container_id=cid,
+                exit_code=exit_code,
+            )
+        else:
+            await self._log_stopped_container(agent_id, cid, exit_code)
+        # The agent self-exited (a graceful i_am_idle shutdown, or a crash), so
+        # stop_agent() — which normally finalizes — was never called. Finalize
+        # here to capture token usage from the transcript; otherwise the
+        # spawn-session row is left open with zero tokens.
+        await self._finalize_spawn_session(
+            agent_id, exit_reason="completed" if graceful else "crashed"
+        )
+        instance.state = AgentState.OFFLINE
+        instance.container_id = None
+        if graceful:
+            instance.error_count = 0
+            self._rearm_auth_ceo_notify(agent_id, instance)
+            return
+        await self._crash_retry_or_escalate(agent_id, instance)
+
+    def _rearm_auth_ceo_notify(self, agent_id: str, instance: Any) -> None:
+        """Re-arm the auth-missing CEO notification only when THIS agent was
+        itself auth-parked and has now exited gracefully - proof the
+        credential is back. An unrelated agent of the same provider finishing
+        normally mid-outage must not clear the flag, or the next auth crash
+        pages the CEO again for the same still-dead credential."""
+        if agent_id in self._auth_parked_agents:
+            self._auth_parked_agents.discard(agent_id)
+            provider_type = instance.config.provider_type if instance.config else None
+            if provider_type is not None:
+                self._auth_ceo_notified.discard(provider_type)
+
+    async def _log_stopped_container(
+        self, agent_id: str, container_id: str | None, exit_code: int | None
+    ) -> None:
+        """Log a non-graceful exit, attributed via the expected-stop breadcrumb.
+
+        A fresh breadcrumb (recorded by an orchestrator-initiated stop/kill
+        path — see ``_record_expected_stop``) means this death is explained:
+        log it at info as "(expected)" so the warning line stays meaningful
+        for genuinely unattributed SIGTERMs/crashes. Inspect diagnostics are
+        best-effort and never block the log line.
+        """
+        reason = self._consume_expected_stop(agent_id)
+        diagnostics = await self._inspect_exit_diagnostics(f"roboco-agent-{agent_id}")
+        expected = reason != "none_recorded"
+        log = logger.info if expected else logger.warning
+        log(
+            "Agent container stopped (expected)"
+            if expected
+            else "Agent container stopped unexpectedly",
+            agent_id=agent_id,
+            container_id=container_id,
+            exit_code=exit_code,
+            expected_stop_reason=reason,
+            **diagnostics,
+        )
+
+    async def _fresh_or_prior_git_context(
+        self, task_id: str | None, agent_id: str
+    ) -> SpawnGitContext | None:
+        """The CURRENT task's git context, falling back to the prior instance's.
+
+        Re-resolving from the task on every respawn (crash-retry, rate-limit
+        resume) prevents a STALE context from regenerating a manifest that
+        points at a nonexistent workspace: a project renamed or deleted since
+        the original spawn would otherwise wedge the agent in an
+        error-loop-crash cycle no dispatcher spawn can fix (live 2026-09-28:
+        fe-qa/be-qa crash-restarted for hours with slug "roboco" while the DB
+        project is "roboco-api" — every review tool errored on the
+        nonexistent path). The prior context is the fallback only when the
+        task no longer resolves.
+        """
+        fresh = await self._git_context_from_task_id(task_id) if task_id else None
+        if fresh is not None:
+            return fresh
+        prior = self._instances.get(agent_id)
+        return prior.config.git_context if prior and prior.config else None
+
+    async def _crash_retry_or_escalate(self, agent_id: str, instance: Any) -> None:
+        """A crashed (non-graceful) agent: auto-restart up to a cap, then escalate.
+
+        Bumps error_count and respawns while under the cap; at exactly the cap
+        escalates once to humans (subsequent crashes stay quiet to avoid spam).
+        """
+        from roboco.services.maintenance_pause import PauseScope
+
+        # While the fleet is dispatch-paused a crash must NOT respawn (the
+        # dispatcher and the reaper both skip paused fleets): the container
+        # stays offline and error_count is left untouched so the crash after
+        # resume gets a full retry budget instead of inheriting this one.
+        if await self._is_paused(PauseScope.DISPATCH):
+            logger.info(
+                "Crashed agent left offline: dispatch pause is armed",
+                agent_id=agent_id,
+                task_id=instance.current_task_id,
+            )
+            return
+        instance.error_count += 1
+        max_retries = 3
+        if instance.error_count < max_retries:
+            logger.info("Auto-restarting crashed agent", agent_id=agent_id)
+            await self.spawn_agent(
+                agent_id=agent_id,
+                task_id=instance.current_task_id,
+                git_context=await self._fresh_or_prior_git_context(
+                    instance.current_task_id, agent_id
+                ),
+                spawned_by="_crash_retry_or_escalate",
+            )
+        elif instance.error_count == max_retries:
+            # Exactly at the threshold — escalate once to humans so a
+            # stranded agent doesn't die silently. Subsequent crashes
+            # stay quiet to avoid notification spam.
+            logger.error(
+                "Agent exceeded max restart attempts; escalating",
+                agent_id=agent_id,
+                error_count=instance.error_count,
+                task_id=instance.current_task_id,
+            )
+            await self._notify_agent_stranded(
+                agent_id=agent_id,
+                error_count=instance.error_count,
+                task_id=instance.current_task_id,
+            )
+
+    async def _decisions_record_exit_cause(
+        self, agent_id: str, instance: Any, exit_code: int | None
+    ) -> None:
+        """B40 park_cause: classify the exit cause and stash the one-line
+        cause for the stranded/waiting notification (fail-open: any failure
+        leaves today's classification and notification exactly as they were)."""
+        if not settings.decisions_enabled:
+            return
+        try:
+            from roboco.db.base import get_session_factory
+            from roboco.services.decisions import pilots_dispatch
+
+            transcript_tail = None
+            segments = self._assistant_segments_from_transcript(agent_id)
+            if segments:
+                transcript_tail = segments[-1]
+            task_id = getattr(instance, "current_task_id", None)
+            factory = get_session_factory()
+            async with factory() as db:
+                verdict = await pilots_dispatch.park_cause(
+                    db,
+                    agent_id=agent_id,
+                    task_id=str(task_id) if task_id else None,
+                    exit_code=exit_code,
+                    parked_kind=None,
+                    transcript_tail=transcript_tail,
+                )
+            if verdict is None:
+                return
+            _cause, line = verdict
+            causes: dict[str, str] = getattr(self, "_decisions_exit_causes", {})
+            self._decisions_exit_causes = causes
+            causes[agent_id] = line
+        except Exception as exc:
+            logger.debug(
+                "park-cause decisions pass failed (best-effort)",
+                agent_id=agent_id,
+                error=str(exc),
+            )
+
+    async def _notify_agent_stranded(
+        self,
+        agent_id: str,
+        error_count: int,
+        task_id: str | None,
+    ) -> None:
+        """Create a notification for humans when an agent can't be restarted.
+
+        Posts a high-priority notification addressed to the auditor and CEO.
+        Fire-and-forget: the agent is already dead; don't let our own failure
+        stop the health loop.
+        """
+        try:
+            from roboco.db.base import get_session_factory
+            from roboco.db.tables import NotificationTable
+            from roboco.models.base import (
+                AgentRole,
+                NotificationPriority,
+                NotificationType,
+            )
+            from roboco.services.notification_delivery import (
+                get_notification_delivery_service,
+            )
+            from roboco.services.repositories.query_helpers import get_agent_by_role
+            from roboco.utils.converters import require_uuid
+
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                auditor = await get_agent_by_role(db, AgentRole.AUDITOR)
+                ceo = await get_agent_by_role(db, AgentRole.CEO)
+                recipients = [a.id for a in (auditor, ceo) if a is not None]
+                if not recipients:
+                    logger.warning(
+                        "No auditor/ceo found for stranded-agent notification",
+                        agent_id=agent_id,
+                    )
+                    return
+                # recipients is non-empty (guarded above) and already holds the
+                # non-None ids in auditor-then-ceo order — its first entry is the
+                # same value as `auditor.id if auditor else ceo.id`, without the
+                # union-narrowing mypy can't prove.
+                from_agent = recipients[0]
+                # B40 park_cause: append the Decisions one-line cause when the
+                # exit classifier produced one (additive only).
+                cause = getattr(self, "_decisions_exit_causes", {}).pop(agent_id, "")
+                body = (
+                    f"Agent '{agent_id}' exceeded max restart attempts "
+                    f"({error_count}) and will not auto-recover. "
+                    f"Task: {task_id or 'none'}. Manual intervention needed."
+                )
+                if cause:
+                    body = f"{body} {cause}."
+                notification = NotificationTable(
+                    type=NotificationType.ALERT,
+                    priority=NotificationPriority.HIGH,
+                    from_agent=from_agent,
+                    to_agents=recipients,
+                    subject=f"Agent stranded: {agent_id}",
+                    body=body,
+                    requires_ack=True,
+                )
+                db.add(notification)
+                await db.flush()
+                delivery = get_notification_delivery_service(db)
+                await delivery.deliver(require_uuid(notification.id))
+                await db.commit()
+        except Exception as e:
+            logger.error(
+                "Failed to send stranded-agent notification",
+                agent_id=agent_id,
+                error=str(e),
+            )
+
+    @staticmethod
+    async def _tail_container_logs(container_name: str, lines: int = 80) -> str:
+        """Return the last ``lines`` of a container's combined output, '' on error.
+
+        The container is still present at exit (agents run detached, not
+        ``--rm``), so ``docker logs`` can read what the dead run printed.
+        """
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "docker",
+                "logs",
+                "--tail",
+                str(lines),
+                container_name,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            out, _ = await proc.communicate()
+        except Exception:
+            return ""
+        return out.decode(errors="replace")
+
+
+class AgentWaitingEngine(_Base):
+    """An agent waiting long, and which provider a tracked agent runs on: the
+    WAITING_LONG stop with its durable record, and the provider queries."""
+
     async def mark_waiting_long(
         self,
         agent_id: str,
@@ -478,49 +749,63 @@ class SpawnExitEngine(_Base):
             and inst.config.provider_type == provider
         ]
 
-    def _claude_session_id_for(self, agent_id: str) -> str | None:
-        """The orchestrator-assigned Claude session id for a running agent."""
-        instance = self._instances.get(agent_id)
-        return (
-            instance.config.claude_session_id if instance and instance.config else None
-        )
+
+class UsageFilesEngine(_Base):
+    """Where each provider CLI's per-agent ``usage.json`` lives, and reading it
+    behind a containment barrier."""
 
     @staticmethod
-    def _usage_from_transcript(
-        agent_id: str, claude_session_id: str | None = None
-    ) -> tuple[int, int, int, int, int]:
-        """Sum token usage + turn count from the agent's Claude Code transcript.
+    def _grok_usage_root() -> Path:
+        """The base dir all per-agent grok usage dirs live under (no agent id).
 
-        The host ``~/.claude`` is mounted into the orchestrator, so transcripts
-        are readable here under ``projects/<cwd-dir>/<session-id>.jsonl``. When
-        the orchestrator-assigned ``claude_session_id`` is known we locate the
-        exact transcript by id across ANY project dir — review/coordinate roles
-        run at cwd ``/app`` so theirs lands in ``projects/-app``, not in a
-        per-agent ``projects/*-{slug}`` dir. Without an id we fall back to the
-        newest transcript in the agent's own workspace dir. Durable fallback for
-        the live SDK ``/usage/status`` fetch, which misses for short-lived or
-        torn-down agents. Returns zeros when no transcript is found.
+        Branched compose-vs-local: in compose the orchestrator sees the mounted
+        host dir at ``GROK_USAGE_DATA_DIR``; in local mode usage.json lands under
+        the shared tempdir. The single fixed anchor the per-agent dir hangs off,
+        and the safe root a finalize read is checked to stay within.
         """
-        from roboco.agent_sdk.transcript_usage import sum_transcript_usage
+        if PROJECT_HOST_PATH:
+            return Path(GROK_USAGE_DATA_DIR)
+        return Path(tempfile.gettempdir()) / "roboco-grok-usage"
 
-        projects = Path.home() / ".claude" / "projects"
-        try:
-            if claude_session_id:
-                by_id = list(projects.glob(f"*/{claude_session_id}.jsonl"))
-                if by_id:
-                    return sum_transcript_usage(by_id[0])
-            jsonl = [
-                f
-                for d in projects.glob(f"*-{agent_id}")
-                if d.is_dir()
-                for f in d.glob("*.jsonl")
-            ]
-            if not jsonl:
-                return (0, 0, 0, 0, 0)
-            newest = max(jsonl, key=lambda f: f.stat().st_mtime)
-            return sum_transcript_usage(newest)
-        except OSError:
-            return (0, 0, 0, 0, 0)
+    @staticmethod
+    def _codex_usage_root() -> Path:
+        """The base dir all per-agent codex usage dirs live under (no agent id).
+
+        Same compose-vs-local branch as :meth:`_grok_usage_root`.
+        """
+        if PROJECT_HOST_PATH:
+            return Path(CODEX_USAGE_DATA_DIR)
+        return Path(tempfile.gettempdir()) / "roboco-codex-usage"
+
+    @staticmethod
+    def _gemini_usage_root() -> Path:
+        """The base dir all per-agent gemini usage dirs live under (no agent id).
+
+        Branched compose-vs-local exactly like :meth:`_grok_usage_root`.
+        """
+        if PROJECT_HOST_PATH:
+            return Path(GEMINI_USAGE_DATA_DIR)
+        return Path(tempfile.gettempdir()) / "roboco-gemini-usage"
+
+    @staticmethod
+    def _kimi_usage_root() -> Path:
+        """The base dir all per-agent kimi usage dirs live under (no agent id).
+
+        Same compose-vs-local branch as :meth:`_grok_usage_root`.
+        """
+        if PROJECT_HOST_PATH:
+            return Path(KIMI_USAGE_DATA_DIR)
+        return Path(tempfile.gettempdir()) / "roboco-kimi-usage"
+
+    @staticmethod
+    def _hummin_usage_root() -> Path:
+        """The base dir all per-agent hummin usage dirs live under (no agent id).
+
+        Same compose-vs-local branch as :meth:`_kimi_usage_root`.
+        """
+        if PROJECT_HOST_PATH:
+            return Path(HUMMIN_USAGE_DATA_DIR)
+        return Path(tempfile.gettempdir()) / "roboco-hummin-usage"
 
     def _grok_usage_json(self, agent_id: str) -> dict[str, Any] | None:
         """Read a GROK agent's ``usage.json`` (``{model, total_tokens, cost_usd}``).
@@ -563,32 +848,6 @@ class SpawnExitEngine(_Base):
         except (OSError, ValueError, json.JSONDecodeError):
             return None
         return data if isinstance(data, dict) else None
-
-    def _grok_usage_tokens(
-        self, agent_id: str, warn_on_zero: bool = True
-    ) -> tuple[int, int, int, int]:
-        """A GROK agent's token usage from its ``usage.json``.
-
-        grok reports a single cumulative total with no input/output split, so it
-        folds into output (it bills at the output rate, matching
-        ``calculate_cost``). A WARNING is logged on a missing/zero read because a
-        silent mount/uid failure is otherwise indistinguishable from a genuine
-        zero-cost run. Returns ``(input, output, cache_read, cache_write)``.
-        """
-        data = self._grok_usage_json(agent_id)
-        total = 0
-        if data:
-            try:
-                total = int(data.get("total_tokens", 0))
-            except (TypeError, ValueError):
-                total = 0
-        if warn_on_zero and not total:
-            logger.warning(
-                "GROK agent finalized with no readable usage "
-                "(0 tokens / $0) — check the data dir mount",
-                agent_id=agent_id,
-            )
-        return (0, total, 0, 0)
 
     def _codex_usage_json(self, agent_id: str) -> dict[str, Any] | None:
         """Read an OPENAI agent's ``usage.json`` (mirrors ``_grok_usage_json``).
@@ -650,6 +909,74 @@ class SpawnExitEngine(_Base):
         docstring promised. Returns ``None`` when absent / unreadable.
         """
         return self._read_usage_json_contained(self._nebius_usage_root(), agent_id)
+
+
+class UsageTokensEngine(_Base):
+    """An agent's token, turn and cost counts: from each provider's
+    ``usage.json``, or from the Claude transcript."""
+
+    @staticmethod
+    def _usage_from_transcript(
+        agent_id: str, claude_session_id: str | None = None
+    ) -> tuple[int, int, int, int, int]:
+        """Sum token usage + turn count from the agent's Claude Code transcript.
+
+        The host ``~/.claude`` is mounted into the orchestrator, so transcripts
+        are readable here under ``projects/<cwd-dir>/<session-id>.jsonl``. When
+        the orchestrator-assigned ``claude_session_id`` is known we locate the
+        exact transcript by id across ANY project dir — review/coordinate roles
+        run at cwd ``/app`` so theirs lands in ``projects/-app``, not in a
+        per-agent ``projects/*-{slug}`` dir. Without an id we fall back to the
+        newest transcript in the agent's own workspace dir. Durable fallback for
+        the live SDK ``/usage/status`` fetch, which misses for short-lived or
+        torn-down agents. Returns zeros when no transcript is found.
+        """
+        from roboco.agent_sdk.transcript_usage import sum_transcript_usage
+
+        projects = Path.home() / ".claude" / "projects"
+        try:
+            if claude_session_id:
+                by_id = list(projects.glob(f"*/{claude_session_id}.jsonl"))
+                if by_id:
+                    return sum_transcript_usage(by_id[0])
+            jsonl = [
+                f
+                for d in projects.glob(f"*-{agent_id}")
+                if d.is_dir()
+                for f in d.glob("*.jsonl")
+            ]
+            if not jsonl:
+                return (0, 0, 0, 0, 0)
+            newest = max(jsonl, key=lambda f: f.stat().st_mtime)
+            return sum_transcript_usage(newest)
+        except OSError:
+            return (0, 0, 0, 0, 0)
+
+    def _grok_usage_tokens(
+        self, agent_id: str, warn_on_zero: bool = True
+    ) -> tuple[int, int, int, int]:
+        """A GROK agent's token usage from its ``usage.json``.
+
+        grok reports a single cumulative total with no input/output split, so it
+        folds into output (it bills at the output rate, matching
+        ``calculate_cost``). A WARNING is logged on a missing/zero read because a
+        silent mount/uid failure is otherwise indistinguishable from a genuine
+        zero-cost run. Returns ``(input, output, cache_read, cache_write)``.
+        """
+        data = self._grok_usage_json(agent_id)
+        total = 0
+        if data:
+            try:
+                total = int(data.get("total_tokens", 0))
+            except (TypeError, ValueError):
+                total = 0
+        if warn_on_zero and not total:
+            logger.warning(
+                "GROK agent finalized with no readable usage "
+                "(0 tokens / $0) — check the data dir mount",
+                agent_id=agent_id,
+            )
+        return (0, total, 0, 0)
 
     def _nebius_usage_cost(self, agent_id: str) -> float | None:
         """A NEBIUS agent's metered spend from its ``usage.json``.
@@ -918,6 +1245,19 @@ class SpawnExitEngine(_Base):
                 agent_id=agent_id,
             )
         return (0, total, 0, 0)
+
+
+class SessionFinalizeEngine(_Base):
+    """Closing an agent's spawn session: its final tokens, turns, tool calls
+    and cost, the zero-capture warning, the Claude session id and the
+    doctrine version it ran with."""
+
+    def _claude_session_id_for(self, agent_id: str) -> str | None:
+        """The orchestrator-assigned Claude session id for a running agent."""
+        instance = self._instances.get(agent_id)
+        return (
+            instance.config.claude_session_id if instance and instance.config else None
+        )
 
     async def _resolve_final_token_usage(
         self, agent_id: str
@@ -1236,6 +1576,38 @@ class SpawnExitEngine(_Base):
                 error=str(exc),
             )
 
+    @staticmethod
+    def _doctrine_version_for_instance(instance: AgentInstance | None) -> str | None:
+        """Short hash of the composed system prompt this spawn ran with.
+
+        Reads the SAME file ``_generate_composed_prompt`` wrote at spawn
+        preparation (``config.blueprint_path``) — nothing on the spawn/stop
+        path deletes it, so it is still the exact prompt text this agent ran
+        with. Every provider gets one (the blueprint is composed and written
+        unconditionally in ``_prepare_agent_spawn``, before provider/route
+        resolution) — GROK agents carry a real blueprint file too, same as
+        Claude. Best-effort: a missing/unreadable file (a provider-parked stub
+        instance that never actually spawned — ``blueprint_path=Path()`` — an
+        evicted temp dir, ...) is NULL, never a finalize failure — the eval
+        harness treats an unstamped session as "doctrine unknown", not an
+        error.
+        """
+        if instance is None or instance.config is None:
+            return None
+        blueprint_path = instance.config.blueprint_path
+        if not blueprint_path:
+            return None
+        try:
+            content = blueprint_path.read_text()
+        except OSError:
+            return None
+        return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
+
+
+class TranscriptNotesEngine(_Base):
+    """Decisions B28: journal entries from the note-worthy assistant segments
+    of an agent's transcript."""
+
     async def _capture_transcript_notes(self, agent_id: str) -> None:
         """Persist journal entries for transcript segments the Decisions
         B28 pilot marks as durable. Shadow mode logs verdicts only; ON mode
@@ -1372,66 +1744,12 @@ class SpawnExitEngine(_Base):
         except OSError:
             return []
 
-    @staticmethod
-    def _doctrine_version_for_instance(instance: AgentInstance | None) -> str | None:
-        """Short hash of the composed system prompt this spawn ran with.
 
-        Reads the SAME file ``_generate_composed_prompt`` wrote at spawn
-        preparation (``config.blueprint_path``) — nothing on the spawn/stop
-        path deletes it, so it is still the exact prompt text this agent ran
-        with. Every provider gets one (the blueprint is composed and written
-        unconditionally in ``_prepare_agent_spawn``, before provider/route
-        resolution) — GROK agents carry a real blueprint file too, same as
-        Claude. Best-effort: a missing/unreadable file (a provider-parked stub
-        instance that never actually spawned — ``blueprint_path=Path()`` — an
-        evicted temp dir, ...) is NULL, never a finalize failure — the eval
-        harness treats an unstamped session as "doctrine unknown", not an
-        error.
-        """
-        if instance is None or instance.config is None:
-            return None
-        blueprint_path = instance.config.blueprint_path
-        if not blueprint_path:
-            return None
-        try:
-            content = blueprint_path.read_text()
-        except OSError:
-            return None
-        return hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
-
-    @staticmethod
-    async def _inspect_container_state(
-        container_name: str,
-    ) -> tuple[bool, int | None]:
-        """Return (is_running, exit_code) from `docker container inspect`.
-
-        exit_code is None when the output is missing or unparseable; the
-        caller treats None as a crash for safety.
-        """
-        proc = await asyncio.create_subprocess_exec(
-            "docker",
-            "container",
-            "inspect",
-            "-f",
-            "{{.State.Running}} {{.State.ExitCode}}",
-            container_name,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        try:
-            stdout, _ = await asyncio.wait_for(
-                proc.communicate(), timeout=_DOCKER_INSPECT_TIMEOUT_SECONDS
-            )
-        except TimeoutError:
-            proc.kill()
-            raise
-        parts = stdout.decode().strip().split()
-        is_running = bool(parts) and parts[0] == "true"
-        try:
-            exit_code = int(parts[1]) if len(parts) > 1 and parts[1] else None
-        except ValueError:
-            exit_code = None
-        return is_running, exit_code
+class ProviderParkingEngine(_Base):
+    """Parking a dead run's provider: on an exit-error or known exit code, on
+    a session limit, overload or expired credential read from the logs or
+    transcript, with the decisions parking lane, its escalation, and the CEO
+    alert for a dead host credential."""
 
     async def _maybe_park_for_exit_error(
         self, agent_id: str, instance: Any, graceful: bool
@@ -1545,501 +1863,6 @@ class SpawnExitEngine(_Base):
                 await park(agent_id, instance)
                 return True
         return False
-
-    async def _handle_stopped_container(
-        self, agent_id: str, instance: Any, exit_code: int | None
-    ) -> None:
-        """Update state + auto-restart only when the exit was non-zero.
-
-        Graceful exits (exit 0 — agent called i_am_idle)
-        were treated as crashes by the old logic. The health check bumped
-        error_count and respawned the agent with the prior task_id even if
-        the task had since moved into a state the role can't claim from
-        (e.g. QA → needs_revision). Now: clean exits reset error_count and
-        do nothing; non-zero exits keep the existing crash-retry behaviour.
-        """
-        cid = instance.container_id[:12] if instance.container_id else None
-        # Grok/Codex/Gemini/Kimi rate-limit + auth-missing parking: each
-        # one-shot CLI mirrors the same "recognized exit code -> park the
-        # provider" shape (see the individual _is_*_exit / _park_* pairs), so
-        # a single dispatch loop replaces what would otherwise be 8
-        # near-identical early returns (keeps this function's branching flat
-        # for PLR0911).
-        if await self._maybe_park_for_known_exit(agent_id, instance, exit_code):
-            return
-        graceful = exit_code == 0
-        # Park the provider on a session/usage limit or a server overload detected
-        # in the dead container's output instead of crash-retrying into it. The
-        # probe-resume loop revives the task when the limit lifts / overload clears.
-        if await self._maybe_park_for_exit_error(agent_id, instance, graceful):
-            return
-        # B40 park_cause: when the deterministic park ladders declined and the
-        # exit was a crash, ask the classifier for the one-line cause that the
-        # stranded/waiting notification will carry (additive only - the
-        # ladders keep first refusal on parking, so the verdict never changes
-        # today's classification).
-        if not graceful:
-            await self._decisions_record_exit_cause(agent_id, instance, exit_code)
-        if graceful:
-            logger.info(
-                "Agent container exited gracefully",
-                agent_id=agent_id,
-                container_id=cid,
-                exit_code=exit_code,
-            )
-        else:
-            await self._log_stopped_container(agent_id, cid, exit_code)
-        # The agent self-exited (a graceful i_am_idle shutdown, or a crash), so
-        # stop_agent() — which normally finalizes — was never called. Finalize
-        # here to capture token usage from the transcript; otherwise the
-        # spawn-session row is left open with zero tokens.
-        await self._finalize_spawn_session(
-            agent_id, exit_reason="completed" if graceful else "crashed"
-        )
-        instance.state = AgentState.OFFLINE
-        instance.container_id = None
-        if graceful:
-            instance.error_count = 0
-            self._rearm_auth_ceo_notify(agent_id, instance)
-            return
-        await self._crash_retry_or_escalate(agent_id, instance)
-
-    def _rearm_auth_ceo_notify(self, agent_id: str, instance: Any) -> None:
-        """Re-arm the auth-missing CEO notification only when THIS agent was
-        itself auth-parked and has now exited gracefully - proof the
-        credential is back. An unrelated agent of the same provider finishing
-        normally mid-outage must not clear the flag, or the next auth crash
-        pages the CEO again for the same still-dead credential."""
-        if agent_id in self._auth_parked_agents:
-            self._auth_parked_agents.discard(agent_id)
-            provider_type = instance.config.provider_type if instance.config else None
-            if provider_type is not None:
-                self._auth_ceo_notified.discard(provider_type)
-
-    async def _log_stopped_container(
-        self, agent_id: str, container_id: str | None, exit_code: int | None
-    ) -> None:
-        """Log a non-graceful exit, attributed via the expected-stop breadcrumb.
-
-        A fresh breadcrumb (recorded by an orchestrator-initiated stop/kill
-        path — see ``_record_expected_stop``) means this death is explained:
-        log it at info as "(expected)" so the warning line stays meaningful
-        for genuinely unattributed SIGTERMs/crashes. Inspect diagnostics are
-        best-effort and never block the log line.
-        """
-        reason = self._consume_expected_stop(agent_id)
-        diagnostics = await self._inspect_exit_diagnostics(f"roboco-agent-{agent_id}")
-        expected = reason != "none_recorded"
-        log = logger.info if expected else logger.warning
-        log(
-            "Agent container stopped (expected)"
-            if expected
-            else "Agent container stopped unexpectedly",
-            agent_id=agent_id,
-            container_id=container_id,
-            exit_code=exit_code,
-            expected_stop_reason=reason,
-            **diagnostics,
-        )
-
-    async def _fresh_or_prior_git_context(
-        self, task_id: str | None, agent_id: str
-    ) -> SpawnGitContext | None:
-        """The CURRENT task's git context, falling back to the prior instance's.
-
-        Re-resolving from the task on every respawn (crash-retry, rate-limit
-        resume) prevents a STALE context from regenerating a manifest that
-        points at a nonexistent workspace: a project renamed or deleted since
-        the original spawn would otherwise wedge the agent in an
-        error-loop-crash cycle no dispatcher spawn can fix (live 2026-09-28:
-        fe-qa/be-qa crash-restarted for hours with slug "roboco" while the DB
-        project is "roboco-api" — every review tool errored on the
-        nonexistent path). The prior context is the fallback only when the
-        task no longer resolves.
-        """
-        fresh = await self._git_context_from_task_id(task_id) if task_id else None
-        if fresh is not None:
-            return fresh
-        prior = self._instances.get(agent_id)
-        return prior.config.git_context if prior and prior.config else None
-
-    async def _crash_retry_or_escalate(self, agent_id: str, instance: Any) -> None:
-        """A crashed (non-graceful) agent: auto-restart up to a cap, then escalate.
-
-        Bumps error_count and respawns while under the cap; at exactly the cap
-        escalates once to humans (subsequent crashes stay quiet to avoid spam).
-        """
-        from roboco.services.maintenance_pause import PauseScope
-
-        # While the fleet is dispatch-paused a crash must NOT respawn (the
-        # dispatcher and the reaper both skip paused fleets): the container
-        # stays offline and error_count is left untouched so the crash after
-        # resume gets a full retry budget instead of inheriting this one.
-        if await self._is_paused(PauseScope.DISPATCH):
-            logger.info(
-                "Crashed agent left offline: dispatch pause is armed",
-                agent_id=agent_id,
-                task_id=instance.current_task_id,
-            )
-            return
-        instance.error_count += 1
-        max_retries = 3
-        if instance.error_count < max_retries:
-            logger.info("Auto-restarting crashed agent", agent_id=agent_id)
-            await self.spawn_agent(
-                agent_id=agent_id,
-                task_id=instance.current_task_id,
-                git_context=await self._fresh_or_prior_git_context(
-                    instance.current_task_id, agent_id
-                ),
-                spawned_by="_crash_retry_or_escalate",
-            )
-        elif instance.error_count == max_retries:
-            # Exactly at the threshold — escalate once to humans so a
-            # stranded agent doesn't die silently. Subsequent crashes
-            # stay quiet to avoid notification spam.
-            logger.error(
-                "Agent exceeded max restart attempts; escalating",
-                agent_id=agent_id,
-                error_count=instance.error_count,
-                task_id=instance.current_task_id,
-            )
-            await self._notify_agent_stranded(
-                agent_id=agent_id,
-                error_count=instance.error_count,
-                task_id=instance.current_task_id,
-            )
-
-    async def _decisions_record_exit_cause(
-        self, agent_id: str, instance: Any, exit_code: int | None
-    ) -> None:
-        """B40 park_cause: classify the exit cause and stash the one-line
-        cause for the stranded/waiting notification (fail-open: any failure
-        leaves today's classification and notification exactly as they were)."""
-        if not settings.decisions_enabled:
-            return
-        try:
-            from roboco.db.base import get_session_factory
-            from roboco.services.decisions import pilots_dispatch
-
-            transcript_tail = None
-            segments = self._assistant_segments_from_transcript(agent_id)
-            if segments:
-                transcript_tail = segments[-1]
-            task_id = getattr(instance, "current_task_id", None)
-            factory = get_session_factory()
-            async with factory() as db:
-                verdict = await pilots_dispatch.park_cause(
-                    db,
-                    agent_id=agent_id,
-                    task_id=str(task_id) if task_id else None,
-                    exit_code=exit_code,
-                    parked_kind=None,
-                    transcript_tail=transcript_tail,
-                )
-            if verdict is None:
-                return
-            _cause, line = verdict
-            causes: dict[str, str] = getattr(self, "_decisions_exit_causes", {})
-            self._decisions_exit_causes = causes
-            causes[agent_id] = line
-        except Exception as exc:
-            logger.debug(
-                "park-cause decisions pass failed (best-effort)",
-                agent_id=agent_id,
-                error=str(exc),
-            )
-
-    async def _notify_agent_stranded(
-        self,
-        agent_id: str,
-        error_count: int,
-        task_id: str | None,
-    ) -> None:
-        """Create a notification for humans when an agent can't be restarted.
-
-        Posts a high-priority notification addressed to the auditor and CEO.
-        Fire-and-forget: the agent is already dead; don't let our own failure
-        stop the health loop.
-        """
-        try:
-            from roboco.db.base import get_session_factory
-            from roboco.db.tables import NotificationTable
-            from roboco.models.base import (
-                AgentRole,
-                NotificationPriority,
-                NotificationType,
-            )
-            from roboco.services.notification_delivery import (
-                get_notification_delivery_service,
-            )
-            from roboco.services.repositories.query_helpers import get_agent_by_role
-            from roboco.utils.converters import require_uuid
-
-            session_factory = get_session_factory()
-            async with session_factory() as db:
-                auditor = await get_agent_by_role(db, AgentRole.AUDITOR)
-                ceo = await get_agent_by_role(db, AgentRole.CEO)
-                recipients = [a.id for a in (auditor, ceo) if a is not None]
-                if not recipients:
-                    logger.warning(
-                        "No auditor/ceo found for stranded-agent notification",
-                        agent_id=agent_id,
-                    )
-                    return
-                # recipients is non-empty (guarded above) and already holds the
-                # non-None ids in auditor-then-ceo order — its first entry is the
-                # same value as `auditor.id if auditor else ceo.id`, without the
-                # union-narrowing mypy can't prove.
-                from_agent = recipients[0]
-                # B40 park_cause: append the Decisions one-line cause when the
-                # exit classifier produced one (additive only).
-                cause = getattr(self, "_decisions_exit_causes", {}).pop(agent_id, "")
-                body = (
-                    f"Agent '{agent_id}' exceeded max restart attempts "
-                    f"({error_count}) and will not auto-recover. "
-                    f"Task: {task_id or 'none'}. Manual intervention needed."
-                )
-                if cause:
-                    body = f"{body} {cause}."
-                notification = NotificationTable(
-                    type=NotificationType.ALERT,
-                    priority=NotificationPriority.HIGH,
-                    from_agent=from_agent,
-                    to_agents=recipients,
-                    subject=f"Agent stranded: {agent_id}",
-                    body=body,
-                    requires_ack=True,
-                )
-                db.add(notification)
-                await db.flush()
-                delivery = get_notification_delivery_service(db)
-                await delivery.deliver(require_uuid(notification.id))
-                await db.commit()
-        except Exception as e:
-            logger.error(
-                "Failed to send stranded-agent notification",
-                agent_id=agent_id,
-                error=str(e),
-            )
-
-    @staticmethod
-    def _is_grok_rate_limit_exit(instance: Any, exit_code: int | None) -> bool:
-        """True for a one-shot grok container that exited 75 (xAI 429)."""
-        from roboco.models.base import ModelProvider
-
-        return (
-            exit_code == _GROK_RATE_LIMIT_EXIT_CODE
-            and instance.config is not None
-            and instance.config.provider_type == ModelProvider.GROK.value
-        )
-
-    @staticmethod
-    def _is_grok_auth_exit(instance: Any, exit_code: int | None) -> bool:
-        """True for a one-shot grok container that exited 78 (auth missing/expired).
-
-        The entrypoint runs ``grok_auth --check`` as a backstop and exits 78
-        (EX_CONFIG) when the access token is missing or expired — the CLI cannot
-        refresh it headlessly and would otherwise hang at an interactive login
-        prompt. See ``_GROK_AUTH_EXIT_CODE`` for the full rationale (F041).
-        """
-        from roboco.models.base import ModelProvider
-
-        return (
-            exit_code == _GROK_AUTH_EXIT_CODE
-            and instance.config is not None
-            and instance.config.provider_type == ModelProvider.GROK.value
-        )
-
-    @staticmethod
-    def _is_codex_rate_limit_exit(instance: Any, exit_code: int | None) -> bool:
-        """True for a one-shot codex container that exited 75 (OpenAI 429)."""
-        from roboco.models.base import ModelProvider
-
-        return (
-            exit_code == _CODEX_RATE_LIMIT_EXIT_CODE
-            and instance.config is not None
-            and instance.config.provider_type == ModelProvider.OPENAI.value
-        )
-
-    @staticmethod
-    def _is_codex_auth_exit(instance: Any, exit_code: int | None) -> bool:
-        """True for a one-shot codex container that exited 78 (auth missing/expired).
-
-        The entrypoint runs ``codex_auth --check`` as a backstop and exits 78
-        when the ChatGPT-subscription token is missing or expired — see
-        ``_CODEX_AUTH_EXIT_CODE``.
-        """
-        from roboco.models.base import ModelProvider
-
-        return (
-            exit_code == _CODEX_AUTH_EXIT_CODE
-            and instance.config is not None
-            and instance.config.provider_type == ModelProvider.OPENAI.value
-        )
-
-    @staticmethod
-    def _is_gemini_rate_limit_exit(instance: Any, exit_code: int | None) -> bool:
-        """True for a one-shot gemini container that exited 75 (quota/rate-limit)."""
-        from roboco.models.base import ModelProvider
-
-        return (
-            exit_code == _GEMINI_RATE_LIMIT_EXIT_CODE
-            and instance.config is not None
-            and instance.config.provider_type == ModelProvider.GEMINI.value
-        )
-
-    @staticmethod
-    def _is_gemini_auth_exit(instance: Any, exit_code: int | None) -> bool:
-        """True for a one-shot gemini container that exited 41 (OAuth credential gone).
-
-        The entrypoint's preflight refuses to run (exit 41 — the CLI's own
-        dedicated auth-failure code) when the mounted ``~/.gemini/oauth_creds.json``
-        is missing/empty. See ``_GEMINI_AUTH_EXIT_CODE`` for the full rationale.
-        """
-        from roboco.models.base import ModelProvider
-
-        return (
-            exit_code == _GEMINI_AUTH_EXIT_CODE
-            and instance.config is not None
-            and instance.config.provider_type == ModelProvider.GEMINI.value
-        )
-
-    @staticmethod
-    def _is_kimi_rate_limit_exit(instance: Any, exit_code: int | None) -> bool:
-        """True for a one-shot kimi container that exited 75 (Moonshot 429/quota)."""
-        from roboco.models.base import ModelProvider
-
-        return (
-            exit_code == _KIMI_RATE_LIMIT_EXIT_CODE
-            and instance.config is not None
-            and instance.config.provider_type == ModelProvider.KIMI.value
-        )
-
-    @staticmethod
-    def _is_kimi_auth_exit(instance: Any, exit_code: int | None) -> bool:
-        """True for a one-shot kimi container that exited 78 (auth missing/expired).
-
-        The entrypoint runs ``kimi_cli_config --check`` as a backstop and
-        exits 78 when the symlinked-in subscription credential is missing or
-        expired — see ``_KIMI_AUTH_EXIT_CODE``.
-        """
-        from roboco.models.base import ModelProvider
-
-        return (
-            exit_code == _KIMI_AUTH_EXIT_CODE
-            and instance.config is not None
-            and instance.config.provider_type == ModelProvider.KIMI.value
-        )
-
-    @staticmethod
-    def _is_hummin_rate_limit_exit(instance: Any, exit_code: int | None) -> bool:
-        """True for a one-shot hummin container that exited 75 (Z.ai 429/quota).
-
-        hummin's JSON mode exits 0 even on an assistant error, so the
-        ENTRYPOINT sniffs the run log (``hummin_cli_sniff``) and exits 75
-        itself on a rate-limit classification — see
-        ``_HUMMIN_RATE_LIMIT_EXIT_CODE``.
-        """
-        from roboco.models.base import ModelProvider
-
-        return (
-            exit_code == _HUMMIN_RATE_LIMIT_EXIT_CODE
-            and instance.config is not None
-            and instance.config.provider_type == ModelProvider.HUMMIN.value
-        )
-
-    @staticmethod
-    def _is_hummin_auth_exit(instance: Any, exit_code: int | None) -> bool:
-        """True for a one-shot hummin container that exited 78 (key missing/invalid).
-
-        The entrypoint's preflight (``hummin_cli_config --check``, i.e.
-        ``hummin auth check --provider zai --json``) exits 78-mapped on a
-        missing/invalid ZAI_API_KEY — see ``_HUMMIN_AUTH_EXIT_CODE``.
-        """
-        from roboco.models.base import ModelProvider
-
-        return (
-            exit_code == _HUMMIN_AUTH_EXIT_CODE
-            and instance.config is not None
-            and instance.config.provider_type == ModelProvider.HUMMIN.value
-        )
-
-    @staticmethod
-    def _is_openrouter_rate_limit_exit(instance: Any, exit_code: int | None) -> bool:
-        """True for a one-shot openrouter container that exited 75 (a 429/quota)."""
-        from roboco.models.base import ModelProvider
-
-        return (
-            exit_code == _OPENROUTER_RATE_LIMIT_EXIT_CODE
-            and instance.config is not None
-            and instance.config.provider_type == ModelProvider.OPENROUTER.value
-        )
-
-    @staticmethod
-    def _is_openrouter_auth_exit(instance: Any, exit_code: int | None) -> bool:
-        """True for a one-shot openrouter container that exited 78 (key missing).
-
-        The entrypoint runs ``openrouter_cli_config --check`` as a backstop
-        and exits 78 when ``OPENROUTER_API_KEY`` is missing/invalid — see
-        ``_OPENROUTER_AUTH_EXIT_CODE``.
-        """
-        from roboco.models.base import ModelProvider
-
-        return (
-            exit_code == _OPENROUTER_AUTH_EXIT_CODE
-            and instance.config is not None
-            and instance.config.provider_type == ModelProvider.OPENROUTER.value
-        )
-
-    @staticmethod
-    def _is_nebius_rate_limit_exit(instance: Any, exit_code: int | None) -> bool:
-        """True for a one-shot nebius container that exited 75 (a 429/quota)."""
-        from roboco.models.base import ModelProvider
-
-        return (
-            exit_code == _NEBIUS_RATE_LIMIT_EXIT_CODE
-            and instance.config is not None
-            and instance.config.provider_type == ModelProvider.NEBIUS.value
-        )
-
-    @staticmethod
-    def _is_nebius_auth_exit(instance: Any, exit_code: int | None) -> bool:
-        """True for a one-shot nebius container that exited 78 (key missing).
-
-        The entrypoint runs ``nebius_cli_config --check`` as a backstop
-        and exits 78 when ``NEBIUS_API_KEY`` is missing/invalid - see
-        ``_NEBIUS_AUTH_EXIT_CODE``.
-        """
-        from roboco.models.base import ModelProvider
-
-        return (
-            exit_code == _NEBIUS_AUTH_EXIT_CODE
-            and instance.config is not None
-            and instance.config.provider_type == ModelProvider.NEBIUS.value
-        )
-
-    @staticmethod
-    async def _tail_container_logs(container_name: str, lines: int = 80) -> str:
-        """Return the last ``lines`` of a container's combined output, '' on error.
-
-        The container is still present at exit (agents run detached, not
-        ``--rm``), so ``docker logs`` can read what the dead run printed.
-        """
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "docker",
-                "logs",
-                "--tail",
-                str(lines),
-                container_name,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.STDOUT,
-            )
-            out, _ = await proc.communicate()
-        except Exception:
-            return ""
-        return out.decode(errors="replace")
 
     def _transcript_tail_text(self, agent_id: str, lines: int = 80) -> str:
         """Return the last ``lines`` of the newest Claude transcript for *agent_id*.
@@ -2336,6 +2159,296 @@ class SpawnExitEngine(_Base):
                 agent_id=agent_id,
                 error=str(exc),
             )
+
+    async def _notify_auth_missing_ceo(
+        self, provider: str, agent_id: str, task_id: str | None
+    ) -> None:
+        """Send a high-priority notification to the CEO about a dead host credential.
+
+        Fires once per expiry episode (caller gates via ``_auth_ceo_notified``).
+        Same direct DB insert + delivery.deliver() pattern as
+        ``_notify_rate_limit_ceo``, but a distinct type: this is a blocker on
+        the fleet, not a transient rate limit.
+        """
+        try:
+            from roboco.db.base import get_session_factory
+            from roboco.db.tables import NotificationTable
+            from roboco.models.base import (
+                AgentRole,
+                NotificationPriority,
+                NotificationType,
+            )
+            from roboco.services.notification_delivery import (
+                get_notification_delivery_service,
+            )
+            from roboco.services.repositories.query_helpers import get_agent_by_role
+            from roboco.utils.converters import require_uuid
+
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                ceo = await get_agent_by_role(db, AgentRole.CEO)
+                if ceo is None:
+                    logger.warning(
+                        "CEO agent not found; skipping auth-missing CEO notification",
+                        provider=provider,
+                    )
+                    return
+                notification = NotificationTable(
+                    type=NotificationType.BLOCKER_ESCALATION,
+                    priority=NotificationPriority.HIGH,
+                    from_agent=ceo.id,
+                    to_agents=[ceo.id],
+                    subject=(
+                        "Claude login expired on the orchestrator host: "
+                        "Anthropic agents parked"
+                    ),
+                    body=(
+                        "The host's Claude Code OAuth session expired and could "
+                        f"not be refreshed (first hit by agent '{agent_id}' on "
+                        f"task {task_id or 'none'}). Every Anthropic agent is "
+                        "parked; no tokens are burned. Fix: an operator runs "
+                        "`claude login` (or `claude setup-token`) on the host as "
+                        "the user whose ~/.claude is mounted into the agent "
+                        "containers. The fleet resumes on its own afterwards."
+                    ),
+                    requires_ack=True,
+                )
+                db.add(notification)
+                await db.flush()
+                delivery = get_notification_delivery_service(db)
+                await delivery.deliver(require_uuid(notification.id))
+                await db.commit()
+            logger.info(
+                "Auth-missing CEO notification sent",
+                provider=provider,
+                agent_id=agent_id,
+                task_id=task_id,
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to send auth-missing CEO notification",
+                provider=provider,
+                agent_id=agent_id,
+                error=str(e),
+            )
+
+
+class ProviderExitCodeEngine(_Base):
+    """Which exit codes mean a rate limit or a missing credential, for each
+    one-shot provider CLI."""
+
+    @staticmethod
+    def _is_grok_rate_limit_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot grok container that exited 75 (xAI 429)."""
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _GROK_RATE_LIMIT_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.GROK.value
+        )
+
+    @staticmethod
+    def _is_grok_auth_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot grok container that exited 78 (auth missing/expired).
+
+        The entrypoint runs ``grok_auth --check`` as a backstop and exits 78
+        (EX_CONFIG) when the access token is missing or expired — the CLI cannot
+        refresh it headlessly and would otherwise hang at an interactive login
+        prompt. See ``_GROK_AUTH_EXIT_CODE`` for the full rationale (F041).
+        """
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _GROK_AUTH_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.GROK.value
+        )
+
+    @staticmethod
+    def _is_codex_rate_limit_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot codex container that exited 75 (OpenAI 429)."""
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _CODEX_RATE_LIMIT_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.OPENAI.value
+        )
+
+    @staticmethod
+    def _is_codex_auth_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot codex container that exited 78 (auth missing/expired).
+
+        The entrypoint runs ``codex_auth --check`` as a backstop and exits 78
+        when the ChatGPT-subscription token is missing or expired — see
+        ``_CODEX_AUTH_EXIT_CODE``.
+        """
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _CODEX_AUTH_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.OPENAI.value
+        )
+
+    @staticmethod
+    def _is_gemini_rate_limit_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot gemini container that exited 75 (quota/rate-limit)."""
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _GEMINI_RATE_LIMIT_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.GEMINI.value
+        )
+
+    @staticmethod
+    def _is_gemini_auth_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot gemini container that exited 41 (OAuth credential gone).
+
+        The entrypoint's preflight refuses to run (exit 41 — the CLI's own
+        dedicated auth-failure code) when the mounted ``~/.gemini/oauth_creds.json``
+        is missing/empty. See ``_GEMINI_AUTH_EXIT_CODE`` for the full rationale.
+        """
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _GEMINI_AUTH_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.GEMINI.value
+        )
+
+    @staticmethod
+    def _is_kimi_rate_limit_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot kimi container that exited 75 (Moonshot 429/quota)."""
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _KIMI_RATE_LIMIT_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.KIMI.value
+        )
+
+    @staticmethod
+    def _is_kimi_auth_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot kimi container that exited 78 (auth missing/expired).
+
+        The entrypoint runs ``kimi_cli_config --check`` as a backstop and
+        exits 78 when the symlinked-in subscription credential is missing or
+        expired — see ``_KIMI_AUTH_EXIT_CODE``.
+        """
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _KIMI_AUTH_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.KIMI.value
+        )
+
+    @staticmethod
+    def _is_hummin_rate_limit_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot hummin container that exited 75 (Z.ai 429/quota).
+
+        hummin's JSON mode exits 0 even on an assistant error, so the
+        ENTRYPOINT sniffs the run log (``hummin_cli_sniff``) and exits 75
+        itself on a rate-limit classification — see
+        ``_HUMMIN_RATE_LIMIT_EXIT_CODE``.
+        """
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _HUMMIN_RATE_LIMIT_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.HUMMIN.value
+        )
+
+    @staticmethod
+    def _is_hummin_auth_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot hummin container that exited 78 (key missing/invalid).
+
+        The entrypoint's preflight (``hummin_cli_config --check``, i.e.
+        ``hummin auth check --provider zai --json``) exits 78-mapped on a
+        missing/invalid ZAI_API_KEY — see ``_HUMMIN_AUTH_EXIT_CODE``.
+        """
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _HUMMIN_AUTH_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.HUMMIN.value
+        )
+
+    @staticmethod
+    def _is_openrouter_rate_limit_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot openrouter container that exited 75 (a 429/quota)."""
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _OPENROUTER_RATE_LIMIT_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.OPENROUTER.value
+        )
+
+    @staticmethod
+    def _is_openrouter_auth_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot openrouter container that exited 78 (key missing).
+
+        The entrypoint runs ``openrouter_cli_config --check`` as a backstop
+        and exits 78 when ``OPENROUTER_API_KEY`` is missing/invalid — see
+        ``_OPENROUTER_AUTH_EXIT_CODE``.
+        """
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _OPENROUTER_AUTH_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.OPENROUTER.value
+        )
+
+    @staticmethod
+    def _is_nebius_rate_limit_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot nebius container that exited 75 (a 429/quota)."""
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _NEBIUS_RATE_LIMIT_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.NEBIUS.value
+        )
+
+    @staticmethod
+    def _is_nebius_auth_exit(instance: Any, exit_code: int | None) -> bool:
+        """True for a one-shot nebius container that exited 78 (key missing).
+
+        The entrypoint runs ``nebius_cli_config --check`` as a backstop
+        and exits 78 when ``NEBIUS_API_KEY`` is missing/invalid - see
+        ``_NEBIUS_AUTH_EXIT_CODE``.
+        """
+        from roboco.models.base import ModelProvider
+
+        return (
+            exit_code == _NEBIUS_AUTH_EXIT_CODE
+            and instance.config is not None
+            and instance.config.provider_type == ModelProvider.NEBIUS.value
+        )
+
+
+class ProviderParkLanesEngine(_Base):
+    """Parking an agent by provider and cause: a rate limit or a missing
+    credential, for each one-shot provider CLI."""
+
+    # Re-declared (not just inherited from _Base above): mypy's Protocol
+    # attribute inference cannot determine the type of an inherited member
+    # that a method both reads AND assigns within the same method body
+    # (read-then-write in one scope; see _park_grok_rate_limited and
+    # _park_gemini_rate_limited below) without a bare re-declaration
+    # directly on the concrete class.
+    if TYPE_CHECKING:
+        _grok_last_park_at: datetime | None
+        _grok_repark_count: int
+        _gemini_last_park_at: datetime | None
+        _gemini_repark_count: int
 
     async def _park_grok_rate_limited(self, agent_id: str, instance: Any) -> None:
         """Park a grok agent whose run hit an xAI 429 (entrypoint exit 75).
@@ -2641,75 +2754,3 @@ class SpawnExitEngine(_Base):
             retry_after=getattr(self, "_hummin_auth_retry_after_s", 60.0),
             kind="auth_missing",
         )
-
-    async def _notify_auth_missing_ceo(
-        self, provider: str, agent_id: str, task_id: str | None
-    ) -> None:
-        """Send a high-priority notification to the CEO about a dead host credential.
-
-        Fires once per expiry episode (caller gates via ``_auth_ceo_notified``).
-        Same direct DB insert + delivery.deliver() pattern as
-        ``_notify_rate_limit_ceo``, but a distinct type: this is a blocker on
-        the fleet, not a transient rate limit.
-        """
-        try:
-            from roboco.db.base import get_session_factory
-            from roboco.db.tables import NotificationTable
-            from roboco.models.base import (
-                AgentRole,
-                NotificationPriority,
-                NotificationType,
-            )
-            from roboco.services.notification_delivery import (
-                get_notification_delivery_service,
-            )
-            from roboco.services.repositories.query_helpers import get_agent_by_role
-            from roboco.utils.converters import require_uuid
-
-            session_factory = get_session_factory()
-            async with session_factory() as db:
-                ceo = await get_agent_by_role(db, AgentRole.CEO)
-                if ceo is None:
-                    logger.warning(
-                        "CEO agent not found; skipping auth-missing CEO notification",
-                        provider=provider,
-                    )
-                    return
-                notification = NotificationTable(
-                    type=NotificationType.BLOCKER_ESCALATION,
-                    priority=NotificationPriority.HIGH,
-                    from_agent=ceo.id,
-                    to_agents=[ceo.id],
-                    subject=(
-                        "Claude login expired on the orchestrator host: "
-                        "Anthropic agents parked"
-                    ),
-                    body=(
-                        "The host's Claude Code OAuth session expired and could "
-                        f"not be refreshed (first hit by agent '{agent_id}' on "
-                        f"task {task_id or 'none'}). Every Anthropic agent is "
-                        "parked; no tokens are burned. Fix: an operator runs "
-                        "`claude login` (or `claude setup-token`) on the host as "
-                        "the user whose ~/.claude is mounted into the agent "
-                        "containers. The fleet resumes on its own afterwards."
-                    ),
-                    requires_ack=True,
-                )
-                db.add(notification)
-                await db.flush()
-                delivery = get_notification_delivery_service(db)
-                await delivery.deliver(require_uuid(notification.id))
-                await db.commit()
-            logger.info(
-                "Auth-missing CEO notification sent",
-                provider=provider,
-                agent_id=agent_id,
-                task_id=task_id,
-            )
-        except Exception as e:
-            logger.error(
-                "Failed to send auth-missing CEO notification",
-                provider=provider,
-                agent_id=agent_id,
-                error=str(e),
-            )
