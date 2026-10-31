@@ -263,6 +263,9 @@ def test_module_run_as_script_invokes_cli() -> None:
         "sys.modules",
         {"roboco.cli": MagicMock(cli=cli_mock)},
     ):
+        # As under `python -m`, the module isn't imported yet when it runs as
+        # __main__; runpy warns otherwise. patch.dict puts it back afterwards.
+        del sys.modules["roboco.bootstrap"]
         runpy.run_module("roboco.bootstrap", run_name="__main__")
     cli_mock.assert_called_once()
 

@@ -260,6 +260,7 @@ async def test_cloud_auth_valid_session_cookie_passes(
 
     monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
     client, orch = orch_client
+    client.cookies.set(SESSION_COOKIE_NAME, "valid-session-cookie")
     fake_user = MagicMock()
     with patch(
         "roboco.api.utils.orchestrator.resolve_session_user",
@@ -271,7 +272,6 @@ async def test_cloud_auth_valid_session_cookie_passes(
                 "X-Agent-ID": _AGENT_ID,
                 "X-Agent-Role": "ceo",
             },
-            cookies={SESSION_COOKIE_NAME: "valid-session-cookie"},
         )
     assert r.status_code == _HTTP_201
     orch.spawn_agent.assert_awaited_once()
@@ -287,6 +287,7 @@ async def test_cloud_auth_invalid_session_cookie_rejected(
 
     monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
     client, orch = orch_client
+    client.cookies.set(SESSION_COOKIE_NAME, "bogus")
     with patch(
         "roboco.api.utils.orchestrator.resolve_session_user",
         new=AsyncMock(return_value=None),
@@ -297,7 +298,6 @@ async def test_cloud_auth_invalid_session_cookie_rejected(
                 "X-Agent-ID": _AGENT_ID,
                 "X-Agent-Role": "ceo",
             },
-            cookies={SESSION_COOKIE_NAME: "bogus"},
         )
     assert r.status_code == _HTTP_401
     orch.spawn_agent.assert_not_awaited()

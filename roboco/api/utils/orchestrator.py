@@ -93,7 +93,7 @@ def _validated_agent_id(agent_id: str) -> str:
         or "\x00" in agent_id
     ):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Invalid agent_id",
         )
     return _resolve_to_slug(agent_id)

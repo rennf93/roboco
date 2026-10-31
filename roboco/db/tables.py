@@ -113,7 +113,14 @@ class AgentTable(Base):
     # Foreign key named by migration 001, not by the naming convention.
     current_task_id: Mapped[UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("tasks.id", ondelete="SET NULL", name="fk_agents_current_task"),
+        # use_alter: agents and tasks reference each other. Added after both
+        # tables exist, so create_all/drop_all can order the cycle's DDL.
+        ForeignKey(
+            "tasks.id",
+            ondelete="SET NULL",
+            name="fk_agents_current_task",
+            use_alter=True,
+        ),
         nullable=True,
     )
 
@@ -250,7 +257,9 @@ class TaskTable(Base):
     branch_name: Mapped[str | None] = mapped_column(String(500), nullable=True)
     work_session_id: Mapped[UUID | None] = mapped_column(
         UUID(as_uuid=True),
-        ForeignKey("work_sessions.id", ondelete="SET NULL"),
+        # use_alter: tasks and work_sessions reference each other (see
+        # AgentTable.current_task_id).
+        ForeignKey("work_sessions.id", ondelete="SET NULL", use_alter=True),
         nullable=True,
     )
 

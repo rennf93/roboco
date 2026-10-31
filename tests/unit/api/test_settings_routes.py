@@ -79,13 +79,12 @@ async def test_settings_accepts_valid_cookie_under_cloud_auth(
     settings_client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(_deps.settings, "cloud_auth_enabled", True)
+    settings_client.cookies.set(SESSION_COOKIE_NAME, "valid")
     with patch(
         "roboco.api.deps.resolve_session_user",
         new=AsyncMock(return_value=MagicMock()),
     ):
-        r = await settings_client.get(
-            "/api/settings", cookies={SESSION_COOKIE_NAME: "valid"}
-        )
+        r = await settings_client.get("/api/settings")
     assert r.status_code == _HTTP_200
 
 

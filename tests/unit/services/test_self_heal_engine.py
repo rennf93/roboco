@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
@@ -47,10 +47,19 @@ def _sample(value: float) -> TelemetrySample:
     )
 
 
+def _session() -> AsyncMock:
+    """An AsyncSession double. AsyncMock, not MagicMock: run_cycle awaits
+    session.commit() to release the pool connection right after the telemetry
+    fetch. The Result that execute() returns reads rows synchronously, as
+    SQLAlchemy's does, so the CI-history write and the outcome labeler see no
+    rows instead of an un-awaited coroutine."""
+    session = AsyncMock()
+    session.execute.return_value = MagicMock(all=MagicMock(return_value=[]))
+    return session
+
+
 def _engine(samples: list[TelemetrySample]) -> SelfHealEngine:
-    # AsyncMock, not MagicMock: run_cycle now awaits session.commit() to
-    # release the pool connection right after the telemetry fetch.
-    return SelfHealEngine(AsyncMock(), source=_FakeSource(samples))
+    return SelfHealEngine(_session(), source=_FakeSource(samples))
 
 
 @pytest.mark.asyncio

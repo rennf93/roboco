@@ -26,23 +26,23 @@ The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for 
 | `init_db` | fn | db/base.py:415 | Boot entry: stamp pre-Alembic DB at 001 then `run_migrations`. |
 | `run_migrations` | fn | db/base.py:354 | Runs `alembic upgrade head` via `command.upgrade` in a thread. |
 | `bootstrap_database` | fn | db/seed.py:82 | `init_db` + seed default agents. |
-| `TaskTable` | class | tables.py:160 | Core task entity (largest table, drives lifecycle). |
-| `WorkSessionTable` | class | tables.py:967 | Per-claim session; single-active enforced by 047 partial-unique index. |
+| `TaskTable` | class | tables.py:167 | Core task entity (largest table, drives lifecycle). |
+| `WorkSessionTable` | class | tables.py:976 | Per-claim session; single-active enforced by 047 partial-unique index. |
 | `AgentTable` | class | tables.py:91 | Agent identity, role, team, model provider assignment. |
-| `ProjectTable` | class | tables.py:527 | Git repo config + CI/watch/dep-update/quality_command/`sandbox_services` (057) cols. |
-| `AuditLogTable` | class | tables.py:1740 | Transition journey; `details` JSONB (010); composite query index (045). |
-| `AgentSpawnSessionTable` | class | tables.py:2023 | Per-spawn token totals; feeds usage dashboard. |
-| `ProjectConventionsCacheTable` | class | tables.py:2434 | Effective conventions map per (project, HEAD sha). |
-| `PlaybookTable` | class | tables.py:851 | Curated procedures (draft→approved→indexed). |
-| `RespawnTrackerTable` | class | tables.py:1690 | Durable PM-respawn circuit breaker mirror. |
-| `TaskCellProjectTable` | class | tables.py:753 | Per-cell project map for a MegaTask root-subtask (052). |
-| `WaitingRecordTable` | class | tables.py:1660 | Persisted dispatcher waiting records (restore at start). |
-| `IndexedDocumentTable` | class | tables.py:1426 | RAG corpus docs (added to chain by 017). |
-| `VerbLatencySampleTable` | class | tables.py:2899 | Per-verb HTTP duration samples persisted from `RequestLoggingMiddleware` for p50/p95 aggregation by `MetricsService.get_verb_latency_stats`. Migration 094; indexes on `verb`, `created_at`, composite `(verb, created_at)`. |
-| `UserTable` | class | tables.py:2577 | Cloud-auth (FastAPI Users) single seeded CEO login row (058). |
-| `XCredentialsTable` | class | tables.py:2626 | Singleton Fernet-encrypted OAuth 1.0a secrets for the X engine (059). |
-| `XSeenMentionTable` | class | tables.py:2704 | X mentions-poll dedup ledger, keyed by mention id (059). |
-| `XSeenFeatureTable` | class | tables.py:2721 | X feature-spotlight dedup ledger, keyed by feature slug (061). |
+| `ProjectTable` | class | tables.py:536 | Git repo config + CI/watch/dep-update/quality_command/`sandbox_services` (057) cols. |
+| `AuditLogTable` | class | tables.py:1749 | Transition journey; `details` JSONB (010); composite query index (045). |
+| `AgentSpawnSessionTable` | class | tables.py:2032 | Per-spawn token totals; feeds usage dashboard. |
+| `ProjectConventionsCacheTable` | class | tables.py:2443 | Effective conventions map per (project, HEAD sha). |
+| `PlaybookTable` | class | tables.py:860 | Curated procedures (draft→approved→indexed). |
+| `RespawnTrackerTable` | class | tables.py:1699 | Durable PM-respawn circuit breaker mirror. |
+| `TaskCellProjectTable` | class | tables.py:762 | Per-cell project map for a MegaTask root-subtask (052). |
+| `WaitingRecordTable` | class | tables.py:1669 | Persisted dispatcher waiting records (restore at start). |
+| `IndexedDocumentTable` | class | tables.py:1435 | RAG corpus docs (added to chain by 017). |
+| `VerbLatencySampleTable` | class | tables.py:2908 | Per-verb HTTP duration samples persisted from `RequestLoggingMiddleware` for p50/p95 aggregation by `MetricsService.get_verb_latency_stats`. Migration 094; indexes on `verb`, `created_at`, composite `(verb, created_at)`. |
+| `UserTable` | class | tables.py:2586 | Cloud-auth (FastAPI Users) single seeded CEO login row (058). |
+| `XCredentialsTable` | class | tables.py:2635 | Singleton Fernet-encrypted OAuth 1.0a secrets for the X engine (059). |
+| `XSeenMentionTable` | class | tables.py:2713 | X mentions-poll dedup ledger, keyed by mention id (059). |
+| `XSeenFeatureTable` | class | tables.py:2730 | X feature-spotlight dedup ledger, keyed by feature slug (061). |
 | `run_async_migrations` | fn | env.py | Async online migration runner (NullPool). |
 
 ## Migration Chain
