@@ -32,10 +32,26 @@ import httpx
 
 from roboco.config import settings
 from roboco.exceptions import GitError
-from roboco.services.forge.base import GitProvider, RepoRef
+from roboco.services.forge.base import (
+    ForgeBranches,
+    ForgeCI,
+    ForgePullRequests,
+    ForgeReleases,
+    ForgeRepository,
+    ForgeReviews,
+    GitProvider,
+    RepoRef,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
+
+if TYPE_CHECKING:
+    from roboco.services.forge._github_provider_types import (
+        GitHubProviderSelf as _Base,
+    )
+else:
+    _Base = object
 
 # GitHub REST API version pinned via header on every versioned call — mirrors
 # git.py's prior inline headers exactly.
@@ -81,74 +97,8 @@ def _settings_api_base() -> str:
     return settings.github_api_base_url.rstrip("/")
 
 
-class GitHubProvider(GitProvider):
-    """GitHub.com / GitHub Enterprise REST transport."""
-
-    def __init__(self, *, base_url: str | None = None) -> None:
-        # An explicit override (only ``GitHubProvisioningService`` supplies
-        # one, already resolved once at its own construction) wins over the
-        # live setting; otherwise every call re-reads the setting fresh.
-        self._base_url_override = base_url.rstrip("/") if base_url else None
-
-    def _api_base(self) -> str:
-        return self._base_url_override or _settings_api_base()
-
-    def _graphql_url(self) -> str:
-        """``/graphql`` beside the REST root: api.github.com/graphql, or a
-        GitHub Enterprise Server's /api/graphql for its /api/v3."""
-        base = self._api_base()
-        if base.endswith("/api/v3"):
-            return f"{base.removesuffix('/v3')}/graphql"
-        return f"{base}/graphql"
-
-    def _repo_url(self, repo: RepoRef, *segments: str) -> str:
-        base = f"{self._api_base()}/repos/{repo.owner}/{repo.repo}"
-        return "/".join([base, *segments]) if segments else base
-
-    @staticmethod
-    def _headers(
-        token: str, *, accept: str = _DEFAULT_ACCEPT, include_api_version: bool = True
-    ) -> dict[str, str]:
-        headers = {"Authorization": f"Bearer {token}", "Accept": accept}
-        if include_api_version:
-            headers["X-GitHub-Api-Version"] = _API_VERSION
-        return headers
-
-    async def _send(
-        self,
-        method: str,
-        url: str,
-        *,
-        headers: Mapping[str, str],
-        json_body: dict[str, Any] | None = None,
-        params: dict[str, Any] | None = None,
-        client: httpx.AsyncClient | None = None,
-        timeout: float | None = None,
-    ) -> httpx.Response:
-        """Issue one REST call — a fresh auto-closed client, or a caller-
-        injected one reused across calls (the provisioning/release lifecycle).
-        """
-        kwargs: dict[str, Any] = {"headers": headers}
-        if json_body is not None:
-            kwargs["json"] = json_body
-        if params is not None:
-            kwargs["params"] = params
-        if client is not None:
-            if timeout is not None:
-                kwargs["timeout"] = timeout
-            return cast("httpx.Response", await getattr(client, method)(url, **kwargs))
-        owned_timeout = timeout if timeout is not None else _default_timeout()
-        # GitHub answers a renamed / transferred repo with 301 (GET) or 307
-        # (writes) to its new location, and documents that clients follow
-        # it. Not following broke every API call for projects whose repos
-        # moved (live 2026-10-28: seven rennf93/* repos transferred to the
-        # Guard-Core org, so list_open_prs got a 301 on every poll).
-        async with httpx.AsyncClient(
-            timeout=owned_timeout, follow_redirects=True
-        ) as owned_client:
-            return cast(
-                "httpx.Response", await getattr(owned_client, method)(url, **kwargs)
-            )
+class GitHubRepository(ForgeRepository, _Base):
+    """`ForgeRepository` over GitHub's REST API."""
 
     # -- identity ----------------------------------------------------------
 
@@ -164,6 +114,65 @@ class GitHubProvider(GitProvider):
                 },
             )
         return RepoRef(match.group("owner"), match.group("repo"))
+
+    # -- repo / labels / branches / releases ----------------------------------
+
+    async def get_repo(
+        self,
+        repo: RepoRef,
+        token: str,
+        *,
+        client: httpx.AsyncClient | None = None,
+        timeout: float | None = None,
+    ) -> httpx.Response:
+        headers = self._headers(token)
+        return await self._send(
+            "get", self._repo_url(repo), headers=headers, client=client, timeout=timeout
+        )
+
+    async def ensure_label(
+        self, repo: RepoRef, token: str, name: str, color: str
+    ) -> httpx.Response:
+        headers = self._headers(token)
+        return await self._send(
+            "post",
+            self._repo_url(repo, "labels"),
+            headers=headers,
+            json_body={"name": name, "color": color},
+        )
+
+    async def create_org_repo(
+        self,
+        token: str,
+        org: str,
+        *,
+        name: str,
+        description: str,
+        private: bool,
+        auto_init: bool,
+        client: httpx.AsyncClient | None = None,
+        timeout: float | None = None,
+    ) -> httpx.Response:
+        headers = self._headers(token)
+        payload = {
+            "name": name,
+            "description": description,
+            "private": private,
+            "auto_init": auto_init,
+        }
+        return await self._send(
+            "post",
+            f"{self._api_base()}/orgs/{org}/repos",
+            headers=headers,
+            json_body=payload,
+            client=client,
+            timeout=timeout,
+        )
+
+
+class GitHubPullRequests(ForgePullRequests, _Base):
+    """`ForgePullRequests` over GitHub's REST API, with GraphQL's
+    markPullRequestReadyForReview for marking a draft ready."""
 
     # -- pull requests -------------------------------------------------------
 
@@ -264,6 +273,10 @@ class GitHubProvider(GitProvider):
             json_body={"merge_method": merge_method},
         )
 
+
+class GitHubReviews(ForgeReviews, _Base):
+    """`ForgeReviews` over GitHub's REST API."""
+
     async def request_reviewers(
         self, repo: RepoRef, token: str, pr_number: int, reviewers: list[str]
     ) -> httpx.Response:
@@ -285,6 +298,33 @@ class GitHubProvider(GitProvider):
             headers=headers,
             json_body={"body": body, "event": event},
         )
+
+    async def add_labels(
+        self, repo: RepoRef, token: str, pr_number: int, labels: list[str]
+    ) -> httpx.Response:
+        headers = self._headers(token)
+        return await self._send(
+            "post",
+            self._repo_url(repo, "issues", str(pr_number), "labels"),
+            headers=headers,
+            json_body={"labels": labels},
+        )
+
+    async def create_issue_comment(
+        self, repo: RepoRef, token: str, issue_number: int, body: str
+    ) -> httpx.Response:
+        headers = self._headers(token)
+        return await self._send(
+            "post",
+            self._repo_url(repo, "issues", str(issue_number), "comments"),
+            headers=headers,
+            json_body={"body": body},
+        )
+
+
+class GitHubBranches(ForgeBranches, _Base):
+    """`ForgeBranches` over GitHub's REST API, with GraphQL's createCommitOnBranch
+    for committing through the API (signed, Verified commits)."""
 
     async def merge_branch(
         self, repo: RepoRef, token: str, *, base: str, head: str, commit_message: str
@@ -359,6 +399,21 @@ class GitHubProvider(GitProvider):
             timeout=timeout,
         )
 
+    async def delete_branch_ref(
+        self, repo: RepoRef, token: str, branch: str, *, timeout: float | None = None
+    ) -> httpx.Response:
+        headers = self._headers(token)
+        return await self._send(
+            "delete",
+            self._repo_url(repo, "git", "refs", "heads", branch),
+            headers=headers,
+            timeout=timeout,
+        )
+
+
+class GitHubCI(ForgeCI, _Base):
+    """`ForgeCI` over GitHub's REST API."""
+
     # -- CI ------------------------------------------------------------------
 
     async def list_ci_runs(
@@ -423,64 +478,9 @@ class GitHubProvider(GitProvider):
             params={"per_page": per_page},
         )
 
-    # -- repo / labels / branches / releases ----------------------------------
 
-    async def get_repo(
-        self,
-        repo: RepoRef,
-        token: str,
-        *,
-        client: httpx.AsyncClient | None = None,
-        timeout: float | None = None,
-    ) -> httpx.Response:
-        headers = self._headers(token)
-        return await self._send(
-            "get", self._repo_url(repo), headers=headers, client=client, timeout=timeout
-        )
-
-    async def ensure_label(
-        self, repo: RepoRef, token: str, name: str, color: str
-    ) -> httpx.Response:
-        headers = self._headers(token)
-        return await self._send(
-            "post",
-            self._repo_url(repo, "labels"),
-            headers=headers,
-            json_body={"name": name, "color": color},
-        )
-
-    async def add_labels(
-        self, repo: RepoRef, token: str, pr_number: int, labels: list[str]
-    ) -> httpx.Response:
-        headers = self._headers(token)
-        return await self._send(
-            "post",
-            self._repo_url(repo, "issues", str(pr_number), "labels"),
-            headers=headers,
-            json_body={"labels": labels},
-        )
-
-    async def delete_branch_ref(
-        self, repo: RepoRef, token: str, branch: str, *, timeout: float | None = None
-    ) -> httpx.Response:
-        headers = self._headers(token)
-        return await self._send(
-            "delete",
-            self._repo_url(repo, "git", "refs", "heads", branch),
-            headers=headers,
-            timeout=timeout,
-        )
-
-    async def create_issue_comment(
-        self, repo: RepoRef, token: str, issue_number: int, body: str
-    ) -> httpx.Response:
-        headers = self._headers(token)
-        return await self._send(
-            "post",
-            self._repo_url(repo, "issues", str(issue_number), "comments"),
-            headers=headers,
-            json_body={"body": body},
-        )
+class GitHubReleases(ForgeReleases, _Base):
+    """`ForgeReleases` over GitHub's REST API."""
 
     async def create_release(
         self,
@@ -508,30 +508,80 @@ class GitHubProvider(GitProvider):
             timeout=timeout,
         )
 
-    async def create_org_repo(
+
+class GitHubProvider(
+    GitHubBranches,
+    GitHubCI,
+    GitHubPullRequests,
+    GitHubReleases,
+    GitHubRepository,
+    GitHubReviews,
+    GitProvider,
+):
+    """GitHub.com / GitHub Enterprise REST transport."""
+
+    def __init__(self, *, base_url: str | None = None) -> None:
+        # An explicit override (only ``GitHubProvisioningService`` supplies
+        # one, already resolved once at its own construction) wins over the
+        # live setting; otherwise every call re-reads the setting fresh.
+        self._base_url_override = base_url.rstrip("/") if base_url else None
+
+    def _api_base(self) -> str:
+        return self._base_url_override or _settings_api_base()
+
+    def _graphql_url(self) -> str:
+        """``/graphql`` beside the REST root: api.github.com/graphql, or a
+        GitHub Enterprise Server's /api/graphql for its /api/v3."""
+        base = self._api_base()
+        if base.endswith("/api/v3"):
+            return f"{base.removesuffix('/v3')}/graphql"
+        return f"{base}/graphql"
+
+    def _repo_url(self, repo: RepoRef, *segments: str) -> str:
+        base = f"{self._api_base()}/repos/{repo.owner}/{repo.repo}"
+        return "/".join([base, *segments]) if segments else base
+
+    @staticmethod
+    def _headers(
+        token: str, *, accept: str = _DEFAULT_ACCEPT, include_api_version: bool = True
+    ) -> dict[str, str]:
+        headers = {"Authorization": f"Bearer {token}", "Accept": accept}
+        if include_api_version:
+            headers["X-GitHub-Api-Version"] = _API_VERSION
+        return headers
+
+    async def _send(
         self,
-        token: str,
-        org: str,
+        method: str,
+        url: str,
         *,
-        name: str,
-        description: str,
-        private: bool,
-        auto_init: bool,
+        headers: Mapping[str, str],
+        json_body: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
         client: httpx.AsyncClient | None = None,
         timeout: float | None = None,
     ) -> httpx.Response:
-        headers = self._headers(token)
-        payload = {
-            "name": name,
-            "description": description,
-            "private": private,
-            "auto_init": auto_init,
-        }
-        return await self._send(
-            "post",
-            f"{self._api_base()}/orgs/{org}/repos",
-            headers=headers,
-            json_body=payload,
-            client=client,
-            timeout=timeout,
-        )
+        """Issue one REST call — a fresh auto-closed client, or a caller-
+        injected one reused across calls (the provisioning/release lifecycle).
+        """
+        kwargs: dict[str, Any] = {"headers": headers}
+        if json_body is not None:
+            kwargs["json"] = json_body
+        if params is not None:
+            kwargs["params"] = params
+        if client is not None:
+            if timeout is not None:
+                kwargs["timeout"] = timeout
+            return cast("httpx.Response", await getattr(client, method)(url, **kwargs))
+        owned_timeout = timeout if timeout is not None else _default_timeout()
+        # GitHub answers a renamed / transferred repo with 301 (GET) or 307
+        # (writes) to its new location, and documents that clients follow
+        # it. Not following broke every API call for projects whose repos
+        # moved (live 2026-10-28: seven rennf93/* repos transferred to the
+        # Guard-Core org, so list_open_prs got a 301 on every poll).
+        async with httpx.AsyncClient(
+            timeout=owned_timeout, follow_redirects=True
+        ) as owned_client:
+            return cast(
+                "httpx.Response", await getattr(owned_client, method)(url, **kwargs)
+            )
