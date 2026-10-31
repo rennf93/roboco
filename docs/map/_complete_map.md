@@ -9131,7 +9131,7 @@ The per-project architectural-conventions standard for RoboCo: a service layer (
 | Path | Role | approx LOC |
 |------|------|-----------:|
 | `roboco/services/conventions.py` | `ConventionsService` — cache/render/scaffold/restore the effective conventions map; record + read findings | 586 |
-| `roboco/services/_conventions_service_types.py` | `ConventionsServiceSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `ConventionsService` mixins reach through `self`, plus its instance attributes; `tests/unit/services/test_conventions_service_mixins.py` fails on a stray stub or a member defined twice | 33 |
+| `roboco/services/_conventions_service_types.py` | `ConventionsServiceSelf`, a TYPE_CHECKING-only Protocol declaring the attributes the `ConventionsService` mixin reads through `self` (no moved body calls across classes, so it has no `<Class>Surface` yet); `tests/unit/services/test_conventions_service_mixins.py` fails on a stray stub or a member defined twice | 29 |
 | `roboco/services/docs.py` | `DocsService` — write/read/list/delete docs, RAG dedup, commit doc to repo, path-traversal containment | 737 |
 | `roboco/conventions/__init__.py` | Package public API re-exports (`run`, `Finding`, `check_*`, `get_parser`, `GrammarUnavailable`, `ValidatorCouldNotRun`) | 30 |
 | `roboco/conventions/__main__.py` | argparse CLI entrypoint (`check --root <dir> --files ...`), JSONL output, exit-0/exit-3 fail-loud | 69 |
@@ -9380,7 +9380,7 @@ No other logic-touching commits in the range.
 
 > Post-snapshot updates (since 2026-06-29): **536bbb64** "Chore/all/logical gaps sweep (#286)" touched five files in this slice:
 
-> **2026-10-31** (Planning trail #51, wave 3): `ConventionsService` splits in place into 1 mixins in `conventions.py`, every method body byte-identical: `ConventionsMapResolution` (13). `ConventionsService` keeps its public surface (`get_map`, the infra globs, baseline constraints, the ambient block, `scaffold`, `restore`, `commit_standard`, `health`, recording and reading findings), composes them, and is no longer a god class. Rows naming `ConventionsService.<method>` still hold through inheritance. Each mixin's TYPE_CHECKING-only base is `ConventionsServiceSelf` (`roboco/services/_conventions_service_types.py`).
+> **2026-10-31** (Planning trail #51, wave 3): `ConventionsService` splits in place into a mixin in `conventions.py`, every method body byte-identical: `ConventionsMapResolution` (13). `ConventionsService` keeps its public surface (`get_map`, the infra globs, baseline constraints, the ambient block, `scaffold`, `restore`, `commit_standard`, `health`, recording and reading findings), composes it, and is no longer a god class. Rows naming `ConventionsService.<method>` still hold through inheritance. The mixin's TYPE_CHECKING-only base is `ConventionsServiceSelf` (`roboco/services/_conventions_service_types.py`).
 > - `conventions/custom.py` (+14 lines): added `_KNOWN_LANGUAGES` frozenset and `unrecognized_rule_languages()` — surfaces typo language tags on custom rules.
 > - `conventions/runner.py` (+28 lines): imported `Finding` directly (not TYPE_CHECKING); added `_LANGUAGE_SCOPE_RULE`/`_LANGUAGE_SCOPE_FILE` constants and `_language_scope_findings()` helper; `run()` now prepends language-scope warn findings before per-file dispatch.
 > - `conventions/modularity.py` (+2 lines): added `"stream"` and `"stream_scalars"` to `_DB_METHODS` (SA 2.0 streaming gap, #35).
