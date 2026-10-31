@@ -2012,280 +2012,10 @@ class GitCheckoutPush(_Base):
         return False, []
 
 
-class GitService(
-    BaseService, GitBranches, GitCheckoutPush, GitCommits, GitPushHooks, GitStatus
-):
-    """
-    Service for git operations on agent workspaces.
-
-    Handles:
-    - Git command execution
-    - Commit creation with templates
-    - PR creation with templates
-    - Branch management
-    """
-
-    service_name: ClassVar[str] = "git"
-
-    @property
-    def _forge(self) -> GitProvider:
-        """The per-call forge router (Phase 2 of the forge-providers spec).
-
-        A property, not an ``__init__``-set attribute: several unit tests
-        build a ``GitService`` via ``GitService.__new__(GitService)`` to skip
-        the DB-session constructor, and a plain instance attribute would be
-        unset on those. The router resolves the concrete transport per call
-        from ``RepoRef.host`` (None → GitHub; a registered gitea host → that
-        instance's ``GiteaProvider``), so every existing call site stays
-        byte-for-byte unchanged. Construction is cheap (no I/O), so
-        resolving fresh per access costs nothing.
-        """
-        return ForgeRouter()
-
-    async def _run_git(
-        self,
-        workspace: Path,
-        args: list[str],
-        check: bool = True,
-        timeout: int | None = None,
-    ) -> subprocess.CompletedProcess[str]:
-        """Run a git command in a repository (non-blocking).
-
-        Every agent container mounts every clone read-write, so nothing here
-        trusts a clone, and no token comes near one:
-
-        - a command that names ``origin`` (fetch / push / ls-remote / pull /
-          remote prune) is served through the project's relay against its
-          URL from the database (``roboco.services.git_origin``); the token
-          lives only in root-run git inside the relay, scoped to the origin
-          host, never in argv or on disk;
-        - any other command runs as the git user via ``run_workspace_git``
-          (environment from scratch, program-starting settings pinned off,
-          hooks only from the root-owned support dir, config audited), or as
-          root via ``run_private_git`` in a dispatcher-owned repository under
-          the private root (the read and release clones).
-
-        The git user writes group-writable files in the agent group, so no
-        ownership repair follows a command. ``timeout`` overrides the default
-        per-command budget (``settings.git_command_timeout_seconds``): staging
-        and committing a large changeset (e.g. the Next.js panel) can exceed
-        the short default, so the commit choreography passes the longer
-        ``settings.git_commit_timeout_seconds``. A refused clone config or an
-        origin command RoboCo never issues raises ``GitCommandError``.
-
-        A workspace commit or push also gets the hooks git would run around
-        it: the project's own (``_run_project_hooks``) and, when Entire
-        records the agent's session, Entire's (``roboco.services.entire_hooks``).
-        """
-        effective_timeout = timeout if timeout is not None else _default_git_timeout()
-        args, refused = await self._run_project_hooks(
-            workspace, args, effective_timeout
-        )
-        if refused is not None:
-            return _hook_refusal(args, refused, check=check)
-        entire = await self._entire_before(workspace, args)
-        if is_origin_command(args):
-            ctx = await self._origin_context(workspace, effective_timeout)
-
-            def _run() -> subprocess.CompletedProcess[str]:
-                return run_origin_command(ctx, args)
-
-        else:
-
-            def _run() -> subprocess.CompletedProcess[str]:
-                return _run_local_git(workspace, args, effective_timeout)
-
-        loop = asyncio.get_running_loop()
-        t0 = time.monotonic()
-        try:
-            result = await loop.run_in_executor(_GIT_EXECUTOR, _run)
-        except subprocess.TimeoutExpired as e:
-            # Timed-out git process was SIGKILL'd mid-mutation and may orphan
-            # .git/*.lock files; clear them so the workspace isn't wedged.
-            await loop.run_in_executor(
-                _GIT_EXECUTOR, _remove_stale_git_locks, workspace
-            )
-            raise GitTimeoutError(" ".join(args), effective_timeout) from e
-        except (UnsafeWorkspaceGitConfigError, UnsupportedOriginCommandError) as e:
-            raise GitCommandError(" ".join(args), str(e)) from e
-        self._warn_if_slow(args, t0, effective_timeout, workspace)
-        if check and result.returncode != 0:
-            raise GitCommandError(
-                " ".join(args), result.stderr or result.stdout or "Unknown error"
-            )
-        await self._run_entire_after(workspace, entire, result, effective_timeout)
-        return result
-
-    def _warn_if_slow(
-        self, args: list[str], started: float, timeout: int, workspace: Path
-    ) -> None:
-        """Surface slow git ops (instrumentation) without flooding the fast path."""
-        git_ms = (time.monotonic() - started) * 1000.0
-        if git_ms > _SLOW_GIT_OP_MS:
-            self.log.warning(
-                "slow git op",
-                op=" ".join(args[:2]),
-                git_ms=round(git_ms),
-                timeout_s=timeout,
-                workspace=str(workspace),
-            )
-
-    async def _origin_context(self, repo: Path, timeout: int) -> OriginContext:
-        """The relay round-trip context for an ``origin`` command in ``repo``."""
-        relay = await self._relay_for_repo(repo)
-
-        def _local(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
-            return _run_local_git(repo, list(args), timeout)
-
-        return OriginContext(
-            relay=relay,
-            repo=repo,
-            local_git=_local,
-            from_workspace=not is_dispatcher_owned(repo),
-            timeout=timeout,
-        )
-
-    async def _relay_for_repo(self, repo: Path) -> GitRelay:
-        """The relay of the project ``repo`` belongs to, from the database."""
-        project = await self._project_for_repo(repo)
-        if project is None:
-            raise GitCommandError("origin", f"no project owns repository {repo}")
-        return relay_for(project, await self._token_for_project(str(project.slug)))
-
-    async def _project_for_repo(self, repo: Path) -> ProjectTable | None:
-        """The project a repository belongs to, by its path — never its config.
-
-        An agent workspace sits at ``<workspaces_root>/<slug>/...`` and a
-        dispatcher-owned clone at ``<private_root>/<read|release|scratch>/<slug>``;
-        any other path is an operator-configured ``workspace_path``. The path
-        is taken lexically: an agent can swap its clone for a symlink to
-        another project's, so it is never resolved.
-        """
-        normalized = Path(os.path.normpath(repo))
-        slug: str | None = None
-        with contextlib.suppress(ValueError):
-            slug = normalized.relative_to(settings.workspaces_root).parts[0]
-        with contextlib.suppress(ValueError):
-            parts = normalized.relative_to(private_root()).parts
-            if len(parts) >= _PRIVATE_REPO_DEPTH and parts[0] in _PRIVATE_REPO_KINDS:
-                slug = parts[1]
-        project_service = get_project_service(self.session)
-        if slug:
-            return await project_service.get_by_slug(slug)
-        return await project_service.get_by_workspace_path(str(normalized))
-
-    async def _repo_ref_for_workspace(self, workspace: Path) -> RepoRef:
-        """The forge repo a workspace's REST calls act on: the project's URL
-        from the database, never the agent-writable ``remote.origin.url``.
-
-        A clone's config is agent-controlled: read from there, a rewritten
-        origin URL pointed PR create/merge/close (with the project token) at
-        any repository that token can reach.
-        """
-        project = await self._project_for_repo(workspace)
-        if project is None:
-            raise GitError(
-                "No project owns this workspace", {"workspace": str(workspace)}
-            )
-        return self._parse_git_url(str(project.git_url))
-
-    async def _token_for_project(self, project_slug: str) -> str | None:
-        """Decrypted project token for orchestrator-side remote git ops.
-
-        A decryption failure (an encryption-key rotation left the stored PAT
-        encrypted with the old key) is logged loudly with the project slug
-        before returning None — without this every best-effort workspace git
-        op (push, PR, clone-with-token) silently looks like 'this project has
-        no token', indistinguishable from a project that genuinely never set
-        one, and the operator can't tell which project a key rotation wedged.
-        The best-effort skip behavior is preserved (callers still get None and
-        skip the remote op); this only makes the cause diagnosable.
-        """
-        from roboco.utils.crypto import EncryptionError
-
-        project_service = get_project_service(self.session)
-        try:
-            return await project_service.get_decrypted_token_by_slug(project_slug)
-        except EncryptionError as exc:
-            self.log.error(
-                "git token decryption failed — encryption key may have rotated;"
-                " treating as no-token for this project's remote git ops",
-                project_slug=project_slug,
-                error=str(exc),
-            )
-            return None
-
-    async def get_workspace(
-        self,
-        project_slug: str,
-        agent_id: UUID | None = None,
-        *,
-        skip_refresh: bool = False,
-    ) -> Path:
-        """Get the workspace path for an agent on a project."""
-        project_service = get_project_service(self.session)
-        project = await project_service.get_by_slug(project_slug)
-        if not project:
-            raise NotFoundError("Project", project_slug)
-
-        if agent_id is None:
-            if not project.workspace_path:
-                raise ValidationError(
-                    f"Project '{project_slug}' has no workspace configured "
-                    "and no agent_id provided for dynamic workspace resolution"
-                )
-            workspace = Path(project.workspace_path)
-            if not workspace.exists():
-                raise ValidationError(f"Workspace path does not exist: {workspace}")
-            return workspace
-
-        workspace_service = get_workspace_service(self.session)
-
-        try:
-            if settings.workspace_auto_clone:
-                workspace = await workspace_service.ensure_workspace(
-                    project_slug=project_slug,
-                    agent_id=agent_id,
-                    git_url=project.git_url,
-                    default_branch=head_branch(project),
-                    skip_refresh=skip_refresh,
-                )
-            else:
-                workspace = await workspace_service.resolve_workspace(
-                    project_slug=project_slug,
-                    agent_id=agent_id,
-                )
-                if not workspace.exists():
-                    raise ValidationError(
-                        f"Workspace does not exist: {workspace}. "
-                        "Clone the repository first or enable auto_clone."
-                    )
-        except WorkspaceError as e:
-            raise ValidationError(str(e)) from e
-
-        return workspace
-
-    # =========================================================================
-    # STATUS / INFO METHODS
-    # =========================================================================
-
-    _PORCELAIN_STATUS_WIDTH: ClassVar[int] = 2
-
-    # =========================================================================
-    # COMMIT METHODS
-    # =========================================================================
-
-    # =========================================================================
-    # BRANCH METHODS
-    # =========================================================================
-
-    # =========================================================================
-    # PULL / FETCH / REBASE METHODS
-    # =========================================================================
-
-    # =========================================================================
-    # PR METHODS
-    # =========================================================================
+class GitPRContext(_Base):
+    """What a pull request is built from: root and internal PR context, commits and
+    agent slugs, the target branch, title and body, the existing PR, and the repo
+    and token."""
 
     @staticmethod
     def _collect_root_commits(
@@ -2525,6 +2255,11 @@ class GitService(
             return None
         return repo_ref, git_token
 
+
+class GitPRQueries(_Base):
+    """Reading pull requests and CI from the forge: open PRs, normalized, and the
+    latest CI run's conclusion."""
+
     async def list_open_prs(self, project_slug: str) -> list[dict[str, Any]]:
         """List a project's open PRs, normalized with fork/author classification.
 
@@ -2747,6 +2482,11 @@ class GitService(
         if not runs:
             return None
         return _select_ci_head_run(runs)
+
+
+class GitPRCreation(_Base):
+    """Opening a pull request: posting it, its labels, its base and head, adopting
+    Entire's PR, patching its title and body, and marking it ready."""
 
     async def _post_pr(
         self,
@@ -2973,6 +2713,216 @@ class GitService(
             target_branch,
         )
 
+    async def _labels_for_pr_request(
+        self,
+        request: GitCreatePRRequest,
+        base_branch: str,
+    ) -> list[str]:
+        """The org-structure labels for the REST/task PR path. A task PR derives
+        team / batch / has_children from the task; a freeform PR (``task_id``
+        None) carries only the tree + root flags. ``base_branch`` is the PR's
+        REAL resolved target (post default-branch fallback), never assumed."""
+        if request.task_id is None:
+            return derive_pr_labels(
+                base_branch=base_branch,
+                is_root_pr=request.is_root_pr,
+                task_team=None,
+                batch_id=None,
+                has_children=False,
+            )
+        task = await get_task_service(self.session).get(request.task_id)
+        if task is None:
+            return derive_pr_labels(
+                base_branch=base_branch,
+                is_root_pr=request.is_root_pr,
+                task_team=None,
+                batch_id=None,
+                has_children=False,
+            )
+        return derive_pr_labels(
+            base_branch=base_branch,
+            is_root_pr=request.is_root_pr,
+            task_team=task.team,
+            batch_id=task.batch_id,
+            has_children=await self._task_has_children(UUID(str(task.id))),
+        )
+
+    async def _resolve_new_pr_context(
+        self,
+        workspace: Path,
+        request: GitCreatePRRequest,
+        source_branch: str,
+        default_branch: str,
+    ) -> tuple[str, str | None, str | None]:
+        """Resolve (target_branch, title, body) for a new PR.
+
+        With a ``task_id``: look the task up, resolve the target + remote base,
+        and generate the title/body from templates. Without one: target the
+        default branch and use the provided title/body (or minimal fallbacks).
+        """
+        if request.task_id is None:
+            return default_branch, request.title or source_branch, request.body or ""
+        task = await get_task_service(self.session).get(request.task_id)
+        if not task:
+            raise NotFoundError("Task", str(request.task_id))
+        target_branch = await self._resolve_pr_target_branch(
+            request, task, default_branch
+        )
+        target_branch = await self._pr_base_on_remote(
+            workspace, target_branch, default_branch, request.task_id
+        )
+        pr_title, pr_body = await self._generate_pr_title_body(
+            request, task, source_branch, target_branch, request.task_id
+        )
+        return target_branch, pr_title, pr_body
+
+    async def _existing_pr(
+        self,
+        resp: httpx.Response,
+        repo_ref: RepoRef,
+        branches: tuple[str, str],
+        git_token: str,
+    ) -> dict[str, Any] | None:
+        """Idempotency: if the create hit an 'already exists' 422, return that
+        PR as GitHub has it.
+
+        ``branches`` is (source, target).
+        """
+        if resp.status_code != _GH_UNPROCESSABLE or "already exists" not in resp.text:
+            return None
+        source_branch, target_branch = branches
+        return await self._find_existing_pr(
+            repo_ref, source_branch, target_branch, git_token
+        )
+
+    async def _patch_pr_title_body(
+        self,
+        repo_ref: RepoRef,
+        pr_number: int,
+        git_token: str,
+        payload: dict[str, str],
+        *,
+        current_body: str | None = None,
+    ) -> None:
+        """PATCH /repos/{owner}/{repo}/pulls/{pr_number} with title/body.
+
+        A new body keeps Entire's markers from the current one
+        (``with_entire_markers``; ``current_body`` spares the lookup when the
+        caller already has it). Translates HTTP failures into GitError so the
+        verb layer can map them onto invalid_state envelopes. 404 → "PR not
+        found"; any other non-2xx surfaces the GitHub validation text inline.
+        """
+        if "title" in payload:
+            payload["title"] = _cap_pr_title(payload["title"])
+        if "body" in payload:
+            if current_body is None:
+                current_body = await self._current_pr_body(
+                    repo_ref, pr_number, git_token
+                )
+            payload["body"] = _cap_pr_body(
+                with_entire_markers(payload["body"], current_body)
+            )
+        try:
+            resp = await self._forge.update_pr(
+                repo_ref, git_token, pr_number, payload=payload
+            )
+        except httpx.HTTPError as e:
+            raise GitError(
+                f"GitHub API error while updating PR #{pr_number}: {e}",
+                {"owner": repo_ref.owner, "repo": repo_ref.repo, "pr": pr_number},
+            ) from e
+        if resp.status_code == _HTTP_NOT_FOUND:
+            raise GitError(
+                f"PR not found: #{pr_number} on {repo_ref.owner}/{repo_ref.repo}",
+                {"owner": repo_ref.owner, "repo": repo_ref.repo, "pr": pr_number},
+            )
+        if not resp.is_success:
+            raise GitError(
+                f"GitHub API refused PR update ({resp.status_code}): {resp.text[:200]}",
+                {"owner": repo_ref.owner, "repo": repo_ref.repo, "pr": pr_number},
+            )
+
+    async def _current_pr_body(
+        self, repo_ref: RepoRef, pr_number: int, git_token: str
+    ) -> str | None:
+        """The PR's body as GitHub has it now, or None when it cannot be
+        read (then a rewrite simply carries no Entire markers forward)."""
+        try:
+            resp = await self._forge.get_pr(repo_ref, git_token, pr_number)
+        except httpx.HTTPError as e:
+            self.log.warning("PR body unreadable", pr=pr_number, error=str(e))
+            return None
+        if not resp.is_success:
+            return None
+        return cast("str | None", resp.json().get("body"))
+
+    async def _adopt_entire_pr(
+        self,
+        repo_ref: RepoRef,
+        git_token: str,
+        found: dict[str, Any],
+        *,
+        title_body: tuple[str, str],
+        project: Any,
+    ) -> None:
+        """Make a PR Entire opened for a linked branch RoboCo's own.
+
+        On a project bridged to Entire trails, a linked branch that already
+        has commits gets a PR from Entire (draft, titled with the branch
+        name), so RoboCo's create finds it instead of opening one. RoboCo then
+        sets its own title and body, keeping Entire's markers, and takes the
+        PR out of draft: GitHub never merges a draft. A PR Entire has not
+        marked is left as it is.
+        """
+        if not (
+            settings.entire_trails_enabled
+            and getattr(project, "entire_trails_enabled", False)
+        ):
+            return
+        current_body = found.get("body") or ""
+        if not is_entire_pr_body(current_body):
+            return
+        pr_number = int(found["number"])
+        title, body = title_body
+        await self._patch_pr_title_body(
+            repo_ref,
+            pr_number,
+            git_token,
+            {"title": title, "body": body},
+            current_body=current_body,
+        )
+        if found.get("draft"):
+            await self._mark_pr_ready(
+                repo_ref, git_token, pr_number, str(found["node_id"])
+            )
+
+    async def _mark_pr_ready(
+        self, repo_ref: RepoRef, git_token: str, pr_number: int, node_id: str
+    ) -> None:
+        """Take a draft PR out of draft, or raise GitError."""
+        context = {"owner": repo_ref.owner, "repo": repo_ref.repo, "pr": pr_number}
+        try:
+            resp = await self._forge.mark_pr_ready_for_review(
+                repo_ref, git_token, node_id
+            )
+        except httpx.HTTPError as e:
+            raise GitError(
+                f"GitHub API error taking PR #{pr_number} out of draft: {e}", context
+            ) from e
+        errors = resp.json().get("errors") if resp.is_success else None
+        if not resp.is_success or errors:
+            detail = errors if errors else resp.text[:200]
+            raise GitError(
+                f"GitHub refused to take PR #{pr_number} out of draft "
+                f"({resp.status_code}): {detail}",
+                context,
+            )
+
+
+class GitEnvSync(_Base):
+    """The environment-branch ladder: syncing an env branch by a local merge, its
+    status, and the sync PR."""
+
     async def sync_env_branch(
         self, project_slug: str, target_branch: str, source_branch: str
     ) -> dict[str, Any]:
@@ -3196,210 +3146,10 @@ class GitService(
         data = resp.json()
         return {"number": int(data["number"]), "url": str(data.get("html_url", ""))}
 
-    async def _labels_for_pr_request(
-        self,
-        request: GitCreatePRRequest,
-        base_branch: str,
-    ) -> list[str]:
-        """The org-structure labels for the REST/task PR path. A task PR derives
-        team / batch / has_children from the task; a freeform PR (``task_id``
-        None) carries only the tree + root flags. ``base_branch`` is the PR's
-        REAL resolved target (post default-branch fallback), never assumed."""
-        if request.task_id is None:
-            return derive_pr_labels(
-                base_branch=base_branch,
-                is_root_pr=request.is_root_pr,
-                task_team=None,
-                batch_id=None,
-                has_children=False,
-            )
-        task = await get_task_service(self.session).get(request.task_id)
-        if task is None:
-            return derive_pr_labels(
-                base_branch=base_branch,
-                is_root_pr=request.is_root_pr,
-                task_team=None,
-                batch_id=None,
-                has_children=False,
-            )
-        return derive_pr_labels(
-            base_branch=base_branch,
-            is_root_pr=request.is_root_pr,
-            task_team=task.team,
-            batch_id=task.batch_id,
-            has_children=await self._task_has_children(UUID(str(task.id))),
-        )
 
-    async def _resolve_new_pr_context(
-        self,
-        workspace: Path,
-        request: GitCreatePRRequest,
-        source_branch: str,
-        default_branch: str,
-    ) -> tuple[str, str | None, str | None]:
-        """Resolve (target_branch, title, body) for a new PR.
-
-        With a ``task_id``: look the task up, resolve the target + remote base,
-        and generate the title/body from templates. Without one: target the
-        default branch and use the provided title/body (or minimal fallbacks).
-        """
-        if request.task_id is None:
-            return default_branch, request.title or source_branch, request.body or ""
-        task = await get_task_service(self.session).get(request.task_id)
-        if not task:
-            raise NotFoundError("Task", str(request.task_id))
-        target_branch = await self._resolve_pr_target_branch(
-            request, task, default_branch
-        )
-        target_branch = await self._pr_base_on_remote(
-            workspace, target_branch, default_branch, request.task_id
-        )
-        pr_title, pr_body = await self._generate_pr_title_body(
-            request, task, source_branch, target_branch, request.task_id
-        )
-        return target_branch, pr_title, pr_body
-
-    async def _existing_pr(
-        self,
-        resp: httpx.Response,
-        repo_ref: RepoRef,
-        branches: tuple[str, str],
-        git_token: str,
-    ) -> dict[str, Any] | None:
-        """Idempotency: if the create hit an 'already exists' 422, return that
-        PR as GitHub has it.
-
-        ``branches`` is (source, target).
-        """
-        if resp.status_code != _GH_UNPROCESSABLE or "already exists" not in resp.text:
-            return None
-        source_branch, target_branch = branches
-        return await self._find_existing_pr(
-            repo_ref, source_branch, target_branch, git_token
-        )
-
-    async def _patch_pr_title_body(
-        self,
-        repo_ref: RepoRef,
-        pr_number: int,
-        git_token: str,
-        payload: dict[str, str],
-        *,
-        current_body: str | None = None,
-    ) -> None:
-        """PATCH /repos/{owner}/{repo}/pulls/{pr_number} with title/body.
-
-        A new body keeps Entire's markers from the current one
-        (``with_entire_markers``; ``current_body`` spares the lookup when the
-        caller already has it). Translates HTTP failures into GitError so the
-        verb layer can map them onto invalid_state envelopes. 404 → "PR not
-        found"; any other non-2xx surfaces the GitHub validation text inline.
-        """
-        if "title" in payload:
-            payload["title"] = _cap_pr_title(payload["title"])
-        if "body" in payload:
-            if current_body is None:
-                current_body = await self._current_pr_body(
-                    repo_ref, pr_number, git_token
-                )
-            payload["body"] = _cap_pr_body(
-                with_entire_markers(payload["body"], current_body)
-            )
-        try:
-            resp = await self._forge.update_pr(
-                repo_ref, git_token, pr_number, payload=payload
-            )
-        except httpx.HTTPError as e:
-            raise GitError(
-                f"GitHub API error while updating PR #{pr_number}: {e}",
-                {"owner": repo_ref.owner, "repo": repo_ref.repo, "pr": pr_number},
-            ) from e
-        if resp.status_code == _HTTP_NOT_FOUND:
-            raise GitError(
-                f"PR not found: #{pr_number} on {repo_ref.owner}/{repo_ref.repo}",
-                {"owner": repo_ref.owner, "repo": repo_ref.repo, "pr": pr_number},
-            )
-        if not resp.is_success:
-            raise GitError(
-                f"GitHub API refused PR update ({resp.status_code}): {resp.text[:200]}",
-                {"owner": repo_ref.owner, "repo": repo_ref.repo, "pr": pr_number},
-            )
-
-    async def _current_pr_body(
-        self, repo_ref: RepoRef, pr_number: int, git_token: str
-    ) -> str | None:
-        """The PR's body as GitHub has it now, or None when it cannot be
-        read (then a rewrite simply carries no Entire markers forward)."""
-        try:
-            resp = await self._forge.get_pr(repo_ref, git_token, pr_number)
-        except httpx.HTTPError as e:
-            self.log.warning("PR body unreadable", pr=pr_number, error=str(e))
-            return None
-        if not resp.is_success:
-            return None
-        return cast("str | None", resp.json().get("body"))
-
-    async def _adopt_entire_pr(
-        self,
-        repo_ref: RepoRef,
-        git_token: str,
-        found: dict[str, Any],
-        *,
-        title_body: tuple[str, str],
-        project: Any,
-    ) -> None:
-        """Make a PR Entire opened for a linked branch RoboCo's own.
-
-        On a project bridged to Entire trails, a linked branch that already
-        has commits gets a PR from Entire (draft, titled with the branch
-        name), so RoboCo's create finds it instead of opening one. RoboCo then
-        sets its own title and body, keeping Entire's markers, and takes the
-        PR out of draft: GitHub never merges a draft. A PR Entire has not
-        marked is left as it is.
-        """
-        if not (
-            settings.entire_trails_enabled
-            and getattr(project, "entire_trails_enabled", False)
-        ):
-            return
-        current_body = found.get("body") or ""
-        if not is_entire_pr_body(current_body):
-            return
-        pr_number = int(found["number"])
-        title, body = title_body
-        await self._patch_pr_title_body(
-            repo_ref,
-            pr_number,
-            git_token,
-            {"title": title, "body": body},
-            current_body=current_body,
-        )
-        if found.get("draft"):
-            await self._mark_pr_ready(
-                repo_ref, git_token, pr_number, str(found["node_id"])
-            )
-
-    async def _mark_pr_ready(
-        self, repo_ref: RepoRef, git_token: str, pr_number: int, node_id: str
-    ) -> None:
-        """Take a draft PR out of draft, or raise GitError."""
-        context = {"owner": repo_ref.owner, "repo": repo_ref.repo, "pr": pr_number}
-        try:
-            resp = await self._forge.mark_pr_ready_for_review(
-                repo_ref, git_token, node_id
-            )
-        except httpx.HTTPError as e:
-            raise GitError(
-                f"GitHub API error taking PR #{pr_number} out of draft: {e}", context
-            ) from e
-        errors = resp.json().get("errors") if resp.is_success else None
-        if not resp.is_success or errors:
-            detail = errors if errors else resp.text[:200]
-            raise GitError(
-                f"GitHub refused to take PR #{pr_number} out of draft "
-                f"({resp.status_code}): {detail}",
-                context,
-            )
+class GitPRReviewAndCI(_Base):
+    """A pull request's review and CI state: reviewers and reviews, its diff and
+    head SHA, and classifying its check runs."""
 
     async def _post_pr_reviewers(
         self,
@@ -3824,6 +3574,11 @@ class GitService(
         state = "pending_not_scheduled" if total > 0 else "no_ci_configured"
         return {"state": state, "head_sha": head_sha}
 
+
+class GitTaskPRs(_Base):
+    """A task's pull request: creating it with its guard and atomic record, and
+    updating it."""
+
     async def update_pr_for_task(
         self,
         task_id: UUID,
@@ -3998,29 +3753,10 @@ class GitService(
             )
         return pr_number, pr_url, title, source_branch, target_branch
 
-    async def _call_merge_api(
-        self,
-        repo_ref: RepoRef,
-        pr_number: int,
-        git_token: str,
-        merge_method: str,
-    ) -> httpx.Response:
-        """PUT the merge request to GitHub; HTTP errors → GitError."""
-        try:
-            return cast(
-                "httpx.Response",
-                await self._forge.merge_pr(
-                    repo_ref,
-                    git_token,
-                    pr_number,
-                    merge_method=merge_method,
-                ),
-            )
-        except httpx.HTTPError as e:
-            raise GitError(
-                f"GitHub API error while merging PR #{pr_number}: {e}",
-                {"owner": repo_ref.owner, "repo": repo_ref.repo, "pr": pr_number},
-            ) from e
+
+class GitBranchCleanup(_Base):
+    """Cleaning up after merges: syncing the target branch, deleting remote and PR
+    branches, closing a task's PR, and the stale-branch sweep."""
 
     async def _sync_target_branch(self, workspace: Path, target_branch: str) -> str:
         """Checkout + hard-sync the target branch to origin, return its tip.
@@ -4454,6 +4190,35 @@ class GitService(
         await workspace_service.delete_local_branch(clone_root, branch, force=True)
         return remote_deleted, True
 
+
+class GitMerge(_Base):
+    """Merging a pull request: the merge API and method, who may merge, and
+    completing the task on merge."""
+
+    async def _call_merge_api(
+        self,
+        repo_ref: RepoRef,
+        pr_number: int,
+        git_token: str,
+        merge_method: str,
+    ) -> httpx.Response:
+        """PUT the merge request to GitHub; HTTP errors → GitError."""
+        try:
+            return cast(
+                "httpx.Response",
+                await self._forge.merge_pr(
+                    repo_ref,
+                    git_token,
+                    pr_number,
+                    merge_method=merge_method,
+                ),
+            )
+        except httpx.HTTPError as e:
+            raise GitError(
+                f"GitHub API error while merging PR #{pr_number}: {e}",
+                {"owner": repo_ref.owner, "repo": repo_ref.repo, "pr": pr_number},
+            ) from e
+
     async def _first_allowed_merge_method(
         self,
         repo_ref: RepoRef,
@@ -4716,6 +4481,295 @@ class GitService(
             )
 
         return target_branch, merge_commit
+
+
+class GitService(
+    BaseService,
+    GitBranchCleanup,
+    GitBranches,
+    GitCheckoutPush,
+    GitCommits,
+    GitEnvSync,
+    GitMerge,
+    GitPRContext,
+    GitPRCreation,
+    GitPRQueries,
+    GitPRReviewAndCI,
+    GitPushHooks,
+    GitStatus,
+    GitTaskPRs,
+):
+    """
+    Service for git operations on agent workspaces.
+
+    Handles:
+    - Git command execution
+    - Commit creation with templates
+    - PR creation with templates
+    - Branch management
+    """
+
+    service_name: ClassVar[str] = "git"
+
+    @property
+    def _forge(self) -> GitProvider:
+        """The per-call forge router (Phase 2 of the forge-providers spec).
+
+        A property, not an ``__init__``-set attribute: several unit tests
+        build a ``GitService`` via ``GitService.__new__(GitService)`` to skip
+        the DB-session constructor, and a plain instance attribute would be
+        unset on those. The router resolves the concrete transport per call
+        from ``RepoRef.host`` (None → GitHub; a registered gitea host → that
+        instance's ``GiteaProvider``), so every existing call site stays
+        byte-for-byte unchanged. Construction is cheap (no I/O), so
+        resolving fresh per access costs nothing.
+        """
+        return ForgeRouter()
+
+    async def _run_git(
+        self,
+        workspace: Path,
+        args: list[str],
+        check: bool = True,
+        timeout: int | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        """Run a git command in a repository (non-blocking).
+
+        Every agent container mounts every clone read-write, so nothing here
+        trusts a clone, and no token comes near one:
+
+        - a command that names ``origin`` (fetch / push / ls-remote / pull /
+          remote prune) is served through the project's relay against its
+          URL from the database (``roboco.services.git_origin``); the token
+          lives only in root-run git inside the relay, scoped to the origin
+          host, never in argv or on disk;
+        - any other command runs as the git user via ``run_workspace_git``
+          (environment from scratch, program-starting settings pinned off,
+          hooks only from the root-owned support dir, config audited), or as
+          root via ``run_private_git`` in a dispatcher-owned repository under
+          the private root (the read and release clones).
+
+        The git user writes group-writable files in the agent group, so no
+        ownership repair follows a command. ``timeout`` overrides the default
+        per-command budget (``settings.git_command_timeout_seconds``): staging
+        and committing a large changeset (e.g. the Next.js panel) can exceed
+        the short default, so the commit choreography passes the longer
+        ``settings.git_commit_timeout_seconds``. A refused clone config or an
+        origin command RoboCo never issues raises ``GitCommandError``.
+
+        A workspace commit or push also gets the hooks git would run around
+        it: the project's own (``_run_project_hooks``) and, when Entire
+        records the agent's session, Entire's (``roboco.services.entire_hooks``).
+        """
+        effective_timeout = timeout if timeout is not None else _default_git_timeout()
+        args, refused = await self._run_project_hooks(
+            workspace, args, effective_timeout
+        )
+        if refused is not None:
+            return _hook_refusal(args, refused, check=check)
+        entire = await self._entire_before(workspace, args)
+        if is_origin_command(args):
+            ctx = await self._origin_context(workspace, effective_timeout)
+
+            def _run() -> subprocess.CompletedProcess[str]:
+                return run_origin_command(ctx, args)
+
+        else:
+
+            def _run() -> subprocess.CompletedProcess[str]:
+                return _run_local_git(workspace, args, effective_timeout)
+
+        loop = asyncio.get_running_loop()
+        t0 = time.monotonic()
+        try:
+            result = await loop.run_in_executor(_GIT_EXECUTOR, _run)
+        except subprocess.TimeoutExpired as e:
+            # Timed-out git process was SIGKILL'd mid-mutation and may orphan
+            # .git/*.lock files; clear them so the workspace isn't wedged.
+            await loop.run_in_executor(
+                _GIT_EXECUTOR, _remove_stale_git_locks, workspace
+            )
+            raise GitTimeoutError(" ".join(args), effective_timeout) from e
+        except (UnsafeWorkspaceGitConfigError, UnsupportedOriginCommandError) as e:
+            raise GitCommandError(" ".join(args), str(e)) from e
+        self._warn_if_slow(args, t0, effective_timeout, workspace)
+        if check and result.returncode != 0:
+            raise GitCommandError(
+                " ".join(args), result.stderr or result.stdout or "Unknown error"
+            )
+        await self._run_entire_after(workspace, entire, result, effective_timeout)
+        return result
+
+    def _warn_if_slow(
+        self, args: list[str], started: float, timeout: int, workspace: Path
+    ) -> None:
+        """Surface slow git ops (instrumentation) without flooding the fast path."""
+        git_ms = (time.monotonic() - started) * 1000.0
+        if git_ms > _SLOW_GIT_OP_MS:
+            self.log.warning(
+                "slow git op",
+                op=" ".join(args[:2]),
+                git_ms=round(git_ms),
+                timeout_s=timeout,
+                workspace=str(workspace),
+            )
+
+    async def _origin_context(self, repo: Path, timeout: int) -> OriginContext:
+        """The relay round-trip context for an ``origin`` command in ``repo``."""
+        relay = await self._relay_for_repo(repo)
+
+        def _local(args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+            return _run_local_git(repo, list(args), timeout)
+
+        return OriginContext(
+            relay=relay,
+            repo=repo,
+            local_git=_local,
+            from_workspace=not is_dispatcher_owned(repo),
+            timeout=timeout,
+        )
+
+    async def _relay_for_repo(self, repo: Path) -> GitRelay:
+        """The relay of the project ``repo`` belongs to, from the database."""
+        project = await self._project_for_repo(repo)
+        if project is None:
+            raise GitCommandError("origin", f"no project owns repository {repo}")
+        return relay_for(project, await self._token_for_project(str(project.slug)))
+
+    async def _project_for_repo(self, repo: Path) -> ProjectTable | None:
+        """The project a repository belongs to, by its path — never its config.
+
+        An agent workspace sits at ``<workspaces_root>/<slug>/...`` and a
+        dispatcher-owned clone at ``<private_root>/<read|release|scratch>/<slug>``;
+        any other path is an operator-configured ``workspace_path``. The path
+        is taken lexically: an agent can swap its clone for a symlink to
+        another project's, so it is never resolved.
+        """
+        normalized = Path(os.path.normpath(repo))
+        slug: str | None = None
+        with contextlib.suppress(ValueError):
+            slug = normalized.relative_to(settings.workspaces_root).parts[0]
+        with contextlib.suppress(ValueError):
+            parts = normalized.relative_to(private_root()).parts
+            if len(parts) >= _PRIVATE_REPO_DEPTH and parts[0] in _PRIVATE_REPO_KINDS:
+                slug = parts[1]
+        project_service = get_project_service(self.session)
+        if slug:
+            return await project_service.get_by_slug(slug)
+        return await project_service.get_by_workspace_path(str(normalized))
+
+    async def _repo_ref_for_workspace(self, workspace: Path) -> RepoRef:
+        """The forge repo a workspace's REST calls act on: the project's URL
+        from the database, never the agent-writable ``remote.origin.url``.
+
+        A clone's config is agent-controlled: read from there, a rewritten
+        origin URL pointed PR create/merge/close (with the project token) at
+        any repository that token can reach.
+        """
+        project = await self._project_for_repo(workspace)
+        if project is None:
+            raise GitError(
+                "No project owns this workspace", {"workspace": str(workspace)}
+            )
+        return self._parse_git_url(str(project.git_url))
+
+    async def _token_for_project(self, project_slug: str) -> str | None:
+        """Decrypted project token for orchestrator-side remote git ops.
+
+        A decryption failure (an encryption-key rotation left the stored PAT
+        encrypted with the old key) is logged loudly with the project slug
+        before returning None — without this every best-effort workspace git
+        op (push, PR, clone-with-token) silently looks like 'this project has
+        no token', indistinguishable from a project that genuinely never set
+        one, and the operator can't tell which project a key rotation wedged.
+        The best-effort skip behavior is preserved (callers still get None and
+        skip the remote op); this only makes the cause diagnosable.
+        """
+        from roboco.utils.crypto import EncryptionError
+
+        project_service = get_project_service(self.session)
+        try:
+            return await project_service.get_decrypted_token_by_slug(project_slug)
+        except EncryptionError as exc:
+            self.log.error(
+                "git token decryption failed — encryption key may have rotated;"
+                " treating as no-token for this project's remote git ops",
+                project_slug=project_slug,
+                error=str(exc),
+            )
+            return None
+
+    async def get_workspace(
+        self,
+        project_slug: str,
+        agent_id: UUID | None = None,
+        *,
+        skip_refresh: bool = False,
+    ) -> Path:
+        """Get the workspace path for an agent on a project."""
+        project_service = get_project_service(self.session)
+        project = await project_service.get_by_slug(project_slug)
+        if not project:
+            raise NotFoundError("Project", project_slug)
+
+        if agent_id is None:
+            if not project.workspace_path:
+                raise ValidationError(
+                    f"Project '{project_slug}' has no workspace configured "
+                    "and no agent_id provided for dynamic workspace resolution"
+                )
+            workspace = Path(project.workspace_path)
+            if not workspace.exists():
+                raise ValidationError(f"Workspace path does not exist: {workspace}")
+            return workspace
+
+        workspace_service = get_workspace_service(self.session)
+
+        try:
+            if settings.workspace_auto_clone:
+                workspace = await workspace_service.ensure_workspace(
+                    project_slug=project_slug,
+                    agent_id=agent_id,
+                    git_url=project.git_url,
+                    default_branch=head_branch(project),
+                    skip_refresh=skip_refresh,
+                )
+            else:
+                workspace = await workspace_service.resolve_workspace(
+                    project_slug=project_slug,
+                    agent_id=agent_id,
+                )
+                if not workspace.exists():
+                    raise ValidationError(
+                        f"Workspace does not exist: {workspace}. "
+                        "Clone the repository first or enable auto_clone."
+                    )
+        except WorkspaceError as e:
+            raise ValidationError(str(e)) from e
+
+        return workspace
+
+    # =========================================================================
+    # STATUS / INFO METHODS
+    # =========================================================================
+
+    _PORCELAIN_STATUS_WIDTH: ClassVar[int] = 2
+
+    # =========================================================================
+    # COMMIT METHODS
+    # =========================================================================
+
+    # =========================================================================
+    # BRANCH METHODS
+    # =========================================================================
+
+    # =========================================================================
+    # PULL / FETCH / REBASE METHODS
+    # =========================================================================
+
+    # =========================================================================
+    # PR METHODS
+    # =========================================================================
 
     # =========================================================================
     # GATEWAY (CHOREOGRAPHER) BACKFILL
