@@ -263,7 +263,7 @@ support-services
 | `get_settings_service` | `api/routes/settings.py`, `runtime/engines/sweeps.py:1475` | `GET/POST /api/settings`; orchestrator transcript-retention read |
 | `get_maintenance_pause_service` / `lookup_degraded_at` | `api/routes/maintenance_pause.py` | CEO-only `GET /api/maintenance-pause`, `POST` / `DELETE /api/maintenance-pause/{scope}` |
 | `is_paused` | `runtime/engines/_shared.py` (`SharedEngine._is_paused`, used by `dispatch_work.py`, `dispatch_breaker.py`, `spawn_exit.py` and the module-level Board Program dispatch in `runtime/orchestrator.py`), `runtime/engines/video_render.py`, `api/routes/board_programs.py`, `services/board_programs.py`, and the originating engines under `services/` (CI-watch, dep-update, docs-sync, env-sync, release-manager, self-heal, X, video, coroner, war-room) | Each dispatch tick (`dispatch`), Board Program origination (`board_programs`) and engine origination or render (`engines`), next to that site's own `*_enabled` gate |
-| `get_model_routing_service().resolve_for_agent` | `runtime/engines/spawn_launch.py:1713` | Each agent spawn |
+| `get_model_routing_service().resolve_for_agent` | `runtime/engines/spawn_launch.py:1592` | Each agent spawn |
 | `ModelRoutingService.*` assignment/mode ops | `api/routes/provider.py` | `GET/POST/DELETE /api/providers/*` |
 | `ProviderService.*` | `api/routes/provider.py` | provider CRUD routes |
 | `get_agent_service` | `api/routes/agents.py`, `services/task.py`, `services/pitch.py` | `/api/agents`; task/pitch main-pm lookup |

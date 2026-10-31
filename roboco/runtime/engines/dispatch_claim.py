@@ -18,7 +18,9 @@ from fastapi import status as http_status
 from roboco.agents_config import get_agent_role
 from roboco.config import settings
 from roboco.foundation.policy.lane import transitive_dependents
-from roboco.models.runtime import SpawnGitContext
+from roboco.models.runtime import (
+    SpawnGitContext,
+)
 from roboco.runtime.orchestrator import (
     _PARENT_BRANCH_WAIT,
     _branch_is_expected,
@@ -383,7 +385,8 @@ class DispatcherLoopEngine(_Base):
 class DispatchClaimEngine(_Base):
     """Claim a task for an agent and spawn it: the claim-in-flight registry,
     picking a free cell agent, the claim and review-PM assignment calls, the
-    guarded claim-and-spawn, and the prompt a routed spawn gets."""
+    guarded claim-and-spawn, the prompt a routed spawn gets, and releasing a
+    stuck claim back to pending."""
 
     def _task_git_context(self, task: dict[str, Any]) -> SpawnGitContext | None:
         """Build SpawnGitContext from a task dict for workspace mounting.
@@ -649,6 +652,35 @@ class DispatchClaimEngine(_Base):
         if routing == "main_pm" or agent_id == "main-pm":
             return self._build_main_pm_triage_prompt(task)
         return self._build_pm_triage_prompt(task)
+
+    async def _release_claim_to_pending(self, task_id: str) -> None:
+        """Release a stuck claim back to PENDING via the lifecycle-safe path.
+
+        Reuses ``TaskService.unclaim_for_reaper`` (claimed/in_progress ->
+        pending, clears assignee + work session) so the state machine records
+        the transition rather than a raw status PATCH. Opens its own short-lived
+        session, mirroring ``_reap_stale_claims``.
+        """
+        from roboco.db.base import get_session_factory
+        from roboco.services.task import TaskService
+        from roboco.utils.converters import require_uuid
+
+        try:
+            factory = get_session_factory()
+            async with factory() as db:
+                svc = TaskService(db)
+                await svc.unclaim_for_reaper(require_uuid(task_id))
+                await db.commit()
+            logger.warning(
+                "Released agentless claim to pending for re-dispatch",
+                task_id=task_id,
+            )
+        except Exception as exc:
+            logger.error(
+                "Failed to release agentless claim; will retry next tick",
+                task_id=task_id,
+                error=str(exc),
+            )
 
 
 class SpawnReadinessEngine(_Base):

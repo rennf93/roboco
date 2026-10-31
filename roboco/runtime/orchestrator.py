@@ -1392,7 +1392,15 @@ from roboco.runtime.engines.spawn_config import (
     SystemPromptEngine,
 )
 from roboco.runtime.engines.spawn_exit import SpawnExitEngine
-from roboco.runtime.engines.spawn_launch import SpawnLaunchEngine
+from roboco.runtime.engines.spawn_launch import (
+    AgentImageEngine,
+    ContainerEnvEngine,
+    ContainerMountsEngine,
+    ProviderRouteEngine,
+    ReadinessGateEngine,
+    SpawnAgentEngine,
+    SpawnGitContextEngine,
+)
 from roboco.runtime.engines.strategy import StrategyEngine
 from roboco.runtime.engines.sweeps import SweepsEngine
 from roboco.runtime.engines.telegram_poll import TelegramPollEngine
@@ -1404,6 +1412,7 @@ from roboco.runtime.engines.x_mentions import XMentionsEngine
 class AgentOrchestrator(
     SharedEngine,
     AgentBriefingEngine,
+    AgentImageEngine,
     AgentSettingsEngine,
     AgentWorkSignalEngine,
     AuditDispatchEngine,
@@ -1415,6 +1424,8 @@ class AgentOrchestrator(
     CellReviewPromptsEngine,
     CiWatchEngine,
     ClaimBarrierEngine,
+    ContainerEnvEngine,
+    ContainerMountsEngine,
     DecisionsLabelerEngine,
     DepUpdateEngine,
     DevDispatchEngine,
@@ -1438,16 +1449,19 @@ class AgentOrchestrator(
     PRReviewDispatchEngine,
     ProductOwnerExplorationsEngine,
     ProductOwnerProgramPromptsEngine,
+    ProviderRouteEngine,
     ProviderUpkeepEngine,
     QADispatchEngine,
     RateLimitProbeEngine,
+    ReadinessGateEngine,
     ReconcileEngine,
     ReleaseManagerEngine,
     RespawnBreakerEngine,
     RespawnTripEngine,
     RoutingClassifierEngine,
+    SpawnAgentEngine,
     SpawnExitEngine,
-    SpawnLaunchEngine,
+    SpawnGitContextEngine,
     SpawnReadinessEngine,
     StaleClaimReaperEngine,
     StrategyEngine,

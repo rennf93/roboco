@@ -733,8 +733,9 @@ class AgentWorkSignalEngine(_Base):
 
 class RespawnTripEngine(_Base):
     """When the respawn breaker trips: the B37 verdict that can override it,
-    the stall marker and overseer notice, the B16 coroner post-mortem, and
-    clearing the marker on real progress."""
+    the stall marker and overseer notice, the one-shot CEO alert for a
+    wedged agent, the B16 coroner post-mortem, and clearing the marker on
+    real progress."""
 
     async def _pm_respawn_spawn_anyway(
         self,
@@ -954,6 +955,44 @@ class RespawnTripEngine(_Base):
         except Exception as exc:
             logger.warning(
                 "Failed to clear stalled marker",
+                agent_id=agent_slug,
+                task_id=task_id,
+                error=str(exc),
+            )
+
+    async def _notify_stuck_agent(
+        self, agent_slug: str, task_id: str, task_status: str | None
+    ) -> None:
+        """One-shot alert to the CEO that an agent is wedged in a respawn loop.
+
+        Best-effort: a notification failure must not wedge dispatch, so any
+        error is logged and swallowed.
+        """
+        from uuid import UUID
+
+        from roboco.db.base import get_db_context
+        from roboco.services.notification import NotificationService
+        from roboco.services.task import TaskService
+
+        task_title: str | None = None
+        try:
+            async with get_db_context() as db:
+                task = await TaskService(db).get(UUID(task_id))
+                task_title = task.title if task else None
+        except Exception:
+            task_title = None
+
+        try:
+            await NotificationService().send_stuck_agent_notification(
+                task_id=task_id,
+                agent_slug=agent_slug,
+                task_status=task_status or "unknown",
+                to_agent="ceo",
+                task_title=task_title,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to send stuck-agent notification",
                 agent_id=agent_slug,
                 task_id=task_id,
                 error=str(exc),

@@ -90,9 +90,9 @@ def _task(
 async def test_complexity_confident_score_overrides_static(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from roboco.runtime.engines.spawn_launch import SpawnLaunchEngine
+    from roboco.runtime.engines.spawn_launch import ProviderRouteEngine
 
-    engine = _bare(SpawnLaunchEngine)
+    engine = _bare(ProviderRouteEngine)
     monkeypatch.setattr(
         decisions,
         "complexity_score",
@@ -108,9 +108,9 @@ async def test_complexity_confident_score_overrides_static(
 async def test_complexity_low_confidence_keeps_static(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from roboco.runtime.engines.spawn_launch import SpawnLaunchEngine
+    from roboco.runtime.engines.spawn_launch import ProviderRouteEngine
 
-    engine = _bare(SpawnLaunchEngine)
+    engine = _bare(ProviderRouteEngine)
     monkeypatch.setattr(
         decisions, "complexity_score", AsyncMock(return_value=(2, False))
     )
@@ -124,9 +124,9 @@ async def test_complexity_low_confidence_keeps_static(
 async def test_complexity_short_description_skips_pilot(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from roboco.runtime.engines.spawn_launch import SpawnLaunchEngine
+    from roboco.runtime.engines.spawn_launch import ProviderRouteEngine
 
-    engine = _bare(SpawnLaunchEngine)
+    engine = _bare(ProviderRouteEngine)
     mock = AsyncMock()
     monkeypatch.setattr(decisions, "complexity_score", mock)
     result = await engine._decisions_complexity_override(
@@ -140,9 +140,9 @@ async def test_complexity_short_description_skips_pilot(
 async def test_complexity_criteria_passed_longest_form(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from roboco.runtime.engines.spawn_launch import SpawnLaunchEngine
+    from roboco.runtime.engines.spawn_launch import ProviderRouteEngine
 
-    engine = _bare(SpawnLaunchEngine)
+    engine = _bare(ProviderRouteEngine)
     mock = AsyncMock(return_value=(1, True))
     monkeypatch.setattr(decisions, "complexity_score", mock)
     task = _task(
@@ -160,9 +160,9 @@ async def test_complexity_criteria_passed_longest_form(
 async def test_complexity_pilot_error_keeps_static(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from roboco.runtime.engines.spawn_launch import SpawnLaunchEngine
+    from roboco.runtime.engines.spawn_launch import ProviderRouteEngine
 
-    engine = _bare(SpawnLaunchEngine)
+    engine = _bare(ProviderRouteEngine)
 
     async def boom(*a: Any, **kw: Any) -> Any:
         raise RuntimeError("down")

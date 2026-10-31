@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 
 from fastapi import status as http_status
 
+from roboco.config import settings
 from roboco.foundation import identity as _foundation
 from roboco.runtime.orchestrator import (
     UUID_TO_SLUG,
@@ -37,7 +38,8 @@ class SharedEngine(_Base):
     """Helpers every engine family uses: the loop heartbeat, audit fire,
     background scheduling, the repo key and one project per key, the agent
     team and active-agent checks, the uptime refresh, the pause check, the
-    subtask fetch, and resolving an agent UUID to its slug."""
+    subtask fetch, the internal API URL, a path-safe agent id, and resolving
+    an agent UUID to its slug."""
 
     # Re-declared (not just inherited from _Base above): mypy's Protocol
     # attribute inference cannot determine the type of an inherited member
@@ -225,3 +227,28 @@ class SharedEngine(_Base):
             return UUID_TO_SLUG[agent_id_or_uuid]
         # Already a slug or unknown UUID
         return agent_id_or_uuid
+
+    @staticmethod
+    def _safe_agent_path_segment(agent_id: str) -> str:
+        """Return ``agent_id`` if it is safe as a single path segment, else raise.
+
+        ``agent_id`` reaches the grok usage dir from request-facing call sites, so
+        it must not be able to traverse the path. Reject every traversal vector —
+        empty, ``.`` / ``..``, a ``/`` or ``\\`` separator, or an embedded NUL —
+        rather than stripping it; the orchestrator only ever assigns plain
+        slug / uuid ids, none of which contain these.
+        """
+        if (
+            not agent_id
+            or agent_id in {".", ".."}
+            or "/" in agent_id
+            or "\\" in agent_id
+            or "\x00" in agent_id
+        ):
+            raise ValueError(f"unsafe agent id for a filesystem path: {agent_id!r}")
+        return agent_id
+
+    @property
+    def _api_url(self) -> str:
+        """Get the internal API URL for task/notification queries."""
+        return settings.internal_api_url

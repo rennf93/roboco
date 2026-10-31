@@ -17,7 +17,11 @@ import httpx
 from fastapi import status as http_status
 
 from roboco.agents.factories._base import compose_prompt
-from roboco.agents_config import get_agent_role, get_agent_team, get_escalation_target
+from roboco.agents_config import (
+    get_agent_role,
+    get_agent_team,
+    get_escalation_target,
+)
 from roboco.config import settings
 from roboco.models import AgentRole, Team
 from roboco.runtime.orchestrator import (
@@ -31,7 +35,9 @@ from roboco.runtime.orchestrator import (
 from roboco.seeds.initial_data import AGENT_UUIDS
 
 if TYPE_CHECKING:
-    from roboco.models.runtime import SpawnGitContext
+    from roboco.models.runtime import (
+        SpawnGitContext,
+    )
     from roboco.runtime.orchestrator import AgentOrchestrator
 
 if TYPE_CHECKING:
@@ -43,7 +49,8 @@ else:
 class AgentSettingsEngine(_Base):
     """The agent's Claude Code configuration: role-scoped tool permissions,
     the Fable-mode hook groups, the per-agent settings file, the CLI model,
-    and the MCP config with its role-scoped servers."""
+    and the MCP config with its role-scoped servers (and which spawns get
+    playwright: a video-authoring ux dev, a dogfooding Product Owner)."""
 
     def _get_role_permissions(
         self, role: str, workspace_path: str, cell_workspace_path: str
@@ -795,6 +802,69 @@ class AgentSettingsEngine(_Base):
                 "command": "/app/scripts/entrypoints/playwright-mcp-entrypoint.sh",
                 "args": [],
             }
+
+    async def _is_video_authoring_spawn(
+        self, agent_id: str, agent_role: str, task_id: str | None
+    ) -> bool:
+        """A ux_ui developer spawned onto a source=video task — the one
+        non-QA case that gets the playwright MCP, so the author can open the
+        composition HTML in a real browser while iterating instead of
+        shipping the first render blind. Gating-only: the agent-ux image
+        already bakes the browser + wrapper entrypoint. Fail-closed — any
+        lookup error means no browser, never a broken spawn."""
+        if agent_role != "developer" or not task_id:
+            return False
+        if get_agent_team(agent_id) != "ux_ui":
+            return False
+        try:
+            from uuid import UUID
+
+            from roboco.db.base import get_session_factory
+            from roboco.services.task import VIDEO_SOURCE, get_task_service
+
+            factory = get_session_factory()
+            async with factory() as db:
+                t = await get_task_service(db).get(UUID(task_id))
+            return t is not None and t.source == VIDEO_SOURCE
+        except Exception as exc:
+            logger.warning(
+                "video-authoring spawn probe failed; playwright not registered",
+                agent_id=agent_id,
+                task_id=task_id,
+                error=str(exc),
+            )
+            return False
+
+    async def _is_dogfood_spawn(
+        self, agent_id: str, agent_role: str, task_id: str | None
+    ) -> bool:
+        """A Product Owner spawned onto a source=board_dogfood task — the
+        ONLY board-role case that gets the playwright MCP, so the PO can walk
+        the product as a user (spec §4). Task-scoped, not role-blanket: a PO
+        spawned for roadmap/pest_control/scales/any other cycle must NOT get
+        browser tools. Mirrors ``_is_video_authoring_spawn``'s shape exactly
+        — fail-closed: any lookup error means no browser, never a broken
+        spawn."""
+        if agent_role != "product_owner" or not task_id:
+            return False
+        try:
+            from uuid import UUID
+
+            from roboco.db.base import get_session_factory
+            from roboco.services.task import DOGFOOD_SOURCE, get_task_service
+
+            factory = get_session_factory()
+            async with factory() as db:
+                t = await get_task_service(db).get(UUID(task_id))
+            return t is not None and t.source == DOGFOOD_SOURCE
+        except Exception as exc:
+            logger.warning(
+                "dogfood spawn probe failed; playwright not registered",
+                agent_id=agent_id,
+                task_id=task_id,
+                error=str(exc),
+            )
+            return False
 
 
 class SystemPromptEngine(_Base):

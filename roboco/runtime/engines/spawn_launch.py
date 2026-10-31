@@ -1,5 +1,8 @@
-"""Auto-extracted engine mixin -- see decomp/extract.py. Method bodies below are
-moved verbatim from AgentOrchestrator (family: spawn_launch)."""
+"""Launching an agent's container: `spawn_agent` and its guards, the agent
+images, the spawn's git context and worktree, the `docker run` mounts and
+env, the provider route, and the readiness gate.
+
+Engine mixins composed into AgentOrchestrator."""
 
 from __future__ import annotations
 
@@ -13,11 +16,7 @@ from typing import TYPE_CHECKING, Any
 import httpx
 from fastapi import status as http_status
 
-from roboco.agents_config import (
-    ALL_DOCS,
-    get_agent_role,
-    get_agent_team,
-)
+from roboco.agents_config import ALL_DOCS, get_agent_role, get_agent_team
 from roboco.config import settings
 from roboco.foundation.identity import (
     is_human_only_role,
@@ -68,20 +67,14 @@ if TYPE_CHECKING:
     from uuid import UUID
 
     from roboco.llm.providers import AgentProvider, ProviderRegistry
-
-    # Also bound into this module's real (non-TYPE_CHECKING) globals at
-    # runtime by orchestrator.py, right after the class is defined -- see
-    # its bottom-of-file comment.
-    from roboco.runtime.orchestrator import (
-        AgentOrchestrator,
-    )
+    from roboco.runtime.orchestrator import AgentOrchestrator
     from roboco.services.llm import AgentRoute
-
 
 if TYPE_CHECKING:
     from roboco.runtime.engines._types import AgentOrchestratorSelf as _Base
 else:
     _Base = object
+
 
 # Decisions pilot 6.3 (complexity): only judge tasks whose description is
 # meaty enough for a routing verdict, and map the 0-2 score onto the
@@ -90,241 +83,10 @@ _DECISIONS_COMPLEXITY_MIN_DESC_CHARS = 80
 _DECISIONS_COMPLEXITY_TIERS = ("low", "medium", "high")
 
 
-class SpawnLaunchEngine(_Base):
-    """Mixin holding the "spawn_launch" methods moved out of AgentOrchestrator."""
-
-    # Re-declared (not just inherited from _Base above): mypy's Protocol
-    # attribute inference cannot determine the type of an inherited member
-    # that a method both reads AND assigns within the same method body
-    # (read-then-write in one scope; see _ensure_provider_registry below)
-    # without a bare re-declaration directly on the concrete class.
-    if TYPE_CHECKING:
-        _provider_registry: ProviderRegistry | None
-
-    async def _ensure_agent_image(self, agent_id: str | None = None) -> None:
-        """Ensure the agent Docker images are present.
-
-        Local mode (no ``agent_image_registry``) builds the base image first,
-        then the role-specialized image, from ``docker/agent-*.Dockerfile``.
-        Registry mode pulls the pre-built images instead. Idempotent — skips
-        anything already present locally.
-        """
-        # Determine build context
-        if PROJECT_HOST_PATH:
-            build_context = PROJECT_HOST_PATH
-            docker_dir = f"{PROJECT_HOST_PATH}/docker"
-        else:
-            build_context = str(self.project_root)
-            docker_dir = str(self.project_root / "docker")
-
-        # Always ensure base image exists
-        await self._ensure_image_present(
-            AGENT_BASE_IMAGE,
-            f"{docker_dir}/agent-base.Dockerfile",
-            build_context,
-        )
-
-        # Ensure the role-specialized image if this agent uses one
-        if agent_id:
-            bare = AGENT_IMAGES.get(agent_id, AGENT_BASE_IMAGE)
-            if bare != AGENT_BASE_IMAGE:
-                # Map the bare image name to its dockerfile
-                dockerfile_map = {
-                    "roboco-agent-pm": "agent-pm.Dockerfile",
-                    "roboco-agent-dev-be": "agent-dev-be.Dockerfile",
-                    "roboco-agent-dev-fe": "agent-dev-fe.Dockerfile",
-                    "roboco-agent-qa-be": "agent-qa-be.Dockerfile",
-                    "roboco-agent-qa-fe": "agent-qa-fe.Dockerfile",
-                    "roboco-agent-doc": "agent-doc.Dockerfile",
-                    "roboco-agent-ux": "agent-ux.Dockerfile",
-                    "roboco-agent-devops": "agent-devops.Dockerfile",
-                    "roboco-agent-prompter": "agent-prompter.Dockerfile",
-                    "roboco-agent-secretary": "agent-secretary.Dockerfile",
-                    "roboco-agent-pr-reviewer": "agent-pr-reviewer.Dockerfile",
-                    # Provider-generic live-chat images (interactive
-                    # intake/secretary on every routed provider).
-                    "roboco-agent-hummin-live": "agent-hummin-live.Dockerfile",
-                    "roboco-agent-codex-live": "agent-codex-live.Dockerfile",
-                    "roboco-agent-gemini-live": "agent-gemini-live.Dockerfile",
-                    "roboco-agent-kimi-live": "agent-kimi-live.Dockerfile",
-                    "roboco-agent-openrouter-live": "agent-openrouter-live.Dockerfile",
-                    "roboco-agent-nebius-live": "agent-nebius-live.Dockerfile",
-                }
-                dockerfile = dockerfile_map.get(bare)
-                if dockerfile:
-                    await self._ensure_image_present(
-                        bare,
-                        f"{docker_dir}/{dockerfile}",
-                        build_context,
-                    )
-
-    @staticmethod
-    def _safe_agent_path_segment(agent_id: str) -> str:
-        """Return ``agent_id`` if it is safe as a single path segment, else raise.
-
-        ``agent_id`` reaches the grok usage dir from request-facing call sites, so
-        it must not be able to traverse the path. Reject every traversal vector —
-        empty, ``.`` / ``..``, a ``/`` or ``\\`` separator, or an embedded NUL —
-        rather than stripping it; the orchestrator only ever assigns plain
-        slug / uuid ids, none of which contain these.
-        """
-        if (
-            not agent_id
-            or agent_id in {".", ".."}
-            or "/" in agent_id
-            or "\\" in agent_id
-            or "\x00" in agent_id
-        ):
-            raise ValueError(f"unsafe agent id for a filesystem path: {agent_id!r}")
-        return agent_id
-
-    async def _ensure_image_present(
-        self, bare_image: str, dockerfile_path: str, build_context: str
-    ) -> None:
-        """Ensure one agent image is present locally.
-
-        Pulls it (registry mode) or builds it from its Dockerfile (local mode)
-        when missing; no-op if already present.
-        """
-        image = _qualify_agent_image(bare_image)
-        # Check if image exists
-        proc = await asyncio.create_subprocess_exec(
-            "docker",
-            "image",
-            "inspect",
-            image,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        await proc.wait()
-        if proc.returncode == 0:
-            return
-
-        if settings.agent_image_registry:
-            # Registry mode: pull the pre-built image; never build from source
-            # (a deployment running pre-built images has no build context).
-            logger.info("Pulling agent image...", image=image)
-            proc = await asyncio.create_subprocess_exec(
-                "docker",
-                "pull",
-                image,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-            )
-            _, stderr = await proc.communicate()
-            if proc.returncode != 0:
-                raise RuntimeError(f"Failed to pull image {image}: {stderr.decode()}")
-            logger.info("Agent image pulled", image=image)
-            return
-
-        logger.info("Building Docker image...", image=image)
-        proc = await asyncio.create_subprocess_exec(
-            "docker",
-            "build",
-            "-t",
-            image,
-            "-f",
-            dockerfile_path,
-            build_context,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            raise RuntimeError(f"Failed to build image {image}: {stderr.decode()}")
-        logger.info("Docker image built successfully", image=image)
-
-    async def _git_context_default_project(self) -> SpawnGitContext | None:
-        """Return git context for the 'default' project when no task is known.
-
-        Used by no-task spawns (idle PM, scanner-only agents). Picks the
-        first active project in the DB — the common case is a single-project
-        deployment, where this resolves to the correct slug; for multi-
-        project deployments the caller should pass task_id to disambiguate.
-        """
-        from sqlalchemy import select
-
-        from roboco.db.base import get_db_context
-        from roboco.db.tables import ProjectTable
-        from roboco.models.env_branches import head_branch
-
-        try:
-            async with get_db_context() as db:
-                result = await db.execute(
-                    select(ProjectTable)
-                    .where(ProjectTable.is_active.is_(True))
-                    .order_by(ProjectTable.created_at.asc())
-                    .limit(1)
-                )
-                project = result.scalar_one_or_none()
-                if project is None or not project.slug:
-                    return None
-                return SpawnGitContext(
-                    project_slug=project.slug,
-                    branch_name=head_branch(project),
-                )
-        except Exception as e:
-            logger.warning(
-                "Could not derive default project git context",
-                error=str(e),
-            )
-            return None
-
-    async def _git_context_from_task_id(self, task_id: str) -> SpawnGitContext | None:
-        """Load a task by ID and derive git context for spawning.
-
-        Used by `spawn_agent` when called without an explicit git_context
-        (e.g. the /agents/{slug}/spawn API endpoint). Without this, agents
-        spawned via that endpoint get project_slug="default" and their
-        workspace mount points at a path that doesn't exist.
-        """
-        from sqlalchemy import select
-
-        from roboco.db.base import get_db_context
-        from roboco.db.tables import ProjectTable, TaskTable
-
-        try:
-            async with get_db_context() as db:
-                result = await db.execute(
-                    select(TaskTable.branch_name, ProjectTable.slug)
-                    .select_from(TaskTable)
-                    .join(ProjectTable, TaskTable.project_id == ProjectTable.id)
-                    .where(TaskTable.id == task_id)
-                )
-                row = result.first()
-                if row is None:
-                    return None
-                branch_name, project_slug = row
-                if not project_slug:
-                    return None
-                ctx = SpawnGitContext(
-                    project_slug=project_slug, branch_name=branch_name
-                )
-                if branch_name and task_id:
-                    ctx.task_short_id = str(task_id)[:8]
-                return ctx
-        except Exception as e:
-            logger.warning(
-                "Could not derive git context from task_id",
-                task_id=task_id,
-                error=str(e),
-            )
-            return None
-
-    async def _resolve_spawn_git_context(
-        self,
-        git_context: SpawnGitContext | None,
-        task_id: str | None,
-    ) -> SpawnGitContext | None:
-        """Auto-derive git context if the caller didn't supply one."""
-        if git_context is not None and git_context.project_slug:
-            return git_context
-        derived: SpawnGitContext | None = None
-        if task_id:
-            derived = await self._git_context_from_task_id(task_id)
-        if derived is None:
-            derived = await self._git_context_default_project()
-        return derived if derived is not None else git_context
+class SpawnAgentEngine(_Base):
+    """`spawn_agent`: refuse a futile or unspawnable spawn, skip one whose
+    provider is parked or at capacity, prepare the agent's config and
+    instance, launch the container, and record the spawn session."""
 
     def _existing_running_instance(self, agent_id: str) -> AgentInstance | None:
         """Return the running instance for agent_id, or None if it can be respawned."""
@@ -339,28 +101,6 @@ class SpawnLaunchEngine(_Base):
             state=existing.state,
         )
         return existing
-
-    def _resolve_project_slug(
-        self,
-        git_context: SpawnGitContext | None,
-        agent_id: str,
-        task_id: str | None,
-    ) -> str:
-        """Pull project_slug from context, or fall back to 'default' with a warning."""
-        project_slug = (
-            git_context.project_slug
-            if git_context and git_context.project_slug
-            else None
-        )
-        if not project_slug:
-            logger.warning(
-                "Spawning agent without project_slug; workspace fallback used. "
-                "Agent file tools will be locked to a nonexistent path.",
-                agent_id=agent_id,
-                task_id=task_id,
-            )
-            project_slug = "default"
-        return project_slug
 
     async def _prepare_agent_spawn(
         self,
@@ -462,105 +202,6 @@ class SpawnLaunchEngine(_Base):
         )
         self._instances[agent_id] = instance
         return config, instance, agent_settings_path
-
-    async def _ensure_worktree_before_spawn(
-        self,
-        git_context: SpawnGitContext | None,
-        project_slug: str,
-        team: str,
-        agent_id: str,
-        task_id: str | None,
-    ) -> None:
-        """Re-attach the task's per-task worktree before the container starts.
-
-        The container launches with ``-w`` at the worktree; a pruned/evicted
-        worktree (reaper, disk pressure, manual cleanup while the agent was
-        down) — or a vanished clone root (disk loss, a redeploy that wiped
-        ``/data/workspaces``) — would start the agent in a missing directory.
-        Idempotent: a pruned worktree is re-added from the surviving branch
-        ref; a missing clone is re-cloned and the branch ref recovered from
-        origin (``create_branch`` pushes at claim time) so the pushed work
-        survives. A PRESENT worktree is refreshed against origin, role-aware
-        (see ``ensure_worktree_self_heal``) rather than left frozen at
-        whatever commit it was created on — the role comes from
-        ``get_agent_role``, the same lookup ``_prepare_agent_spawn`` already
-        makes for this agent. No-op for branchless / no-task spawns.
-
-        The reaper-style claim release preserves ownership + ``branch_name``, so
-        a re-dispatch is a RESUME, not a fresh claim — ``create_branch`` never
-        re-runs to re-clone. Without the clone self-heal a vanished clone_root
-        fatal-looped every tick (``git -C <missing>`` -> release -> re-dispatch
-        into the same missing clone). A fatal git-state failure
-        (``WorkspaceError`` — the clone won't re-clone, the token is missing,
-        or the branch ref is unrecoverable) releases the claim and aborts so
-        the next dispatch retries the rebuild, never launching the container at
-        a missing ``-w``. A transient failure (DB/other) aborts without
-        releasing — the next tick retries the same claim.
-        """
-        if not (git_context and git_context.task_short_id and git_context.branch_name):
-            return
-        clone_root = Path(_agent_workspace_path(project_slug, team, agent_id))
-        worktree = Path(
-            _agent_worktree_path(
-                project_slug, team, agent_id, git_context.task_short_id
-            )
-        )
-        can_author = is_worktree_author_role(get_agent_role(agent_id))
-        from roboco.db.base import get_db_context
-        from roboco.services.workspace import WorkspaceError, WorkspaceService
-
-        try:
-            async with get_db_context() as db:
-                ws = WorkspaceService(db)
-                # Heal a vanished/unhealthy clone first. The reaper-style claim
-                # release preserves ownership + branch_name, so a re-dispatch is
-                # a RESUME, not a fresh claim — create_branch never re-runs to
-                # re-clone, and ensure_worktree_for_resume would ``git -C`` a
-                # missing directory and fatal-loop every tick. Skipped on a
-                # healthy clone (no new fetch overhead on the common resume).
-                if not WorkspaceService._is_workspace_healthy(clone_root):
-                    await ws.ensure_workspace(project_slug, agent_id)
-                await ws.ensure_worktree_self_heal(
-                    clone_root,
-                    worktree,
-                    git_context.branch_name,
-                    project_slug,
-                    can_author=can_author,
-                )
-        except WorkspaceError as e:
-            # Fatal git state (clone won't re-clone, token missing, branch ref
-            # unrecoverable): release the claim so the next dispatch can retry
-            # the rebuild, and abort before docker run -w lands on a missing
-            # path. The release is best-effort (suppressed) so a release
-            # failure never masks the fatal error.
-            logger.error(
-                "worktree ensure failed (fatal); releasing claim for rebuild",
-                agent_id=agent_id,
-                task_short_id=git_context.task_short_id,
-                error=str(e),
-            )
-            if task_id:
-                with contextlib.suppress(Exception):
-                    await self._release_claim_to_pending(task_id)
-            raise AgentReadinessError(
-                f"worktree ensure failed for {agent_id}"
-                f" (task={task_id}, branch={git_context.branch_name}): {e};"
-                f" claim released for rebuild"
-            ) from e
-        except Exception as e:
-            # Transient (DB hiccup, etc.): abort so we don't launch at a
-            # possibly-missing path, but do NOT release — a fresh claim would
-            # not help and re-cloning is destructive. Next tick retries.
-            logger.warning(
-                "worktree ensure failed (transient); aborting spawn",
-                agent_id=agent_id,
-                task_short_id=git_context.task_short_id,
-                error=str(e),
-            )
-            raise AgentReadinessError(
-                f"worktree ensure failed (transient) for {agent_id}"
-                f" (task={task_id}): {e}; will retry next tick"
-            ) from e
 
     async def _launch_spawn(
         self,
@@ -818,6 +459,536 @@ class SpawnLaunchEngine(_Base):
             spawned_by=spawned_by,
         )
 
+    async def _spawn_container(
+        self,
+        config: AgentConfig,
+        initial_prompt: str | None = None,
+        agent_settings_path: Path | None = None,
+    ) -> str:
+        """Spawn a Docker container for the agent.
+
+        Args:
+            config: Agent configuration
+            initial_prompt: Optional initial prompt for the agent
+            agent_settings_path: Path to per-agent Claude settings file
+        """
+        # Every spawn gets a non-empty user prompt. A prompt-less spawn (e.g. the
+        # crash auto-restart, which passes no initial_prompt) must still direct the
+        # agent to scan for work. The Claude body re-applies the same default; doing
+        # it here single-sources it so dedicated providers (GROK) get it too —
+        # otherwise grok would launch with an empty `grok -p ""`.
+        if not initial_prompt:
+            initial_prompt = self._default_spawn_prompt()
+        # A dedicated provider backend (e.g. GROK / OpenAI protocol) handles its
+        # own spawn. Anthropic / Ollama Cloud / self-hosted have no dedicated
+        # provider registered and fall through to the Claude Code body below,
+        # byte-for-byte unchanged.
+        provider = self._provider_for(config.provider_type)
+        if provider is not None:
+            result = await provider.spawn(config, initial_prompt, agent_settings_path)
+            return result.instance_id
+
+        container_name = f"roboco-agent-{config.agent_id}"
+        # teardown_sandbox=False: nothing is provisioned before spawn anymore
+        # (sandboxes are on-demand via request_sandbox/ensure_sandbox), so this
+        # is now vestigial for THIS spawn — but it still protects a respawn
+        # racing a sandbox the agent just requested moments ago via the verb.
+        await self._remove_container(
+            container_name, teardown_sandbox=False, stop_reason="pre_spawn_stale_clear"
+        )
+
+        if not config.mcp_config_path:
+            raise RuntimeError("MCP config path not set")
+
+        hosts = self._resolve_host_paths(config, agent_settings_path)
+        cmd = self._build_mount_args(container_name, config, hosts)
+        self._append_agent_auth_env(cmd, config)
+        self._append_git_context_env(cmd, config)
+        if config.sandbox_available_services:
+            self._append_sandbox_marker_env(cmd, config.sandbox_available_services)
+        else:
+            self._append_gate_env(cmd)
+        cmd.extend(await compose_label_args(config.agent_id))
+        cmd, env_values = docker_options_without_env_values(cmd)
+        self._append_image_and_claude_args(cmd, config, initial_prompt)
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            env=docker_cli_env(env_values),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await proc.communicate()
+
+        if proc.returncode != 0:
+            raise RuntimeError(f"Failed to start container: {stderr.decode()}")
+
+        return stdout.decode().strip()
+
+    async def _record_spawn_session(
+        self,
+        config: "OrchestratorAgentConfig",
+        task_id: str | None,
+    ) -> "UUID | None":
+        """Insert a row into agent_spawn_sessions after a successful spawn.
+
+        Returns the UUID of the created row so the caller can store it on
+        the AgentInstance for later direct-by-id lookup in
+        _finalize_spawn_session.  Returns None when the insert fails; a
+        missing session row must never block the spawn path.
+        """
+        try:
+            from uuid import uuid4 as _uuid4
+
+            from roboco.db.base import get_session_factory
+            from roboco.db.tables import AgentSpawnSessionTable
+
+            agent_slug = config.agent_id
+            team = get_agent_team(agent_slug) or "backend"
+            role = get_agent_role(agent_slug) or "developer"
+
+            # A delivery-role spawn with no task_id is unattributed usage (#11) —
+            # the rollup can't tie the spend to a task. Intake/secretary/PM spawns
+            # legitimately carry no task and are not flagged.
+            if is_unattributed_delivery_spawn(role, task_id):
+                logger.warning(
+                    "Spawn session has no task_id for a delivery role — "
+                    "unattributed usage",
+                    agent_slug=agent_slug,
+                    role=role,
+                )
+
+            session_id = _uuid4()
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                row = AgentSpawnSessionTable(
+                    id=session_id,
+                    agent_slug=agent_slug,
+                    team=team,
+                    role=role,
+                    model=config.model or "unknown",
+                    task_id=task_id,
+                    started_at=datetime.now(UTC),
+                )
+                db.add(row)
+                await db.commit()
+                logger.debug(
+                    "Spawn session recorded",
+                    agent_slug=agent_slug,
+                    session_id=str(session_id),
+                    task_id=task_id,
+                )
+            return session_id
+        except Exception as exc:
+            logger.warning(
+                "Failed to record spawn session",
+                agent_slug=config.agent_id,
+                error=str(exc),
+            )
+            return None
+
+    async def _spawn_gate_skip_reason(
+        self, provider_type: str | None, exclude_agent_id: str | None = None
+    ) -> str | None:
+        """Why ``spawn_agent`` should bail before launch, or None to proceed.
+
+        Checked in order: provider-parked (rate-limited/overloaded), then the
+        provider's concurrency cap (currently kimi-only, see
+        ``_provider_concurrency_cap``). The returned string is both the skip
+        reason and the log event name — same shape both callers already used.
+        *exclude_agent_id* is the agent this spawn is FOR: its own registered
+        instance must never count against its own capacity check.
+        """
+        if await self._provider_spawn_parked(provider_type):
+            return "Spawn skipped: provider rate-limited (parked)"
+        if self._provider_spawn_at_capacity(provider_type, exclude_agent_id):
+            return "Spawn skipped: kimi concurrency cap reached"
+        return None
+
+    def _bail_prepared_instance(
+        self,
+        instance: AgentInstance,
+        agent_id: str,
+        task_id: str | None,
+        provider_type: str | None,
+        reason: str,
+    ) -> AgentInstance:
+        """OFFLINE a just-``_prepare_agent_spawn``'d instance and log why the
+        launch was skipped (used by both the parked and concurrency-cap
+        rare-race checks after prepare)."""
+        self._mark_task_handled(task_id)
+        instance.state = AgentState.OFFLINE
+        logger.info(reason, agent_id=agent_id, task_id=task_id, provider=provider_type)
+        return instance
+
+    def _offline_route_bail(
+        self,
+        agent_id: str,
+        task_id: str | None,
+        route: Any,
+        git_context: SpawnGitContext | None,
+    ) -> AgentInstance:
+        """Build the unregistered OFFLINE instance returned by a pre-prepare
+        spawn bail (parked or at-capacity) — no blueprint/settings/image work
+        has run, so nothing needs undoing."""
+        return AgentInstance(
+            agent_id=agent_id,
+            state=AgentState.OFFLINE,
+            config=AgentConfig(
+                agent_id=agent_id,
+                # Not launching, so no blueprint was written.
+                blueprint_path=Path(),
+                model=route.model_name,
+                provider_type=route.provider_type.value,
+                provider_base_url=route.base_url,
+                provider_auth_token=route.auth_token,
+                git_context=git_context,
+            ),
+            current_task_id=task_id,
+        )
+
+
+class AgentImageEngine(_Base):
+    """The agent Docker images: pulled from the registry, or built locally."""
+
+    async def _ensure_agent_image(self, agent_id: str | None = None) -> None:
+        """Ensure the agent Docker images are present.
+
+        Local mode (no ``agent_image_registry``) builds the base image first,
+        then the role-specialized image, from ``docker/agent-*.Dockerfile``.
+        Registry mode pulls the pre-built images instead. Idempotent — skips
+        anything already present locally.
+        """
+        # Determine build context
+        if PROJECT_HOST_PATH:
+            build_context = PROJECT_HOST_PATH
+            docker_dir = f"{PROJECT_HOST_PATH}/docker"
+        else:
+            build_context = str(self.project_root)
+            docker_dir = str(self.project_root / "docker")
+
+        # Always ensure base image exists
+        await self._ensure_image_present(
+            AGENT_BASE_IMAGE,
+            f"{docker_dir}/agent-base.Dockerfile",
+            build_context,
+        )
+
+        # Ensure the role-specialized image if this agent uses one
+        if agent_id:
+            bare = AGENT_IMAGES.get(agent_id, AGENT_BASE_IMAGE)
+            if bare != AGENT_BASE_IMAGE:
+                # Map the bare image name to its dockerfile
+                dockerfile_map = {
+                    "roboco-agent-pm": "agent-pm.Dockerfile",
+                    "roboco-agent-dev-be": "agent-dev-be.Dockerfile",
+                    "roboco-agent-dev-fe": "agent-dev-fe.Dockerfile",
+                    "roboco-agent-qa-be": "agent-qa-be.Dockerfile",
+                    "roboco-agent-qa-fe": "agent-qa-fe.Dockerfile",
+                    "roboco-agent-doc": "agent-doc.Dockerfile",
+                    "roboco-agent-ux": "agent-ux.Dockerfile",
+                    "roboco-agent-devops": "agent-devops.Dockerfile",
+                    "roboco-agent-prompter": "agent-prompter.Dockerfile",
+                    "roboco-agent-secretary": "agent-secretary.Dockerfile",
+                    "roboco-agent-pr-reviewer": "agent-pr-reviewer.Dockerfile",
+                    # Provider-generic live-chat images (interactive
+                    # intake/secretary on every routed provider).
+                    "roboco-agent-hummin-live": "agent-hummin-live.Dockerfile",
+                    "roboco-agent-codex-live": "agent-codex-live.Dockerfile",
+                    "roboco-agent-gemini-live": "agent-gemini-live.Dockerfile",
+                    "roboco-agent-kimi-live": "agent-kimi-live.Dockerfile",
+                    "roboco-agent-openrouter-live": "agent-openrouter-live.Dockerfile",
+                    "roboco-agent-nebius-live": "agent-nebius-live.Dockerfile",
+                }
+                dockerfile = dockerfile_map.get(bare)
+                if dockerfile:
+                    await self._ensure_image_present(
+                        bare,
+                        f"{docker_dir}/{dockerfile}",
+                        build_context,
+                    )
+
+    async def _ensure_image_present(
+        self, bare_image: str, dockerfile_path: str, build_context: str
+    ) -> None:
+        """Ensure one agent image is present locally.
+
+        Pulls it (registry mode) or builds it from its Dockerfile (local mode)
+        when missing; no-op if already present.
+        """
+        image = _qualify_agent_image(bare_image)
+        # Check if image exists
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "image",
+            "inspect",
+            image,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await proc.wait()
+        if proc.returncode == 0:
+            return
+
+        if settings.agent_image_registry:
+            # Registry mode: pull the pre-built image; never build from source
+            # (a deployment running pre-built images has no build context).
+            logger.info("Pulling agent image...", image=image)
+            proc = await asyncio.create_subprocess_exec(
+                "docker",
+                "pull",
+                image,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                raise RuntimeError(f"Failed to pull image {image}: {stderr.decode()}")
+            logger.info("Agent image pulled", image=image)
+            return
+
+        logger.info("Building Docker image...", image=image)
+        proc = await asyncio.create_subprocess_exec(
+            "docker",
+            "build",
+            "-t",
+            image,
+            "-f",
+            dockerfile_path,
+            build_context,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise RuntimeError(f"Failed to build image {image}: {stderr.decode()}")
+        logger.info("Docker image built successfully", image=image)
+
+
+class SpawnGitContextEngine(_Base):
+    """The spawn's git context and workspace: derived from the task (or the
+    default project), its project slug, and the task's worktree re-attached
+    before the container starts."""
+
+    async def _git_context_default_project(self) -> SpawnGitContext | None:
+        """Return git context for the 'default' project when no task is known.
+
+        Used by no-task spawns (idle PM, scanner-only agents). Picks the
+        first active project in the DB — the common case is a single-project
+        deployment, where this resolves to the correct slug; for multi-
+        project deployments the caller should pass task_id to disambiguate.
+        """
+        from sqlalchemy import select
+
+        from roboco.db.base import get_db_context
+        from roboco.db.tables import ProjectTable
+        from roboco.models.env_branches import head_branch
+
+        try:
+            async with get_db_context() as db:
+                result = await db.execute(
+                    select(ProjectTable)
+                    .where(ProjectTable.is_active.is_(True))
+                    .order_by(ProjectTable.created_at.asc())
+                    .limit(1)
+                )
+                project = result.scalar_one_or_none()
+                if project is None or not project.slug:
+                    return None
+                return SpawnGitContext(
+                    project_slug=project.slug,
+                    branch_name=head_branch(project),
+                )
+        except Exception as e:
+            logger.warning(
+                "Could not derive default project git context",
+                error=str(e),
+            )
+            return None
+
+    async def _git_context_from_task_id(self, task_id: str) -> SpawnGitContext | None:
+        """Load a task by ID and derive git context for spawning.
+
+        Used by `spawn_agent` when called without an explicit git_context
+        (e.g. the /agents/{slug}/spawn API endpoint). Without this, agents
+        spawned via that endpoint get project_slug="default" and their
+        workspace mount points at a path that doesn't exist.
+        """
+        from sqlalchemy import select
+
+        from roboco.db.base import get_db_context
+        from roboco.db.tables import ProjectTable, TaskTable
+
+        try:
+            async with get_db_context() as db:
+                result = await db.execute(
+                    select(TaskTable.branch_name, ProjectTable.slug)
+                    .select_from(TaskTable)
+                    .join(ProjectTable, TaskTable.project_id == ProjectTable.id)
+                    .where(TaskTable.id == task_id)
+                )
+                row = result.first()
+                if row is None:
+                    return None
+                branch_name, project_slug = row
+                if not project_slug:
+                    return None
+                ctx = SpawnGitContext(
+                    project_slug=project_slug, branch_name=branch_name
+                )
+                if branch_name and task_id:
+                    ctx.task_short_id = str(task_id)[:8]
+                return ctx
+        except Exception as e:
+            logger.warning(
+                "Could not derive git context from task_id",
+                task_id=task_id,
+                error=str(e),
+            )
+            return None
+
+    async def _resolve_spawn_git_context(
+        self,
+        git_context: SpawnGitContext | None,
+        task_id: str | None,
+    ) -> SpawnGitContext | None:
+        """Auto-derive git context if the caller didn't supply one."""
+        if git_context is not None and git_context.project_slug:
+            return git_context
+        derived: SpawnGitContext | None = None
+        if task_id:
+            derived = await self._git_context_from_task_id(task_id)
+        if derived is None:
+            derived = await self._git_context_default_project()
+        return derived if derived is not None else git_context
+
+    def _resolve_project_slug(
+        self,
+        git_context: SpawnGitContext | None,
+        agent_id: str,
+        task_id: str | None,
+    ) -> str:
+        """Pull project_slug from context, or fall back to 'default' with a warning."""
+        project_slug = (
+            git_context.project_slug
+            if git_context and git_context.project_slug
+            else None
+        )
+        if not project_slug:
+            logger.warning(
+                "Spawning agent without project_slug; workspace fallback used. "
+                "Agent file tools will be locked to a nonexistent path.",
+                agent_id=agent_id,
+                task_id=task_id,
+            )
+            project_slug = "default"
+        return project_slug
+
+    async def _ensure_worktree_before_spawn(
+        self,
+        git_context: SpawnGitContext | None,
+        project_slug: str,
+        team: str,
+        agent_id: str,
+        task_id: str | None,
+    ) -> None:
+        """Re-attach the task's per-task worktree before the container starts.
+
+        The container launches with ``-w`` at the worktree; a pruned/evicted
+        worktree (reaper, disk pressure, manual cleanup while the agent was
+        down) — or a vanished clone root (disk loss, a redeploy that wiped
+        ``/data/workspaces``) — would start the agent in a missing directory.
+        Idempotent: a pruned worktree is re-added from the surviving branch
+        ref; a missing clone is re-cloned and the branch ref recovered from
+        origin (``create_branch`` pushes at claim time) so the pushed work
+        survives. A PRESENT worktree is refreshed against origin, role-aware
+        (see ``ensure_worktree_self_heal``) rather than left frozen at
+        whatever commit it was created on — the role comes from
+        ``get_agent_role``, the same lookup ``_prepare_agent_spawn`` already
+        makes for this agent. No-op for branchless / no-task spawns.
+
+        The reaper-style claim release preserves ownership + ``branch_name``, so
+        a re-dispatch is a RESUME, not a fresh claim — ``create_branch`` never
+        re-runs to re-clone. Without the clone self-heal a vanished clone_root
+        fatal-looped every tick (``git -C <missing>`` -> release -> re-dispatch
+        into the same missing clone). A fatal git-state failure
+        (``WorkspaceError`` — the clone won't re-clone, the token is missing,
+        or the branch ref is unrecoverable) releases the claim and aborts so
+        the next dispatch retries the rebuild, never launching the container at
+        a missing ``-w``. A transient failure (DB/other) aborts without
+        releasing — the next tick retries the same claim.
+        """
+        if not (git_context and git_context.task_short_id and git_context.branch_name):
+            return
+        clone_root = Path(_agent_workspace_path(project_slug, team, agent_id))
+        worktree = Path(
+            _agent_worktree_path(
+                project_slug, team, agent_id, git_context.task_short_id
+            )
+        )
+        can_author = is_worktree_author_role(get_agent_role(agent_id))
+        from roboco.db.base import get_db_context
+        from roboco.services.workspace import WorkspaceError, WorkspaceService
+
+        try:
+            async with get_db_context() as db:
+                ws = WorkspaceService(db)
+                # Heal a vanished/unhealthy clone first. The reaper-style claim
+                # release preserves ownership + branch_name, so a re-dispatch is
+                # a RESUME, not a fresh claim — create_branch never re-runs to
+                # re-clone, and ensure_worktree_for_resume would ``git -C`` a
+                # missing directory and fatal-loop every tick. Skipped on a
+                # healthy clone (no new fetch overhead on the common resume).
+                if not WorkspaceService._is_workspace_healthy(clone_root):
+                    await ws.ensure_workspace(project_slug, agent_id)
+                await ws.ensure_worktree_self_heal(
+                    clone_root,
+                    worktree,
+                    git_context.branch_name,
+                    project_slug,
+                    can_author=can_author,
+                )
+        except WorkspaceError as e:
+            # Fatal git state (clone won't re-clone, token missing, branch ref
+            # unrecoverable): release the claim so the next dispatch can retry
+            # the rebuild, and abort before docker run -w lands on a missing
+            # path. The release is best-effort (suppressed) so a release
+            # failure never masks the fatal error.
+            logger.error(
+                "worktree ensure failed (fatal); releasing claim for rebuild",
+                agent_id=agent_id,
+                task_short_id=git_context.task_short_id,
+                error=str(e),
+            )
+            if task_id:
+                with contextlib.suppress(Exception):
+                    await self._release_claim_to_pending(task_id)
+            raise AgentReadinessError(
+                f"worktree ensure failed for {agent_id}"
+                f" (task={task_id}, branch={git_context.branch_name}): {e};"
+                f" claim released for rebuild"
+            ) from e
+        except Exception as e:
+            # Transient (DB hiccup, etc.): abort so we don't launch at a
+            # possibly-missing path, but do NOT release — a fresh claim would
+            # not help and re-cloning is destructive. Next tick retries.
+            logger.warning(
+                "worktree ensure failed (transient); aborting spawn",
+                agent_id=agent_id,
+                task_short_id=git_context.task_short_id,
+                error=str(e),
+            )
+            raise AgentReadinessError(
+                f"worktree ensure failed (transient) for {agent_id}"
+                f" (task={task_id}): {e}; will retry next tick"
+            ) from e
+
+
+class ContainerMountsEngine(_Base):
+    """The `docker run` mounts: the host paths for this runtime, the always-on
+    volumes, the optional host files, and the task-resolved working
+    directory."""
+
     def _resolve_host_paths(
         self, config: AgentConfig, agent_settings_path: Path | None
     ) -> dict[str, str | None]:
@@ -1017,6 +1188,50 @@ class SpawnLaunchEngine(_Base):
         return env
 
     @staticmethod
+    def _resolve_workspace_cwd(config: AgentConfig) -> str | None:
+        """The task-resolved workspace path for this spawn, or None.
+
+        Single source of truth consumed by BOTH the container ``-w`` and the
+        spawn manifest's ``workspace_path`` — they must agree, or the agent's
+        prompt claims one directory while its shell sits in another (live
+        2026-07-02: manifest said the roboco workspace for a guard-core task).
+        """
+        role = get_agent_role(config.agent_id) or "developer"
+        team = get_agent_team(config.agent_id) or ""
+        project = _resolve_project_slug_from_git_context(config.git_context)
+        if role in AgentOrchestrator._ROLES_WITH_AGENT_WORKSPACE:
+            # Per-task worktree when the task has a branch (F123), else the
+            # clone root. _agent_cwd_path is the SAME formula the Edit/Write
+            # allowlist is built from, so -w and the allowlist match exactly.
+            return _agent_cwd_path(project, team, config.agent_id, config.git_context)
+        if role in AgentOrchestrator._ROLES_WITH_CELL_WORKSPACE:
+            return _cell_workspace_path(project, team)
+        return None
+
+    @staticmethod
+    def _append_workspace_cwd(cmd: list[str], config: AgentConfig) -> None:
+        """Set the container -w to the agent or cell workspace by role."""
+        # Pre-gateway parity: set the container's cwd
+        # to the agent's task workspace so Edit/Write resolve to paths that
+        # match _get_role_permissions allowlist, and `git add` operates inside
+        # the workspace clone. Without this, container WORKDIR (/app from the
+        # Dockerfile) shadows the workspace and every file op fails.
+        #
+        # Workspace selection lives in _resolve_workspace_cwd:
+        # - developer / product_owner / head_marketing: per-agent workspace
+        # - documenter: cell workspace
+        # - qa / cell_pm / main_pm / auditor: no write workspace → omit -w
+        workspace = AgentOrchestrator._resolve_workspace_cwd(config)
+        if workspace is not None:
+            cmd.extend(["-w", workspace])
+
+
+class ContainerEnvEngine(_Base):
+    """The `docker run` env and CLI args: the provider env, the spawn manifest,
+    the agent's auth token, the git context, the gate's test DB, the sandbox
+    marker, and the image with its Claude Code arguments."""
+
+    @staticmethod
     def _append_provider_env(cmd: list[str], config: AgentConfig) -> None:
         """Inject ANTHROPIC_* env only on non-Anthropic providers."""
         # Provider routing: only inject ANTHROPIC_* env vars when the
@@ -1057,44 +1272,6 @@ class SpawnLaunchEngine(_Base):
             )
         else:
             cmd.extend(["-e", "ROBOCO_GATEWAY_ENABLED=false"])
-
-    @staticmethod
-    def _resolve_workspace_cwd(config: AgentConfig) -> str | None:
-        """The task-resolved workspace path for this spawn, or None.
-
-        Single source of truth consumed by BOTH the container ``-w`` and the
-        spawn manifest's ``workspace_path`` — they must agree, or the agent's
-        prompt claims one directory while its shell sits in another (live
-        2026-07-02: manifest said the roboco workspace for a guard-core task).
-        """
-        role = get_agent_role(config.agent_id) or "developer"
-        team = get_agent_team(config.agent_id) or ""
-        project = _resolve_project_slug_from_git_context(config.git_context)
-        if role in AgentOrchestrator._ROLES_WITH_AGENT_WORKSPACE:
-            # Per-task worktree when the task has a branch (F123), else the
-            # clone root. _agent_cwd_path is the SAME formula the Edit/Write
-            # allowlist is built from, so -w and the allowlist match exactly.
-            return _agent_cwd_path(project, team, config.agent_id, config.git_context)
-        if role in AgentOrchestrator._ROLES_WITH_CELL_WORKSPACE:
-            return _cell_workspace_path(project, team)
-        return None
-
-    @staticmethod
-    def _append_workspace_cwd(cmd: list[str], config: AgentConfig) -> None:
-        """Set the container -w to the agent or cell workspace by role."""
-        # Pre-gateway parity: set the container's cwd
-        # to the agent's task workspace so Edit/Write resolve to paths that
-        # match _get_role_permissions allowlist, and `git add` operates inside
-        # the workspace clone. Without this, container WORKDIR (/app from the
-        # Dockerfile) shadows the workspace and every file op fails.
-        #
-        # Workspace selection lives in _resolve_workspace_cwd:
-        # - developer / product_owner / head_marketing: per-agent workspace
-        # - documenter: cell workspace
-        # - qa / cell_pm / main_pm / auditor: no write workspace → omit -w
-        workspace = AgentOrchestrator._resolve_workspace_cwd(config)
-        if workspace is not None:
-            cmd.extend(["-w", workspace])
 
     @staticmethod
     def _append_agent_auth_env(cmd: list[str], config: AgentConfig) -> None:
@@ -1255,6 +1432,21 @@ class SpawnLaunchEngine(_Base):
         claude_args += ["-p", initial_prompt or cls._default_spawn_prompt()]
         cmd.extend(claude_args)
 
+
+class ProviderRouteEngine(_Base):
+    """Which provider and model an agent runs on, and whether that provider
+    can take a spawn now: the provider registry, the routed (provider,
+    model) with the decisions complexity override, rate-limit parking and
+    concurrency caps."""
+
+    # Re-declared (not just inherited from _Base above): mypy's Protocol
+    # attribute inference cannot determine the type of an inherited member
+    # that a method both reads AND assigns within the same method body
+    # (read-then-write in one scope; see _ensure_provider_registry below)
+    # without a bare re-declaration directly on the concrete class.
+    if TYPE_CHECKING:
+        _provider_registry: ProviderRegistry | None
+
     def _ensure_provider_registry(self) -> "ProviderRegistry":
         """Build (once) the registry of dedicated provider backends.
 
@@ -1346,134 +1538,196 @@ class SpawnLaunchEngine(_Base):
             return None
         return self._ensure_provider_registry().get_or_none(model_provider)
 
-    async def _spawn_container(
-        self,
-        config: AgentConfig,
-        initial_prompt: str | None = None,
-        agent_settings_path: Path | None = None,
-    ) -> str:
-        """Spawn a Docker container for the agent.
+    async def _resolve_agent_route(
+        self, agent_id: str, task_id: str | None = None
+    ) -> "AgentRoute":
+        """Resolve (provider, model) for `agent_id` via `ModelRoutingService`.
 
-        Args:
-            config: Agent configuration
-            initial_prompt: Optional initial prompt for the agent
-            agent_settings_path: Path to per-agent Claude settings file
+        When `task_id` is given, its `estimated_complexity` (LOW/MEDIUM/HIGH)
+        threads into the resolver as a lowercase string so a cost-tiered
+        `ROLE(":"complexity)` override (see `ModelRoutingService`) can apply.
+        The task lookup is isolated in its own try/except: a missing task or
+        lookup failure degrades to the plain-role path silently (debug log —
+        this is the common case for non-task spawns like idle PM bootstrap),
+        never escalating to the full legacy-Anthropic downgrade below.
+
+        Errors are contained: any DB/session failure degrades to a legacy
+        Anthropic-default AgentRoute so spawn never stalls on routing.
         """
-        # Every spawn gets a non-empty user prompt. A prompt-less spawn (e.g. the
-        # crash auto-restart, which passes no initial_prompt) must still direct the
-        # agent to scan for work. The Claude body re-applies the same default; doing
-        # it here single-sources it so dedicated providers (GROK) get it too —
-        # otherwise grok would launch with an empty `grok -p ""`.
-        if not initial_prompt:
-            initial_prompt = self._default_spawn_prompt()
-        # A dedicated provider backend (e.g. GROK / OpenAI protocol) handles its
-        # own spawn. Anthropic / Ollama Cloud / self-hosted have no dedicated
-        # provider registered and fall through to the Claude Code body below,
-        # byte-for-byte unchanged.
-        provider = self._provider_for(config.provider_type)
-        if provider is not None:
-            result = await provider.spawn(config, initial_prompt, agent_settings_path)
-            return result.instance_id
+        from sqlalchemy import select
 
-        container_name = f"roboco-agent-{config.agent_id}"
-        # teardown_sandbox=False: nothing is provisioned before spawn anymore
-        # (sandboxes are on-demand via request_sandbox/ensure_sandbox), so this
-        # is now vestigial for THIS spawn — but it still protects a respawn
-        # racing a sandbox the agent just requested moments ago via the verb.
-        await self._remove_container(
-            container_name, teardown_sandbox=False, stop_reason="pre_spawn_stale_clear"
+        from roboco.db.base import get_session_factory
+        from roboco.db.tables import TaskTable
+        from roboco.models.base import ModelProvider
+        from roboco.models.runtime import MODEL_MAP
+        from roboco.services.llm import (
+            AgentRoute,
+            get_model_routing_service,
         )
 
-        if not config.mcp_config_path:
-            raise RuntimeError("MCP config path not set")
-
-        hosts = self._resolve_host_paths(config, agent_settings_path)
-        cmd = self._build_mount_args(container_name, config, hosts)
-        self._append_agent_auth_env(cmd, config)
-        self._append_git_context_env(cmd, config)
-        if config.sandbox_available_services:
-            self._append_sandbox_marker_env(cmd, config.sandbox_available_services)
-        else:
-            self._append_gate_env(cmd)
-        cmd.extend(await compose_label_args(config.agent_id))
-        cmd, env_values = docker_options_without_env_values(cmd)
-        self._append_image_and_claude_args(cmd, config, initial_prompt)
-
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            env=docker_cli_env(env_values),
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        stdout, stderr = await proc.communicate()
-
-        if proc.returncode != 0:
-            raise RuntimeError(f"Failed to start container: {stderr.decode()}")
-
-        return stdout.decode().strip()
-
-    async def _is_video_authoring_spawn(
-        self, agent_id: str, agent_role: str, task_id: str | None
-    ) -> bool:
-        """A ux_ui developer spawned onto a source=video task — the one
-        non-QA case that gets the playwright MCP, so the author can open the
-        composition HTML in a real browser while iterating instead of
-        shipping the first render blind. Gating-only: the agent-ux image
-        already bakes the browser + wrapper entrypoint. Fail-closed — any
-        lookup error means no browser, never a broken spawn."""
-        if agent_role != "developer" or not task_id:
-            return False
-        if get_agent_team(agent_id) != "ux_ui":
-            return False
         try:
-            from uuid import UUID
-
-            from roboco.db.base import get_session_factory
-            from roboco.services.task import VIDEO_SOURCE, get_task_service
-
             factory = get_session_factory()
             async with factory() as db:
-                t = await get_task_service(db).get(UUID(task_id))
-            return t is not None and t.source == VIDEO_SOURCE
+                complexity: str | None = None
+                if task_id:
+                    try:
+                        result = await db.execute(
+                            select(TaskTable).where(TaskTable.id == task_id)
+                        )
+                        task = result.scalar_one_or_none()
+                        if task is not None:
+                            if task.estimated_complexity is not None:
+                                complexity = task.estimated_complexity.value.lower()
+                            complexity = await self._decisions_complexity_override(
+                                db, task, static=complexity
+                            )
+                    except Exception as e:
+                        logger.debug(
+                            "Task complexity lookup failed; using plain-role routing",
+                            agent_id=agent_id,
+                            task_id=task_id,
+                            error=str(e),
+                        )
+                router = get_model_routing_service(db)
+                return await router.resolve_for_agent(agent_id, complexity=complexity)
+        except Exception as e:
+            role = get_agent_role(agent_id) or ""
+            short = ROLE_MODEL_MAP.get(role, "sonnet")
+            logger.warning(
+                "Model routing resolve failed; using legacy Anthropic path",
+                agent_id=agent_id,
+                error=str(e),
+            )
+            return AgentRoute(
+                provider_id=None,
+                provider_type=ModelProvider.ANTHROPIC,
+                base_url=None,
+                auth_token=None,
+                model_name=MODEL_MAP.get(short, short),
+            )
+
+    async def _decisions_complexity_override(
+        self, db: Any, task: Any, *, static: str | None
+    ) -> str | None:
+        """Decisions pilot 6.3 (spec): a spawn-time complexity score for the
+        ``ROLE:complexity`` routing lookup. Applies only when the task
+        description is meaty enough to judge, the pilot mode is ON, and the
+        verdict clears the confidence floor; otherwise the static
+        ``estimated_complexity`` column stands (today's behavior). Worst
+        case is a slightly mismatched model tier on one agent session."""
+        from roboco.services import decisions
+
+        try:
+            description = task.description or ""
+            if len(description) < _DECISIONS_COMPLEXITY_MIN_DESC_CHARS:
+                return static
+            score, confident = await decisions.complexity_score(
+                db,
+                task_id=str(task.id),
+                task_title=task.title,
+                task_description=description,
+                acceptance_criteria=[
+                    str(entry.get("criterion"))
+                    for entry in (task.acceptance_criteria_status or [])
+                    if isinstance(entry, dict) and entry.get("criterion")
+                ],
+                parent_kind=None,
+            )
+            if not confident or score is None:
+                return static
+            return _DECISIONS_COMPLEXITY_TIERS[score]
+        except Exception as exc:
+            logger.debug(
+                "decisions complexity override failed; using static tier",
+                task_id=str(getattr(task, "id", "")),
+                error=str(exc),
+            )
+            return static
+
+    def _make_tracker(self, provider: str) -> Any:
+        """Return a RateLimitStateTracker for *provider*.
+
+        Extracted as its own method so unit tests can monkeypatch it to
+        return an async mock without needing to intercept lazy imports.
+        """
+        from roboco.services.gateway.rate_limit_tracker import RateLimitStateTracker
+
+        return RateLimitStateTracker(provider)
+
+    async def _provider_spawn_parked(self, provider_type: str | None) -> bool:
+        """True when *provider_type*'s provider is parked (rate-limited/overloaded).
+
+        The spawn loop-breaker consults this before launching any container.
+        Fail-open: any error reading the tracker returns False so a Redis hiccup
+        can never block spawning.
+        """
+        if provider_type is None:
+            return False
+        try:
+            tracker = self._make_tracker(provider_type)
+            return bool(await tracker.is_rate_limited())
         except Exception as exc:
             logger.warning(
-                "video-authoring spawn probe failed; playwright not registered",
-                agent_id=agent_id,
-                task_id=task_id,
+                "provider rate-limit check failed; allowing spawn",
+                provider=provider_type,
                 error=str(exc),
             )
             return False
 
-    async def _is_dogfood_spawn(
-        self, agent_id: str, agent_role: str, task_id: str | None
+    @staticmethod
+    def _provider_concurrency_cap(provider_type: str | None) -> int | None:
+        """Max concurrent live containers for *provider_type*, or None if uncapped.
+
+        KIMI is capped by default: every Kimi container shares one OAuth
+        refresh-token chain (see ``settings.kimi_max_concurrent``) — a second
+        concurrent container risks forking it and revoking fleet-wide Kimi
+        auth. HUMMIN defaults to uncapped (a static per-spawn env key — no
+        shared chain to protect); its Settings knob exists only for an
+        operator who observes Z.ai throttling the account.
+        """
+        if provider_type == ModelProvider.KIMI.value:
+            return settings.kimi_max_concurrent
+        if provider_type == ModelProvider.HUMMIN.value:
+            return settings.hummin_max_concurrent
+        return None
+
+    def _live_provider_instance_count(
+        self, provider_type: str, exclude_agent_id: str | None = None
+    ) -> int:
+        """Count ``_instances`` entries for *provider_type* still holding a slot.
+
+        Mirrors ``_existing_running_instance``'s liveness definition: any
+        state other than OFFLINE/WAITING_LONG occupies (or is about to
+        occupy) a container. *exclude_agent_id* drops the agent being
+        spawned from the count — ``_prepare_agent_spawn`` registers its
+        STARTING instance before the post-prepare gate re-check, and with
+        cap=1 a self-counting check cancels every spawn forever.
+        """
+        return sum(
+            1
+            for agent_id, inst in self._instances.items()
+            if agent_id != exclude_agent_id
+            and inst.config is not None
+            and inst.config.provider_type == provider_type
+            and inst.state not in (AgentState.OFFLINE, AgentState.WAITING_LONG)
+        )
+
+    def _provider_spawn_at_capacity(
+        self, provider_type: str | None, exclude_agent_id: str | None = None
     ) -> bool:
-        """A Product Owner spawned onto a source=board_dogfood task — the
-        ONLY board-role case that gets the playwright MCP, so the PO can walk
-        the product as a user (spec §4). Task-scoped, not role-blanket: a PO
-        spawned for roadmap/pest_control/scales/any other cycle must NOT get
-        browser tools. Mirrors ``_is_video_authoring_spawn``'s shape exactly
-        — fail-closed: any lookup error means no browser, never a broken
-        spawn."""
-        if agent_role != "product_owner" or not task_id:
+        """True when *provider_type* is at its concurrency cap, if any."""
+        cap = self._provider_concurrency_cap(provider_type)
+        if cap is None or provider_type is None:
             return False
-        try:
-            from uuid import UUID
+        live = self._live_provider_instance_count(provider_type, exclude_agent_id)
+        return live >= cap
 
-            from roboco.db.base import get_session_factory
-            from roboco.services.task import DOGFOOD_SOURCE, get_task_service
 
-            factory = get_session_factory()
-            async with factory() as db:
-                t = await get_task_service(db).get(UUID(task_id))
-            return t is not None and t.source == DOGFOOD_SOURCE
-        except Exception as exc:
-            logger.warning(
-                "dogfood spawn probe failed; playwright not registered",
-                agent_id=agent_id,
-                task_id=task_id,
-                error=str(exc),
-            )
-            return False
+class ReadinessGateEngine(_Base):
+    """`spawn_agent`'s readiness gate: refuse a spawn whose task isn't ready
+    (missing, no acceptance criteria, the wrong role for its status, a
+    persistent blocker, no git token, dependencies not terminal) and
+    auto-block it."""
 
     async def _readiness_gate(self, agent_id: str, task_id: str | None) -> str | None:
         """Return a reason string if the spawn must be refused, else None.
@@ -1659,317 +1913,6 @@ class SpawnLaunchEngine(_Base):
         await self._auto_block_task(client, task_id, f"readiness: {reason}")
         return reason
 
-    async def _resolve_agent_route(
-        self, agent_id: str, task_id: str | None = None
-    ) -> "AgentRoute":
-        """Resolve (provider, model) for `agent_id` via `ModelRoutingService`.
-
-        When `task_id` is given, its `estimated_complexity` (LOW/MEDIUM/HIGH)
-        threads into the resolver as a lowercase string so a cost-tiered
-        `ROLE(":"complexity)` override (see `ModelRoutingService`) can apply.
-        The task lookup is isolated in its own try/except: a missing task or
-        lookup failure degrades to the plain-role path silently (debug log —
-        this is the common case for non-task spawns like idle PM bootstrap),
-        never escalating to the full legacy-Anthropic downgrade below.
-
-        Errors are contained: any DB/session failure degrades to a legacy
-        Anthropic-default AgentRoute so spawn never stalls on routing.
-        """
-        from sqlalchemy import select
-
-        from roboco.db.base import get_session_factory
-        from roboco.db.tables import TaskTable
-        from roboco.models.base import ModelProvider
-        from roboco.models.runtime import MODEL_MAP
-        from roboco.services.llm import (
-            AgentRoute,
-            get_model_routing_service,
-        )
-
-        try:
-            factory = get_session_factory()
-            async with factory() as db:
-                complexity: str | None = None
-                if task_id:
-                    try:
-                        result = await db.execute(
-                            select(TaskTable).where(TaskTable.id == task_id)
-                        )
-                        task = result.scalar_one_or_none()
-                        if task is not None:
-                            if task.estimated_complexity is not None:
-                                complexity = task.estimated_complexity.value.lower()
-                            complexity = await self._decisions_complexity_override(
-                                db, task, static=complexity
-                            )
-                    except Exception as e:
-                        logger.debug(
-                            "Task complexity lookup failed; using plain-role routing",
-                            agent_id=agent_id,
-                            task_id=task_id,
-                            error=str(e),
-                        )
-                router = get_model_routing_service(db)
-                return await router.resolve_for_agent(agent_id, complexity=complexity)
-        except Exception as e:
-            role = get_agent_role(agent_id) or ""
-            short = ROLE_MODEL_MAP.get(role, "sonnet")
-            logger.warning(
-                "Model routing resolve failed; using legacy Anthropic path",
-                agent_id=agent_id,
-                error=str(e),
-            )
-            return AgentRoute(
-                provider_id=None,
-                provider_type=ModelProvider.ANTHROPIC,
-                base_url=None,
-                auth_token=None,
-                model_name=MODEL_MAP.get(short, short),
-            )
-
-    async def _decisions_complexity_override(
-        self, db: Any, task: Any, *, static: str | None
-    ) -> str | None:
-        """Decisions pilot 6.3 (spec): a spawn-time complexity score for the
-        ``ROLE:complexity`` routing lookup. Applies only when the task
-        description is meaty enough to judge, the pilot mode is ON, and the
-        verdict clears the confidence floor; otherwise the static
-        ``estimated_complexity`` column stands (today's behavior). Worst
-        case is a slightly mismatched model tier on one agent session."""
-        from roboco.services import decisions
-
-        try:
-            description = task.description or ""
-            if len(description) < _DECISIONS_COMPLEXITY_MIN_DESC_CHARS:
-                return static
-            score, confident = await decisions.complexity_score(
-                db,
-                task_id=str(task.id),
-                task_title=task.title,
-                task_description=description,
-                acceptance_criteria=[
-                    str(entry.get("criterion"))
-                    for entry in (task.acceptance_criteria_status or [])
-                    if isinstance(entry, dict) and entry.get("criterion")
-                ],
-                parent_kind=None,
-            )
-            if not confident or score is None:
-                return static
-            return _DECISIONS_COMPLEXITY_TIERS[score]
-        except Exception as exc:
-            logger.debug(
-                "decisions complexity override failed; using static tier",
-                task_id=str(getattr(task, "id", "")),
-                error=str(exc),
-            )
-            return static
-
-    async def _record_spawn_session(
-        self,
-        config: "OrchestratorAgentConfig",
-        task_id: str | None,
-    ) -> "UUID | None":
-        """Insert a row into agent_spawn_sessions after a successful spawn.
-
-        Returns the UUID of the created row so the caller can store it on
-        the AgentInstance for later direct-by-id lookup in
-        _finalize_spawn_session.  Returns None when the insert fails; a
-        missing session row must never block the spawn path.
-        """
-        try:
-            from uuid import uuid4 as _uuid4
-
-            from roboco.db.base import get_session_factory
-            from roboco.db.tables import AgentSpawnSessionTable
-
-            agent_slug = config.agent_id
-            team = get_agent_team(agent_slug) or "backend"
-            role = get_agent_role(agent_slug) or "developer"
-
-            # A delivery-role spawn with no task_id is unattributed usage (#11) —
-            # the rollup can't tie the spend to a task. Intake/secretary/PM spawns
-            # legitimately carry no task and are not flagged.
-            if is_unattributed_delivery_spawn(role, task_id):
-                logger.warning(
-                    "Spawn session has no task_id for a delivery role — "
-                    "unattributed usage",
-                    agent_slug=agent_slug,
-                    role=role,
-                )
-
-            session_id = _uuid4()
-            session_factory = get_session_factory()
-            async with session_factory() as db:
-                row = AgentSpawnSessionTable(
-                    id=session_id,
-                    agent_slug=agent_slug,
-                    team=team,
-                    role=role,
-                    model=config.model or "unknown",
-                    task_id=task_id,
-                    started_at=datetime.now(UTC),
-                )
-                db.add(row)
-                await db.commit()
-                logger.debug(
-                    "Spawn session recorded",
-                    agent_slug=agent_slug,
-                    session_id=str(session_id),
-                    task_id=task_id,
-                )
-            return session_id
-        except Exception as exc:
-            logger.warning(
-                "Failed to record spawn session",
-                agent_slug=config.agent_id,
-                error=str(exc),
-            )
-            return None
-
-    def _make_tracker(self, provider: str) -> Any:
-        """Return a RateLimitStateTracker for *provider*.
-
-        Extracted as its own method so unit tests can monkeypatch it to
-        return an async mock without needing to intercept lazy imports.
-        """
-        from roboco.services.gateway.rate_limit_tracker import RateLimitStateTracker
-
-        return RateLimitStateTracker(provider)
-
-    async def _provider_spawn_parked(self, provider_type: str | None) -> bool:
-        """True when *provider_type*'s provider is parked (rate-limited/overloaded).
-
-        The spawn loop-breaker consults this before launching any container.
-        Fail-open: any error reading the tracker returns False so a Redis hiccup
-        can never block spawning.
-        """
-        if provider_type is None:
-            return False
-        try:
-            tracker = self._make_tracker(provider_type)
-            return bool(await tracker.is_rate_limited())
-        except Exception as exc:
-            logger.warning(
-                "provider rate-limit check failed; allowing spawn",
-                provider=provider_type,
-                error=str(exc),
-            )
-            return False
-
-    @staticmethod
-    def _provider_concurrency_cap(provider_type: str | None) -> int | None:
-        """Max concurrent live containers for *provider_type*, or None if uncapped.
-
-        KIMI is capped by default: every Kimi container shares one OAuth
-        refresh-token chain (see ``settings.kimi_max_concurrent``) — a second
-        concurrent container risks forking it and revoking fleet-wide Kimi
-        auth. HUMMIN defaults to uncapped (a static per-spawn env key — no
-        shared chain to protect); its Settings knob exists only for an
-        operator who observes Z.ai throttling the account.
-        """
-        if provider_type == ModelProvider.KIMI.value:
-            return settings.kimi_max_concurrent
-        if provider_type == ModelProvider.HUMMIN.value:
-            return settings.hummin_max_concurrent
-        return None
-
-    def _live_provider_instance_count(
-        self, provider_type: str, exclude_agent_id: str | None = None
-    ) -> int:
-        """Count ``_instances`` entries for *provider_type* still holding a slot.
-
-        Mirrors ``_existing_running_instance``'s liveness definition: any
-        state other than OFFLINE/WAITING_LONG occupies (or is about to
-        occupy) a container. *exclude_agent_id* drops the agent being
-        spawned from the count — ``_prepare_agent_spawn`` registers its
-        STARTING instance before the post-prepare gate re-check, and with
-        cap=1 a self-counting check cancels every spawn forever.
-        """
-        return sum(
-            1
-            for agent_id, inst in self._instances.items()
-            if agent_id != exclude_agent_id
-            and inst.config is not None
-            and inst.config.provider_type == provider_type
-            and inst.state not in (AgentState.OFFLINE, AgentState.WAITING_LONG)
-        )
-
-    def _provider_spawn_at_capacity(
-        self, provider_type: str | None, exclude_agent_id: str | None = None
-    ) -> bool:
-        """True when *provider_type* is at its concurrency cap, if any."""
-        cap = self._provider_concurrency_cap(provider_type)
-        if cap is None or provider_type is None:
-            return False
-        live = self._live_provider_instance_count(provider_type, exclude_agent_id)
-        return live >= cap
-
-    async def _spawn_gate_skip_reason(
-        self, provider_type: str | None, exclude_agent_id: str | None = None
-    ) -> str | None:
-        """Why ``spawn_agent`` should bail before launch, or None to proceed.
-
-        Checked in order: provider-parked (rate-limited/overloaded), then the
-        provider's concurrency cap (currently kimi-only, see
-        ``_provider_concurrency_cap``). The returned string is both the skip
-        reason and the log event name — same shape both callers already used.
-        *exclude_agent_id* is the agent this spawn is FOR: its own registered
-        instance must never count against its own capacity check.
-        """
-        if await self._provider_spawn_parked(provider_type):
-            return "Spawn skipped: provider rate-limited (parked)"
-        if self._provider_spawn_at_capacity(provider_type, exclude_agent_id):
-            return "Spawn skipped: kimi concurrency cap reached"
-        return None
-
-    def _bail_prepared_instance(
-        self,
-        instance: AgentInstance,
-        agent_id: str,
-        task_id: str | None,
-        provider_type: str | None,
-        reason: str,
-    ) -> AgentInstance:
-        """OFFLINE a just-``_prepare_agent_spawn``'d instance and log why the
-        launch was skipped (used by both the parked and concurrency-cap
-        rare-race checks after prepare)."""
-        self._mark_task_handled(task_id)
-        instance.state = AgentState.OFFLINE
-        logger.info(reason, agent_id=agent_id, task_id=task_id, provider=provider_type)
-        return instance
-
-    def _offline_route_bail(
-        self,
-        agent_id: str,
-        task_id: str | None,
-        route: Any,
-        git_context: SpawnGitContext | None,
-    ) -> AgentInstance:
-        """Build the unregistered OFFLINE instance returned by a pre-prepare
-        spawn bail (parked or at-capacity) — no blueprint/settings/image work
-        has run, so nothing needs undoing."""
-        return AgentInstance(
-            agent_id=agent_id,
-            state=AgentState.OFFLINE,
-            config=AgentConfig(
-                agent_id=agent_id,
-                # Not launching, so no blueprint was written.
-                blueprint_path=Path(),
-                model=route.model_name,
-                provider_type=route.provider_type.value,
-                provider_base_url=route.base_url,
-                provider_auth_token=route.auth_token,
-                git_context=git_context,
-            ),
-            current_task_id=task_id,
-        )
-
-    @property
-    def _api_url(self) -> str:
-        """Get the internal API URL for task/notification queries."""
-        return settings.internal_api_url
-
     async def _check_dependencies_terminal(
         self, client: httpx.AsyncClient, task: dict[str, Any]
     ) -> str | None:
@@ -2050,71 +1993,4 @@ class SpawnLaunchEngine(_Base):
                 "Failed to auto-block task",
                 task_id=task_id,
                 error=str(e) or repr(e),
-            )
-
-    async def _notify_stuck_agent(
-        self, agent_slug: str, task_id: str, task_status: str | None
-    ) -> None:
-        """One-shot alert to the CEO that an agent is wedged in a respawn loop.
-
-        Best-effort: a notification failure must not wedge dispatch, so any
-        error is logged and swallowed.
-        """
-        from uuid import UUID
-
-        from roboco.db.base import get_db_context
-        from roboco.services.notification import NotificationService
-        from roboco.services.task import TaskService
-
-        task_title: str | None = None
-        try:
-            async with get_db_context() as db:
-                task = await TaskService(db).get(UUID(task_id))
-                task_title = task.title if task else None
-        except Exception:
-            task_title = None
-
-        try:
-            await NotificationService().send_stuck_agent_notification(
-                task_id=task_id,
-                agent_slug=agent_slug,
-                task_status=task_status or "unknown",
-                to_agent="ceo",
-                task_title=task_title,
-            )
-        except Exception as exc:
-            logger.warning(
-                "Failed to send stuck-agent notification",
-                agent_id=agent_slug,
-                task_id=task_id,
-                error=str(exc),
-            )
-
-    async def _release_claim_to_pending(self, task_id: str) -> None:
-        """Release a stuck claim back to PENDING via the lifecycle-safe path.
-
-        Reuses ``TaskService.unclaim_for_reaper`` (claimed/in_progress ->
-        pending, clears assignee + work session) so the state machine records
-        the transition rather than a raw status PATCH. Opens its own short-lived
-        session, mirroring ``_reap_stale_claims``.
-        """
-        from roboco.db.base import get_session_factory
-        from roboco.services.task import TaskService
-        from roboco.utils.converters import require_uuid
-
-        try:
-            factory = get_session_factory()
-            async with factory() as db:
-                svc = TaskService(db)
-                await svc.unclaim_for_reaper(require_uuid(task_id))
-                await db.commit()
-            logger.warning(
-                "Released agentless claim to pending for re-dispatch",
-                task_id=task_id,
-            )
-        except Exception as exc:
-            logger.error(
-                "Failed to release agentless claim; will retry next tick",
-                task_id=task_id,
-                error=str(exc),
             )
