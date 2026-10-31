@@ -21,7 +21,7 @@ import pytest
 import structlog
 from roboco.foundation.policy.content import markers as _markers
 from roboco.runtime.engines.dispatch_breaker import DispatchBreakerEngine
-from roboco.runtime.engines.dispatch_claim import DispatchClaimEngine
+from roboco.runtime.engines.dispatch_closure import AutoSubmitEngine
 from roboco.runtime.engines.dispatch_prompts import (
     DevPromptContextEngine,
     DispatchPromptsEngine,
@@ -1428,7 +1428,7 @@ async def test_b42_confident_line_logged_and_returned(
 @pytest.mark.asyncio
 async def test_b42_engine_off_skips_ask(monkeypatch: pytest.MonkeyPatch) -> None:
     _flag_on(monkeypatch, False)
-    engine = _bare(DispatchClaimEngine)
+    engine = _bare(AutoSubmitEngine)
     mock = AsyncMock()
     monkeypatch.setattr(pilots_dispatch, "closure_safety", mock)
     assert await engine._decisions_closure_advisory({"id": "t"}) == ""

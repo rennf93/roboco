@@ -1332,7 +1332,14 @@ from roboco.runtime.engines.ci_watch import CiWatchEngine
 from roboco.runtime.engines.decisions_labeler import DecisionsLabelerEngine
 from roboco.runtime.engines.dep_update import DepUpdateEngine
 from roboco.runtime.engines.dispatch_breaker import DispatchBreakerEngine
-from roboco.runtime.engines.dispatch_claim import DispatchClaimEngine
+from roboco.runtime.engines.dispatch_claim import (
+    ClaimBarrierEngine,
+    DispatchClaimEngine,
+    DispatcherLoopEngine,
+    SpawnReadinessEngine,
+    StuckTaskEngine,
+)
+from roboco.runtime.engines.dispatch_closure import AutoSubmitEngine, PMClosureEngine
 from roboco.runtime.engines.dispatch_prompts import (
     CellReviewPromptsEngine,
     DevPromptContextEngine,
@@ -1351,7 +1358,12 @@ from roboco.runtime.engines.dispatch_routing import (
     DispatchRoutingEngine,
     RoutingClassifierEngine,
 )
-from roboco.runtime.engines.dispatch_work import DispatchWorkEngine
+from roboco.runtime.engines.dispatch_work import (
+    AuditDispatchEngine,
+    DevDispatchEngine,
+    DispatchWorkEngine,
+    PRReviewDispatchEngine,
+)
 from roboco.runtime.engines.entire_trails import EntireTrailsEngine
 from roboco.runtime.engines.env_sync import EnvSyncEngine
 from roboco.runtime.engines.interactive_sessions import InteractiveSessionsEngine
@@ -1371,23 +1383,30 @@ from roboco.runtime.engines.x_mentions import XMentionsEngine
 
 class AgentOrchestrator(
     SharedEngine,
+    AuditDispatchEngine,
     AuditorPromptsEngine,
+    AutoSubmitEngine,
     CellReviewPromptsEngine,
     CiWatchEngine,
+    ClaimBarrierEngine,
     DecisionsLabelerEngine,
     DepUpdateEngine,
+    DevDispatchEngine,
     DevPromptContextEngine,
     DispatchBreakerEngine,
     DispatchClaimEngine,
     DispatchPromptsEngine,
     DispatchRoutingEngine,
     DispatchWorkEngine,
+    DispatcherLoopEngine,
     EntireTrailsEngine,
     EnvSyncEngine,
     InteractiveSessionsEngine,
     ManagementPromptsEngine,
     MarketingProgramPromptsEngine,
     NotificationPromptsEngine,
+    PMClosureEngine,
+    PRReviewDispatchEngine,
     ProductOwnerProgramPromptsEngine,
     RateLimitProbeEngine,
     ReconcileEngine,
@@ -1396,7 +1415,9 @@ class AgentOrchestrator(
     SpawnConfigEngine,
     SpawnExitEngine,
     SpawnLaunchEngine,
+    SpawnReadinessEngine,
     StrategyEngine,
+    StuckTaskEngine,
     SweepsEngine,
     TelegramPollEngine,
     VaultEngine,

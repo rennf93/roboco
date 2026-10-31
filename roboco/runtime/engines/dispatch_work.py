@@ -1,16 +1,18 @@
-"""Auto-extracted engine mixin -- see decomp/extract.py. Method bodies below are
-moved verbatim from AgentOrchestrator (family: dispatch_work)."""
+"""The work dispatchers `_dispatch_all_work` runs each tick, and the dev, PR
+gate and Auditor dispatch helpers they use.
+
+Engine mixins composed into AgentOrchestrator."""
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Any
+import time
+from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, Any, ClassVar
 
 import httpx
+from fastapi import status as http_status
 
-from roboco.agents_config import (
-    get_agent_role,
-)
+from roboco.agents_config import get_agent_role
 from roboco.config import settings
 from roboco.foundation.identity import (
     is_human_only_role,
@@ -21,6 +23,8 @@ from roboco.foundation.policy.content import markers as _markers
 from roboco.runtime.orchestrator import (
     _PARENT_BRANCH_WAIT,
     _PM_DISPATCH_FETCH_LIMIT,
+    AgentState,
+    _agent_api_headers,
     _dispatch_board_program_exploration,
     _is_branch_pending,
     _is_held_ceo_source,
@@ -28,13 +32,11 @@ from roboco.runtime.orchestrator import (
     _system_api_headers,
     logger,
 )
-from roboco.services.task import (
-    PR_REVIEW_SOURCES,
-)
+from roboco.seeds.initial_data import AGENT_UUIDS
+from roboco.services.task import PR_REVIEW_SOURCES
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
-
 
 if TYPE_CHECKING:
     from roboco.runtime.engines._types import AgentOrchestratorSelf as _Base
@@ -2506,3 +2508,396 @@ class DispatchWorkEngine(_Base):
                     spawned_by="_dispatch_a2a_work",
                 )
                 break
+
+
+class DevDispatchEngine(_Base):
+    """Which owner to respawn for a dev task and when: the owner UUID by
+    status, the HITL skip, the existing-owner respawn, the role-to-task-type
+    match, and the assignee of an agentless claimed task."""
+
+    @staticmethod
+    def _resolve_dev_owner_uuid(task: dict[str, Any]) -> str | None:
+        """Pick the right owner UUID for dev dispatch based on status.
+
+        Always falls back to ``claimed_by`` when ``assigned_to`` is missing, so
+        a task left half-reaped (assigned_to nulled but still claimed) still
+        dispatches to its rightful owner instead of going dormant — the
+        orchestrator knows who to call even when one ownership field was cleared.
+        """
+        status = task.get("status")
+        if status in ("claimed", "blocked"):
+            return task.get("claimed_by") or task.get("assigned_to")
+        return task.get("assigned_to") or task.get("claimed_by")
+
+    @staticmethod
+    def _is_hitl_blocked(task: dict[str, Any]) -> bool:
+        """HITL-blocked tasks wait for human resolution; skip respawn."""
+        return (
+            task.get("status") == "blocked"
+            and task.get("blocker_resolver_type") == "human"
+        )
+
+    async def _handle_dev_existing_owner(
+        self, task: dict[str, Any], status: str, agent_slug: str
+    ) -> None:
+        """Respawn existing dev for needs_revision / in_progress / claimed."""
+        # A `blocked` task is waiting for its blocker to clear (PM / dependency);
+        # the owner has no legal move from `blocked`, so respawning it does
+        # nothing but churn. It is revived only when unblocked back to
+        # in_progress, or released to the pool (unclaim) for re-delegation.
+        if status == "blocked":
+            return
+        if status in (
+            "in_progress",
+            "claimed",
+        ) and not self._is_agent_active(agent_slug):
+            logger.info(
+                "Respawning agent for orphaned task",
+                task_id=task["id"],
+                agent=agent_slug,
+                status=status,
+            )
+        await self._respawn_dev_if_inactive(task, agent_slug)
+
+    @staticmethod
+    def _dev_dispatch_role_matches(task: dict[str, Any], agent_slug: str) -> bool:
+        """Return True if the assignee role matches the task's task_type.
+
+        Dev dispatcher only spawns developer-role agents. A doc/qa task
+        assigned to a dev (or vice versa) should be flagged, not silently
+        spawned. Returns True when the type is unknown or the assignee role
+        is unknown — the validation runs as a guard, not a strict gate, so
+        an unknown classification doesn't block work that would otherwise
+        proceed.
+        """
+        role = get_agent_role(agent_slug)
+        if role == "unknown":
+            return True
+        task_type = task.get("task_type")
+        if task_type == "documentation":
+            return role == "documenter"
+        # DevOps authors infra work, which is code-typed like a developer's
+        # task; a doc-typed assignment is as much a mismatch for it as for a
+        # dev. The dispatcher's flag gate decides whether devops is spawnable
+        # at all: this matcher only answers the type question.
+        if role == "devops":
+            return settings.devops_enabled
+        # `code` / `research` / `planning` / `administrative` / `design` all
+        # route through dev or PM; only the doc-task case is unambiguous.
+        return role == "developer"
+
+    def _claimed_task_needs_agent(self, task: dict[str, Any]) -> str | None:
+        """Return the assignee slug to (re)spawn for an agentless claimed task.
+
+        A task left CLAIMED/IN_PROGRESS with an assignee but no running
+        container (e.g. a reassignment that didn't spawn) is invisibly stuck —
+        only PENDING tasks get fresh dispatch, and the heartbeat reaper can't
+        see it because the claim seeded a fresh heartbeat. Returns the assignee
+        slug when the task has sat past the grace window with no active agent;
+        ``None`` when it is healthy, too fresh, or HITL-blocked.
+        """
+        if self._is_hitl_blocked(task):
+            return None
+        owner_uuid = task.get("assigned_to") or task.get("claimed_by")
+        if not owner_uuid:
+            return None
+        agent_slug = self._resolve_agent_slug(str(owner_uuid))
+        # Human-only roles (CEO / prompter / secretary) are never containers —
+        # there is no agent to respawn. Leave the task as-is for the human to
+        # act on through the panel; do NOT release it to pending (that would
+        # re-route a human-owned task to a PM). A stale slug (None role) is NOT
+        # skipped here — a stale-slug claim SHOULD be released to pending so a
+        # real agent can reclaim it (recovery, not spawning). See spawn_agent's
+        # human-role guard for the structural backstop.
+        if is_human_only_role(role_for_slug_or_none(agent_slug)):
+            return None
+        # The assignee is running, and on THIS task — healthy.
+        instance = self._instances.get(agent_slug)
+        if instance is not None and instance.state == AgentState.ACTIVE:
+            return None
+        # Grace window: a just-claimed task whose spawn is still in flight must
+        # not be churned. _time_in_state under-counts (any update bumps it),
+        # which biases toward "agent is working" — exactly the safe direction.
+        age = self._time_in_state(task)
+        grace = settings.claimed_no_agent_grace_seconds
+        if age is None or age.total_seconds() < grace:
+            return None
+        return agent_slug
+
+
+class PRReviewDispatchEngine(_Base):
+    """The in-path PR gate's reviewer: hold while the PR's CI runs, pick the
+    reviewer, skip one already on the task, and keep ``assigned_to`` on the
+    reviewer actually spawned."""
+
+    _LIVE_INSTANCE_STATES: ClassVar[frozenset[AgentState]] = frozenset(
+        {AgentState.STARTING, AgentState.ACTIVE, AgentState.WAITING_SHORT}
+    )
+
+    async def _fetch_gate_ci_state(self, slug: str, pr_number: int) -> str | None:
+        """Best-effort CI ``state`` lookup for the gate CI-pending check.
+
+        Reuses ``GitService.get_pr_ci_status`` - the exact signal ``pr_pass``
+        itself blocks on. Returns ``None`` on any lookup failure so the
+        caller fails open (never strands a task over a transient error).
+        """
+        from roboco.db import get_db_context
+        from roboco.services.git import GitService
+
+        try:
+            async with get_db_context() as db:
+                status = await GitService(db).get_pr_ci_status(slug, pr_number)
+        except Exception as exc:
+            logger.warning(
+                "gate CI status lookup failed",
+                project_slug=slug,
+                pr_number=pr_number,
+                error=str(exc),
+            )
+            return None
+        return status.get("state") if isinstance(status, dict) else None
+
+    async def _gate_task_ci_pending(self, task: dict[str, Any]) -> bool:
+        """True while the assembled PR's head-commit CI is still running or
+        not yet scheduled.
+
+        Without this, the dispatcher spawns a reviewer that immediately hits
+        ``pr_pass``'s own CI-pending block and exits, respawning every tick
+        until the respawn breaker trips and pages the CEO (live 2026-08: 7
+        rejected ``pr_pass`` calls in ~12 min on each of two tasks). The
+        lookup is cached per (slug, pr_number) for
+        ``_GATE_CI_STATUS_CACHE_TTL_SECONDS``.
+
+        Fails open (``False`` - spawn proceeds) on a missing project_slug/
+        pr_number, a lookup error, or any non-pending state (including
+        ``no_ci_configured``, ``error``, ``success``, ``failure``) - a
+        reviewer must still be spawned for a repo with no CI configured, or
+        to act on a genuinely-failing PR via ``pr_fail``. Only ``pending``
+        and ``pending_not_scheduled`` hold the spawn back.
+        """
+        slug = task.get("project_slug")
+        pr_number = task.get("pr_number")
+        if not slug or not pr_number:
+            return False
+        cache_key = (str(slug), int(pr_number))
+        now = time.monotonic()
+        cached = self._gate_ci_status_cache.get(cache_key)
+        ttl = self._GATE_CI_STATUS_CACHE_TTL_SECONDS
+        if cached is not None and now - cached[0] < ttl:
+            state = cached[1]
+        else:
+            state = await self._fetch_gate_ci_state(str(slug), int(pr_number))
+            self._gate_ci_status_cache[cache_key] = (now, state)
+        return state in ("pending", "pending_not_scheduled")
+
+    def _gate_task_reviewer(self, task: dict[str, Any]) -> str | None:
+        """Pick which reviewer to dispatch for one awaiting_pr_review task.
+
+        A task with a REAL live claim (``active_claimant_id`` set - some
+        reviewer ran ``claim_gate_review`` on it in an earlier tick) is
+        always re-targeted at that SAME reviewer, whether or not it is
+        currently free - never re-routed to a different one (e.g. the
+        overflow ``cell-pr-reviewer-2``) just because that other reviewer
+        happens to be free this tick. Observed live: fe-pr-reviewer claimed a
+        gate task, its container exited between ticks, and the dispatcher
+        kept spawning cell-pr-reviewer-2 onto the SAME task every tick since
+        it recomputed "which cell reviewer is free" from scratch each time -
+        each spawn's ``claim_gate_review`` was rejected outright
+        ("already claimed by another reviewer"), burning spawns until the
+        respawn breaker paged the CEO over a task that had already
+        advanced. Deliberately NOT keyed on ``claimed_by``:
+        ``_notify_pr_reviewer`` already sets ``claimed_by`` (alongside
+        ``assigned_to``) to the PRIMARY reviewer at gate entry via a plain
+        ``reassign``, before any real claim - pinning on that would read the
+        entry assignment as "already claimed" and skip the overflow fallback
+        even while the primary is busy, reinstating the serialization the
+        overflow reviewer exists to prevent. Falls back to the normal
+        team-based selection when there is no live claim yet, or the
+        claimant can't be resolved to a known slug (stale/foreign id).
+        """
+        claimant = task.get("active_claimant_id")
+        if claimant:
+            resolved = self._resolve_agent_slug(str(claimant))
+            if resolved != str(claimant):
+                return resolved
+        if self._gate_reviewer_already_on(task):
+            return None
+        team = task.get("team")
+        if team in ("backend", "frontend", "ux_ui"):
+            return self._select_agent_for_cell(team, "pr_reviewer")
+        return "pr-reviewer-1"
+
+    def _gate_reviewer_already_on(self, task: dict[str, Any]) -> bool:
+        """A reviewer's container is up on this gate task, not yet claimed.
+
+        ``claim_gate_review`` sets ``active_claimant_id`` only once the spawned
+        reviewer has booted, so for the first ticks after a spawn the task
+        looks unreviewed. The primary reviewer then reads as busy and the
+        overflow ``cell-pr-reviewer-2`` was sent onto the SAME task (live
+        2026-10-28: be-pr-reviewer at 06:34:21 and cell-pr-reviewer-2 at
+        06:34:35 on 300472d1; the loser's claim, notes and DMs were refused
+        for twelve minutes of respawns).
+        """
+        task_id = str(task.get("id"))
+        return any(
+            instance.current_task_id == task_id
+            and instance.state in self._LIVE_INSTANCE_STATES
+            and get_agent_role(slug) == "pr_reviewer"
+            for slug, instance in self._instances.items()
+        )
+
+    async def _sync_gate_reviewer_assignment(
+        self, task: dict[str, Any], reviewer: str
+    ) -> None:
+        """Keep ``assigned_to`` matching the reviewer actually being spawned.
+
+        ``TaskService.pr_reviewer_for`` (via ``submit_up``/``submit_root``'s
+        ``_notify_pr_reviewer``) already assigns the PRIMARY reviewer at
+        gate entry, so a mismatch here only means that reviewer is busy and
+        ``_select_agent_for_cell`` fell back to the overflow
+        ``cell-pr-reviewer-2``, the one case this dispatcher's own
+        selection can legitimately diverge from the entry assignment. Skips
+        entirely (no DB round trip) when the task is still unassigned or
+        already matches, so the common case costs nothing. Best-effort: a
+        failure leaves the stale assignee, which ``claim_gate_review``'s
+        role-only gate tolerates fine (the reviewer can still claim it).
+        """
+        current = task.get("assigned_to")
+        if not current or self._resolve_agent_slug(str(current)) == reviewer:
+            return
+        reviewer_uuid = AGENT_UUIDS.get(reviewer)
+        if reviewer_uuid is None:
+            return
+        from uuid import UUID
+
+        from roboco.db.base import get_db_context
+        from roboco.services.task import TaskService
+        from roboco.utils.converters import InvalidIdentifierError, require_uuid
+
+        try:
+            task_id = require_uuid(str(task["id"]))
+        except InvalidIdentifierError:
+            return
+        try:
+            async with get_db_context() as db:
+                await TaskService(db).reassign(task_id, UUID(reviewer_uuid))
+        except Exception as exc:
+            logger.warning(
+                "gate reviewer overflow reassign failed",
+                task_id=task.get("id"),
+                reviewer=reviewer,
+                error=str(exc),
+            )
+
+
+class AuditDispatchEngine(_Base):
+    """When to wake the Auditor: the scheduled sweep's cooldown and its
+    recent-delivery-activity check, and the newest unacknowledged alert,
+    acknowledged on dispatch."""
+
+    def _audit_spawn_cooled(self) -> bool:
+        """True when a scheduled sweep should be blocked.
+
+        Blocks when ROBOCO_AUDIT_INTERVAL_SECONDS is 0 (disabled) or when the
+        auditor was spawned within the interval window.
+        """
+        interval = settings.audit_interval_seconds
+        if interval <= 0:
+            return True
+        last = self._last_audit_spawn_at
+        if last is None:
+            return False
+        return (datetime.now(UTC) - last).total_seconds() < interval
+
+    async def _next_unobserved_audit_alert(
+        self, client: httpx.AsyncClient
+    ) -> dict[str, Any] | None:
+        """Newest ALERT targeting the auditor that the auditor has not acked.
+
+        Fetches the auditor's OWN pending-ack view: ``GET /notifications`` authed
+        as the auditor routes through ``list_for_agent``, which filters
+        ``acked_by`` for the auditor — not the system-wide "not fully acked"
+        view ``list_system_notifications`` returns. The auditor is read-only (no
+        ack verb) and ``auditor_triage`` never acks, so under the system view a
+        stale rework alert stayed pending forever (the CEO hadn't acked either)
+        and the per-alert cooldown only paced a rotation that respawned the
+        auditor every ~3 min. The auditor's own view excludes alerts it has
+        already observed — even ones the CEO has not acked yet — so each alert
+        is a one-shot, not a rotation source. Authed as the auditor (not the
+        system identity) so the route selects the per-recipient view.
+        """
+        auditor_uuid = AGENT_UUIDS.get("auditor")
+        if not auditor_uuid:
+            return None
+        try:
+            resp = await client.get(
+                f"{self._api_url}/notifications",
+                params={"type_filter": "alert", "pending_ack_only": "true"},
+                headers=_agent_api_headers(auditor_uuid, "auditor"),
+            )
+            if resp.status_code == http_status.HTTP_200_OK:
+                items = resp.json().get("items", [])
+                return items[0] if items else None
+        except Exception as e:
+            logger.error("Fetch unobserved audit alert failed", error=str(e))
+        return None
+
+    async def _ack_alert_as_auditor(
+        self, client: httpx.AsyncClient, notification_id: str
+    ) -> None:
+        """Acknowledge an alert as the auditor on dispatch (HTTP, loop-safe).
+
+        The spawn IS the auditor's observation; the auditor has no ack verb
+        (read-only), so the orchestrator acks on its behalf via the API authed
+        as the auditor. This is the terminal one-shot response that clears the
+        alert from the auditor's pending view so the next tick cannot respawn
+        on the same alert. Best-effort: a failed ack degrades to the per-alert
+        cooldown guarding the next tick — it never blocks the dispatch.
+        """
+        auditor_uuid = AGENT_UUIDS.get("auditor")
+        if not auditor_uuid:
+            return
+        try:
+            resp = await client.post(
+                f"{self._api_url}/notifications/{notification_id}/ack",
+                headers=_agent_api_headers(auditor_uuid, "auditor"),
+            )
+            if resp.status_code != http_status.HTTP_200_OK:
+                logger.warning(
+                    "Ack audit alert as auditor failed",
+                    notification_id=notification_id,
+                    status=resp.status_code,
+                )
+        except Exception as e:
+            logger.warning("Ack audit alert as auditor failed", error=str(e))
+
+    async def _has_recent_delivery_activity(
+        self,
+        client: httpx.AsyncClient,
+    ) -> bool:
+        """True when delivery work has moved recently enough to warrant a sweep.
+
+        Active delivery states always count as recent activity. Completed tasks
+        only count if they were updated inside the audit interval window.
+        """
+        active_statuses = [
+            "in_progress",
+            "verifying",
+            "awaiting_qa",
+            "needs_revision",
+            "awaiting_documentation",
+            "awaiting_pr_review",
+            "awaiting_pm_review",
+            "awaiting_ceo_approval",
+        ]
+        if await self._fetch_tasks(client, active_statuses):
+            return True
+
+        interval = settings.audit_interval_seconds
+        cutoff = datetime.now(UTC) - timedelta(seconds=interval)
+        completed = await self._fetch_tasks(client, "completed")
+        for task in completed:
+            ts = self._coerce_heartbeat(task.get("updated_at"))
+            if ts is not None and ts >= cutoff:
+                return True
+        return False
