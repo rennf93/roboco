@@ -249,6 +249,13 @@ class Policy:
                 f"{registry}/roboco-agent-*",
                 f"{registry}/roboco-orchestrator:*",
             ]
+            # A registry deploy runs RoboCo's own sandbox image from the
+            # registry, at the release's tag (roboco/runtime/sandbox.py).
+            images += [
+                f"{registry}/{image.partition(':')[0]}:*"
+                for image in SANDBOX_IMAGES
+                if image.startswith("roboco-")
+            ]
         images += _split(os.environ.get("GATE_IMAGES", ""), ",")
         roots = tuple(_split(os.environ.get("GATE_BIND_ROOTS", ""), ":"))
         for root in roots:

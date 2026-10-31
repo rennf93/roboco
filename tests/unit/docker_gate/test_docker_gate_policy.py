@@ -94,6 +94,8 @@ def test_every_call_site_was_recorded() -> None:
         "intake",
         "sandbox",
         "pull-sandbox",
+        "sandbox-registry",
+        "pull-sandbox-registry",
         "workspace-container",
         "exec",
     }
@@ -264,6 +266,20 @@ def test_without_a_registry_only_local_images_are_allowed() -> None:
     policy = _gate().Policy()
     assert _gate().image_allowed(["roboco-agent-dev-be"], policy)
     assert not _gate().image_allowed(["ghcr.io/rennf93/roboco-agent-dev-be:1"], policy)
+    assert not _gate().image_allowed(
+        ["ghcr.io/rennf93/roboco-sandbox-pg:0.33.0"], policy
+    )
+
+
+def test_a_registry_allows_robocos_sandbox_image_from_it_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    policy = _policy(monkeypatch)
+    assert _gate().image_allowed(["ghcr.io/rennf93/roboco-sandbox-pg:0.33.0"], policy)
+    assert not _gate().image_allowed(["ghcr.io/other/roboco-sandbox-pg:0.33.0"], policy)
+    assert not _gate().image_allowed(["ghcr.io/rennf93/roboco-sandbox-x:1"], policy)
+    # Upstream sandbox images are pulled by their own names, never the registry's.
+    assert not _gate().image_allowed(["ghcr.io/rennf93/postgres:16-alpine"], policy)
 
 
 @pytest.mark.parametrize(

@@ -252,6 +252,7 @@ def _live_chat_argv(chat: str, provider: str) -> list[str]:
 
 
 async def _record_sandboxes(recorder: _Recorder) -> None:
+    from roboco.config import settings
     from roboco.models.sandbox import SANDBOX_ENGINE_FEATURES, SANDBOX_ENGINES
     from roboco.runtime.orchestrator import AGENT_NETWORK
     from roboco.runtime.sandbox import SandboxProvisioner, SandboxProvisionError
@@ -261,8 +262,9 @@ async def _record_sandboxes(recorder: _Recorder) -> None:
         if args[:2] == ["image", "inspect"]:
             return 1, b"", b"No such image"
         if args[:1] == ["pull"]:
-            source = recorder.source.replace("sandbox:", "pull-sandbox:", 1)
-            recorder.calls.append(Captured(source, ["docker", *args]))
+            recorder.calls.append(
+                Captured(f"pull-{recorder.source}", ["docker", *args])
+            )
             return 0, b"", b""
         if args[:1] == ["run"]:
             recorder.calls.append(Captured(recorder.source, ["docker", *args]))
@@ -280,6 +282,19 @@ async def _record_sandboxes(recorder: _Recorder) -> None:
         for features in ([], some_feature) if some_feature else ([],):
             recorder.source = f"sandbox:{name}{':features' if features else ''}"
             # The runner refuses the run once it is recorded.
+            with fixed_password, contextlib.suppress(SandboxProvisionError):
+                await provisioner._provision_engine(_AGENT, engine, features)
+    # docker-compose.registry.yml: RoboCo's own sandbox image comes from the
+    # registry, at the release's tag; upstream images are unchanged.
+    with (
+        patch.object(settings, "agent_image_registry", "ghcr.io/rennf93"),
+        patch.object(settings, "agent_image_tag", "0.33.0"),
+    ):
+        for name, engine in SANDBOX_ENGINES.items():
+            features = sorted(SANDBOX_ENGINE_FEATURES.get(name, ()))[:1]
+            if not engine.image_for(features).startswith("roboco-"):
+                continue
+            recorder.source = f"sandbox-registry:{name}:features"
             with fixed_password, contextlib.suppress(SandboxProvisionError):
                 await provisioner._provision_engine(_AGENT, engine, features)
 
