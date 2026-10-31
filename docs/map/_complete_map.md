@@ -621,7 +621,7 @@ This slice is the agent-to-agent communication, audit forensics, journaling, str
 |---|---|---|
 | roboco/services/a2a.py | A2A protocol + persistent conversation service: Agent Cards, task↔A2A conversion, legacy A2A task notifications, bidirectional response spawning, slug-keyed conversation/message CRUD, gateway send adapter, CEO admin/live-view surface (reply budget + org-wide read), CEO-DM offline-recipient wake | 2423 |
 | roboco/services/audit.py | AuditService singleton: best-effort persist denial/lifecycle/agent events to audit_log, resolve actor role + slug→UUID at write time, tracing-gap query for respawn circuit breaker, recent-events query | 514 |
-| roboco/services/journal.py | JournalService: journal/entry CRUD, gateway scope-string→JournalEntryType adapter, fire-and-forget RAG indexing (private excluded), tracing-gate existence checks, board review brief, growth analytics | 1115 |
+| roboco/services/journal.py | JournalService: journal/entry CRUD, gateway scope-string→JournalEntryType adapter, fire-and-forget RAG indexing (private excluded), tracing-gate existence checks, board review brief, growth analytics | 1116 |
 | roboco/services/content_notes.py | Single chokepoint applying structured notes: validate via foundation ContentModel, store in notes_structured, regenerate derived TEXT mirror column (dev_notes/qa_notes/etc.) | 85 |
 | roboco/services/extraction.py | ExtractionService + ExtractionPipeline: regex-pattern (and optional LLM/TOON) classification of raw agent LLM buffers into typed ExtractedMessages; transcription pipeline callback fan-out | 630 |
 | roboco/services/permissions.py | PermissionService singleton + async helpers: notification scope (all/cell/board-chain), task-action and KB-action RBAC from agents_config; privileged/PM-role DB lookups | 302 |
@@ -691,24 +691,24 @@ This slice is the agent-to-agent communication, audit forensics, journaling, str
 | get_recent_events | method | roboco/services/audit.py:451 | Fetch recent audit events as dicts (Auditor/CEO queries) with optional type/agent/severity filters |
 | get_audit_service | function | roboco/services/audit.py:510 | Lazy singleton accessor for AuditService |
 | JournalService | class | roboco/services/journal.py:67 | BaseService for journal/entry CRUD, gateway adapters, RAG indexing, tracing-gate existence checks |
-| _get_optimal_service | method | roboco/services/journal.py:81 | Lazy-load OptimalService singleton (avoid circular import) |
-| resolve_agent_id | method | roboco/services/journal.py:89 | Resolve UUID-or-slug string to agent UUID via repositories.resolve_agent_uuid |
-| get_agent_slug | method | roboco/services/journal.py:105 | Reverse slug lookup via repositories.get_agent_slug |
-| get_or_create_journal | method | roboco/services/journal.py:140 | Fetch or create a journal row for an agent (commits on create) |
-| create_entry | method | roboco/services/journal.py:235 | Insert entry, bump journal metadata counters, commit; IntegrityError→rollback+None; schedule fire-and-forget RAG index |
-| _schedule_rag_index | method | roboco/services/journal.py:397 | asyncio.create_task best-effort RAG index; skips private entries in shared JOURNALS index; strong-ref in _RAG_INDEX_TASKS |
-| list_entries | method | roboco/services/journal.py:478 | Filtered/paginated entry listing (excludes private unless include_private) |
-| board_review_brief | method | roboco/services/journal.py:531 | PO+HoM DECISION_LOG entries for a task (board handoff for CEO approval/intake redraft) |
-| delete_entry | method | roboco/services/journal.py:570 | Delete entry and decrement journal counters (floored at 0) |
-| add_task_reflection/add_decision_log/add_learning/add_struggle/add_general_entry | method | roboco/services/journal.py:620 | Convenience builders that get_or_create journal then create_entry via the journal model factories |
-| get_growth_metrics | method | roboco/services/journal.py:788 | Compute learning/struggle/decision counts, resolution rate, learning frequency from entries_by_type + content scan |
-| search_entries | method | roboco/services/journal.py:843 | Semantic RAG search over an agent's JOURNALS index; re-fetches entries and keeps those in the agent's own journal (`get_journal_by_agent`) |
-| _has_entry_of_type | method | roboco/services/journal.py:921 | Existence check: agent has entry of type for task (backs tracing gates) |
-| has_decision_for_task/latest_decision_at/has_note_for_task/has_learning_for_task/has_reflect_for_task/has_struggle_for_task | method | roboco/services/journal.py:940 | Per-type tracing-gate existence checks used by the Choreographer |
-| has_recent_entry | method | roboco/services/journal.py:998 | Any entry within window (backs auditor i_am_idle session-scoped note obligation) |
-| write_struggle/write_decision | method | roboco/services/journal.py:1020 | Write-then-gate helpers deriving title from first content line for PM verbs |
-| write_entry | method | roboco/services/journal.py:1073 | Gateway adapter: scope string→JournalEntryType, get_or_create journal, create_entry |
-| get_journal_service | function | roboco/services/journal.py:1113 | Factory: JournalService(db) |
+| _get_optimal_service | method | roboco/services/journal.py:82 | Lazy-load OptimalService singleton (avoid circular import) |
+| resolve_agent_id | method | roboco/services/journal.py:90 | Resolve UUID-or-slug string to agent UUID via repositories.resolve_agent_uuid |
+| get_agent_slug | method | roboco/services/journal.py:106 | Reverse slug lookup via repositories.get_agent_slug |
+| get_or_create_journal | method | roboco/services/journal.py:141 | Fetch or create a journal row for an agent (commits on create) |
+| create_entry | method | roboco/services/journal.py:236 | Insert entry, bump journal metadata counters, commit; IntegrityError→rollback+None; schedule fire-and-forget RAG index |
+| _schedule_rag_index | method | roboco/services/journal.py:398 | asyncio.create_task best-effort RAG index; skips private entries in shared JOURNALS index; strong-ref in _RAG_INDEX_TASKS |
+| list_entries | method | roboco/services/journal.py:479 | Filtered/paginated entry listing (excludes private unless include_private) |
+| board_review_brief | method | roboco/services/journal.py:532 | PO+HoM DECISION_LOG entries for a task (board handoff for CEO approval/intake redraft) |
+| delete_entry | method | roboco/services/journal.py:571 | Delete entry and decrement journal counters (floored at 0) |
+| add_task_reflection/add_decision_log/add_learning/add_struggle/add_general_entry | method | roboco/services/journal.py:621 | Convenience builders that get_or_create journal then create_entry via the journal model factories |
+| get_growth_metrics | method | roboco/services/journal.py:789 | Compute learning/struggle/decision counts, resolution rate, learning frequency from entries_by_type + content scan |
+| search_entries | method | roboco/services/journal.py:844 | Semantic RAG search over an agent's JOURNALS index; re-fetches entries and keeps those in the agent's own journal (`get_journal_by_agent`) |
+| _has_entry_of_type | method | roboco/services/journal.py:922 | Existence check: agent has entry of type for task (backs tracing gates) |
+| has_decision_for_task/latest_decision_at/has_note_for_task/has_learning_for_task/has_reflect_for_task/has_struggle_for_task | method | roboco/services/journal.py:941 | Per-type tracing-gate existence checks used by the Choreographer |
+| has_recent_entry | method | roboco/services/journal.py:999 | Any entry within window (backs auditor i_am_idle session-scoped note obligation) |
+| write_struggle/write_decision | method | roboco/services/journal.py:1021 | Write-then-gate helpers deriving title from first content line for PM verbs |
+| write_entry | method | roboco/services/journal.py:1074 | Gateway adapter: scope string→JournalEntryType, get_or_create journal, create_entry |
+| get_journal_service | function | roboco/services/journal.py:1114 | Factory: JournalService(db) |
 | drain_rag_index_tasks | function | roboco/services/journal.py:53 | Test helper: await all in-flight background RAG index tasks |
 | apply_structured_note | function | roboco/services/content_notes.py:63 | Validate payload via foundation ContentModel, store in notes_structured[content_type], regenerate TEXT mirror column; raises before any mutation |
 | content_type_for_role | function | roboco/services/content_notes.py:51 | Map agent role to the note section content-type it authors via note(scope='handoff') |

@@ -497,7 +497,8 @@ async def test_write_decision_inside_caller_savepoint_leaves_its_transaction_ope
     ``unblock`` and main-PM ``escalate_up``)."""
     svc = journal_setup["svc"]
     session = svc.session
-    session.sync_session.autoflush = False  # as get_session_factory() builds it
+    # As get_session_factory() builds it
+    session.sync_session.autoflush = False
 
     async with session.begin_nested():
         entry = await svc.write_decision(
@@ -522,7 +523,8 @@ async def test_create_entry_integrity_error_inside_caller_savepoint_propagates(
     discarded the caller's entire outer transaction instead."""
     svc = journal_setup["svc"]
     session = svc.session
-    session.sync_session.autoflush = False  # as get_session_factory() builds it
+    # As get_session_factory() builds it
+    session.sync_session.autoflush = False
     journal = await svc.get_or_create_journal(journal_setup["agent_id"])
     await session.execute(
         update(JournalTable)
@@ -538,7 +540,8 @@ async def test_create_entry_integrity_error_inside_caller_savepoint_propagates(
                     type=JournalEntryType.GENERAL,
                     title="orphan",
                     content="x",
-                    task_id=uuid4(),  # no such task: FK violation at flush
+                    # No such task: FK violation at flush
+                    task_id=uuid4(),
                 )
             )
 

@@ -91,7 +91,8 @@ def test_i_will_plan_rejects_empty_subtasks_for_pm() -> None:
             "task_id": str(uuid4()),
             "plan": "Route to backend cell only",
             "approach": _GOOD_APPROACH,
-            "sub_tasks": [],  # empty — gateway rejects for PM
+            # Empty — gateway rejects for PM
+            "sub_tasks": [],
         },
     )
     # Schema validation passes (sub_tasks is a valid empty list).

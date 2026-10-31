@@ -276,7 +276,8 @@ def test_truncated_task_id_422_carries_remediation() -> None:
 def test_other_validation_422_omits_remediation() -> None:
     """A non-task_id validation error keeps the standard 422 shape (no remediate)."""
     client = TestClient(_make_uuid_app(), raise_server_exceptions=False)
-    response = client.post("/needs-uuid", json={})  # missing task_id entirely
+    # Missing task_id entirely
+    response = client.post("/needs-uuid", json={})
     assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
     assert "remediate" not in response.json()
 
@@ -410,7 +411,8 @@ def test_request_validation_handler_scrubs_secrets_from_log() -> None:
     assert logged_body["api_key"] == "***REDACTED***"
     assert logged_body["auth_token"] == "***REDACTED***"
     assert logged_body["nested"]["git_token"] == "***REDACTED***"
-    assert logged_body["nested"]["safe"] == "keep"  # non-secret preserved
+    # Non-secret preserved
+    assert logged_body["nested"]["safe"] == "keep"
     assert "errors" in fails[0]
 
 
@@ -438,8 +440,10 @@ def test_request_validation_handler_log_preserves_non_secret_fields() -> None:
     fails = [e for e in logs if e["event"] == "Request validation failed"]
     assert len(fails) == 1
     logged_body = fails[0]["body"]
-    assert logged_body["title"] == "visible-title"  # non-secret preserved
-    assert logged_body["git_token"] == "***REDACTED***"  # secret redacted
+    # Non-secret preserved
+    assert logged_body["title"] == "visible-title"
+    # Secret redacted
+    assert logged_body["git_token"] == "***REDACTED***"
     assert "ghp_secret_xyz" not in str(logged_body)
 
 
@@ -671,7 +675,8 @@ class _CancelableCommitSession:
     async def commit(self) -> None:
         self._order.append("commit_start")
         await self._never_set.wait()
-        self._order.append("commit_end")  # unreachable: proves no commit-after-cancel
+        # Unreachable: proves no commit-after-cancel
+        self._order.append("commit_end")
 
     async def rollback(self) -> None:
         self._order.append("rollback")

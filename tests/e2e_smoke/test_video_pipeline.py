@@ -338,7 +338,8 @@ def test_video_pipeline_render_and_approve(e2e_stack: E2EStack) -> None:
     draft = _find_video_post_draft(stack, task_id)
     assert draft["source"] == "video_post", draft
     assert draft["confirmed_by_human"] is False, draft
-    assert draft["status"] == "pending", draft  # held, awaiting the CEO
+    # Held, awaiting the CEO
+    assert draft["status"] == "pending", draft
     assert set(draft["mp4_paths"]) == {"vertical", "square"}, draft
 
     # The key wiring: video_post is skipped by BOTH dispatchers.
