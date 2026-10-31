@@ -203,7 +203,8 @@ class ProjectWorkspaceState(_Base):
         self.log.info(
             "Sync state updated",
             project_id=str(project_id),
-            head_commit=head_commit[:8],  # Short SHA
+            # Short SHA
+            head_commit=head_commit[:8],
         )
         return project
 
