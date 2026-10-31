@@ -33,6 +33,13 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from uuid import UUID
 
+    from roboco.foundation.policy import lifecycle as spec_module
+    from roboco.services.gateway.choreographer._impl import (
+        ChoreographerDeps,
+        _ClaimPlanStartContext,
+        _IAmDoneContext,
+        _ReassignedCtx,
+    )
     from roboco.services.gateway.choreographer._verb_runner import VerbRunner
     from roboco.services.gateway.envelope import Envelope
 
@@ -137,6 +144,133 @@ class BaseChoreographerSurface:
     ) -> Envelope:
         raise NotImplementedError
 
+    async def _apply_resolved_findings(self, ctx: _IAmDoneContext) -> None:
+        raise NotImplementedError
+
+    async def _behind_base_gate(self, ctx: _IAmDoneContext) -> Envelope | None:
+        raise NotImplementedError
+
+    async def _branch_staleness_advisory(self, agent_id: UUID, t: Any) -> None:
+        raise NotImplementedError
+
+    async def _check_tracing_gates(
+        self, agent_id: UUID, task_id: UUID, t: Any
+    ) -> Envelope | None:
+        raise NotImplementedError
+
+    async def _claim_plan_start_gate(
+        self,
+        ctx: _ClaimPlanStartContext,
+        role: spec_module.Role,
+        spec_ctx: spec_module.Context,
+    ) -> Envelope | None:
+        raise NotImplementedError
+
+    async def _claim_plan_start_run(
+        self, ctx: _ClaimPlanStartContext, agent: Any, spec_ctx: spec_module.Context
+    ) -> Envelope:
+        raise NotImplementedError
+
+    async def _conventions_gate(self, ctx: _IAmDoneContext) -> Envelope | None:
+        raise NotImplementedError
+
+    async def _drop_access_denied(self, tasks: list[Any], agent_id: UUID) -> list[Any]:
+        raise NotImplementedError
+
+    async def _post_claim_journal_gate(
+        self,
+        verb: str,
+        agent_id: UUID,
+        task_id: UUID,
+        envelope: Envelope,
+    ) -> Envelope:
+        raise NotImplementedError
+
+    @staticmethod
+    def _reassigned_rejection(
+        ctx: _ReassignedCtx,
+    ) -> Envelope | None:
+        raise NotImplementedError
+
+    async def _record_milestone_progress(
+        self,
+        task_id: UUID,
+        agent_id: UUID,
+        message: str,
+        percentage: int | None = None,
+    ) -> None:
+        raise NotImplementedError
+
+    @staticmethod
+    def _resolve_effective_plan(
+        plan: str, rich_plan: dict[str, Any] | None
+    ) -> str | dict[str, Any]:
+        raise NotImplementedError
+
+    async def _resume_from_claimed(
+        self,
+        ctx: _ClaimPlanStartContext,
+    ) -> Envelope:
+        raise NotImplementedError
+
+    @staticmethod
+    def _soup_reason(value: str, field: str, min_chars: int) -> Envelope | None:
+        raise NotImplementedError
+
+
+class DoneChecksSurface:
+    """``DoneChecksMixin``'s methods that the other classes call."""
+
+    async def _check_quality_gate(self, ctx: _IAmDoneContext) -> Envelope | None:
+        raise NotImplementedError
+
+    async def _maybe_i_am_done_fast_path(
+        self, ctx: _IAmDoneContext, t: Any, agent_id: UUID
+    ) -> Envelope | None:
+        raise NotImplementedError
+
+    async def _open_finding_ids(self, task_id: UUID) -> tuple[str, ...]:
+        raise NotImplementedError
+
+    async def _write_criteria_status(
+        self, agent_id: UUID, task_id: UUID, t: Any
+    ) -> None:
+        raise NotImplementedError
+
+
+class GiveMeWorkSurface:
+    """``GiveMeWorkMixin``'s methods that the other classes call."""
+
+    async def _pending_not_lane_held(self, pending: list[Any]) -> list[Any]:
+        raise NotImplementedError
+
+
+class IAmDoneSurface:
+    """``IAmDoneMixin``'s methods that the other classes call."""
+
+    async def _build_i_am_done_ok(
+        self, agent_id: UUID, task_id: UUID, t: Any
+    ) -> Envelope:
+        raise NotImplementedError
+
+    async def _check_submit_qa_field_gates(
+        self, agent_id: UUID, task_id: UUID, t: Any
+    ) -> Envelope | None:
+        raise NotImplementedError
+
+    async def _notify_qa(self, agent_id: UUID, task_id: UUID, t: Any) -> str | None:
+        raise NotImplementedError
+
+    async def _reject_i_am_done(self, ctx: _IAmDoneContext, env: Envelope) -> Envelope:
+        raise NotImplementedError
+
+
+class OpenPRSurface:
+    """``OpenPRMixin``'s methods that the other classes call."""
+
+    async def _ensure_branch_pushed(self, ctx: _IAmDoneContext) -> Envelope | None:
+        raise NotImplementedError
+
 
 class PRGatePassSurface:
     """``PRGatePassMixin``'s methods that the other classes call."""
@@ -154,6 +288,10 @@ class PRReviewerSurface:
 
 class ChoreographerHelpers(
     BaseChoreographerSurface,
+    DoneChecksSurface,
+    GiveMeWorkSurface,
+    IAmDoneSurface,
+    OpenPRSurface,
     PRGatePassSurface,
     PRReviewerSurface,
 ):
@@ -163,6 +301,7 @@ class ChoreographerHelpers(
     surface names and resolve via MRO at runtime.
     """
 
+    _deps: ChoreographerDeps
     task: Any
     work_session: Any
     git: Any

@@ -151,7 +151,7 @@ review-findings slice
 | `pr_fail` | `choreographer/pr_gate.py` | PR reviewer calls `pr_fail(task_id, findings=[...])` on a claimed gate review |
 | `request_changes` | `choreographer/_impl.py` | Cell/Main PM calls `request_changes(task_id, findings=[...])` on an `awaiting_pm_review` task |
 | `ceo_reject` (`TaskService` method, no verb) | `roboco/services/task.py` | CEO-approval-chain route on `awaiting_ceo_approval` |
-| `i_am_done` / `submit_up` / `submit_root` | `choreographer/_impl.py` | Dev/PM resolves findings via `resolved_findings=[...]` on resubmit |
+| `i_am_done` / `submit_up` / `submit_root` | `choreographer/dev.py` (`i_am_done`), `choreographer/_impl.py` (`submit_up`, `submit_root`) | Dev/PM resolves findings via `resolved_findings=[...]` on resubmit |
 | `GET /api/tasks/{id}/findings` | `roboco/api/routes/tasks.py` | Panel's `useTaskFindings` hook, any authenticated agent context |
 
 ## Config Flags

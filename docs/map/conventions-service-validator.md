@@ -201,7 +201,7 @@ conventions-service-validator
 ## Entry Points
 
 - **CLI:** `python -m roboco.conventions check --root <repo> --files a b ...` (`__main__.main`, exit 0 ran / exit 3 could-not-run). Spawned as a subprocess by `GitService._run_conventions_validator` per gate evaluation.
-- **Gate verbs (choreographer):** `i_am_done` (dev pre-submit) and `pr_pass` (in-path PR gate) call `GitService.conventions_check_for_task`; `claim_review` (QA) assembles findings into evidence. `block`-level findings refuse the transition. Routed via `_impl.py:2011` / `:2059` and `qa.py:187`.
+- **Gate verbs (choreographer):** `i_am_done` (dev pre-submit) and `pr_pass` (in-path PR gate) call `GitService.conventions_check_for_task`; `claim_review` (QA) assembles findings into evidence. `block`-level findings refuse the transition. Routed via `_impl.py`'s `_conventions_gate` (from `i_am_done`'s gate in `dev.py`) and `_conventions_guard` (from `pr_pass`), and `qa.py`'s `claim_review`.
 - **Spawn ambient block:** `agents/factories/_base.conventions_ambient_layer` calls `render_ambient_block` per project at spawn (when flag on).
 - **Task create:** `TaskService._baseline_constraints_for` (task.py:1003) calls `baseline_constraints` to auto-attach the `## Constraints` section.
 - **Panel HTTP routes:** `/api/projects/{id}/conventions` (scaffold/save/ restore/health/findings) in `api/routes/project.py:480-541` → `scaffold`/`commit_standard`/`restore`/`health`/`recent_findings`.
