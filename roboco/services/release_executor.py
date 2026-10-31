@@ -142,7 +142,8 @@ class ReleaseExecutor:
         else:
             fresh = await self._run_fresh_release(version, report)
             if isinstance(fresh, ReleaseResult):
-                return fresh  # promotion / gate / commit failed (fail-closed)
+                # Promotion / gate / commit failed (fail-closed)
+                return fresh
             commit_sha, files = fresh
 
         if not await self._ops.wait_for_ci(commit_sha):
@@ -272,16 +273,21 @@ class ReleaseExecutor:
 # --------------------------------------------------------------------------- #
 
 _CI_POLL_INTERVAL_SECONDS = 30
-_CI_MAX_POLLS = 80  # ~40 min ceiling
+# ~40 min ceiling
+_CI_MAX_POLLS = 80
 
 # Subprocess deadlines. A hung git / make would otherwise block the
 # CEO-gated release loop indefinitely. Each is generous enough that a
 # legitimate, slow operation is never wrongly aborted — only a true hang fails
 # closed. Mirrors the quality-gate ``_run_one`` kill-on-timeout idiom.
-_GIT_OP_TIMEOUT_SECONDS = 300  # git add/commit/rev-parse/ls-remote/push
-_RELEASE_GATE_TIMEOUT_SECONDS = 1800  # make quality — full ruff/mypy/pytest suite
-_PUBLISH_TIMEOUT_SECONDS = 300  # GitHub release POST (httpx client timeout)
-_CLONE_TIMEOUT_SECONDS = 600  # git clone / rm -rf the release clone
+# git add/commit/rev-parse/ls-remote/push
+_GIT_OP_TIMEOUT_SECONDS = 300
+# make quality — full ruff/mypy/pytest suite
+_RELEASE_GATE_TIMEOUT_SECONDS = 1800
+# GitHub release POST (httpx client timeout)
+_PUBLISH_TIMEOUT_SECONDS = 300
+# git clone / rm -rf the release clone
+_CLONE_TIMEOUT_SECONDS = 600
 
 # The conventional non-zero rc a timed-out subprocess reports so every caller's
 # fail-closed branch (rc != 0) fires instead of hanging the release loop.
@@ -316,7 +322,8 @@ async def _await_proc(
         # released — a kill without a wait leaves a zombie that wedges the
         # release loop's next clone (and leaks FDs over a long release session).
         with contextlib.suppress(ProcessLookupError):
-            proc.kill()  # already-exited between the timeout and the kill is fine
+            # Already-exited between the timeout and the kill is fine
+            proc.kill()
         await proc.wait()
         return _TIMEOUT_RC, f"subprocess timed out after {int(timeout)}s"
     except asyncio.CancelledError:
