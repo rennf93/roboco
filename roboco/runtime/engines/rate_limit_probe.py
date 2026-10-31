@@ -197,7 +197,8 @@ class RateLimitProbeEngine(_Base):
             return
         await asyncio.sleep(self._resume_confirm_delay)
         if not self._is_agent_active(agent_id):
-            return  # container died — keep the record for the orphan fallback
+            # Container died — keep the record for the orphan fallback
+            return
         del self._waiting_records[agent_id]
         try:
             await self._delete_waiting_record(agent_id)
@@ -271,7 +272,8 @@ Start by:
         rate limits can be cleared on their own cadence without blocking
         other sweep work.
         """
-        probe_interval = 30  # seconds
+        # In seconds.
+        probe_interval = 30
         while self._running:
             try:
                 await asyncio.sleep(probe_interval)
@@ -389,7 +391,8 @@ Start by:
     async def _probe_one_provider(self, provider: str, state: dict[str, Any]) -> None:
         """Probe a single rate-limited provider and handle the outcome."""
         if self._too_early_to_probe(state):
-            return  # Wait until after the estimated lift time.
+            # Wait until after the estimated lift time.
+            return
         tracker = self._make_tracker(provider)
         if await self._do_probe(provider):
             await self._on_probe_success(provider, tracker)
@@ -433,7 +436,8 @@ Start by:
         """
         url, headers = self._probe_target(provider)
         if url is None:
-            return True  # cannot probe — trust the elapsed retry_after window
+            # Cannot probe — trust the elapsed retry_after window
+            return True
         try:
             async with httpx.AsyncClient(timeout=_PROBE_TIMEOUT_SECONDS) as client:
                 resp = await client.get(url, headers=headers)
@@ -443,7 +447,8 @@ Start by:
                 provider=provider,
                 error=str(exc),
             )
-            return False  # unreachable — stay parked, retry on the next sweep
+            # Unreachable — stay parked, retry on the next sweep
+            return False
         return _HTTP_OK <= resp.status_code < _HTTP_MULTIPLE_CHOICES
 
     async def _notify_rate_limit_ceo(

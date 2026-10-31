@@ -58,8 +58,8 @@ class SweeperLoopEngine(_Base):
     # Re-declared (not just inherited from _Base above): mypy's Protocol
     # attribute inference cannot determine the type of an inherited member
     # that a method both reads AND assigns within the same method body
-    # (read-then-write in one scope; see _sweep_prune_dangling_images and
-    # _sweep_prune_transcripts below) without a bare re-declaration
+    # (read-then-write in one scope; see _sweep_dangling_images and
+    # _sweep_transcript_retention below) without a bare re-declaration
     # directly on the concrete class.
     if TYPE_CHECKING:
         _last_image_prune: datetime | None
@@ -74,7 +74,8 @@ class SweeperLoopEngine(_Base):
 
         Runs on its own interval so a slow sweep can't delay agent dispatch.
         """
-        sweep_interval = 60  # seconds
+        # In seconds.
+        sweep_interval = 60
         while self._running:
             try:
                 await asyncio.sleep(sweep_interval)
