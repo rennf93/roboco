@@ -1,8 +1,8 @@
 """Structural type for the composed AgentOrchestrator, TYPE_CHECKING-only.
 
 Every ``roboco/runtime/engines/*.py`` mixin holds methods moved verbatim
-out of ``AgentOrchestrator`` (see ``decomp/extract.py``); many reference
-attributes and methods that live on a DIFFERENT mixin, or on the core class
+out of ``AgentOrchestrator``; many reference attributes and methods that
+live on a DIFFERENT mixin, or on the core class
 itself (declared in ``__init__`` / at class scope). mypy checks each mixin
 file against its own declared bases only, so it does not know ``self`` is
 ultimately a full ``AgentOrchestrator`` with every sibling mixin composed in.
@@ -175,6 +175,8 @@ class AgentOrchestratorSelf(Protocol):
         self, *args: Any, **kwargs: Any
     ) -> tuple[int, int, int, int]: ...
     async def _cut_supersede_branch(self, *args: Any, **kwargs: Any) -> None: ...
+    async def _decisions_pruned_description(self, *args: Any, **kwargs: Any) -> str: ...
+    async def _delta_brief_block(self, *args: Any, **kwargs: Any) -> str: ...
     @staticmethod
     def _default_spawn_prompt(*args: Any, **kwargs: Any) -> str: ...
     @staticmethod

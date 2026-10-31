@@ -194,10 +194,11 @@ RUN git config --global --add safe.directory '*' \
 # orchestrator + sdk-startup-hook), not VIRTUAL_ENV. PATH keeps gateway tools.
 # HYPERFRAMES_NO_TELEMETRY / HYPERFRAMES_NO_UPDATE_CHECK: no image installs
 # the HyperFrames CLI, but an agent authoring a video can run it
-# (`npx hyperframes check`, as motion/skills/ says). The CLI sends anonymous
-# usage events to PostHog unless the first is "1", and checks npm for its own
-# updates on every run unless the second is. Set here so every agent image
-# inherits both, as motion/package.json's scripts set them.
+# (`npx hyperframes check`, as motion/skills/hyperframes/SKILL.md says). The
+# CLI sends anonymous usage events to PostHog unless the first is "1", and
+# checks npm for its own updates on every run unless the second is. Set here
+# so every agent image inherits both, as motion/package.json's scripts set
+# them.
 ENV PATH="/app/.venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     HYPERFRAMES_NO_TELEMETRY=1 \

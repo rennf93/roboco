@@ -98,3 +98,19 @@ def test_check_skips_the_tool_owned_entire_directory(tmp_path: Path) -> None:
         check=False,
     )
     assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_check_skips_the_vendored_hyperframes_skill(tmp_path: Path) -> None:
+    references = tmp_path / "motion" / "skills" / "hyperframes" / "references"
+    references.mkdir(parents=True)
+    (references / "runtimes.md").write_text(
+        "Upstream prose that its authors have\nhard-wrapped, kept byte for byte here.\n"
+    )
+    result = subprocess.run(
+        [sys.executable, str(SCRIPT), "--check"],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr

@@ -19,6 +19,7 @@ validated model (or a ``ContentValidationError``).
 from __future__ import annotations
 
 import re
+from abc import abstractmethod
 from typing import Any, Literal
 
 from pydantic import (
@@ -80,8 +81,9 @@ class _Base(BaseModel):
 class _Content(_Base):
     """A top-level content type that renders to canonical markdown."""
 
-    def render_markdown(self) -> str:  # pragma: no cover - overridden
-        raise NotImplementedError
+    @abstractmethod
+    def render_markdown(self) -> str:
+        """Render this content as canonical markdown."""
 
 
 # --------------------------------------------------------------------------- #

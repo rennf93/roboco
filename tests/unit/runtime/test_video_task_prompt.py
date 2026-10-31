@@ -6,6 +6,7 @@ bare-instance ``_build_dev_prompt`` idiom.
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -62,6 +63,17 @@ async def test_video_source_prompt_previews_over_http_not_file_urls() -> None:
     assert "http://127.0.0.1:8000/compositions/<id>/vertical.html" in prompt
     assert "file://.../vertical.html" not in prompt
     assert "never add an index.html under compositions/" in prompt
+
+
+@pytest.mark.asyncio
+async def test_video_source_prompt_names_the_vendored_skill_that_exists() -> None:
+    """The brief sends the author to the vendored HyperFrames skill, whose
+    house overrides sit on top; the path it names must exist, so a re-vendor
+    cannot leave the brief pointing at files that are gone."""
+    prompt = await _orch()._build_dev_prompt(_task(source=VIDEO_SOURCE))
+    assert "motion/skills/hyperframes/SKILL.md" in prompt
+    assert (Path(__file__).parents[3] / "motion/skills/hyperframes/SKILL.md").is_file()
+    assert "hyperframes-core" not in prompt
 
 
 @pytest.mark.asyncio
