@@ -884,7 +884,7 @@ class JournalService(BaseService):
                         if entry:
                             # Filter by agent_id to ensure we only
                             # return this agent's entries
-                            journal = await self.get_journal(agent_id)
+                            journal = await self.get_journal_by_agent(agent_id)
                             if journal and entry.journal_id == journal.id:
                                 entries.append(entry)
                     except ValueError:
