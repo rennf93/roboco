@@ -72,7 +72,8 @@ TYPE_SUBFOLDERS: dict[str, str] = {
     "api": "api",
     "qa": "qa",
     "guide": "guides",
-    "readme": "",  # Root of team folder
+    # Root of team folder
+    "readme": "",
     "changelog": "",
     "architecture": "architecture",
     "design": "design",
@@ -644,7 +645,8 @@ class DocsService(BaseService, DocsFiles, DocsRecords):
         # Index in RAG
         await self._index_doc_in_rag(full_path, req.task_id)
 
-        return rel_path, doc_ref, False  # is_update=False
+        # is_update=False
+        return rel_path, doc_ref, False
 
     async def _update_existing_doc(
         self,
@@ -692,7 +694,8 @@ class DocsService(BaseService, DocsFiles, DocsRecords):
         # Re-index in RAG
         await self._index_doc_in_rag(full_path, req.task_id)
 
-        return existing_path, doc_ref, True  # is_update=True
+        # is_update=True
+        return existing_path, doc_ref, True
 
     async def read_doc(
         self,
