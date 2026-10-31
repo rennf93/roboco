@@ -147,7 +147,7 @@ class _FakePlugin(BaseIndexPlugin):
     def build_source_uri(self, doc_id: str | None = None, **kwargs: Any) -> str | None:
         return None
 
-    async def close(self) -> None:  # pragma: no cover - never awaited here
+    async def close(self) -> None:
         return None
 
 

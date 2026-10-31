@@ -3626,7 +3626,7 @@ The organizational-memory + playbooks slice: captures cross-agent learnings and 
 | roboco/services/memory_distiller.py | Local-LLM distiller: turns a completed task into one <=120-word Problem/Approach/Gotcha lesson (best-effort, returns None on failure) | 131 |
 | roboco/services/playbook.py | PlaybookService: draft + Auditor curation state machine (draft/approve/reject/archive) + post-commit RAG index/de-index orchestration | 415 |
 | roboco/services/learning.py | LearningPropagationService: record a learning, index it, notify same-scope non-human agents, scope-filtered retrieval (legacy pre-distiller capture path) | 579 |
-| roboco/services/optimal.py | OptimalService: plugin-based RAG hub over pgvector; owns index_playbook/unindex_playbook/record_learning/search/search_learnings and the singleton accessor | 2461 |
+| roboco/services/optimal.py | OptimalService: plugin-based RAG hub over pgvector; owns index_playbook/unindex_playbook/record_learning/search/search_learnings and the singleton accessor | 2477 |
 | roboco/services/optimal_brain/indexes/base.py | BaseIndexPlugin ABC: chunk/filter/embed/store pipeline, hybrid search, 429-retried ask(); atomic replace_chunks reingest semantics | 1188 |
 | roboco/services/optimal_brain/indexes/learnings.py | LearningsIndexPlugin: record/search cross-agent learnings; forces shareable=True on shared retrieval so private reflections never leak into briefings | 253 |
 | roboco/services/optimal_brain/indexes/playbooks.py | PlaybooksIndexPlugin: index approved playbooks (title+when-to-use+procedure) and delete_playbook de-index | 97 |
@@ -3676,17 +3676,17 @@ The organizational-memory + playbooks slice: captures cross-agent learnings and 
 | LearningPropagationService.get_learnings_for_agent | method | roboco/services/learning.py:357 | Role-shaped search_learnings + post-filter by scope visibility (personal/team) |
 | LearningPropagationService.search_similar_learnings | method | roboco/services/learning.py:538 | Similar-learnings search via OptimalService.search over LEARNINGS index |
 | get_learning_service | function | roboco/services/learning.py:575 | Process-wide singleton accessor for LearningPropagationService |
-| PLUGIN_REGISTRY | dict | roboco/services/optimal.py:198 | IndexType -> plugin class map (includes LEARNINGS, PLAYBOOKS) |
-| OptimalService.initialize | method | roboco/services/optimal.py:242 | Graceful-degradation init of all plugins; starts background auto-index + periodic tasks |
-| OptimalService.close | method | roboco/services/optimal.py:785 | Cancel _indexing_task FIRST, then periodic task, then close plugins (prevent writes to closed plugins) |
-| OptimalService._get_plugin | method | roboco/services/optimal.py:815 | Typed plugin lookup with a clear RuntimeError when missing/uninitialized |
-| OptimalService.index_playbook | method | roboco/services/optimal.py:1070 | Embed an approved playbook + write the indexed_documents tracking row |
-| OptimalService.unindex_playbook | method | roboco/services/optimal.py:1107 | Delete playbook chunks from vector store AND drop tracking row; both steps best-effort/idempotent |
-| OptimalService.record_learning | method | roboco/services/optimal.py:1387 | Embed a learning via LearningsIndexPlugin + write tracking row (source learn-{md5(full content)}) |
-| OptimalService.search | method | roboco/services/optimal.py:1471 | Embed-once fan-out: concurrent hybrid search across selected indexes; used by similar_memory |
-| OptimalService._aggregate_citations | method | roboco/services/optimal.py:1608 | Embed once + concurrent per-index search into an aggregation buffer for RAG query() |
-| OptimalService.search_learnings | method | roboco/services/optimal.py:1906 | LEARNINGS-only search with optional category/team filter (shareable_only=True default) |
-| get_optimal_service | function | roboco/services/optimal.py:2427 | Lock-guarded singleton: publish instance only after initialize() completes |
+| PLUGIN_REGISTRY | dict | roboco/services/optimal.py:200 | IndexType -> plugin class map (includes LEARNINGS, PLAYBOOKS) |
+| OptimalService.initialize | method | roboco/services/optimal.py:248 | Graceful-degradation init of all plugins; starts background auto-index + periodic tasks |
+| OptimalService.close | method | roboco/services/optimal.py:793 | Cancel _indexing_task FIRST, then periodic task, then close plugins (prevent writes to closed plugins) |
+| OptimalService._get_plugin | method | roboco/services/optimal.py:823 | Typed plugin lookup with a clear RuntimeError when missing/uninitialized |
+| OptimalService.index_playbook | method | roboco/services/optimal.py:1079 | Embed an approved playbook + write the indexed_documents tracking row |
+| OptimalService.unindex_playbook | method | roboco/services/optimal.py:1116 | Delete playbook chunks from vector store AND drop tracking row; both steps best-effort/idempotent |
+| OptimalService.record_learning | method | roboco/services/optimal.py:1396 | Embed a learning via LearningsIndexPlugin + write tracking row (source learn-{md5(full content)}) |
+| OptimalService.search | method | roboco/services/optimal.py:1480 | Embed-once fan-out: concurrent hybrid search across selected indexes; used by similar_memory |
+| OptimalService._aggregate_citations | method | roboco/services/optimal.py:1620 | Embed once + concurrent per-index search into an aggregation buffer for RAG query() |
+| OptimalService.search_learnings | method | roboco/services/optimal.py:1918 | LEARNINGS-only search with optional category/team filter (shareable_only=True default) |
+| get_optimal_service | function | roboco/services/optimal.py:2443 | Lock-guarded singleton: publish instance only after initialize() completes |
 | BaseIndexPlugin.ingest | method | roboco/services/optimal_brain/indexes/base.py:369 | Validate -> metadata -> source URI -> chunk/filter/embed/store pipeline |
 | BaseIndexPlugin._chunk_filter_embed_store | method | roboco/services/optimal_brain/indexes/base.py:447 | Chunk + quality-filter + embed + atomic replace_chunks/add_chunks; returns stored count |
 | BaseIndexPlugin._citations_to_results | method | roboco/services/optimal_brain/indexes/base.py:790 | Apply exact-match metadata filters to citations and cap to top_k SearchResults |

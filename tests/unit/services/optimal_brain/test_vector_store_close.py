@@ -23,7 +23,8 @@ async def test_close_swallows_event_loop_closed() -> None:
     pool.close = AsyncMock(side_effect=RuntimeError("Event loop is closed"))
     vs._pool = pool
 
-    await vs.close()  # must not raise
+    # Must not raise
+    await vs.close()
 
     assert vs._pool is None
 
