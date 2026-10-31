@@ -19,6 +19,9 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+# RFC 7518 section 3.2: an HS256 key MUST be at least the hash's 256 bits.
+_MIN_SIGNING_SECRET_BYTES = 32
+
 
 class Settings(BaseSettings):
     """
@@ -1003,6 +1006,31 @@ class Settings(BaseSettings):
                 "cloud-auth session cookie; there is nothing to mint "
                 "without it)."
             )
+        return self
+
+    @model_validator(mode="after")
+    def _validate_signing_secret_lengths(self) -> "Settings":
+        """Refuse to start with an HMAC signing secret shorter than its hash.
+
+        Both secrets key HMAC-SHA256: the login cookie's HS256 JWT, and the
+        agent tokens minted at spawn (and the panel's CEO token). A shorter
+        key can be brute-forced offline from one captured token, which
+        forges a CEO session or any agent's identity.
+        """
+        in_use = {
+            "ROBOCO_CLOUD_AUTH_SECRET": (
+                self.cloud_auth_secret if self.cloud_auth_enabled else None
+            ),
+            "ROBOCO_AGENT_AUTH_SECRET": os.environ.get("ROBOCO_AGENT_AUTH_SECRET"),
+        }
+        for name, secret in in_use.items():
+            if secret and len(secret.encode("utf-8")) < _MIN_SIGNING_SECRET_BYTES:
+                raise ValueError(
+                    f"{name} must be at least {_MIN_SIGNING_SECRET_BYTES} bytes "
+                    "(an HS256 key shorter than its 256-bit hash can be brute-"
+                    "forced from one token). Generate one with: python -c "
+                    "'import secrets; print(secrets.token_hex(32))'"
+                )
         return self
 
     # ==========================================================================

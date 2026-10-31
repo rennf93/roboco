@@ -225,7 +225,7 @@ The work-already-done fast path on `i_am_done`. Default-off, transparent to the 
 | `ROBOCO_CLOUD_AUTH_ENABLED` | `false` | Master switch. Off: `get_agent_context` behaves byte-for-byte as today (header-trust). On: no registration router is mounted — exactly one user, seeded from `cloud_auth_email` / `cloud_auth_password`. **Fails loud at startup** (raises before the app boots) if `true` without `ROBOCO_CLOUD_AUTH_SECRET` set. |
 | `ROBOCO_CLOUD_AUTH_EMAIL` | (unset) | Email for the single seeded CEO login user. |
 | `ROBOCO_CLOUD_AUTH_PASSWORD` | (unset) | Password for the single seeded user. Hashed at startup; never stored in plain text. |
-| `ROBOCO_CLOUD_AUTH_SECRET` | (unset) | Session-signing secret for the login cookie's JWT. Required when enabled — generate with `python -c 'import secrets; print(secrets.token_hex(32))'`. |
+| `ROBOCO_CLOUD_AUTH_SECRET` | (unset) | Session-signing secret for the login cookie's JWT. Required when enabled, at least 32 bytes (`Settings._validate_signing_secret_lengths` refuses a shorter one at startup: an HS256 key under 256 bits can be brute-forced from one cookie) — generate with `python -c 'import secrets; print(secrets.token_hex(32))'`. |
 | `ROBOCO_CLOUD_AUTH_COOKIE_MAX_AGE` | `2592000` | Session cookie lifetime in seconds (30 days). Sliding: every authenticated request re-mints + re-sets the cookie, so an active session never expires — only genuine inactivity past this window logs out. |
 
 The session cookie is `secure`-only (`cookie_secure=True` in `roboco/api/auth/backend.py`) — arm this flag only behind TLS, or the browser will silently refuse to send the cookie and login will appear to fail.
@@ -277,7 +277,7 @@ Pure DB/notification event handlers (task-status and handoff notifications) regi
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ROBOCO_ENCRYPTION_KEY` | (required) | Fernet key that encrypts secrets at rest (e.g. per-project git tokens, the `x_credentials` OAuth 1.0a singleton row). Generate with `Fernet.generate_key()`. |
-| `ROBOCO_AGENT_AUTH_SECRET` | (required) | HMAC secret the orchestrator signs each agent's `X-Agent-Token` with. |
+| `ROBOCO_AGENT_AUTH_SECRET` | (required) | HMAC secret the orchestrator signs each agent's `X-Agent-Token` (and the panel's CEO token) with. At least 32 bytes: startup refuses a shorter one. |
 | `ROBOCO_AGENT_AUTH_REQUIRED` | `false` | When `true`, every request must carry a valid agent token (secure mode). |
 | `ROBOCO_PANEL_AGENT_TOKEN` | (unset) | The control panel's CEO token, injected by nginx in secure mode. Get it with `make panel-token`. |
 

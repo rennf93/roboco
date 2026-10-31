@@ -10,7 +10,7 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | docker-compose.registry.yml | Pull-and-run compose using pre-built GHCR/Docker Hub images (ROBOCO_REGISTRY + ROBOCO_VERSION); infra services byte-identical to build compose (incl. `backup` + vault defaults), agent-* services are one-shot pre-pulls, own `roboco_data` network; one `docker-gate` (builds refused, since every image is pulled; `GATE_REGISTRY` from `ROBOCO_REGISTRY`; the same read-only bind roots as the build file's gates) serves the orchestrator and dispatcher | 973 |
 | Makefile | Ops + quality targets: infra, dev/run/orchestrator, quality gate (ruff/mypy/pytest/xenon/radon/vulture/bandit/pip-audit/deptry/lint-imports/alembic/foundation-check), fast pre-submit `gate` target (ruff format/check, mypy, xenon, lint-imports), per-Python test matrix, docs, lifecycle regen | 628 |
 | pyproject.toml | Project + dependency manifest: requires-python >=3.13,<3.15, deps, dev/docs extras, console scripts, ruff/mypy/pytest/coverage/vulture/bandit/radon/xenon/deptry/importlinter config | 708 |
-| roboco/config.py | Pydantic Settings (env prefix ROBOCO_, cached via lru_cache); every tunable: DB, Redis, RAG, LLM/Ollama, workspaces, agent guardrails, gateway thresholds, autonomy-engine flags | 3283 |
+| roboco/config.py | Pydantic Settings (env prefix ROBOCO_, cached via lru_cache); every tunable: DB, Redis, RAG, LLM/Ollama, workspaces, agent guardrails, gateway thresholds, autonomy-engine flags | 3311 |
 | roboco/__init__.py | Package root: __version__ + re-exports settings, exceptions, logging helpers | 36 |
 | roboco/bootstrap.py | Async bootstrap: git-user drop self-test (every role but indexer; SystemExit(1) on failure), a warning when an api or dispatcher has the host Docker socket and no `DOCKER_HOST` (a compose file from before the Docker gate), DB init, Redis event bus, websocket bridge, orchestrator construction, uvicorn API server task, wait-for-ready poll, optional agent spawn, graceful shutdown | 259 |
 | roboco/cli.py | argparse CLI wrapper around bootstrap.main / db-only; the ENTRYPOINT invoked by `python -m roboco.cli` | 64 |
@@ -102,12 +102,12 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 
 | Name | Kind | File:Line | Responsibility |
 |---|---|---|---|
-| Settings | class | roboco/config.py:23 | Pydantic BaseSettings; all ROBOCO_ env-backed tunables + derived URL properties (database_url, redis_url, internal_api_url, rag_store_url) |
-| get_settings | function | roboco/config.py:3277 | lru_cache-backed singleton factory returning the cached Settings instance |
-| internal_api_url | property | roboco/config.py:136 | service-to-service API base URL (api_url override or http://host:port/api, maps 0.0.0.0 to 127.0.0.1) |
-| database_url | property | roboco/config.py:211 | asyncpg connection URL |
-| database_url_sync | property | roboco/config.py:219 | sync psycopg URL for Alembic |
-| redis_url / redis_url_for_db | property / method | roboco/config.py:235 | Redis connection URL carrying the URL-quoted ROBOCO_REDIS_PASSWORD (required by every compose file; Redis runs with requirepass) |
+| Settings | class | roboco/config.py:26 | Pydantic BaseSettings; all ROBOCO_ env-backed tunables + derived URL properties (database_url, redis_url, internal_api_url, rag_store_url) |
+| get_settings | function | roboco/config.py:3305 | lru_cache-backed singleton factory returning the cached Settings instance |
+| internal_api_url | property | roboco/config.py:139 | service-to-service API base URL (api_url override or http://host:port/api, maps 0.0.0.0 to 127.0.0.1) |
+| database_url | property | roboco/config.py:214 | asyncpg connection URL |
+| database_url_sync | property | roboco/config.py:222 | sync psycopg URL for Alembic |
+| redis_url / redis_url_for_db | property / method | roboco/config.py:238 | Redis connection URL carrying the URL-quoted ROBOCO_REDIS_PASSWORD (required by every compose file; Redis runs with requirepass) |
 | _BootstrapHolder | class | roboco/bootstrap.py:34 | Module-level holder for the singleton AgentOrchestrator instance |
 | _run_api_server | function | roboco/bootstrap.py:40 | Build a uvicorn.Config for roboco.api.app:app and serve it (no reload in prod/container) |
 | _wait_for_api_ready | function | roboco/bootstrap.py:122 | Poll http://127.0.0.1:port/health until 200 (up to max_wait) so the orchestrator starts only after lifespan indexing completes |
@@ -387,6 +387,8 @@ deployment-tooling
 > **v0.18.0** (2026-07-04): Fable mode — `agent-base.Dockerfile` now `COPY`s 5 vendored `docker/scripts/fable-*.sh` hook scripts (stop-gate, bash-discipline, honesty-nudge, prompt-nudge, precompact), installed at spawn time only when `ROBOCO_FABLE_MODE_ENABLED` is set (default off; `session-start.sh` from the upstream `opus-fable-playbook` was deliberately not ported — redundant with the doctrine layer). X feature-spotlight adds `ROBOCO_X_FEATURE_SPOTLIGHT_ENABLED`/`_INTERVAL_SECONDS` to `config.py` as a sub-switch of the existing X-engine flag.
 >
 > **Dispatcher hardening (branch `feature/claude/dispatcher-git-hardening`, 2026-10-28).** Redis gained `requirepass` (`ROBOCO_REDIS_PASSWORD`, all three compose files + bootstrap + release placeholder + `.env.example`); `docker run` secrets for agent/provider containers are passed by name (`-e NAME` + the CLI's env) instead of `-e NAME=value` in argv (`roboco/utils/docker_env.py`); grok/codex credential files are written agent-owned 0600 (`roboco/llm/providers/_credential_file.py`); the orchestrator image gained the `agent` group, the `roboco-git` user, `setpriv` (since replaced by the `as-git-user` helper), and /opt/roboco/git (`docker/git-support/`), and lost `safe.directory '*'`; every agent image runs under `umask 002`; the orchestrator mounts `${ROBOCO_DATA_DIR:-./data}/private` at /data/private; log dir 0700 and agent log dumps 0600.
+>
+> **Signing-secret length (2026-10-31, trail #32).** `Settings._validate_signing_secret_lengths` refuses to start when `ROBOCO_AGENT_AUTH_SECRET` (agent and panel tokens), or `ROBOCO_CLOUD_AUTH_SECRET` with cloud auth on, is shorter than 32 bytes (`_MIN_SIGNING_SECRET_BYTES`). Both key HMAC-SHA256 (the session cookie is an HS256 JWT), and RFC 7518 section 3.2 requires a 256-bit key; a shorter one can be brute-forced offline from one captured token. Before, any non-empty value started. Bootstrap's `token_hex(32)` secrets (64 bytes) and the release pull-smoke placeholder (40) already pass; `.env.example` and the RAG config reference state the floor.
 
 ## Regression Risks
 

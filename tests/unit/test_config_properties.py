@@ -108,6 +108,38 @@ def test_cloud_auth_enabled_with_secret_succeeds() -> None:
     assert s.cloud_auth_secret == "s" * 32
 
 
+def test_cloud_auth_secret_shorter_than_32_bytes_fails_loud() -> None:
+    """An HS256 key under 256 bits can be brute-forced from one session
+    cookie (RFC 7518 section 3.2): refuse to start with one."""
+    with pytest.raises(
+        ValueError, match="ROBOCO_CLOUD_AUTH_SECRET must be at least 32"
+    ):
+        Settings(cloud_auth_enabled=True, cloud_auth_secret="s" * 31)
+
+
+def test_short_cloud_auth_secret_is_ignored_while_cloud_auth_is_off() -> None:
+    """With cloud auth off the session secret signs nothing."""
+    s = Settings(cloud_auth_enabled=False, cloud_auth_secret="short")
+    assert s.cloud_auth_enabled is False
+
+
+def test_agent_auth_secret_shorter_than_32_bytes_fails_loud(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The agent tokens and the panel's CEO token are HMAC-SHA256 under this
+    secret; a short one forges any agent's identity."""
+    monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", "a" * 31)
+    with pytest.raises(
+        ValueError, match="ROBOCO_AGENT_AUTH_SECRET must be at least 32"
+    ):
+        Settings()
+
+
+def test_agent_auth_secret_of_32_bytes_starts(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ROBOCO_AGENT_AUTH_SECRET", "a" * 32)
+    assert Settings() is not None
+
+
 def test_cloud_auth_cookie_max_age_defaults_to_30_days() -> None:
     s = Settings()
     assert s.cloud_auth_cookie_max_age == 30 * 24 * 60 * 60

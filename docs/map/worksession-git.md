@@ -314,16 +314,16 @@ External:
 | Flag / setting | Source | Used for |
 |----------------|--------|----------|
 | `ROBOCO_GIT_EXECUTOR_WORKERS` (env, default 16) | `os.environ` at git.py:217 | Dedicated git subprocess pool size |
-| `settings.git_command_timeout_seconds` | config.py:2200 | Default `_run_git` timeout |
-| `settings.git_commit_timeout_seconds` | config.py:2251 | Staging/commit large changeset timeout |
-| `settings.git_network_timeout_seconds` | config.py:2273 | fetch/pull/push/ls-remote timeout |
-| `settings.git_diff_timeout_seconds` | config.py:2284 | `GET /api/git/diff`'s outer "diff" stage bound (default 60s) around the paired `git diff` + `git diff --stat` calls — on top of, not instead of, `git_command_timeout_seconds` bounding each call individually |
-| `settings.workspaces_root` | config.py:1964 | Workspace path root (token derivation) |
-| `settings.workspace_auto_clone` | config.py:1968 | `get_workspace` auto-clone branch |
-| `settings.public_base_url` | config.py:2393 | Commit/PR template link base (`+ /api`) |
-| `settings.internal_api_url` | config.py:136 | Internal PR body link base |
-| `settings.github_api_base_url` | config.py:1033 | GitHub REST API base (PR/CI/review) |
-| `settings.release_ci_workflow` | config.py:1509 | Named workflow file (e.g. `ci.yml`) used by the release CI gate in `get_latest_ci_conclusion`; always resolves a named workflow so the gate never degrades to the imprecise all-workflows mode |
+| `settings.git_command_timeout_seconds` | config.py:2228 | Default `_run_git` timeout |
+| `settings.git_commit_timeout_seconds` | config.py:2279 | Staging/commit large changeset timeout |
+| `settings.git_network_timeout_seconds` | config.py:2301 | fetch/pull/push/ls-remote timeout |
+| `settings.git_diff_timeout_seconds` | config.py:2312 | `GET /api/git/diff`'s outer "diff" stage bound (default 60s) around the paired `git diff` + `git diff --stat` calls — on top of, not instead of, `git_command_timeout_seconds` bounding each call individually |
+| `settings.workspaces_root` | config.py:1992 | Workspace path root (token derivation) |
+| `settings.workspace_auto_clone` | config.py:1996 | `get_workspace` auto-clone branch |
+| `settings.public_base_url` | config.py:2421 | Commit/PR template link base (`+ /api`) |
+| `settings.internal_api_url` | config.py:139 | Internal PR body link base |
+| `settings.github_api_base_url` | config.py:1061 | GitHub REST API base (PR/CI/review) |
+| `settings.release_ci_workflow` | config.py:1537 | Named workflow file (e.g. `ci.yml`) used by the release CI gate in `get_latest_ci_conclusion`; always resolves a named workflow so the gate never degrades to the imprecise all-workflows mode |
 
 Module-level tunables (not env): `_SLOW_GIT_OP_MS=5000`, `_CI_RUN_WINDOW=20`, `_CI_FETCH_ATTEMPTS=3`, `_CI_FETCH_BACKOFF_SECONDS=0.5`, `_CI_RETRYABLE_STATUS`, `_CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS=120`, `_GH_UNPROCESSABLE=422`, `_HTTP_NOT_FOUND=404`, `_HTTP_CONFLICT=409`.
 
