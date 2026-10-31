@@ -373,7 +373,8 @@ class StartupReconcileEngine(_Base):
 
         agent_uuid = AGENT_UUIDS.get(slug)
         if agent_uuid is None:
-            return False  # unknown slug owns nothing by definition
+            # Unknown slug owns nothing by definition
+            return False
         try:
             async with get_db_context() as db:
                 result = await db.execute(
@@ -587,7 +588,8 @@ class HealthLoopEngine(_Base):
         """Background health check loop."""
         while self._running:
             try:
-                await asyncio.sleep(30)  # Check every 30 seconds
+                # Check every 30 seconds
+                await asyncio.sleep(30)
                 await self._check_health()
             except asyncio.CancelledError:
                 break
