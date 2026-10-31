@@ -36,6 +36,11 @@ if TYPE_CHECKING:
 
     from roboco.db.tables import TaskTable
 
+if TYPE_CHECKING:
+    from roboco.services._video_post_service_types import VideoPostServiceSelf as _Base
+else:
+    _Base = object
+
 logger = logging.getLogger(__name__)
 
 # A tweet-length caption reuses X's own limit; TikTok's caption/description
@@ -161,149 +166,10 @@ class VideoPostExecuteResult:
     detail: str
 
 
-class VideoPostService(BaseService):
-    """List / approve / reject held video-post drafts."""
-
-    service_name = "video_post_service"
-
-    def __init__(
-        self,
-        session: AsyncSession,
-        *,
-        x_poster: XVideoPoster,
-        tiktok_poster: TikTokPoster,
-    ) -> None:
-        super().__init__(session)
-        self._x_poster = x_poster
-        self._tiktok_poster = tiktok_poster
-
-    async def list_held_video_posts(self) -> list[TaskTable]:
-        """Every held video_post draft awaiting the CEO (panel queue basis)."""
-        return await get_task_service(self.session).list_open_video_post_drafts()
-
-    async def list_video_post_history(self, *, limit: int = 50) -> list[TaskTable]:
-        """Acted-on video_post drafts (posted or rejected), newest-acted-
-        first — the panel history basis."""
-        return await get_task_service(self.session).list_video_post_history(limit=limit)
-
-    async def approve(
-        self,
-        task_id: UUID,
-        *,
-        x_caption: str | None = None,
-        tiktok_caption: str | None = None,
-    ) -> VideoPostExecuteResult | None:
-        """Post the draft's platforms (optionally with the CEO's edited captions).
-
-        Returns None when `task_id` is not an open video_post draft.
-        Idempotent: a task already COMPLETED returns `already_posted` with
-        the stored ids, without calling any poster again. The critical
-        section runs under the heartbeat-renewed mutex (an upload can
-        outlast a flat lock TTL), not a plain SET NX.
-
-        Caption edits are only VALIDATED here (pure, no session write) —
-        they're applied to the draft under the lock, on the fresh re-read
-        row. A pre-lock write used to flush a stale whole-column draft
-        (missing whatever a concurrent approve had already posted); once
-        this session later commits under the lock, that stale write wins
-        and erases the concurrent approve's committed posted-id, causing a
-        double-post on the next retry.
-        """
-        task = await get_task_service(self.session).get(task_id)
-        if task is None or task.source != VIDEO_POST_SOURCE:
-            return None
-
-        validated_captions = self._validate_caption_edits(x_caption, tiktok_caption)
-
-        if task.status == TaskStatus.COMPLETED:
-            draft = dict(markers.get_video_draft(task) or {})
-            return self._already_posted_result(draft)
-        if task.status == TaskStatus.CANCELLED:
-            return VideoPostExecuteResult(
-                status="already_rejected",
-                posted={},
-                detail="this draft was already rejected",
-            )
-
-        mutex = HeartbeatMutex(
-            f"{_LOCK_PREFIX}{task_id}",
-            ttl_seconds=_LOCK_TTL_SECONDS,
-            heartbeat_seconds=_LOCK_HEARTBEAT_SECONDS,
-        )
-        try:
-            token = await mutex.acquire()
-        except HeartbeatLockUnavailable as exc:
-            logger.error("video-post lock unavailable (redis down): %s", exc)
-            return VideoPostExecuteResult(
-                status="redis_unavailable",
-                posted={},
-                detail="Redis is unavailable so the post mutex can't be acquired.",
-            )
-        if token is None:
-            return VideoPostExecuteResult(
-                status="already_in_progress",
-                posted={},
-                detail="A post is already in progress for this draft.",
-            )
-        try:
-            return await self._approve_locked(
-                task_id, task, mutex, token, validated_captions
-            )
-        finally:
-            await mutex.release(token)
-
-    async def _approve_locked(
-        self,
-        task_id: UUID,
-        task: TaskTable,
-        mutex: HeartbeatMutex,
-        token: str,
-        validated_captions: dict[str, str],
-    ) -> VideoPostExecuteResult | None:
-        """The critical section under the held post lock.
-
-        Re-reads the committed state (expire forces a fresh SELECT): a
-        concurrent approve that won the lock first may have posted +
-        committed COMPLETED after the pre-lock read, so acting on the stale
-        in-memory row would double-post. On a lock-loss the session is
-        rolled back before returning — every commit here goes through
-        `_commit_shielded`, which both survives a mid-commit cancellation
-        AND waits out that shielded commit before returning, so by the time
-        we get here it has already settled; without that wait, this
-        rollback would race a still-in-flight commit on the same session
-        and SQLAlchemy raises IllegalStateChangeError. The rollback itself
-        is still needed — it's what guarantees the session is clean for
-        reuse instead of poisoned for the caller's next statement.
-        """
-        self.session.expire(task)
-        locked = await get_task_service(self.session).get(task_id)
-        if locked is None:
-            return None
-        # Copy — see the identical note in approve() above.
-        draft = dict(markers.get_video_draft(locked) or {})
-        if locked.status == TaskStatus.COMPLETED:
-            return self._already_posted_result(draft)
-        if locked.status == TaskStatus.CANCELLED:
-            return VideoPostExecuteResult(
-                status="already_rejected",
-                posted={},
-                detail="this draft was already rejected",
-            )
-        guarded = await mutex.run_guarded(
-            self._post_all_platforms(locked, draft, validated_captions), token
-        )
-        if guarded.lock_lost:
-            await self.session.rollback()
-            return VideoPostExecuteResult(
-                status="lock_lost",
-                posted={},
-                detail=(
-                    "The post lock was lost mid-upload (an extended Redis "
-                    "outage let the mutex expire); aborted fail-closed. "
-                    "Retry the approve."
-                ),
-            )
-        return guarded.value
+class VideoPostPlatforms(_Base):
+    """Posting an approved draft to its platforms: which posters hold credentials,
+    each platform's attempt and dispatch to X or TikTok, the shielded commits that
+    survive a lost lock, and finalizing the draft once every platform is done."""
 
     async def _post_all_platforms(
         self,
@@ -486,6 +352,151 @@ class VideoPostService(BaseService):
         status = "posted_partial" if posted else "post_failed"
         detail = "; ".join(f"{p}: {d}" for p, d in failures.items())
         return VideoPostExecuteResult(status=status, posted=dict(posted), detail=detail)
+
+
+class VideoPostService(BaseService, VideoPostPlatforms):
+    """List / approve / reject held video-post drafts."""
+
+    service_name = "video_post_service"
+
+    def __init__(
+        self,
+        session: AsyncSession,
+        *,
+        x_poster: XVideoPoster,
+        tiktok_poster: TikTokPoster,
+    ) -> None:
+        super().__init__(session)
+        self._x_poster = x_poster
+        self._tiktok_poster = tiktok_poster
+
+    async def list_held_video_posts(self) -> list[TaskTable]:
+        """Every held video_post draft awaiting the CEO (panel queue basis)."""
+        return await get_task_service(self.session).list_open_video_post_drafts()
+
+    async def list_video_post_history(self, *, limit: int = 50) -> list[TaskTable]:
+        """Acted-on video_post drafts (posted or rejected), newest-acted-
+        first — the panel history basis."""
+        return await get_task_service(self.session).list_video_post_history(limit=limit)
+
+    async def approve(
+        self,
+        task_id: UUID,
+        *,
+        x_caption: str | None = None,
+        tiktok_caption: str | None = None,
+    ) -> VideoPostExecuteResult | None:
+        """Post the draft's platforms (optionally with the CEO's edited captions).
+
+        Returns None when `task_id` is not an open video_post draft.
+        Idempotent: a task already COMPLETED returns `already_posted` with
+        the stored ids, without calling any poster again. The critical
+        section runs under the heartbeat-renewed mutex (an upload can
+        outlast a flat lock TTL), not a plain SET NX.
+
+        Caption edits are only VALIDATED here (pure, no session write) —
+        they're applied to the draft under the lock, on the fresh re-read
+        row. A pre-lock write used to flush a stale whole-column draft
+        (missing whatever a concurrent approve had already posted); once
+        this session later commits under the lock, that stale write wins
+        and erases the concurrent approve's committed posted-id, causing a
+        double-post on the next retry.
+        """
+        task = await get_task_service(self.session).get(task_id)
+        if task is None or task.source != VIDEO_POST_SOURCE:
+            return None
+
+        validated_captions = self._validate_caption_edits(x_caption, tiktok_caption)
+
+        if task.status == TaskStatus.COMPLETED:
+            draft = dict(markers.get_video_draft(task) or {})
+            return self._already_posted_result(draft)
+        if task.status == TaskStatus.CANCELLED:
+            return VideoPostExecuteResult(
+                status="already_rejected",
+                posted={},
+                detail="this draft was already rejected",
+            )
+
+        mutex = HeartbeatMutex(
+            f"{_LOCK_PREFIX}{task_id}",
+            ttl_seconds=_LOCK_TTL_SECONDS,
+            heartbeat_seconds=_LOCK_HEARTBEAT_SECONDS,
+        )
+        try:
+            token = await mutex.acquire()
+        except HeartbeatLockUnavailable as exc:
+            logger.error("video-post lock unavailable (redis down): %s", exc)
+            return VideoPostExecuteResult(
+                status="redis_unavailable",
+                posted={},
+                detail="Redis is unavailable so the post mutex can't be acquired.",
+            )
+        if token is None:
+            return VideoPostExecuteResult(
+                status="already_in_progress",
+                posted={},
+                detail="A post is already in progress for this draft.",
+            )
+        try:
+            return await self._approve_locked(
+                task_id, task, mutex, token, validated_captions
+            )
+        finally:
+            await mutex.release(token)
+
+    async def _approve_locked(
+        self,
+        task_id: UUID,
+        task: TaskTable,
+        mutex: HeartbeatMutex,
+        token: str,
+        validated_captions: dict[str, str],
+    ) -> VideoPostExecuteResult | None:
+        """The critical section under the held post lock.
+
+        Re-reads the committed state (expire forces a fresh SELECT): a
+        concurrent approve that won the lock first may have posted +
+        committed COMPLETED after the pre-lock read, so acting on the stale
+        in-memory row would double-post. On a lock-loss the session is
+        rolled back before returning — every commit here goes through
+        `_commit_shielded`, which both survives a mid-commit cancellation
+        AND waits out that shielded commit before returning, so by the time
+        we get here it has already settled; without that wait, this
+        rollback would race a still-in-flight commit on the same session
+        and SQLAlchemy raises IllegalStateChangeError. The rollback itself
+        is still needed — it's what guarantees the session is clean for
+        reuse instead of poisoned for the caller's next statement.
+        """
+        self.session.expire(task)
+        locked = await get_task_service(self.session).get(task_id)
+        if locked is None:
+            return None
+        # Copy — see the identical note in approve() above.
+        draft = dict(markers.get_video_draft(locked) or {})
+        if locked.status == TaskStatus.COMPLETED:
+            return self._already_posted_result(draft)
+        if locked.status == TaskStatus.CANCELLED:
+            return VideoPostExecuteResult(
+                status="already_rejected",
+                posted={},
+                detail="this draft was already rejected",
+            )
+        guarded = await mutex.run_guarded(
+            self._post_all_platforms(locked, draft, validated_captions), token
+        )
+        if guarded.lock_lost:
+            await self.session.rollback()
+            return VideoPostExecuteResult(
+                status="lock_lost",
+                posted={},
+                detail=(
+                    "The post lock was lost mid-upload (an extended Redis "
+                    "outage let the mutex expire); aborted fail-closed. "
+                    "Retry the approve."
+                ),
+            )
+        return guarded.value
 
     def _validate_caption_edits(
         self, x_caption: str | None, tiktok_caption: str | None

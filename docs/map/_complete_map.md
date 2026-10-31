@@ -5324,6 +5324,7 @@ The RoboCo video engine: a default-off subsystem that authors bespoke short mark
 |---|---|---|
 | `roboco/services/video_engine.py` | `VideoEngine` — opens the ASSIGNED authoring task (`open_video_task`, balanced across `ux-dev-1`/`ux-dev-2`) and originates the held `video_post` draft once the render succeeds (`_originate_video_post`); release/spotlight/on-demand trigger wiring. | 814 |
 | `roboco/services/video_post_service.py` | `VideoPostService` — CEO approve/reject over the held post; the ONLY caller of the X-v2 and TikTok posters; runs the critical section under a heartbeat-renewed Redis mutex, commits each platform's posted-id durably before the next, idempotent on already-`COMPLETED` AND on already-CANCELLED (rejected). | 629 |
+| `roboco/services/_video_post_service_types.py` | `VideoPostServiceSelf`, a TYPE_CHECKING-only Protocol declaring the attributes the `VideoPostService` mixin reads through `self` (no moved body calls across classes, so it has no `<Class>Surface` yet); `tests/unit/services/test_video_post_service_mixins.py` fails on a stray stub or a member defined twice | 33 |
 | `roboco/services/video_renderer_client.py` | `VideoRenderer` — tars the merged `motion/` dir, POSTs the tarball to the sidecar (`ROBOCO_VIDEO_RENDERER_BASE_URL`), saves the returned MP4s to `video_output_dir` and PUTs each to MinIO (`_save`). `NullVideoRenderer` raises on unconfigured so the render loop fails loud rather than silently no-op'ing a real trigger; `get_video_renderer()` factory. | 230 |
 | `roboco/services/minio_client.py` | Singleton `Minio` (minio-py) with an unconfigured guard (`get_client()` returns `None` when `minio_endpoint` empty); `put_object` / `get_object_stream` / `stat_object`, sync, call sites wrapped in `asyncio.to_thread`. | 129 |
 | `roboco/services/tiktok_client.py` | `TikTokPoster` — TikTok inbox-upload poster (v2 media, OAuth2 refresh). Fernet-encrypted singleton `tiktok_credentials` row (migration 062); agents never hold creds or egress. | 326 |
@@ -5382,6 +5383,9 @@ CEO ACT: `GET /api/video/posts` lists held drafts (including `mp4_paths`); `GET 
 ## Health
 
 Default-off, CEO-gated at two independent points (the flags, then per-clip approval). The held-draft shape mirrors the XEngine / ReleaseManagerEngine pattern, so the dispatchers never see it. The render pass is bounded retry with `_MAX_VIDEO_RENDER_ATTEMPTS` and a per-render deadline; `NullVideoRenderer` raises on unconfigured so a misflagged trigger fails loud rather than silently no-op'ing. The approve critical section is heartbeat-mutex protected so a double-click can't double-post and a partial platform failure is recoverable, and (Wave 5, PR #551) `approve` now also refuses a CANCELLED draft outright rather than posting it. TikTok's OAuth2 secrets live Fernet-encrypted in a singleton row (migration 062); agents never hold creds or egress — `VideoPostService.approve` is the only caller of the posters.
+
+> **2026-11-01** (Planning trail #51, wave 3): `VideoPostService` splits in place into a mixin in `video_post_service.py`, every method body byte-identical: `VideoPostPlatforms` (8). `VideoPostService` keeps the held queue and its history, approving under the post lock (with the CEO's caption edits validated) and rejecting with the re-author hand-off, composes it, and is no longer a god class. Rows naming `VideoPostService.<method>` still hold through inheritance. The mixin's TYPE_CHECKING-only base is `VideoPostServiceSelf` (`roboco/services/_video_post_service_types.py`).
+
 
 ## Related
 
