@@ -30,10 +30,48 @@ if TYPE_CHECKING:
     from roboco.models.task import TaskCreateRequest
     from roboco.services.task import (
         GatewayAgentView,
+        SoftBlockInfo,
         _ClaimFieldSnapshot,
         _LineageCutContext,
     )
     from roboco.services.uptime import UptimeLedger
+
+
+class TaskAcceptanceCriteriaSurface(Protocol):
+    """``TaskAcceptanceCriteria``'s members that other classes reach."""
+
+    @staticmethod
+    def _ac_texts_for(parent: TaskTable, ids: set[str]) -> list[str]: ...
+    @staticmethod
+    def _normalize_ac_refs(parent: TaskTable, refs: list[str] | None) -> set[str]: ...
+    async def _parent_ac_ref_sets(
+        self, task_id: UUID
+    ) -> tuple[TaskTable, set[str], set[str], bool, set[str]] | None: ...
+
+
+class TaskAdminOverrideSurface(Protocol):
+    """``TaskAdminOverride``'s members that other classes reach."""
+
+    async def _admin_out_of_blocked(
+        self,
+        task: TaskTable,
+        from_status: str,
+        new_status: TaskStatus,
+        *,
+        actor_id: str | UUID | None,
+        actor_role: str | None,
+    ) -> TaskTable | None: ...
+    async def _apply_forced_override_effects(
+        self,
+        task: TaskTable,
+        from_status: str,
+        new_status: TaskStatus,
+        actor_id: str | UUID | None,
+        actor_role: str | None,
+    ) -> None: ...
+    def _refuse_terminal_resurrection(
+        self, task: TaskTable, from_status: str, new_status: TaskStatus, force: bool
+    ) -> None: ...
 
 
 class TaskAgentQueriesSurface(Protocol):
@@ -41,6 +79,21 @@ class TaskAgentQueriesSurface(Protocol):
 
     async def held_task_blocking_claim(
         self, agent_id: UUID, task_id: UUID
+    ) -> TaskTable | None: ...
+
+
+class TaskBlockingSurface(Protocol):
+    """``TaskBlocking``'s members that other classes reach."""
+
+    async def _notify_unblock(
+        self, task_id: UUID, restored_owner: Any, task_title: str | None = ...
+    ) -> None: ...
+    def _snapshot_pre_block(self, task: TaskTable) -> None: ...
+    async def soft_block(
+        self, task_id: UUID, info: SoftBlockInfo, agent_role: str | None = ...
+    ) -> TaskTable | None: ...
+    async def unblock(
+        self, task_id: UUID, agent_role: str | None = ...
     ) -> TaskTable | None: ...
 
 
@@ -54,12 +107,33 @@ class TaskBranchesSurface(Protocol):
     async def _resolve_parent_branch(self, task: TaskTable, project: Any) -> str: ...
 
 
+class TaskCEOApprovalSurface(Protocol):
+    """``TaskCEOApproval``'s members that other classes reach."""
+
+    async def escalate_to_ceo(
+        self,
+        task_id: UUID,
+        agent_role: str = ...,
+        notes: str | None = ...,
+        actor_agent_id: UUID | None = ...,
+        allow_subtask_ceo_merge: bool = ...,
+    ) -> TaskTable | None: ...
+
+
 class TaskClaimSurface(Protocol):
     """``TaskClaim``'s members that other classes reach."""
 
     def _mark_agent_active_for_claim(
         self, agent: AgentTable | None, task_id: Any
     ) -> None: ...
+    async def claim(
+        self,
+        task_id: UUID,
+        agent_id: UUID,
+        allow_reassign: bool = ...,
+        *,
+        provision: bool = ...,
+    ) -> TaskTable | None: ...
 
 
 class TaskClaimRulesSurface(Protocol):
@@ -83,6 +157,21 @@ class TaskClaimSequenceSurface(Protocol):
     async def _claim_blocked_by_sequence(self, task: TaskTable) -> str | None: ...
 
 
+class TaskCompletionSurface(Protocol):
+    """``TaskCompletion``'s members that other classes reach."""
+
+    async def _trigger_completion_hooks(
+        self, task: TaskTable, agent_id: UUID | None
+    ) -> None: ...
+    async def complete(
+        self,
+        task_id: UUID,
+        agent_id: UUID | None = ...,
+        force_with_cancelled: bool = ...,
+        justification: str | None = ...,
+    ) -> TaskTable | None: ...
+
+
 class TaskCompletionLearningsSurface(Protocol):
     """``TaskCompletionLearnings``'s members that other classes reach."""
 
@@ -104,6 +193,32 @@ class TaskDependenciesSurface(Protocol):
     """``TaskDependencies``'s members that other classes reach."""
 
     async def unmet_dependency_ids(self, dependency_ids: list[UUID]) -> list[UUID]: ...
+
+
+class TaskDependentsRevivalSurface(Protocol):
+    """``TaskDependentsRevival``'s members that other classes reach."""
+
+    async def _emit_task_event(
+        self, event_type: EventType, task_id: UUID, data: dict[str, Any] | None = ...
+    ) -> None: ...
+    async def _notify_completion(self, task: TaskTable, task_id: UUID) -> None: ...
+    async def _unblock_dependents(self, completed_task_id: UUID) -> None: ...
+
+
+class TaskDocsReviewSurface(Protocol):
+    """``TaskDocsReview``'s members that other classes reach."""
+
+    async def docs_complete(
+        self, task_id: UUID, doc_notes: str | None = ...
+    ) -> TaskTable | None: ...
+
+
+class TaskEscalationSurface(Protocol):
+    """``TaskEscalation``'s members that other classes reach."""
+
+    async def _divert_owned_task_to_pool(
+        self, task: TaskTable, *, note: str
+    ) -> None: ...
 
 
 class TaskLineageSurface(Protocol):
@@ -131,6 +246,8 @@ class TaskPMReviewSurface(Protocol):
         self, task: TaskTable, task_id: UUID
     ) -> None: ...
     @staticmethod
+    def _record_completion_notes(task: TaskTable, notes: str | None) -> None: ...
+    @staticmethod
     def _record_pr_review(
         task: TaskTable,
         *,
@@ -138,6 +255,34 @@ class TaskPMReviewSurface(Protocol):
         verdict: str,
         issues: list[str] | None = ...,
     ) -> None: ...
+    async def submit_for_pm_review(
+        self, task_id: UUID, agent_role: str = ..., notes: str | None = ...
+    ) -> TaskTable | None: ...
+
+
+class TaskProgressSurface(Protocol):
+    """``TaskProgress``'s members that other classes reach."""
+
+    async def add_progress(
+        self, task_id: UUID, agent_id: UUID, message: str, percentage: int | None = ...
+    ) -> TaskTable | None: ...
+
+
+class TaskQAReviewSurface(Protocol):
+    """``TaskQAReview``'s members that other classes reach."""
+
+    async def fail_qa(
+        self, task_id: UUID, notes: str, agent_role: str = ...
+    ) -> TaskTable | None: ...
+    async def pass_qa(
+        self, task_id: UUID, notes: str | None = ..., agent_role: str = ...
+    ) -> TaskTable | None: ...
+    async def submit_for_qa(
+        self, task_id: UUID, agent_role: str | None = ...
+    ) -> TaskTable | None: ...
+    async def submit_for_verification(
+        self, task_id: UUID, agent_role: str | None = ...
+    ) -> TaskTable | None: ...
 
 
 class TaskRagIndexingSurface(Protocol):
@@ -185,38 +330,82 @@ class TaskRagIndexingSurface(Protocol):
     ) -> None: ...
 
 
+class TaskReassignmentSurface(Protocol):
+    """``TaskReassignment``'s members that other classes reach."""
+
+    async def _retarget_agent_claim(
+        self, old_agent_id: UUID | None, new_agent_id: UUID | None, task_id: UUID
+    ) -> None: ...
+
+
 class TaskRecordsSurface(Protocol):
     """``TaskRecords``'s members that other classes reach."""
 
+    async def admin_set_status(
+        self,
+        task_id: UUID,
+        new_status: TaskStatus,
+        *,
+        actor_id: str | UUID | None = ...,
+        actor_role: str | None = ...,
+        force: bool = ...,
+    ) -> TaskTable | None: ...
     async def get(self, task_id: UUID) -> TaskTable | None: ...
     async def get_live_subtasks(self, parent_task_id: UUID) -> list[TaskTable]: ...
+    async def update(self, task_id: UUID, **updates: Any) -> TaskTable | None: ...
+
+
+class TaskReviewClaimsSurface(Protocol):
+    """``TaskReviewClaims``'s members that other classes reach."""
+
+    async def _qa_or_doc_claim(
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        expected_status: TaskStatus,
+        enforce_competing_claimant: bool = ...,
+    ) -> TaskTable | None: ...
 
 
 class TaskRoleLookupSurface(Protocol):
     """``TaskRoleLookup``'s members that other classes reach."""
 
+    async def _is_board_advisory_agent(self, agent_id: UUID) -> bool: ...
+    async def _is_main_pm_agent(self, agent_id: UUID) -> bool: ...
     async def agent_for(self, agent_id: UUID) -> GatewayAgentView | None: ...
+    async def cell_pm_for_team(self, team: Team) -> AgentTable | None: ...
+    async def main_pm_agent(self) -> AgentTable | None: ...
+    async def resolve_agent_id(self, agent_id_str: str) -> UUID: ...
+
+
+class TaskRouteClaimsSurface(Protocol):
+    """``TaskRouteClaims``'s members that other classes reach."""
+
+    async def _load_task_or_raise(self, task_id: UUID) -> TaskTable: ...
+    @staticmethod
+    def _task_status_value(task: TaskTable) -> str: ...
+
+
+class TaskRouteCompletionSurface(Protocol):
+    """``TaskRouteCompletion``'s members that other classes reach."""
+
+    def _format_id_list(self, ids: list[str]) -> str: ...
 
 
 class TaskSurface(Protocol):
     """``TaskService``'s members that other classes reach."""
 
+    MAX_ERR_IDS: ClassVar[int]
+    MIN_NOTES_CHARS: ClassVar[int]
     _AGENT_NON_TERMINAL_STATUSES: ClassVar[set[TaskStatus]]
     _CLAIMABLE_STATUSES: ClassVar[set[TaskStatus]]
     _DEV_ACTIVE_STATUSES: ClassVar[set[TaskStatus]]
     _JOURNAL_CONTEXT_STATUSES: ClassVar[set[TaskStatus]]
     _MANAGEMENT_ROLES: frozenset[str]
+    _REVIEW_HANDOFF_STATUSES: frozenset[TaskStatus]
     _SINGLE_ACTIVE_TASK_ROLES: ClassVar[frozenset[AgentRole]]
+    _SUBSTITUTE_REASON_TO_STATUS: ClassVar[dict[str, TaskStatus]]
 
-    async def _admin_out_of_blocked(
-        self,
-        task: TaskTable,
-        from_status: str,
-        new_status: TaskStatus,
-        *,
-        actor_id: str | UUID | None,
-        actor_role: str | None,
-    ) -> TaskTable | None: ...
     async def _alert_auditor_of_rework(
         self,
         task: TaskTable,
@@ -225,19 +414,14 @@ class TaskSurface(Protocol):
         actor_agent_id: UUID | None = ...,
         actor_role: str | None = ...,
     ) -> None: ...
-    async def _apply_forced_override_effects(
-        self,
-        task: TaskTable,
-        from_status: str,
-        new_status: TaskStatus,
-        actor_id: str | UUID | None,
-        actor_role: str | None,
-    ) -> None: ...
+    async def _alert_coroner_of_cancel(self, task: TaskTable) -> None: ...
 
     _background_tasks: ClassVar[set[asyncio.Task[None]]]
 
-    async def _close_work_session_for_task(
-        self, task: TaskTable, reason: str
+    @staticmethod
+    def _clear_stale_stalled_marker(task: TaskTable) -> None: ...
+    def _emit_escalation_audit(
+        self, task: TaskTable, *, escalator_slug: str, target_slug: str
     ) -> None: ...
     def _emit_status_transition_audit(
         self,
@@ -248,18 +432,7 @@ class TaskSurface(Protocol):
         agent_role: str | None,
         audit_agent_id: str | UUID | None,
     ) -> None: ...
-    async def _emit_task_event(
-        self, event_type: EventType, task_id: UUID, data: dict[str, Any] | None = ...
-    ) -> None: ...
     async def _materialize_vault_note(self, task: TaskTable) -> None: ...
-    def _refuse_terminal_resurrection(
-        self, task: TaskTable, from_status: str, new_status: TaskStatus, force: bool
-    ) -> None: ...
-    async def _remove_task_worktree_on_terminal(self, task: TaskTable) -> None: ...
-    async def _retarget_agent_claim(
-        self, old_agent_id: UUID | None, new_agent_id: UUID | None, task_id: UUID
-    ) -> None: ...
-    async def _unblock_dependents(self, completed_task_id: UUID) -> None: ...
     def _validate_and_set_status(
         self,
         task: TaskTable,
@@ -268,20 +441,26 @@ class TaskSurface(Protocol):
         audit_agent_id: str | UUID | None = ...,
         extra_allowed_roles: tuple[str, ...] = ...,
     ) -> None: ...
-    async def escalate_to_ceo(
-        self,
-        task_id: UUID,
-        agent_role: str = ...,
-        notes: str | None = ...,
-        actor_agent_id: UUID | None = ...,
-        allow_subtask_ceo_merge: bool = ...,
-    ) -> TaskTable | None: ...
 
 
 class TaskStalledSurface(Protocol):
     """``TaskStalled``'s members that other classes reach."""
 
     async def _load_uptime_ledger(self, now: datetime) -> UptimeLedger | None: ...
+
+
+class TaskTerminalCleanupSurface(Protocol):
+    """``TaskTerminalCleanup``'s members that other classes reach."""
+
+    async def _abandon_work_session_for_task(
+        self, task: TaskTable, reason: str
+    ) -> None: ...
+    async def _close_task_pr_best_effort(self, task: TaskTable) -> None: ...
+    async def _close_work_session_for_task(
+        self, task: TaskTable, reason: str
+    ) -> None: ...
+    async def _delete_task_branch_best_effort(self, task: TaskTable) -> None: ...
+    async def _remove_task_worktree_on_terminal(self, task: TaskTable) -> None: ...
 
 
 class TaskTreeSurface(Protocol):
@@ -299,25 +478,49 @@ class TaskUnclaimSurface(Protocol):
     ) -> None: ...
 
 
+class TaskWorkStateSurface(Protocol):
+    """``TaskWorkState``'s members that other classes reach."""
+
+    async def pause(
+        self, task_id: UUID, agent_role: str | None = ...
+    ) -> TaskTable | None: ...
+
+
 class TaskServiceSelf(
+    TaskAcceptanceCriteriaSurface,
+    TaskAdminOverrideSurface,
     TaskAgentQueriesSurface,
+    TaskBlockingSurface,
     TaskBranchesSurface,
+    TaskCEOApprovalSurface,
     TaskClaimSurface,
     TaskClaimRulesSurface,
     TaskClaimSequenceSurface,
+    TaskCompletionSurface,
     TaskCompletionLearningsSurface,
     TaskCreationSurface,
     TaskDependenciesSurface,
+    TaskDependentsRevivalSurface,
+    TaskDocsReviewSurface,
+    TaskEscalationSurface,
     TaskLineageSurface,
     TaskListQueriesSurface,
     TaskPMReviewSurface,
+    TaskProgressSurface,
+    TaskQAReviewSurface,
     TaskRagIndexingSurface,
+    TaskReassignmentSurface,
     TaskRecordsSurface,
+    TaskReviewClaimsSurface,
     TaskRoleLookupSurface,
+    TaskRouteClaimsSurface,
+    TaskRouteCompletionSurface,
     TaskSurface,
     TaskStalledSurface,
+    TaskTerminalCleanupSurface,
     TaskTreeSurface,
     TaskUnclaimSurface,
+    TaskWorkStateSurface,
     Protocol,
 ):
     """Every cross-class member a moved method body reaches via ``self``:
