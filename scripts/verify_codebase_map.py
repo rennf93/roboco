@@ -357,7 +357,8 @@ class Definition:
     first_line: int
     line: int
     last_line: int
-    block: bool = False  # a def or class, not an assignment
+    # A def or class, not an assignment
+    block: bool = False
 
 
 def _definition_from_node(
@@ -862,7 +863,8 @@ class MapSymbolChecks(_Base):
             if lines:
                 return [], lines
         if name.rsplit(".", 1)[-1] == Path(path).stem:
-            return [], [1]  # the row names the module itself
+            # The row names the module itself
+            return [], [1]
         return [], []
 
     def _check_anchor(
@@ -1027,7 +1029,8 @@ class MapCheck(MapHintChecks, MapMigrationChecks, MapSymbolChecks):
         cells = []
         for column in LOCATION_COLUMNS:
             if column == "path" and "role" not in row.header:
-                continue  # an endpoint table's Path is a URL
+                # An endpoint table's Path is a URL
+                continue
             cell = row.cell(column)
             if cell is not None and cell.text:
                 cells.append((column, cell))
