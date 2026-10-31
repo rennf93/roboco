@@ -17,9 +17,10 @@ Why Postgres and not SQLite:
 
 Behaviour:
     Tests that request `db_session` or `smoke_test_batch` are skipped at
-    collection time when no Postgres is reachable on `localhost:5432`. Set
+    collection time when no Postgres is reachable on `localhost:15432`. Set
     `ROBOCO_TEST_DB_HOST`, `ROBOCO_TEST_DB_PORT`, `ROBOCO_TEST_DB_USER`, or
-    `ROBOCO_TEST_DB_PASSWORD` to override.
+    `ROBOCO_TEST_DB_PASSWORD` to override. The terminal summary's "test
+    environment" section counts those skips.
 
 Redis isolation:
     No test uses a real Redis, so `_no_live_redis` (autouse) points the
@@ -37,7 +38,6 @@ from __future__ import annotations
 import contextlib
 import os
 import socket
-import warnings
 from typing import TYPE_CHECKING
 from uuid import UUID, uuid4
 
@@ -74,7 +74,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Iterable
 
 
 # Isolate every test-spawned git subprocess from the developer machine's
@@ -173,21 +173,31 @@ def _postgres_reachable() -> bool:
         return False
 
 
-def _warn_if_pg_unavailable(available: bool, host: str, port: int) -> None:
-    """#90: warn loudly when the test DB is unreachable so a green run of all-skips
-    is not mistaken for a pass. The per-test ``pytest.skip`` still applies; this
-    only adds a visible import-time warning."""
-    if not available:
-        warnings.warn(
-            f"Postgres unreachable at {host}:{port} — every DB test will be "
-            "SKIPPED. Set ROBOCO_TEST_DB_HOST/PORT/USER/PASSWORD or start "
-            "Postgres (local: ROBOCO_TEST_DB_PORT=55432 ROBOCO_TEST_DB_USER=renzof).",
-            stacklevel=2,
-        )
+def _pg_unreachable_notice(
+    skip_reasons: Iterable[str], host: str, port: int
+) -> str | None:
+    """#90: say loudly how many tests skipped for want of the test DB, so a
+    green run of all-skips is not mistaken for a pass. A run that selects no
+    DB test (the in-image suites, the decisions-sidecar suite) has nothing to
+    report."""
+    unreachable = f"Postgres unreachable at {host}:{port}"
+    skipped = sum(unreachable in reason for reason in skip_reasons)
+    if not skipped:
+        return None
+    return (
+        f"{skipped} test(s) needing Postgres were SKIPPED: {unreachable}. "
+        "Set ROBOCO_TEST_DB_HOST/PORT/USER/PASSWORD or start Postgres "
+        "(local: ROBOCO_TEST_DB_PORT=55432 ROBOCO_TEST_DB_USER=renzof)."
+    )
 
+
+# What this machine kept the run from testing, reported in the terminal
+# summary by `pytest_terminal_summary` below. Not through `warnings`: the
+# suite fails on any warning (pyproject's filterwarnings), and these describe
+# the machine the run is on, not the code under test.
+_TEST_ENVIRONMENT_NOTICES = pytest.StashKey[list[str]]()
 
 _PG_AVAILABLE = _postgres_reachable()
-_warn_if_pg_unavailable(_PG_AVAILABLE, _TEST_DB_HOST, _TEST_DB_PORT)
 
 # Sanity-check imported tables registered themselves on Base.metadata. Tied to
 # `roboco_tables` so static analysis treats the import as load-bearing.
@@ -206,7 +216,7 @@ def _build_url(database: str) -> str:
 # Session-scoped: provision an ephemeral test DB and build the schema.
 # ---------------------------------------------------------------------------
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
-async def _test_database_url() -> AsyncIterator[str]:
+async def _test_database_url(request: pytest.FixtureRequest) -> AsyncIterator[str]:
     """Create a fresh `roboco_test_<pid>_<rand>` DB, build the schema, yield URL.
 
     Drops the database on teardown. Skips the entire test session if Postgres
@@ -248,9 +258,8 @@ async def _test_database_url() -> AsyncIterator[str]:
             except Exception:
                 # Dev/sandbox Postgres may lack pgvector. Only C3 needs it, so
                 # continue and let the rest of the suite run.
-                warnings.warn(
-                    "pgvector extension unavailable - continuing without it",
-                    stacklevel=2,
+                request.config.stash.setdefault(_TEST_ENVIRONMENT_NOTICES, []).append(
+                    "pgvector extension unavailable - continued without it"
                 )
     finally:
         await pgvector_engine.dispose()
@@ -581,3 +590,21 @@ def pytest_collection_modifyitems(
         fixturenames = set(getattr(item, "fixturenames", ()))
         if fixturenames & fixtures_requiring_db:
             item.add_marker(skip)
+
+
+def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
+    """Report the run's `_TEST_ENVIRONMENT_NOTICES` and its Postgres skips."""
+    notices: list[str] = terminalreporter.config.stash.get(
+        _TEST_ENVIRONMENT_NOTICES, []
+    )
+    skip_reasons = (
+        str(report.longrepr) for report in terminalreporter.stats.get("skipped", [])
+    )
+    pg_notice = _pg_unreachable_notice(skip_reasons, _TEST_DB_HOST, _TEST_DB_PORT)
+    if pg_notice is not None:
+        notices = [*notices, pg_notice]
+    if not notices:
+        return
+    terminalreporter.section("test environment", sep="!", red=True, bold=True)
+    for notice in notices:
+        terminalreporter.line(notice, red=True, bold=True)
