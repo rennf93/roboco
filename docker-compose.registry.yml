@@ -711,11 +711,17 @@ services:
   # Docker gate (trail #34) - the orchestrator's only way to Docker. It holds
   # the host socket and serves the orchestrator and dispatcher on
   # /run/roboco-docker/gate.sock (the docker-gate volume), forwarding only
-  # the Engine API calls RoboCo makes (docker/docker-gate/gate.py). It runs
-  # as 0:0 because the host socket is root:docker 0660 and the docker group's
-  # gid differs per host; the image's own USER is 65534, and every capability
-  # but CHOWN is dropped. Image builds are refused: this file pulls every
-  # image from the registry.
+  # the Engine API calls RoboCo makes (docker/docker-gate/gate.py), and only
+  # with what RoboCo asks for. It runs as 0:0 because the host socket is
+  # root:docker 0660 and the docker group's gid differs per host; the image's
+  # own USER is 65534, and every capability is dropped but CHOWN (the
+  # socket's owner) and DAC_READ_SEARCH (walking owner-only bind roots such
+  # as ~/.claude to refuse symlinks). Image builds are refused: this file
+  # pulls every image from the registry, the one GATE_REGISTRY names.
+  # GATE_BIND_ROOTS are the host paths RoboCo binds into agents, chats,
+  # sandboxes and throwaway workspace containers (the orchestrator's
+  # ROBOCO_HOST_* values), each mounted read-only below at its own path so
+  # the gate can refuse a bind that goes through a symlink.
   # --------------------------------------------------------------------------
   docker-gate:
     image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-docker-gate:${ROBOCO_VERSION:-latest}
@@ -728,14 +734,24 @@ services:
       - ALL
     cap_add:
       - CHOWN
+      - DAC_READ_SEARCH
     security_opt:
       - no-new-privileges:true
     environment:
       GATE_LISTEN: /run/roboco-docker/gate.sock
       GATE_ALLOW_BUILD: "false"
+      GATE_REGISTRY: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}
+      GATE_BIND_ROOTS: ${ROBOCO_HOST_DATA_DIR:-/opt/roboco/data}:${ROBOCO_HOST_PROJECT_DIR:-/opt/roboco}/docs:${ROBOCO_HOST_CLAUDE_DIR:-${HOME}/.claude}:${ROBOCO_HOST_GROK_DIR:-${HOME}/.grok}:${ROBOCO_HOST_CODEX_DIR:-${HOME}/.codex}:${ROBOCO_HOST_GEMINI_DIR:-${HOME}/.gemini}:${ROBOCO_HOST_KIMI_DIR:-${HOME}/.kimi-code}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - docker-gate:/run/roboco-docker
+      - ${ROBOCO_HOST_DATA_DIR:-/opt/roboco/data}:${ROBOCO_HOST_DATA_DIR:-/opt/roboco/data}:ro
+      - ${ROBOCO_HOST_PROJECT_DIR:-/opt/roboco}/docs:${ROBOCO_HOST_PROJECT_DIR:-/opt/roboco}/docs:ro
+      - ${ROBOCO_HOST_CLAUDE_DIR:-${HOME}/.claude}:${ROBOCO_HOST_CLAUDE_DIR:-${HOME}/.claude}:ro
+      - ${ROBOCO_HOST_GROK_DIR:-${HOME}/.grok}:${ROBOCO_HOST_GROK_DIR:-${HOME}/.grok}:ro
+      - ${ROBOCO_HOST_CODEX_DIR:-${HOME}/.codex}:${ROBOCO_HOST_CODEX_DIR:-${HOME}/.codex}:ro
+      - ${ROBOCO_HOST_GEMINI_DIR:-${HOME}/.gemini}:${ROBOCO_HOST_GEMINI_DIR:-${HOME}/.gemini}:ro
+      - ${ROBOCO_HOST_KIMI_DIR:-${HOME}/.kimi-code}:${ROBOCO_HOST_KIMI_DIR:-${HOME}/.kimi-code}:ro
 
   # --------------------------------------------------------------------------
   # Orchestrator — API server + agent spawner

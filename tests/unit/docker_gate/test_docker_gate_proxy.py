@@ -4,7 +4,9 @@ A fake Docker daemon on a Unix socket records every request that reaches it,
 so these tests can show that a refused request never does, that an allowed
 one arrives intact with its body, that responses stream back (including a
 chunked one), that a ``101`` upgrade is spliced both ways, and that one
-keep-alive connection is checked request by request.
+keep-alive connection is checked request by request. It also answers the
+image and container lookups stage 2 makes, from its own tables, and keeps
+those apart from the calls the gate forwards.
 """
 
 from __future__ import annotations
@@ -34,6 +36,10 @@ if TYPE_CHECKING:
 _GATE = Path(__file__).parents[3] / "docker" / "docker-gate" / "gate.py"
 AGENT = "roboco-agent-0b6e1f2a"
 ID = "4f1c2b3a9d8e"
+OTHER_ID = "9a8b7c6d5e4f"
+AGENT_IMAGE = "roboco-agent-dev-be"
+ROOT_IMAGE = "postgres:16-alpine"
+_NOT_FOUND = 404
 _OK = 200
 _FORBIDDEN = 403
 _SWITCHING_PROTOCOLS = 101
@@ -52,11 +58,48 @@ def _gate() -> ModuleType:
     return module
 
 
+def _container(
+    name: str, *, user: str = "agent", binds: list[str] | None = None
+) -> dict[str, Any]:
+    return {
+        "Name": f"/{name}",
+        "Config": {"User": user, "Labels": {}},
+        "HostConfig": {"Binds": binds},
+    }
+
+
 @dataclass
 class FakeDocker:
-    """Answers like the Engine API for the few calls these tests make."""
+    """Answers like the Engine API for the few calls these tests make.
+
+    ``seen`` holds what the gate forwards; ``inspected`` the image and
+    container lookups stage 2 makes on connections of its own.
+    """
 
     seen: list[tuple[str, str, bytes]] = field(default_factory=list)
+    inspected: list[str] = field(default_factory=list)
+    images: dict[str, dict[str, Any]] = field(
+        default_factory=lambda: {
+            AGENT_IMAGE: {
+                "RepoTags": [f"{AGENT_IMAGE}:latest"],
+                "Config": {"User": "agent"},
+            },
+            ROOT_IMAGE: {"RepoTags": [ROOT_IMAGE], "Config": {"User": ""}},
+        }
+    )
+    containers: dict[str, dict[str, Any]] = field(
+        default_factory=lambda: {
+            AGENT: _container(AGENT),
+            ID: _container(AGENT),
+            OTHER_ID: _container("roboco-postgres", user="postgres"),
+        }
+    )
+
+    def _lookup(self, path: str) -> dict[str, Any] | None:
+        """The image or container a stage-2 lookup asks for, if there is one."""
+        _, kind, ref = path.removesuffix("/json").split("/", 2)
+        table = self.images if kind == "images" else self.containers
+        return table.get(ref)
 
     async def handle(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -68,8 +111,31 @@ class FakeDocker:
                 if request is None:
                     return
                 method, target = request.method.decode(), request.target.decode()
-                self.seen.append((method, target, body))
                 path = urlsplit(target).path
+                if (
+                    method == "GET"
+                    and path.endswith("/json")
+                    and ("/images/" in path or "/containers/" in path)
+                    and not path.endswith("/containers/json")
+                ):
+                    self.inspected.append(path)
+                    found = self._lookup(path)
+                    payload = json.dumps(
+                        found or {"message": "No such object"}
+                    ).encode()
+                    writer.write(
+                        conn.send(
+                            h11.Response(
+                                status_code=_OK if found else _NOT_FOUND,
+                                headers=[("Content-Length", str(len(payload)))],
+                            )
+                        )
+                    )
+                    writer.write(conn.send(h11.Data(data=payload)))
+                    writer.write(conn.send(h11.EndOfMessage()))
+                    await writer.drain()
+                    return
+                self.seen.append((method, target, body))
                 if path.endswith("/attach"):
                     writer.write(
                         conn.send(
@@ -144,7 +210,9 @@ class Running:
 
 
 @contextlib.asynccontextmanager
-async def _running(*, record: bool = False) -> AsyncIterator[Running]:
+async def _running(
+    *, record: bool = False, bind_roots: tuple[str, ...] = ()
+) -> AsyncIterator[Running]:
     # A short directory: a Unix socket path is limited to ~108 bytes.
     root = tempfile.mkdtemp(prefix="dg")
     try:
@@ -158,6 +226,7 @@ async def _running(*, record: bool = False) -> AsyncIterator[Running]:
             socket_gid=os.getgid(),
             allow_build=False,
             record=record,
+            policy=_gate().Policy(bind_roots=bind_roots),
         )
         serving = asyncio.create_task(_gate().Gate(settings).serve())
         for _ in range(100):
@@ -229,24 +298,26 @@ class Client:
         self.writer.close()
 
 
+def _create_body(image: str = AGENT_IMAGE, **host: Any) -> bytes:
+    return json.dumps(
+        {"Image": image, "HostConfig": {"NetworkMode": "roboco_default", **host}}
+    ).encode()
+
+
 async def test_an_allowed_call_reaches_docker_with_its_body() -> None:
+    body = _create_body()
     async with _running() as gate:
         client = await Client.connect(gate.listen)
         status, data = await client.call(
-            "POST",
-            "/v1.51/containers/create?name=roboco-wsx-0123456789ab",
-            b'{"Image":"x"}',
+            "POST", "/v1.51/containers/create?name=roboco-wsx-0123456789ab", body
         )
         client.close()
     assert status == _OK
-    assert json.loads(data)["body"] == '{"Image":"x"}'
+    assert json.loads(data)["body"] == body.decode()
     assert gate.docker.seen == [
-        (
-            "POST",
-            "/v1.51/containers/create?name=roboco-wsx-0123456789ab",
-            b'{"Image":"x"}',
-        )
+        ("POST", "/v1.51/containers/create?name=roboco-wsx-0123456789ab", body)
     ]
+    assert gate.docker.inspected == [f"/images/{AGENT_IMAGE}/json"]
 
 
 async def test_a_refused_call_never_reaches_docker_and_says_why() -> None:
@@ -357,3 +428,111 @@ async def test_health_fails_when_the_listener_has_another_owner() -> None:
             record=False,
         )
         assert "is owned by" in (_gate().listener_problem(other) or "")
+
+
+async def test_a_create_asking_for_too_much_never_reaches_docker() -> None:
+    async with _running() as gate:
+        client = await Client.connect(gate.listen)
+        status, data = await client.call(
+            "POST",
+            f"/v1.51/containers/create?name={AGENT}",
+            _create_body(Privileged=True),
+        )
+        # The connection stays usable after a body the gate read whole.
+        ping, _ = await client.call("GET", "/_ping")
+        client.close()
+    assert status == _FORBIDDEN
+    assert "privileged" in json.loads(data)["message"]
+    assert ping == _OK
+    assert [t for _, t, _ in gate.docker.seen] == ["/_ping"]
+
+
+async def test_a_root_image_may_not_bind_and_an_absent_one_is_left_to_docker(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "data").mkdir()
+    bind = [f"{tmp_path}/data:/data"]
+    async with _running(bind_roots=(str(tmp_path),)) as gate:
+        client = await Client.connect(gate.listen)
+        root, data = await client.call(
+            "POST",
+            f"/v1.51/containers/create?name={AGENT}",
+            _create_body(ROOT_IMAGE, Binds=bind),
+        )
+        absent, _ = await client.call(
+            "POST",
+            f"/v1.51/containers/create?name={AGENT}",
+            _create_body("roboco-agent-not-pulled-yet", Binds=bind),
+        )
+        client.close()
+    assert root == _FORBIDDEN
+    assert "runs as root" in json.loads(data)["message"]
+    # Docker itself answers for an image it does not have (the CLI then
+    # pulls an allowed image and asks again); the start checks the user.
+    assert absent == _OK
+
+
+async def test_a_bind_through_a_symlink_is_refused_at_create_and_at_start(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "real").mkdir()
+    (tmp_path / "link").symlink_to("/etc")
+    async with _running(bind_roots=(str(tmp_path),)) as gate:
+        gate.docker.containers[AGENT] = _container(
+            AGENT, binds=[f"{tmp_path}/link:/mnt"]
+        )
+        client = await Client.connect(gate.listen)
+        create, created = await client.call(
+            "POST",
+            f"/v1.51/containers/create?name={AGENT}",
+            _create_body(Binds=[f"{tmp_path}/link:/mnt"]),
+        )
+        start, started = await client.call("POST", f"/v1.51/containers/{AGENT}/start")
+        client.close()
+    assert (create, start) == (_FORBIDDEN, _FORBIDDEN)
+    for data in (created, started):
+        assert "symlink" in json.loads(data)["message"]
+    assert gate.docker.seen == []
+
+
+async def test_a_start_checks_the_container_as_it_is_now(tmp_path: Path) -> None:
+    (tmp_path / "real").mkdir()
+    async with _running(bind_roots=(str(tmp_path),)) as gate:
+        gate.docker.containers[AGENT] = _container(
+            AGENT, binds=[f"{tmp_path}/real:/mnt"]
+        )
+        gate.docker.containers["roboco-sandbox-pg-x"] = _container(
+            "roboco-sandbox-pg-x", user="", binds=[f"{tmp_path}/real:/mnt"]
+        )
+        client = await Client.connect(gate.listen)
+        plain, _ = await client.call("POST", f"/v1.51/containers/{AGENT}/start")
+        root, data = await client.call(
+            "POST", "/v1.51/containers/roboco-sandbox-pg-x/start"
+        )
+        client.close()
+    assert (plain, root) == (_OK, _FORBIDDEN)
+    assert "root" in json.loads(data)["message"]
+
+
+async def test_a_call_by_id_must_reach_a_roboco_container() -> None:
+    async with _running() as gate:
+        client = await Client.connect(gate.listen)
+        mine, _ = await client.call("POST", f"/v1.51/containers/{ID}/stop")
+        theirs, data = await client.call("POST", f"/v1.51/containers/{OTHER_ID}/stop")
+        logs, _ = await client.call("GET", f"/v1.51/containers/{OTHER_ID}/logs")
+        client.close()
+    assert (mine, theirs, logs) == (_OK, _FORBIDDEN, _FORBIDDEN)
+    assert "not one of RoboCo's" in json.loads(data)["message"]
+
+
+async def test_record_mode_forwards_a_create_stage_2_would_refuse() -> None:
+    async with _running(record=True) as gate:
+        client = await Client.connect(gate.listen)
+        status, _ = await client.call(
+            "POST",
+            f"/v1.51/containers/create?name={AGENT}",
+            _create_body(Privileged=True),
+        )
+        client.close()
+    assert status == _OK
+    assert len(gate.docker.seen) == 1
