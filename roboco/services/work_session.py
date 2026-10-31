@@ -37,6 +37,10 @@ class WorkSessionQueries(_Base):
     """Finding work sessions: a task's active one (for an agent too), superseding a
     task's active sessions, and listing them by agent, by project, or all active."""
 
+    # =========================================================================
+    # QUERIES
+    # =========================================================================
+
     async def get_active_for_task(
         self,
         task_id: UUID,
@@ -217,6 +221,10 @@ class WorkSessionCommits(_Base):
     """A session's commits and files: recording them, the files it changed, and
     whether it has unpushed commits."""
 
+    # =========================================================================
+    # COMMIT TRACKING
+    # =========================================================================
+
     async def add_commit(
         self,
         session_id: UUID,
@@ -277,6 +285,10 @@ class WorkSessionCommits(_Base):
 
         return work_session
 
+    # =========================================================================
+    # GATEWAY (CHOREOGRAPHER) BACKFILL
+    # =========================================================================
+
     async def files_changed(self, work_session_id: UUID) -> list[str]:
         """Files modified during this work session (empty list if none/unknown)."""
         work_session = await self.get(work_session_id)
@@ -301,6 +313,10 @@ class WorkSessionCommits(_Base):
 
 class WorkSessionPRs(_Base):
     """A session's pull request: recording it, its status, and its merge."""
+
+    # =========================================================================
+    # PR LIFECYCLE
+    # =========================================================================
 
     async def create_pr(
         self,
@@ -600,18 +616,6 @@ class WorkSessionService(
         return work_session
 
     # =========================================================================
-    # QUERIES
-    # =========================================================================
-
-    # =========================================================================
-    # COMMIT TRACKING
-    # =========================================================================
-
-    # =========================================================================
-    # PR LIFECYCLE
-    # =========================================================================
-
-    # =========================================================================
     # SESSION LIFECYCLE
     # =========================================================================
 
@@ -726,10 +730,6 @@ class WorkSessionService(
             reason=reason,
         )
         return work_session
-
-    # =========================================================================
-    # GATEWAY (CHOREOGRAPHER) BACKFILL
-    # =========================================================================
 
 
 # =============================================================================
