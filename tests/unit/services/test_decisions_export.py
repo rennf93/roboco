@@ -106,7 +106,8 @@ def test_example_with_malformed_gold_is_skipped(
         lambda pilot, outcome: {"gate": {"true": 0.5}},
     )
     example = build_example(_row())
-    assert example is None  # probabilities must sum to 1
+    # Probabilities must sum to 1
+    assert example is None
 
 
 def test_example_choice_gold_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:

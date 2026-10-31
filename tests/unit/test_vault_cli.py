@@ -70,8 +70,10 @@ def test_relocate_into_existing_vault_grafts_roboco_subtree(
     assert main(["relocate", str(personal)]) == 0
 
     assert (personal / "RoboCo" / "marker.md").read_text(encoding="utf-8") == "hi"
-    assert not (personal / "old-vault").exists()  # no nested old dirname
-    assert not (old_root / "RoboCo").exists()  # subtree moved, not copied
+    # No nested old dirname
+    assert not (personal / "old-vault").exists()
+    # Subtree moved, not copied
+    assert not (old_root / "RoboCo").exists()
     # Personal config untouched; absent shipped assets materialized.
     assert (personal / ".obsidian" / "app.json").read_text(
         encoding="utf-8"
