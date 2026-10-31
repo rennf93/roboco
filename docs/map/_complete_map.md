@@ -2828,7 +2828,8 @@ The CEO-facing intake and chief-of-staff slice. PrompterService turns a confirme
 |---|---|---|
 | roboco/services/prompter.py | PrompterService: create tasks from confirmed intake drafts (single + MegaTask batch), route owning team, sequence drafts into waves; plus pure description/readiness helpers, the wave-1/2 prompter-memory history-digest builders, and compact task-search row rendering | 1926 |
 | roboco/services/_prompter_service_types.py | `PrompterServiceSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `PrompterService` mixins reach through `self`, plus its instance attributes; `tests/unit/services/test_prompter_service_mixins.py` fails on a stray stub or a member defined twice | 116 |
-| roboco/services/prompter_live.py | PrompterLiveRegistry: process-wide singleton bridging live intake/secretary chat between panel (SSE) and spawned container (HTTP turn), with open/close/park/idle-reap lifecycle | 311 |
+| roboco/services/prompter_live.py | PrompterLiveRegistry: process-wide singleton bridging live intake/secretary chat between panel (SSE) and spawned container (HTTP turn), with open/close/park/idle-reap lifecycle | 322 |
+| roboco/services/_prompter_live_types.py | `PrompterLiveRegistrySelf`, a TYPE_CHECKING-only Protocol declaring the attributes the `PrompterLiveRegistry` mixin reads through `self` (no moved body calls across classes, so it has no `<Class>Surface` yet); `tests/unit/services/test_prompter_live_registry_mixins.py` fails on a stray stub or a member defined twice | 31 |
 | roboco/services/secretary.py | SecretaryService: read company state + submit/confirm/reject gated CEO directives (relay/announce/charter/pitch/task-control incl. wave-1 full-content `edit` + claim-aware reassignment), persisted in secretary_directives | 521 |
 | roboco/services/_secretary_service_types.py | `SecretaryServiceSelf`, a TYPE_CHECKING-only Protocol declaring the attributes the `SecretaryService` mixin reads through `self` (no moved body calls across classes, so it has no `<Class>Surface` yet); `tests/unit/services/test_secretary_service_mixins.py` fails on a stray stub or a member defined twice | 28 |
 
@@ -2879,20 +2880,21 @@ The CEO-facing intake and chief-of-staff slice. PrompterService turns a confirme
 | compose_description | function | roboco/services/prompter.py:1726 | Deterministically build the markdown description from structured fields; fall back to model description if too sparse (<20 chars) |
 | _compose_umbrella_draft | function | roboco/services/prompter.py:1756 | Build the branchless umbrella draft from batch + wave plan; task_type=planning |
 | get_prompter_service | function | roboco/services/prompter.py:1920 | Factory: construct PrompterService with optional db session |
-| LiveIntakeSession | dataclass | roboco/services/prompter_live.py:47 | One live chat: session_id, agent_id, asyncio queue, closed flag, parked task_id, last_activity timestamp |
-| PrompterLiveRegistry | class | roboco/services/prompter_live.py:70 | Tracks live intake/secretary sessions; bridges panel<->container via push/stream/deliver; lifecycle open/close/park |
-| PrompterLiveRegistry.open | method | roboco/services/prompter_live.py:80 | Register a live session; idempotent (returns existing un-closed session instead of orphaning its SSE queue) |
-| PrompterLiveRegistry.get | method | roboco/services/prompter_live.py:100 | Return the session or None |
-| PrompterLiveRegistry.is_alive | method | roboco/services/prompter_live.py:117 | True when a live un-closed session exists (panel reload reconnect decision) |
-| PrompterLiveRegistry.close | method | roboco/services/prompter_live.py:127 | End a session: pop, mark closed, push _CLOSE sentinel to unblock the SSE stream |
-| PrompterLiveRegistry.close_by_agent | method | roboco/services/prompter_live.py:136 | Close every live session bound to agent_id (forced kill); optional final error event; returns closed ids |
-| PrompterLiveRegistry.park | method | roboco/services/prompter_live.py:155 | Mark session parked awaiting board review of task_id (keeps it alive for in-context re-draft) |
-| PrompterLiveRegistry.find_by_task | method | roboco/services/prompter_live.py:174 | Return the live un-closed session parked for task_id, if any |
-| PrompterLiveRegistry.push | method | roboco/services/prompter_live.py:183 | Queue one agent event for SSE; bump last_activity; False if no/gone session |
-| PrompterLiveRegistry.idle_session_ids | method | roboco/services/prompter_live.py:207 | Return (session_id, agent_id) idle past threshold; excludes closed and board-parked sessions |
-| PrompterLiveRegistry.stream | method | roboco/services/prompter_live.py:233 | Async generator yielding queued events until _CLOSE sentinel |
-| PrompterLiveRegistry.deliver | method | roboco/services/prompter_live.py:260 | POST the human's text to the container's /turn receiver; bump last_activity; debug-log transient failures |
-| get_live_registry | function | roboco/services/prompter_live.py:307 | Process-wide singleton accessor (lazily instantiates PrompterLiveRegistry) |
+| LiveIntakeSession | dataclass | roboco/services/prompter_live.py:52 | One live chat: session_id, agent_id, asyncio queue, closed flag, parked task_id, last_activity timestamp |
+| PrompterLiveRegistry | class | roboco/services/prompter_live.py:200 | Tracks live intake/secretary sessions; bridges panel<->container via push/stream/deliver; lifecycle open/close/park |
+| `PrompterLiveBridge` | class | roboco/services/prompter_live.py:75 | Mixin of `PrompterLiveRegistry` (7 methods): The bridge across a live session: agent events queued for the panel's stream (with the turn's text buffered, idle sessions found, and the stream kept alive), and the human's messages delivered to the container. |
+| PrompterLiveRegistry.open | method | roboco/services/prompter_live.py:210 | Register a live session; idempotent (returns existing un-closed session instead of orphaning its SSE queue) |
+| PrompterLiveRegistry.get | method | roboco/services/prompter_live.py:230 | Return the session or None |
+| PrompterLiveRegistry.is_alive | method | roboco/services/prompter_live.py:247 | True when a live un-closed session exists (panel reload reconnect decision) |
+| PrompterLiveRegistry.close | method | roboco/services/prompter_live.py:257 | End a session: pop, mark closed, push _CLOSE sentinel to unblock the SSE stream |
+| PrompterLiveRegistry.close_by_agent | method | roboco/services/prompter_live.py:266 | Close every live session bound to agent_id (forced kill); optional final error event; returns closed ids |
+| PrompterLiveRegistry.park | method | roboco/services/prompter_live.py:285 | Mark session parked awaiting board review of task_id (keeps it alive for in-context re-draft) |
+| PrompterLiveRegistry.find_by_task | method | roboco/services/prompter_live.py:304 | Return the live un-closed session parked for task_id, if any |
+| PrompterLiveRegistry.push | method | roboco/services/prompter_live.py:82 | Queue one agent event for SSE; bump last_activity; False if no/gone session |
+| PrompterLiveRegistry.idle_session_ids | method | roboco/services/prompter_live.py:106 | Return (session_id, agent_id) idle past threshold; excludes closed and board-parked sessions |
+| PrompterLiveRegistry.stream | method | roboco/services/prompter_live.py:132 | Async generator yielding queued events until _CLOSE sentinel |
+| PrompterLiveRegistry.deliver | method | roboco/services/prompter_live.py:159 | POST the human's text to the container's /turn receiver; bump last_activity; debug-log transient failures |
+| get_live_registry | function | roboco/services/prompter_live.py:318 | Process-wide singleton accessor (lazily instantiates PrompterLiveRegistry) |
 | SecretaryService | class | roboco/services/secretary.py:263 | Read company state + execute/queue CEO directives; BaseService subclass bound to a session |
 | `SecretaryTaskActions` | class | roboco/services/secretary.py:72 | Mixin of `SecretaryService` (7 methods): What a confirmed directive does to a task: controlling it, editing its fields, reassigning it with the assignee resolved, and telling the CEO a directive waits. |
 | SecretaryService.read_company_state | method | roboco/services/secretary.py:272 | Aggregate goals + task counts + proposed pitches + pending directives for the CEO dashboard |
@@ -3078,6 +3080,8 @@ intake-secretary
 > **2026-10-31** (Planning trail #51, wave 3): `PrompterService` splits in place into 4 mixins in `prompter.py`, every method body byte-identical: `PrompterDraftValidation` (11), `PrompterDraftConfirm` (4), `PrompterBatchConfirm` (9), `PrompterBatchUpdate` (6). `PrompterService` keeps its live-session core (`__init__`, `_session`, the live session, draft and message records, `mark_live_drafts_consumed`), composes them, and is no longer a god class. Rows naming `PrompterService.<method>` still hold through inheritance. Each mixin's TYPE_CHECKING-only base is `PrompterServiceSelf` (`roboco/services/_prompter_service_types.py`).
 
 > **2026-10-31** (Planning trail #51, wave 3): `SecretaryService` splits in place into a mixin in `secretary.py`, every method body byte-identical: `SecretaryTaskActions` (7). `SecretaryService` keeps its directive lifecycle (reading company state and a task, getting, listing, submitting, confirming and rejecting directives, and running them), composes it, and is no longer a god class. Rows naming `SecretaryService.<method>` still hold through inheritance. The mixin's TYPE_CHECKING-only base is `SecretaryServiceSelf` (`roboco/services/_secretary_service_types.py`).
+
+> **2026-11-01** (Planning trail #51, wave 3): `PrompterLiveRegistry` splits in place into a mixin in `prompter_live.py`, every method body byte-identical: `PrompterLiveBridge` (7). `PrompterLiveRegistry` keeps the session lifecycle (opening, finding and checking a live session, closing it or every session of an agent, parking it for Board review), composes it, and is no longer a god class. Rows naming `PrompterLiveRegistry.<method>` still hold through inheritance. The mixin's TYPE_CHECKING-only base is `PrompterLiveRegistrySelf` (`roboco/services/_prompter_live_types.py`).
 >
 > `d1cf6ecb` Wave 1: PR-gate turn cut, task search, trace timestamps, Secretary edits + e2e scenarios 2–3 (#295) — secretary.py gains the full `edit` action (`_EDITABLE_TASK_FIELDS`, `_edit_task`, `_reassign_task`, `_resolve_assignee`) on `_control_task`; prompter.py gains the prompter-memory digest builders (`build_history_digest`, `project_history_digest`, `history_digest_layer`, `compact_task_rows`) plus the `TaskService.list_recent_for_project` / `search_tasks` backing queries; adds the `GET /live/{session}/search-tasks` route and the `search_past_tasks` MCP tool + Claude-SDK in-process parity tool. First commit to touch secretary.py since baseline.
 >
