@@ -92,6 +92,11 @@ from roboco.utils.workspace_paths import worktree_path_of
 if TYPE_CHECKING:
     from roboco.services.permissions import PermissionService
 
+if TYPE_CHECKING:
+    from roboco.services._task_service_types import TaskServiceSelf as _Base
+else:
+    _Base = object
+
 # UUID format constants for validation
 # Standard UUID string length
 _UUID_LENGTH = 36
@@ -1225,7 +1230,1040 @@ def _reconcile_ac_ids(
     ]
 
 
-class TaskService(BaseService):
+class TaskListQueries(_Base):
+    """Task listings: by project, team, assignee and status, search, recency,
+    archive candidates and FIFO order."""
+
+    async def list_recent_for_project(
+        self, project_id: UUID, limit: int = 15
+    ) -> list[TaskTable]:
+        """Recent non-cancelled tasks for a project, most-recently-active first.
+
+        Backs the prompter's history digest: the intake agent gets a compact
+        chronological view of what's already been built/attempted in this repo.
+        "Recent" = highest of completed_at / updated_at / created_at, so a
+        just-touched-but-not-completed task still surfaces ahead of an old
+        completed one. Cancelled tasks are excluded — abandoned work is not
+        precedent an intake agent should treat as shipped or in-flight.
+        """
+        activity = func.coalesce(
+            TaskTable.completed_at, TaskTable.updated_at, TaskTable.created_at
+        )
+        stmt = (
+            select(TaskTable)
+            .where(TaskTable.project_id == project_id)
+            .where(TaskTable.status != TaskStatus.CANCELLED)
+            .order_by(activity.desc())
+            .limit(limit)
+        )
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def search_tasks(
+        self,
+        q: str,
+        *,
+        team: Team | None = None,
+        status: TaskStatus | None = None,
+        limit: int = 100,
+    ) -> list[TaskTable]:
+        """Case-insensitive task search over title, description, and id.
+
+        Backs the panel's task-list search bar: title/keyword/details hits
+        via ILIKE, plus an id-prefix match so a pasted short id resolves.
+        Filters compose with the list routes' team/status semantics.
+        """
+        needle = f"%{q}%"
+        conditions = [
+            TaskTable.title.ilike(needle),
+            TaskTable.description.ilike(needle),
+            cast("Any", TaskTable.id).cast(String).ilike(f"{q}%"),
+        ]
+        stmt = select(TaskTable).where(or_(*conditions))
+        if team is not None:
+            stmt = stmt.where(TaskTable.team == team)
+        if status is not None:
+            stmt = stmt.where(TaskTable.status == status)
+        result = await self.session.execute(
+            stmt.order_by(TaskTable.created_at.desc()).limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def list_completed_roots_pending_vault_curation(
+        self, *, limit: int = 20
+    ) -> list[TaskTable]:
+        """Root tasks (no parent) most recently completed, not yet vault-curated.
+
+        Backs the orchestrator's root-completion Auditor spawn. Ordered by
+        ``completed_at`` DESC within a small window — self-bounding without a
+        migration: ``orchestration_markers`` is a plain JSON column (no
+        server-side "key absent" filter), so the marker check runs client-side
+        over a small recency window instead of the whole completed-task table,
+        which would otherwise grow forever and could mask a fresh completion
+        behind older, already-curated rows.
+        """
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.status == TaskStatus.COMPLETED,
+                TaskTable.parent_task_id.is_(None),
+            )
+            .order_by(TaskTable.completed_at.desc())
+            .limit(limit)
+        )
+        return [
+            t
+            for t in result.scalars().all()
+            if not markers.is_vault_curation_dispatched(t)
+        ]
+
+    async def list_all(
+        self,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[TaskTable]:
+        """List all tasks with pagination."""
+        result = await self.session.execute(
+            select(TaskTable)
+            .order_by(TaskTable.created_at.desc())
+            .limit(limit)
+            .offset(offset)
+        )
+        return list(result.scalars().all())
+
+    async def list_updated_since(
+        self,
+        since: datetime,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[TaskTable]:
+        """Tasks touched since ``since`` — the vault janitor's changed-task
+        re-projection set. Falls back to ``created_at`` since ``updated_at``
+        has no default and stays NULL on a row that's never been updated
+        (so a freshly-created, never-touched task is still caught).
+        Ascending touched-order: the janitor's capped drain advances its
+        resume marker to the last processed stamp, so oldest-first is the
+        resume contract."""
+        touched_at = func.coalesce(TaskTable.updated_at, TaskTable.created_at)
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(touched_at >= since)
+            .order_by(touched_at, TaskTable.id)
+            .limit(limit)
+            .offset(offset)
+        )
+        return list(result.scalars().all())
+
+    async def list_archive_candidates(
+        self,
+        after: datetime,
+        before: datetime,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[TaskTable]:
+        """Terminal tasks whose terminal timestamp (``completed_at``, else
+        ``updated_at``, else ``created_at``) falls in ``[after, before)`` —
+        the vault janitor's archival-pass candidate window. Bounded by a
+        watermark (``after``) so a daily sweep never re-scans the whole
+        historical archive, only what just crossed the cutoff. Ascending
+        terminal-order: the janitor's capped drain advances the watermark to
+        the last processed stamp, so oldest-first is the resume contract."""
+        terminal_ts = func.coalesce(
+            TaskTable.completed_at, TaskTable.updated_at, TaskTable.created_at
+        )
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(
+                TaskTable.status.in_(_TERMINAL_STATES),
+                terminal_ts >= after,
+                terminal_ts < before,
+            )
+            .order_by(terminal_ts, TaskTable.id)
+            .limit(limit)
+            .offset(offset)
+        )
+        return list(result.scalars().all())
+
+    async def sample_stale_tasks(
+        self, before: datetime, limit: int = 20
+    ) -> list[TaskTable]:
+        """Random sample of tasks last touched before ``before`` — the vault
+        janitor's drift-verification sample (excludes tasks the same sweep's
+        changed-since pass already re-projected)."""
+        touched_at = func.coalesce(TaskTable.updated_at, TaskTable.created_at)
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(touched_at < before)
+            .order_by(func.random())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    def fifo_order(self, query: Any) -> Any:
+        """Oldest ROOT first, then the task's own created_at, sequence, id.
+
+        A leaf's age says nothing about how long the deliverable it belongs
+        to has waited: a 6-hour-old leaf under a 15-day-old root must be
+        picked before a 5-hour-old leaf under a 4-day-old root. Shared by
+        every work-selection query (give_me_work, board/auditor triage, PM
+        triage) so agents work the oldest root first. Priority is
+        deliberately excluded: eligibility filters (sequence bar,
+        dependencies, claim guards) already decided WHICH tasks are
+        eligible; this only orders among them.
+        """
+        roots = self._task_root_ages_cte()
+        return query.outerjoin(roots, roots.c.id == TaskTable.id).order_by(
+            func.coalesce(roots.c.root_created_at, TaskTable.created_at).asc(),
+            TaskTable.created_at.asc(),
+            TaskTable.sequence.asc(),
+            TaskTable.id.asc(),
+        )
+
+    def _task_root_ages_cte(self) -> Any:
+        """Recursive CTE: task id -> its root ancestor's created_at.
+
+        Anchor is every root row (parent_task_id IS NULL), carrying its own
+        created_at down to every descendant. One row per reachable task id,
+        so joining it never duplicates or drops rows; outer-joined by the
+        caller so an orphan (parent row deleted) still sorts by its own
+        created_at instead of vanishing.
+        """
+        anchor = select(
+            TaskTable.id.label("id"),
+            TaskTable.created_at.label("root_created_at"),
+        ).where(TaskTable.parent_task_id.is_(None))
+        cte = anchor.cte("task_roots", recursive=True)
+        child = aliased(TaskTable)
+        recursive = select(child.id, cte.c.root_created_at).join(
+            cte, child.parent_task_id == cte.c.id
+        )
+        return cte.union_all(recursive)
+
+    async def list_by_team(
+        self,
+        team: Team,
+        status: TaskStatus | None = None,
+        limit: int = 100,
+    ) -> list[TaskTable]:
+        """List tasks for a team, ordered by priority, sequence, created_at."""
+        query = select(TaskTable).where(TaskTable.team == team)
+
+        if status:
+            query = query.where(TaskTable.status == status)
+
+        query = query.order_by(
+            TaskTable.priority,
+            TaskTable.sequence,
+            TaskTable.created_at,
+        )
+        query = query.limit(limit)
+
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
+    async def list_by_assignee(
+        self,
+        agent_id: UUID,
+        status: TaskStatus | None = None,
+    ) -> list[TaskTable]:
+        """List tasks assigned to an agent, oldest eligible first."""
+        query = select(TaskTable).where(TaskTable.assigned_to == agent_id)
+
+        if status:
+            query = query.where(TaskTable.status == status)
+
+        query = self.fifo_order(query)
+
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
+    async def list_by_team_or_assignee(
+        self,
+        team: Team | None = None,
+        agent_id: UUID | None = None,
+        status: TaskStatus | None = None,
+    ) -> list[TaskTable]:
+        """
+        List tasks by team OR assignee.
+
+        Useful for finding tasks an agent could work on (their assigned tasks
+        or unassigned tasks in their team).
+        """
+        conditions = []
+
+        if team:
+            conditions.append(
+                and_(TaskTable.team == team, TaskTable.assigned_to.is_(None))
+            )
+        if agent_id:
+            conditions.append(TaskTable.assigned_to == agent_id)
+
+        if not conditions:
+            return []
+
+        query = select(TaskTable).where(or_(*conditions))
+
+        if status:
+            query = query.where(TaskTable.status == status)
+
+        query = query.order_by(TaskTable.priority, TaskTable.created_at.desc())
+
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
+    async def list_by_status(
+        self,
+        status: TaskStatus,
+        team: Team | None = None,
+    ) -> list[TaskTable]:
+        """List tasks by status, oldest eligible first."""
+        query = select(TaskTable).where(TaskTable.status == status)
+
+        if team:
+            query = query.where(TaskTable.team == team)
+
+        query = self.fifo_order(query)
+
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
+    async def list_pending(
+        self,
+        team: Team | None = None,
+        filter_by_dependencies: bool = True,
+    ) -> list[TaskTable]:
+        """
+        List pending tasks (available to claim).
+
+        Args:
+            team: Filter by team
+            filter_by_dependencies: If True, exclude tasks with incomplete dependencies
+
+        Returns:
+            List of pending tasks, oldest eligible first (see fifo_order)
+        """
+        tasks = await self.list_by_status(TaskStatus.PENDING, team)
+
+        if not filter_by_dependencies:
+            return tasks
+
+        # Filter out tasks whose dependencies aren't complete
+        available_tasks = []
+        for task in tasks:
+            if not task.dependency_ids:
+                available_tasks.append(task)
+                continue
+
+            # Check if all dependencies are complete
+            deps_result = await self.session.execute(
+                select(TaskTable.status).where(TaskTable.id.in_(task.dependency_ids))
+            )
+            dep_statuses = deps_result.scalars().all()
+
+            # All dependencies must be COMPLETED or CANCELLED
+            terminal_statuses = {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
+            if all(s in terminal_statuses for s in dep_statuses):
+                available_tasks.append(task)
+
+        return available_tasks
+
+
+class TaskQueueQueries(_Base):
+    """The review and escalation queues: blocked, awaiting QA, docs, PM review, Main
+    PM and CEO approval, and the Board's strategic list."""
+
+    async def list_blocked(self, team: Team | None = None) -> list[TaskTable]:
+        """List blocked tasks."""
+        return await self.list_by_status(TaskStatus.BLOCKED, team)
+
+    async def list_awaiting_qa(self, team: Team | None = None) -> list[TaskTable]:
+        """List tasks awaiting QA review."""
+        return await self.list_by_status(TaskStatus.AWAITING_QA, team)
+
+    async def list_awaiting_docs(self, team: Team | None = None) -> list[TaskTable]:
+        """List tasks awaiting documentation."""
+        return await self.list_by_status(TaskStatus.AWAITING_DOCUMENTATION, team)
+
+    async def list_awaiting_pm_review(
+        self, team: Team | None = None
+    ) -> list[TaskTable]:
+        """List tasks awaiting PM review."""
+        return await self.list_by_status(TaskStatus.AWAITING_PM_REVIEW, team)
+
+    async def list_awaiting_ceo_approval(self) -> list[TaskTable]:
+        """List tasks awaiting CEO approval (org-wide, no team filter)."""
+        return await self.list_by_status(TaskStatus.AWAITING_CEO_APPROVAL)
+
+    async def list_strategic_for_board(self) -> list[TaskTable]:
+        """Root tasks (no parent) in awaiting_pm_review with strategic nature.
+
+        Strategic = non-technical roots: product strategy, marketing, vision —
+        the work the Board (Product Owner, Head Marketing) curates before
+        escalating to CEO. The codebase models nature as a binary
+        TECHNICAL/NON_TECHNICAL split, so non_technical is the strategic-board
+        bucket.
+        """
+        query = select(TaskTable).where(
+            TaskTable.parent_task_id.is_(None),
+            TaskTable.status == TaskStatus.AWAITING_PM_REVIEW,
+            TaskTable.nature == TaskNature.NON_TECHNICAL,
+        )
+        query = self.fifo_order(query)
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
+    async def list_long_running_blocked(
+        self, *, threshold_minutes: int = 30, ledger: UptimeLedger | None = None
+    ) -> list[TaskTable]:
+        """Tasks in 'blocked' state whose updated_at is older than threshold_minutes.
+
+        Surfaces anomalies for the Auditor to observe. Most-stale first, ordered by
+        updated_at ascending so the oldest blocker is at the head of the list.
+        This is deliberately NOT fifo_order: staleness, not creation time, is
+        the anomaly signal. Priority is still dropped from the tiebreak.
+
+        The SQL cutoff is a wall-clock superset; a task blocked right before
+        a long fleet pause hasn't actually sat blocked for
+        ``threshold_minutes`` of active time yet, so a ledger (the caller's
+        own ``ledger``, or one self-loaded here when there's a candidate to
+        score) drops those in Python afterward. No ledger available (self-
+        load failure, or none passed and none loadable) falls back to the
+        SQL result as-is (today's behaviour).
+        """
+        now = datetime.now(UTC)
+        cutoff = now - timedelta(minutes=threshold_minutes)
+        query = (
+            select(TaskTable)
+            .where(
+                TaskTable.status == TaskStatus.BLOCKED,
+                TaskTable.updated_at.is_not(None),
+                TaskTable.updated_at < cutoff,
+            )
+            .order_by(
+                TaskTable.updated_at.asc(),
+                TaskTable.created_at.asc(),
+                TaskTable.id.asc(),
+            )
+        )
+        result = await self.session.execute(query)
+        rows = list(result.scalars().all())
+        if not rows:
+            return rows
+        if ledger is None:
+            ledger = await self._load_uptime_ledger(now)
+        if ledger is None:
+            return rows
+        threshold = timedelta(minutes=threshold_minutes)
+        return [
+            t
+            for t in rows
+            if t.updated_at is not None
+            and ledger.active_elapsed(t.updated_at, now) >= threshold
+        ]
+
+    async def list_blocked_for_team(self, team: Team) -> list[TaskTable]:
+        """List blocked tasks for a single team."""
+        return await self.list_blocked(team=team)
+
+    async def list_blocked_all_teams(self) -> list[TaskTable]:
+        """List blocked tasks across all teams."""
+        return await self.list_blocked()
+
+    async def list_awaiting_pm_review_for_team(self, team: Team) -> list[TaskTable]:
+        """List awaiting-PM-review tasks for a single team."""
+        return await self.list_awaiting_pm_review(team=team)
+
+    async def list_awaiting_main_pm_all(self) -> list[TaskTable]:
+        """Root tasks (no parent) awaiting PM review across all teams.
+
+        Used by Main PM triage — root tasks have escalated past their
+        cell PMs and need final approval/escalation to CEO. Oldest
+        eligible first (see fifo_order).
+        """
+        query = select(TaskTable).where(
+            TaskTable.parent_task_id.is_(None),
+            TaskTable.status == TaskStatus.AWAITING_PM_REVIEW,
+        )
+        query = self.fifo_order(query)
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
+
+class TaskStatistics(_Base):
+    """Counts, delivery statistics and spend."""
+
+    async def project_month_spend_usd(self, project_id: UUID) -> float:
+        """This calendar month's summed agent-spawn cost for a project's tasks.
+
+        Backs the claim-time monthly-budget guard (``ROBOCO_TASK_BUDGETS_ENABLED``).
+        ``agent_spawn_sessions.task_id`` is a plain ``String(36)``, not a real
+        FK (see ``AgentSpawnSessionTable``), so the join casts ``tasks.id`` to
+        text. A still-open session's ``estimated_cost_usd`` stays null until
+        close (``AgentOrchestrator._finalize_spawn_session``) — summing that
+        column alone undercounts N parallel long-running sessions as $0 while
+        they're open, which is exactly the case a claim-time budget guard must
+        not miss. So this fetches per-row token/cost columns (one query, no
+        server-side SUM) and prices any still-open row from its periodically-
+        refreshed token counts via the same ``calculate_cost`` the
+        orchestrator's task-budget sweep uses (``_task_spend_usd``).
+
+        Month attribution is deliberately ``started_at``-bucketed: a session
+        that starts in one calendar month and closes in the next counts
+        entirely against its START month, never split pro-rata across the
+        boundary. Accepted simplification — a claim-time guard only needs to
+        be roughly current, not a settled ledger; the tiny sliver of a
+        month-spanning session's tail is a rounding error against a monthly
+        cap, not a correctness bug.
+        """
+        from roboco.billing.pricing import calculate_cost
+
+        month_start = datetime.now(UTC).replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0
+        )
+        task_id_str = cast("Any", TaskTable.id).cast(String)
+        result = await self.session.execute(
+            select(
+                AgentSpawnSessionTable.estimated_cost_usd,
+                AgentSpawnSessionTable.ended_at,
+                AgentSpawnSessionTable.model,
+                AgentSpawnSessionTable.tokens_input,
+                AgentSpawnSessionTable.tokens_output,
+                AgentSpawnSessionTable.tokens_cache_read,
+                AgentSpawnSessionTable.tokens_cache_write,
+            )
+            .select_from(AgentSpawnSessionTable)
+            .join(TaskTable, task_id_str == AgentSpawnSessionTable.task_id)
+            .where(
+                TaskTable.project_id == project_id,
+                AgentSpawnSessionTable.started_at >= month_start,
+            )
+        )
+        total = 0.0
+        for row in result.all():
+            if row.estimated_cost_usd is not None:
+                total += row.estimated_cost_usd
+            elif row.ended_at is None:
+                total += calculate_cost(
+                    model=row.model,
+                    tokens_input=row.tokens_input,
+                    tokens_output=row.tokens_output,
+                    tokens_cache_read=row.tokens_cache_read,
+                    tokens_cache_write=row.tokens_cache_write,
+                )
+        return total
+
+    async def task_spend_usd(self, task_id: UUID) -> float:
+        """Total agent-spawn spend for one task: closed sessions'
+        ``estimated_cost_usd`` + the live cost of any still-open session.
+
+        Scoped to one task instead of a project+month — otherwise identical
+        to ``project_month_spend_usd``'s open-session handling: a still-open
+        session's cost stays null until close, so it's priced from its
+        periodically-refreshed token counts via ``calculate_cost``. Backs the
+        orchestrator's per-task budget sweep and ``unblock``'s budget-breach
+        re-check (both need "is this task still over its own cap").
+        """
+        from roboco.billing.pricing import calculate_cost
+
+        rows = (
+            (
+                await self.session.execute(
+                    select(AgentSpawnSessionTable).where(
+                        AgentSpawnSessionTable.task_id == str(task_id)
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        total = 0.0
+        for row in rows:
+            if row.estimated_cost_usd is not None:
+                total += row.estimated_cost_usd
+            elif row.ended_at is None:
+                total += calculate_cost(
+                    model=row.model,
+                    tokens_input=row.tokens_input,
+                    tokens_output=row.tokens_output,
+                    tokens_cache_read=row.tokens_cache_read,
+                    tokens_cache_write=row.tokens_cache_write,
+                )
+        return total
+
+    async def count_by_status(self, team: Team | None = None) -> dict[str, int]:
+        """Count tasks by status."""
+        query = select(
+            TaskTable.status,
+            func.count(TaskTable.id),
+        ).group_by(TaskTable.status)
+
+        if team:
+            query = query.where(TaskTable.team == team)
+
+        result = await self.session.execute(query)
+        return {row[0].value: row[1] for row in result.all()}
+
+    async def get_delivery_stats_30d(self) -> dict[str, Any]:
+        """Return completed-task count and median lead time for real delivery
+        work completed in the last 30 days.
+
+        The population is scoped to one well-defined unit per piece of work —
+        **root delivery tasks** (``parent_task_id IS NULL``) — so a Main-PM
+        coordination root is counted once, never again for each of its cell
+        tasks and dev subtasks. For a MegaTask, that root is the branchless
+        umbrella (its root-subtasks are children of the umbrella and are
+        excluded); a single-task delivery's root is the coordination root
+        itself.
+
+        It further excludes non-delivery rows that would otherwise pollute
+        "intake to merged" with completions that carry no real delivery
+        lead time:
+
+        - ``task_type == administrative`` — process/administrative tasks and
+          every board-program exploration cycle (board_roadmap,
+          board_pest_control, ...), which complete the moment a Board role
+          files its proposal, not when anything ships.
+        - :data:`LEAD_TIME_EXCLUDED_SOURCES` — held CEO-approval drafts (X
+          posts, video posts, release proposals) that complete the instant
+          the CEO approves them, seconds after being drafted.
+
+        ``completed_30d`` and ``median_lead_time_hours`` are computed from
+        the SAME filtered row set, so the two figures always describe the
+        same population.
+
+        Queries tasks WHERE status=completed AND completed_at IS NOT NULL AND
+        completed_at >= now()-30d, plus the scoping above.  Lead time is
+        ``completed_at - created_at`` expressed in hours; the median is
+        computed with :func:`statistics.median`.
+
+        Returns::
+
+            {
+                "completed_30d": int,
+                "median_lead_time_hours": float | None,  # None when no tasks
+            }
+        """
+        import statistics
+
+        cutoff = datetime.now(UTC) - timedelta(days=30)
+        result = await self.session.execute(
+            select(TaskTable.created_at, TaskTable.completed_at).where(
+                TaskTable.status == TaskStatus.COMPLETED,
+                TaskTable.completed_at.is_not(None),
+                TaskTable.completed_at >= cutoff,
+                TaskTable.parent_task_id.is_(None),
+                TaskTable.task_type != TaskType.ADMINISTRATIVE,
+                TaskTable.source.notin_(LEAD_TIME_EXCLUDED_SOURCES),
+            )
+        )
+        rows = result.all()
+        completed_30d = len(rows)
+        median_lead_time_hours: float | None = None
+        if rows:
+            lead_times = [
+                (row.completed_at - row.created_at).total_seconds() / 3600
+                for row in rows
+            ]
+            median_lead_time_hours = float(statistics.median(lead_times))
+        return {
+            "completed_30d": completed_30d,
+            "median_lead_time_hours": median_lead_time_hours,
+        }
+
+    async def count_by_team(self) -> dict[str, int]:
+        """Count tasks by team."""
+        result = await self.session.execute(
+            select(
+                TaskTable.team,
+                func.count(TaskTable.id),
+            ).group_by(TaskTable.team)
+        )
+        return {row[0].value: row[1] for row in result.all()}
+
+    async def get_active_count(self, agent_id: UUID) -> int:
+        """Get count of active tasks for an agent."""
+        result = await self.session.execute(
+            select(func.count(TaskTable.id)).where(
+                and_(
+                    TaskTable.assigned_to == agent_id,
+                    TaskTable.status.in_(
+                        [
+                            TaskStatus.CLAIMED,
+                            TaskStatus.IN_PROGRESS,
+                            TaskStatus.VERIFYING,
+                        ]
+                    ),
+                )
+            )
+        )
+        return result.scalar() or 0
+
+
+class TaskAgentQueries(_Base):
+    """One agent's tasks: assigned, active, pending, paused, in progress, and the
+    held task that blocks its next claim."""
+
+    async def list_in_progress_or_claimed(self) -> list[TaskTable]:
+        """All tasks currently in claimed or in_progress state.
+
+        Used by the orchestrator's stale-claim reaper to find rows whose
+        holder may have gone silent. Returns the bare row set; the reaper
+        applies the heartbeat-TTL filter in Python because the cutoff is a
+        runtime decision tied to settings, not a column.
+        """
+        result = await self.session.execute(
+            select(TaskTable).where(
+                TaskTable.status.in_([TaskStatus.CLAIMED, TaskStatus.IN_PROGRESS])
+            )
+        )
+        return list(result.scalars().all())
+
+    async def list_assigned_for_agent(self, agent_id: UUID) -> list[TaskTable]:
+        """Active (non-terminal) tasks currently assigned to an agent.
+
+        Oldest-created first: give_me_work walks this list top-down, so
+        agents work their queue FIFO (the updated_at-desc ordering it
+        replaced surfaced the most-recently-touched task first, burying
+        older assigned work).
+        """
+        query = select(TaskTable).where(
+            TaskTable.assigned_to == agent_id,
+            TaskTable.status.in_(self._AGENT_NON_TERMINAL_STATUSES),
+        )
+        query = self.fifo_order(query)
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
+    async def get_active_task_for_agent(self, agent_id: UUID) -> TaskTable | None:
+        """Most-recently-updated task currently being worked by the agent."""
+        query = (
+            select(TaskTable)
+            .where(
+                TaskTable.assigned_to == agent_id,
+                TaskTable.status.in_(self._DEV_ACTIVE_STATUSES),
+            )
+            .order_by(TaskTable.updated_at.desc().nullslast())
+            .limit(1)
+        )
+        result = await self.session.execute(query)
+        return result.scalar_one_or_none()
+
+    async def get_journal_context_task_for_agent(
+        self, agent_id: UUID
+    ) -> TaskTable | None:
+        """Most-recently-updated task the agent owns for journal/content context.
+
+        Wider than ``get_active_task_for_agent`` — includes BLOCKED, PAUSED,
+        and NEEDS_REVISION so journal entries written while stuck still
+        get the task_id auto-attached. Dogfooding surfaced the bug: PMs
+        wrote decisions during blocked state, auto-injection returned
+        None, entries persisted with task_id=NULL, the C8 tracing gate
+        never saw them, agents spiraled forever.
+        """
+        query = (
+            select(TaskTable)
+            .where(
+                TaskTable.assigned_to == agent_id,
+                TaskTable.status.in_(self._JOURNAL_CONTEXT_STATUSES),
+            )
+            .order_by(TaskTable.updated_at.desc().nullslast())
+            .limit(1)
+        )
+        result = await self.session.execute(query)
+        return result.scalar_one_or_none()
+
+    async def list_pending_for_agent(self, agent_id: UUID) -> list[TaskTable]:
+        """Tasks assigned to this agent that are still in PENDING status.
+
+        Pre-gateway parity: give_me_work missed the
+        pre-assigned case before this. PMs whose root was seeded with
+        assigned_to=<them> + status=pending got 'no work' until they
+        triage()'d explicitly.
+
+        A pre-assigned task with unmet (non-terminal) dependencies is held
+        back: offering it would let the agent claim and work ahead of a
+        dependency that has not resolved (e.g. a frontend dev coding before
+        the UX/UI design lands). The pre-assigned path bypasses
+        `list_pending(filter_by_dependencies=True)`, so the dependency gate
+        must be applied here too — and so must the sequence claim-gate
+        (`_claim_blocked_by_sequence`): without it, give_me_work offered a
+        sequence-held pre-assigned task that `i_will_work_on`'s claim() then
+        rejected (the give_me_work/i_will_work_on disagreement this closes
+        on the PENDING side; `_drop_dependency_held` closes the same class
+        of gap for the `list_assigned_for_agent` NEEDS_REVISION fallback).
+
+        F059: a self-heal fix task held for the CEO's Approve-&-Start
+        (``source=self_heal`` + ``confirmed_by_human=False``) is NOT offered
+        here — an already-alive PM must not grab it via give_me_work before the
+        CEO opens the gate. The hold is scoped to self-heal: ordinary delegated
+        subtasks default to ``confirmed_by_human=False`` (the PM delegated them,
+        which is itself the authorization to start) and MUST still be offered.
+        The same hold covers every ``X_SOURCES`` member (``x_post``/``x_reply``/
+        ``x_feature``) — CEO-gated X drafts owned by the Secretary, who has no
+        ``give_me_work`` verb, but held here too for the same belt-and-suspenders
+        reason. ``VIDEO_HELD_SOURCES`` (``video_post``) gets the identical
+        treatment; the video-authoring source (``video``) is NOT held — it is
+        pre-assigned to a ux-dev and must still be offered like any other
+        delegated code task. A ``vault_note`` draft is NOT held either — like a
+        prompter board draft, its board assignment IS the gate (board roles have
+        no ``give_me_work``), so no source exclusion is needed.
+
+        Oldest eligible first (see fifo_order); the loop below still
+        applies the dependency and sequence claim-gates as filters.
+        """
+        query = select(TaskTable).where(
+            TaskTable.assigned_to == agent_id,
+            TaskTable.status == TaskStatus.PENDING,
+            or_(
+                TaskTable.source.notin_(
+                    (SELF_HEAL_SOURCE, *X_SOURCES, *VIDEO_HELD_SOURCES)
+                ),
+                TaskTable.confirmed_by_human.is_(True),
+            ),
+        )
+        query = self.fifo_order(query)
+        result = await self.session.execute(query)
+        tasks = list(result.scalars().all())
+        available: list[TaskTable] = []
+        for task in tasks:
+            if await self.unmet_dependency_ids(list(task.dependency_ids or [])):
+                continue
+            if await self._claim_blocked_by_sequence(task) is not None:
+                continue
+            available.append(task)
+        return available
+
+    async def list_paused_for_agent(self, agent_id: UUID) -> list[TaskTable]:
+        """Paused tasks assigned to the agent, oldest eligible first."""
+        query = select(TaskTable).where(
+            TaskTable.assigned_to == agent_id,
+            TaskTable.status == TaskStatus.PAUSED,
+        )
+        query = self.fifo_order(query)
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
+    async def list_in_progress_for_agent(self, agent_id: UUID) -> list[TaskTable]:
+        """Tasks the agent is still on the hook for: every status
+        ``already_active_guard`` counts as actively worked (claimed,
+        in_progress, verifying, blocked), not only ``in_progress``.
+
+        F018: ``blocked`` is included because a blocked task is still owned and
+        ``unblock_with_restore`` resumes it to ``in_progress``; the claim guard
+        (``already_active_guard``) must see it or a dev could claim a second
+        task while blocked and end up with two ``in_progress`` tasks once the
+        first is unblocked. The same holds for a task escalated AWAY from the
+        agent: escalation moves ``assigned_to`` to the resolver but snapshots
+        the agent into ``pre_block_assignee``, which ``unblock_with_restore``
+        hands the task straight back to (live 2026-10-28: be-dev-1 escalated
+        11a83407, claimed f5d66db6 a minute later, and the PM's restore left it
+        two in_progress tasks). ``claimed`` / ``verifying`` were already in the
+        guard's status set but never fetched here, so a dev holding a claimed,
+        not-yet-started task could start a second one.
+
+        Callers that only want pausable (in_progress) tasks — the
+        ``i_am_idle`` auto-pause path — filter on ``status`` themselves
+        (``pause()`` no-ops on non-in_progress regardless).
+        """
+        query = (
+            select(TaskTable)
+            .where(
+                or_(
+                    and_(
+                        TaskTable.assigned_to == agent_id,
+                        TaskTable.status.in_(
+                            [
+                                TaskStatus.CLAIMED,
+                                TaskStatus.IN_PROGRESS,
+                                TaskStatus.VERIFYING,
+                                TaskStatus.BLOCKED,
+                            ]
+                        ),
+                    ),
+                    and_(
+                        TaskTable.pre_block_assignee == agent_id,
+                        TaskTable.status == TaskStatus.BLOCKED,
+                    ),
+                )
+            )
+            .order_by(TaskTable.priority, TaskTable.updated_at.desc())
+        )
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
+    async def held_task_blocking_claim(
+        self, agent_id: UUID, task_id: UUID
+    ) -> TaskTable | None:
+        """The held task that keeps ``agent_id`` from starting ``task_id``.
+
+        The single-active-task rule the gateway's ``already_active_guard`` and
+        ``paused_tasks_guard`` apply to a developer's own ``i_will_work_on``
+        (an actively worked task first, else a paused one, never ``task_id``
+        itself), as one service predicate. The claim chokepoint, the
+        dispatcher's spawn/claim pre-filters and the PM ``reassign`` verb ask
+        it, so none of them hands a developer work it would be refused.
+        """
+        for held in await self.list_in_progress_for_agent(agent_id):
+            if held.id != task_id:
+                return held
+        for held in await self.list_paused_for_agent(agent_id):
+            if held.id != task_id:
+                return held
+        return None
+
+
+class TaskRoleLookup(_Base):
+    """Finding the agent that holds a role: QA, PR reviewer, documenter, cell PM and
+    Main PM, by team or slug."""
+
+    async def resolve_agent_id(self, agent_id_str: str) -> UUID:
+        """Resolve a UUID-string-or-slug into an agent UUID.
+
+        Used by claim-style endpoints where callers may pass either form.
+        Raises NotFoundError if the slug doesn't exist. Exists on the service
+        so route modules never issue raw AgentTable queries.
+        """
+        try:
+            return UUID(agent_id_str)
+        except ValueError:
+            pass
+
+        result = await self.session.execute(
+            select(AgentTable.id).where(AgentTable.slug == agent_id_str)
+        )
+        agent_uuid = result.scalar_one_or_none()
+        if not agent_uuid:
+            raise NotFoundError(resource_type="Agent", resource_id=agent_id_str)
+        return UUID(str(agent_uuid))
+
+    async def agent_for(self, agent_id: UUID) -> GatewayAgentView | None:
+        """Return a gateway-shaped view of the agent (DB + config derived).
+
+        Combines AgentTable's role/team with `agents_config`'s
+        escalation_target + skills so the Choreographer reads one object.
+        """
+        from roboco.agents_config import (
+            get_agent_skills,
+            get_escalation_target,
+        )
+
+        result = await self.session.execute(
+            select(AgentTable).where(AgentTable.id == agent_id)
+        )
+        agent = result.scalar_one_or_none()
+        if agent is None:
+            return None
+        slug = agent.slug
+        role_value = (
+            agent.role.value if hasattr(agent.role, "value") else str(agent.role)
+        )
+        team_value: str | None = None
+        if agent.team is not None:
+            team_value = (
+                agent.team.value if hasattr(agent.team, "value") else str(agent.team)
+            )
+        return GatewayAgentView(
+            id=UUID(str(agent.id)),
+            role=role_value,
+            team=team_value,
+            escalation_target=get_escalation_target(slug),
+            skills=get_agent_skills(slug),
+        )
+
+    async def _agent_with_role_and_team(
+        self, role: AgentRole, team: Team
+    ) -> AgentTable | None:
+        """Find an agent matching role + team."""
+        result = await self.session.execute(
+            select(AgentTable).where(
+                AgentTable.role == role,
+                AgentTable.team == team,
+            )
+        )
+        return result.scalars().first()
+
+    async def _agent_by_slug(self, slug: str) -> AgentTable | None:
+        """Find an agent by its exact slug."""
+        result = await self.session.execute(
+            select(AgentTable).where(AgentTable.slug == slug)
+        )
+        return result.scalar_one_or_none()
+
+    async def qa_agent_for_team(self, team: Team) -> AgentTable | None:
+        """Find the QA agent for a team."""
+        return await self._agent_with_role_and_team(AgentRole.QA, team)
+
+    async def pr_reviewer_for(self, task: TaskTable) -> AgentTable | None:
+        """The in-path PR-review-gate reviewer for an assembled-PR task.
+
+        Mirrors ``qa_agent_for_team``: a cell-team task (backend/frontend/
+        ux_ui) - the cell→root gate - goes to that cell's dedicated
+        reviewer (be/fe/ux-pr-reviewer); anything else (the root→master
+        gate) goes to the shared board-level ``pr-reviewer-1``. ``pr-
+        reviewer-1`` and the overflow ``cell-pr-reviewer-2`` are both
+        board-team PR_REVIEWER rows, so the root case is resolved by slug
+        rather than role+team to avoid picking either one arbitrarily. The
+        orchestrator's ``_dispatch_pr_gate_work`` mirrors this exact
+        selection so the assignee set here and the reviewer it spawns can
+        never disagree (its own overflow fallback reassigns when it
+        legitimately spawns ``cell-pr-reviewer-2`` instead).
+        """
+        try:
+            team = Team(task.team) if task.team else None
+        except ValueError:
+            team = None
+        if team in (Team.BACKEND, Team.FRONTEND, Team.UX_UI):
+            return await self._agent_with_role_and_team(AgentRole.PR_REVIEWER, team)
+        return await self._agent_by_slug("pr-reviewer-1")
+
+    async def documenter_for_team(self, team: Team) -> AgentTable | None:
+        """Find the Documenter agent for a team."""
+        return await self._agent_with_role_and_team(AgentRole.DOCUMENTER, team)
+
+    async def cell_pm_for_team(self, team: Team) -> AgentTable | None:
+        """Find the Cell PM for a team."""
+        return await self._agent_with_role_and_team(AgentRole.CELL_PM, team)
+
+    async def main_pm_agent(self) -> AgentTable | None:
+        """Find the Main PM (org-wide; takes the earliest-created if many)."""
+        result = await self.session.execute(
+            select(AgentTable)
+            .where(AgentTable.role == AgentRole.MAIN_PM)
+            .order_by(AgentTable.created_at)
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def _is_board_advisory_agent(self, agent_id: UUID) -> bool:
+        """True if ``agent_id`` is a board/advisory role (PO / marketing / auditor)."""
+        result = await self.session.execute(
+            select(AgentTable.role).where(AgentTable.id == agent_id)
+        )
+        role = result.scalar_one_or_none()
+        return role in _BOARD_ADVISORY_ROLES
+
+    async def _is_main_pm_agent(self, agent_id: UUID) -> bool:
+        """True if ``agent_id`` is the Main PM role (the coordinator with no code verb).
+
+        Twin of ``_is_board_advisory_agent`` for the impossibility invariant —
+        consulted by the escalation / reassign / claim guards that divert or
+        refuse a ``main_pm`` + ``code`` hand-off to a Main-PM target.
+        """
+        result = await self.session.execute(
+            select(AgentTable.role).where(AgentTable.id == agent_id)
+        )
+        role = result.scalar_one_or_none()
+        return role == AgentRole.MAIN_PM
+
+
+class TaskService(
+    BaseService,
+    TaskAgentQueries,
+    TaskListQueries,
+    TaskQueueQueries,
+    TaskRoleLookup,
+    TaskStatistics,
+):
     """
     Service for managing tasks.
 
@@ -6215,21 +7253,6 @@ class TaskService(BaseService):
             .values(last_heartbeat_at=datetime.now(UTC))
         )
 
-    async def list_in_progress_or_claimed(self) -> list[TaskTable]:
-        """All tasks currently in claimed or in_progress state.
-
-        Used by the orchestrator's stale-claim reaper to find rows whose
-        holder may have gone silent. Returns the bare row set; the reaper
-        applies the heartbeat-TTL filter in Python because the cutoff is a
-        runtime decision tied to settings, not a column.
-        """
-        result = await self.session.execute(
-            select(TaskTable).where(
-                TaskTable.status.in_([TaskStatus.CLAIMED, TaskStatus.IN_PROGRESS])
-            )
-        )
-        return list(result.scalars().all())
-
     async def unclaim_for_reaper(self, task_id: UUID) -> None:
         """Reaper-only unclaim: skip role checks, force the row back to pending.
 
@@ -9713,428 +10736,6 @@ class TaskService(BaseService):
     # QUERIES
     # =========================================================================
 
-    async def list_recent_for_project(
-        self, project_id: UUID, limit: int = 15
-    ) -> list[TaskTable]:
-        """Recent non-cancelled tasks for a project, most-recently-active first.
-
-        Backs the prompter's history digest: the intake agent gets a compact
-        chronological view of what's already been built/attempted in this repo.
-        "Recent" = highest of completed_at / updated_at / created_at, so a
-        just-touched-but-not-completed task still surfaces ahead of an old
-        completed one. Cancelled tasks are excluded — abandoned work is not
-        precedent an intake agent should treat as shipped or in-flight.
-        """
-        activity = func.coalesce(
-            TaskTable.completed_at, TaskTable.updated_at, TaskTable.created_at
-        )
-        stmt = (
-            select(TaskTable)
-            .where(TaskTable.project_id == project_id)
-            .where(TaskTable.status != TaskStatus.CANCELLED)
-            .order_by(activity.desc())
-            .limit(limit)
-        )
-        result = await self.session.execute(stmt)
-        return list(result.scalars().all())
-
-    async def search_tasks(
-        self,
-        q: str,
-        *,
-        team: Team | None = None,
-        status: TaskStatus | None = None,
-        limit: int = 100,
-    ) -> list[TaskTable]:
-        """Case-insensitive task search over title, description, and id.
-
-        Backs the panel's task-list search bar: title/keyword/details hits
-        via ILIKE, plus an id-prefix match so a pasted short id resolves.
-        Filters compose with the list routes' team/status semantics.
-        """
-        needle = f"%{q}%"
-        conditions = [
-            TaskTable.title.ilike(needle),
-            TaskTable.description.ilike(needle),
-            cast("Any", TaskTable.id).cast(String).ilike(f"{q}%"),
-        ]
-        stmt = select(TaskTable).where(or_(*conditions))
-        if team is not None:
-            stmt = stmt.where(TaskTable.team == team)
-        if status is not None:
-            stmt = stmt.where(TaskTable.status == status)
-        result = await self.session.execute(
-            stmt.order_by(TaskTable.created_at.desc()).limit(limit)
-        )
-        return list(result.scalars().all())
-
-    async def list_completed_roots_pending_vault_curation(
-        self, *, limit: int = 20
-    ) -> list[TaskTable]:
-        """Root tasks (no parent) most recently completed, not yet vault-curated.
-
-        Backs the orchestrator's root-completion Auditor spawn. Ordered by
-        ``completed_at`` DESC within a small window — self-bounding without a
-        migration: ``orchestration_markers`` is a plain JSON column (no
-        server-side "key absent" filter), so the marker check runs client-side
-        over a small recency window instead of the whole completed-task table,
-        which would otherwise grow forever and could mask a fresh completion
-        behind older, already-curated rows.
-        """
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.status == TaskStatus.COMPLETED,
-                TaskTable.parent_task_id.is_(None),
-            )
-            .order_by(TaskTable.completed_at.desc())
-            .limit(limit)
-        )
-        return [
-            t
-            for t in result.scalars().all()
-            if not markers.is_vault_curation_dispatched(t)
-        ]
-
-    async def list_all(
-        self,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> list[TaskTable]:
-        """List all tasks with pagination."""
-        result = await self.session.execute(
-            select(TaskTable)
-            .order_by(TaskTable.created_at.desc())
-            .limit(limit)
-            .offset(offset)
-        )
-        return list(result.scalars().all())
-
-    async def list_updated_since(
-        self,
-        since: datetime,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> list[TaskTable]:
-        """Tasks touched since ``since`` — the vault janitor's changed-task
-        re-projection set. Falls back to ``created_at`` since ``updated_at``
-        has no default and stays NULL on a row that's never been updated
-        (so a freshly-created, never-touched task is still caught).
-        Ascending touched-order: the janitor's capped drain advances its
-        resume marker to the last processed stamp, so oldest-first is the
-        resume contract."""
-        touched_at = func.coalesce(TaskTable.updated_at, TaskTable.created_at)
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(touched_at >= since)
-            .order_by(touched_at, TaskTable.id)
-            .limit(limit)
-            .offset(offset)
-        )
-        return list(result.scalars().all())
-
-    async def list_archive_candidates(
-        self,
-        after: datetime,
-        before: datetime,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> list[TaskTable]:
-        """Terminal tasks whose terminal timestamp (``completed_at``, else
-        ``updated_at``, else ``created_at``) falls in ``[after, before)`` —
-        the vault janitor's archival-pass candidate window. Bounded by a
-        watermark (``after``) so a daily sweep never re-scans the whole
-        historical archive, only what just crossed the cutoff. Ascending
-        terminal-order: the janitor's capped drain advances the watermark to
-        the last processed stamp, so oldest-first is the resume contract."""
-        terminal_ts = func.coalesce(
-            TaskTable.completed_at, TaskTable.updated_at, TaskTable.created_at
-        )
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(
-                TaskTable.status.in_(_TERMINAL_STATES),
-                terminal_ts >= after,
-                terminal_ts < before,
-            )
-            .order_by(terminal_ts, TaskTable.id)
-            .limit(limit)
-            .offset(offset)
-        )
-        return list(result.scalars().all())
-
-    async def sample_stale_tasks(
-        self, before: datetime, limit: int = 20
-    ) -> list[TaskTable]:
-        """Random sample of tasks last touched before ``before`` — the vault
-        janitor's drift-verification sample (excludes tasks the same sweep's
-        changed-since pass already re-projected)."""
-        touched_at = func.coalesce(TaskTable.updated_at, TaskTable.created_at)
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(touched_at < before)
-            .order_by(func.random())
-            .limit(limit)
-        )
-        return list(result.scalars().all())
-
-    def fifo_order(self, query: Any) -> Any:
-        """Oldest ROOT first, then the task's own created_at, sequence, id.
-
-        A leaf's age says nothing about how long the deliverable it belongs
-        to has waited: a 6-hour-old leaf under a 15-day-old root must be
-        picked before a 5-hour-old leaf under a 4-day-old root. Shared by
-        every work-selection query (give_me_work, board/auditor triage, PM
-        triage) so agents work the oldest root first. Priority is
-        deliberately excluded: eligibility filters (sequence bar,
-        dependencies, claim guards) already decided WHICH tasks are
-        eligible; this only orders among them.
-        """
-        roots = self._task_root_ages_cte()
-        return query.outerjoin(roots, roots.c.id == TaskTable.id).order_by(
-            func.coalesce(roots.c.root_created_at, TaskTable.created_at).asc(),
-            TaskTable.created_at.asc(),
-            TaskTable.sequence.asc(),
-            TaskTable.id.asc(),
-        )
-
-    def _task_root_ages_cte(self) -> Any:
-        """Recursive CTE: task id -> its root ancestor's created_at.
-
-        Anchor is every root row (parent_task_id IS NULL), carrying its own
-        created_at down to every descendant. One row per reachable task id,
-        so joining it never duplicates or drops rows; outer-joined by the
-        caller so an orphan (parent row deleted) still sorts by its own
-        created_at instead of vanishing.
-        """
-        anchor = select(
-            TaskTable.id.label("id"),
-            TaskTable.created_at.label("root_created_at"),
-        ).where(TaskTable.parent_task_id.is_(None))
-        cte = anchor.cte("task_roots", recursive=True)
-        child = aliased(TaskTable)
-        recursive = select(child.id, cte.c.root_created_at).join(
-            cte, child.parent_task_id == cte.c.id
-        )
-        return cte.union_all(recursive)
-
-    async def list_by_team(
-        self,
-        team: Team,
-        status: TaskStatus | None = None,
-        limit: int = 100,
-    ) -> list[TaskTable]:
-        """List tasks for a team, ordered by priority, sequence, created_at."""
-        query = select(TaskTable).where(TaskTable.team == team)
-
-        if status:
-            query = query.where(TaskTable.status == status)
-
-        query = query.order_by(
-            TaskTable.priority,
-            TaskTable.sequence,
-            TaskTable.created_at,
-        )
-        query = query.limit(limit)
-
-        result = await self.session.execute(query)
-        return list(result.scalars().all())
-
-    async def list_by_assignee(
-        self,
-        agent_id: UUID,
-        status: TaskStatus | None = None,
-    ) -> list[TaskTable]:
-        """List tasks assigned to an agent, oldest eligible first."""
-        query = select(TaskTable).where(TaskTable.assigned_to == agent_id)
-
-        if status:
-            query = query.where(TaskTable.status == status)
-
-        query = self.fifo_order(query)
-
-        result = await self.session.execute(query)
-        return list(result.scalars().all())
-
-    async def list_by_team_or_assignee(
-        self,
-        team: Team | None = None,
-        agent_id: UUID | None = None,
-        status: TaskStatus | None = None,
-    ) -> list[TaskTable]:
-        """
-        List tasks by team OR assignee.
-
-        Useful for finding tasks an agent could work on (their assigned tasks
-        or unassigned tasks in their team).
-        """
-        conditions = []
-
-        if team:
-            conditions.append(
-                and_(TaskTable.team == team, TaskTable.assigned_to.is_(None))
-            )
-        if agent_id:
-            conditions.append(TaskTable.assigned_to == agent_id)
-
-        if not conditions:
-            return []
-
-        query = select(TaskTable).where(or_(*conditions))
-
-        if status:
-            query = query.where(TaskTable.status == status)
-
-        query = query.order_by(TaskTable.priority, TaskTable.created_at.desc())
-
-        result = await self.session.execute(query)
-        return list(result.scalars().all())
-
-    async def list_by_status(
-        self,
-        status: TaskStatus,
-        team: Team | None = None,
-    ) -> list[TaskTable]:
-        """List tasks by status, oldest eligible first."""
-        query = select(TaskTable).where(TaskTable.status == status)
-
-        if team:
-            query = query.where(TaskTable.team == team)
-
-        query = self.fifo_order(query)
-
-        result = await self.session.execute(query)
-        return list(result.scalars().all())
-
-    async def list_pending(
-        self,
-        team: Team | None = None,
-        filter_by_dependencies: bool = True,
-    ) -> list[TaskTable]:
-        """
-        List pending tasks (available to claim).
-
-        Args:
-            team: Filter by team
-            filter_by_dependencies: If True, exclude tasks with incomplete dependencies
-
-        Returns:
-            List of pending tasks, oldest eligible first (see fifo_order)
-        """
-        tasks = await self.list_by_status(TaskStatus.PENDING, team)
-
-        if not filter_by_dependencies:
-            return tasks
-
-        # Filter out tasks whose dependencies aren't complete
-        available_tasks = []
-        for task in tasks:
-            if not task.dependency_ids:
-                available_tasks.append(task)
-                continue
-
-            # Check if all dependencies are complete
-            deps_result = await self.session.execute(
-                select(TaskTable.status).where(TaskTable.id.in_(task.dependency_ids))
-            )
-            dep_statuses = deps_result.scalars().all()
-
-            # All dependencies must be COMPLETED or CANCELLED
-            terminal_statuses = {TaskStatus.COMPLETED, TaskStatus.CANCELLED}
-            if all(s in terminal_statuses for s in dep_statuses):
-                available_tasks.append(task)
-
-        return available_tasks
-
-    async def list_blocked(self, team: Team | None = None) -> list[TaskTable]:
-        """List blocked tasks."""
-        return await self.list_by_status(TaskStatus.BLOCKED, team)
-
-    async def list_awaiting_qa(self, team: Team | None = None) -> list[TaskTable]:
-        """List tasks awaiting QA review."""
-        return await self.list_by_status(TaskStatus.AWAITING_QA, team)
-
-    async def list_awaiting_docs(self, team: Team | None = None) -> list[TaskTable]:
-        """List tasks awaiting documentation."""
-        return await self.list_by_status(TaskStatus.AWAITING_DOCUMENTATION, team)
-
-    async def list_awaiting_pm_review(
-        self, team: Team | None = None
-    ) -> list[TaskTable]:
-        """List tasks awaiting PM review."""
-        return await self.list_by_status(TaskStatus.AWAITING_PM_REVIEW, team)
-
-    async def list_awaiting_ceo_approval(self) -> list[TaskTable]:
-        """List tasks awaiting CEO approval (org-wide, no team filter)."""
-        return await self.list_by_status(TaskStatus.AWAITING_CEO_APPROVAL)
-
-    async def list_strategic_for_board(self) -> list[TaskTable]:
-        """Root tasks (no parent) in awaiting_pm_review with strategic nature.
-
-        Strategic = non-technical roots: product strategy, marketing, vision —
-        the work the Board (Product Owner, Head Marketing) curates before
-        escalating to CEO. The codebase models nature as a binary
-        TECHNICAL/NON_TECHNICAL split, so non_technical is the strategic-board
-        bucket.
-        """
-        query = select(TaskTable).where(
-            TaskTable.parent_task_id.is_(None),
-            TaskTable.status == TaskStatus.AWAITING_PM_REVIEW,
-            TaskTable.nature == TaskNature.NON_TECHNICAL,
-        )
-        query = self.fifo_order(query)
-        result = await self.session.execute(query)
-        return list(result.scalars().all())
-
-    async def list_long_running_blocked(
-        self, *, threshold_minutes: int = 30, ledger: UptimeLedger | None = None
-    ) -> list[TaskTable]:
-        """Tasks in 'blocked' state whose updated_at is older than threshold_minutes.
-
-        Surfaces anomalies for the Auditor to observe. Most-stale first, ordered by
-        updated_at ascending so the oldest blocker is at the head of the list.
-        This is deliberately NOT fifo_order: staleness, not creation time, is
-        the anomaly signal. Priority is still dropped from the tiebreak.
-
-        The SQL cutoff is a wall-clock superset; a task blocked right before
-        a long fleet pause hasn't actually sat blocked for
-        ``threshold_minutes`` of active time yet, so a ledger (the caller's
-        own ``ledger``, or one self-loaded here when there's a candidate to
-        score) drops those in Python afterward. No ledger available (self-
-        load failure, or none passed and none loadable) falls back to the
-        SQL result as-is (today's behaviour).
-        """
-        now = datetime.now(UTC)
-        cutoff = now - timedelta(minutes=threshold_minutes)
-        query = (
-            select(TaskTable)
-            .where(
-                TaskTable.status == TaskStatus.BLOCKED,
-                TaskTable.updated_at.is_not(None),
-                TaskTable.updated_at < cutoff,
-            )
-            .order_by(
-                TaskTable.updated_at.asc(),
-                TaskTable.created_at.asc(),
-                TaskTable.id.asc(),
-            )
-        )
-        result = await self.session.execute(query)
-        rows = list(result.scalars().all())
-        if not rows:
-            return rows
-        if ledger is None:
-            ledger = await self._load_uptime_ledger(now)
-        if ledger is None:
-            return rows
-        threshold = timedelta(minutes=threshold_minutes)
-        return [
-            t
-            for t in rows
-            if t.updated_at is not None
-            and ledger.active_elapsed(t.updated_at, now) >= threshold
-        ]
-
     async def add_dependency(self, task_id: UUID, depends_on_id: UUID) -> bool:
         """Append a dependency to a task WITHOUT changing its status.
 
@@ -10420,104 +11021,6 @@ class TaskService(BaseService):
             if dep_status not in terminal
         ]
 
-    async def project_month_spend_usd(self, project_id: UUID) -> float:
-        """This calendar month's summed agent-spawn cost for a project's tasks.
-
-        Backs the claim-time monthly-budget guard (``ROBOCO_TASK_BUDGETS_ENABLED``).
-        ``agent_spawn_sessions.task_id`` is a plain ``String(36)``, not a real
-        FK (see ``AgentSpawnSessionTable``), so the join casts ``tasks.id`` to
-        text. A still-open session's ``estimated_cost_usd`` stays null until
-        close (``AgentOrchestrator._finalize_spawn_session``) — summing that
-        column alone undercounts N parallel long-running sessions as $0 while
-        they're open, which is exactly the case a claim-time budget guard must
-        not miss. So this fetches per-row token/cost columns (one query, no
-        server-side SUM) and prices any still-open row from its periodically-
-        refreshed token counts via the same ``calculate_cost`` the
-        orchestrator's task-budget sweep uses (``_task_spend_usd``).
-
-        Month attribution is deliberately ``started_at``-bucketed: a session
-        that starts in one calendar month and closes in the next counts
-        entirely against its START month, never split pro-rata across the
-        boundary. Accepted simplification — a claim-time guard only needs to
-        be roughly current, not a settled ledger; the tiny sliver of a
-        month-spanning session's tail is a rounding error against a monthly
-        cap, not a correctness bug.
-        """
-        from roboco.billing.pricing import calculate_cost
-
-        month_start = datetime.now(UTC).replace(
-            day=1, hour=0, minute=0, second=0, microsecond=0
-        )
-        task_id_str = cast("Any", TaskTable.id).cast(String)
-        result = await self.session.execute(
-            select(
-                AgentSpawnSessionTable.estimated_cost_usd,
-                AgentSpawnSessionTable.ended_at,
-                AgentSpawnSessionTable.model,
-                AgentSpawnSessionTable.tokens_input,
-                AgentSpawnSessionTable.tokens_output,
-                AgentSpawnSessionTable.tokens_cache_read,
-                AgentSpawnSessionTable.tokens_cache_write,
-            )
-            .select_from(AgentSpawnSessionTable)
-            .join(TaskTable, task_id_str == AgentSpawnSessionTable.task_id)
-            .where(
-                TaskTable.project_id == project_id,
-                AgentSpawnSessionTable.started_at >= month_start,
-            )
-        )
-        total = 0.0
-        for row in result.all():
-            if row.estimated_cost_usd is not None:
-                total += row.estimated_cost_usd
-            elif row.ended_at is None:
-                total += calculate_cost(
-                    model=row.model,
-                    tokens_input=row.tokens_input,
-                    tokens_output=row.tokens_output,
-                    tokens_cache_read=row.tokens_cache_read,
-                    tokens_cache_write=row.tokens_cache_write,
-                )
-        return total
-
-    async def task_spend_usd(self, task_id: UUID) -> float:
-        """Total agent-spawn spend for one task: closed sessions'
-        ``estimated_cost_usd`` + the live cost of any still-open session.
-
-        Scoped to one task instead of a project+month — otherwise identical
-        to ``project_month_spend_usd``'s open-session handling: a still-open
-        session's cost stays null until close, so it's priced from its
-        periodically-refreshed token counts via ``calculate_cost``. Backs the
-        orchestrator's per-task budget sweep and ``unblock``'s budget-breach
-        re-check (both need "is this task still over its own cap").
-        """
-        from roboco.billing.pricing import calculate_cost
-
-        rows = (
-            (
-                await self.session.execute(
-                    select(AgentSpawnSessionTable).where(
-                        AgentSpawnSessionTable.task_id == str(task_id)
-                    )
-                )
-            )
-            .scalars()
-            .all()
-        )
-        total = 0.0
-        for row in rows:
-            if row.estimated_cost_usd is not None:
-                total += row.estimated_cost_usd
-            elif row.ended_at is None:
-                total += calculate_cost(
-                    model=row.model,
-                    tokens_input=row.tokens_input,
-                    tokens_output=row.tokens_output,
-                    tokens_cache_read=row.tokens_cache_read,
-                    tokens_cache_write=row.tokens_cache_write,
-                )
-        return total
-
     async def inherit_unmet_dependencies(
         self, subtask_id: UUID, parent_id: UUID
     ) -> None:
@@ -10653,134 +11156,6 @@ class TaskService(BaseService):
     # =========================================================================
     # STATISTICS
     # =========================================================================
-
-    async def count_by_status(self, team: Team | None = None) -> dict[str, int]:
-        """Count tasks by status."""
-        query = select(
-            TaskTable.status,
-            func.count(TaskTable.id),
-        ).group_by(TaskTable.status)
-
-        if team:
-            query = query.where(TaskTable.team == team)
-
-        result = await self.session.execute(query)
-        return {row[0].value: row[1] for row in result.all()}
-
-    async def get_delivery_stats_30d(self) -> dict[str, Any]:
-        """Return completed-task count and median lead time for real delivery
-        work completed in the last 30 days.
-
-        The population is scoped to one well-defined unit per piece of work —
-        **root delivery tasks** (``parent_task_id IS NULL``) — so a Main-PM
-        coordination root is counted once, never again for each of its cell
-        tasks and dev subtasks. For a MegaTask, that root is the branchless
-        umbrella (its root-subtasks are children of the umbrella and are
-        excluded); a single-task delivery's root is the coordination root
-        itself.
-
-        It further excludes non-delivery rows that would otherwise pollute
-        "intake to merged" with completions that carry no real delivery
-        lead time:
-
-        - ``task_type == administrative`` — process/administrative tasks and
-          every board-program exploration cycle (board_roadmap,
-          board_pest_control, ...), which complete the moment a Board role
-          files its proposal, not when anything ships.
-        - :data:`LEAD_TIME_EXCLUDED_SOURCES` — held CEO-approval drafts (X
-          posts, video posts, release proposals) that complete the instant
-          the CEO approves them, seconds after being drafted.
-
-        ``completed_30d`` and ``median_lead_time_hours`` are computed from
-        the SAME filtered row set, so the two figures always describe the
-        same population.
-
-        Queries tasks WHERE status=completed AND completed_at IS NOT NULL AND
-        completed_at >= now()-30d, plus the scoping above.  Lead time is
-        ``completed_at - created_at`` expressed in hours; the median is
-        computed with :func:`statistics.median`.
-
-        Returns::
-
-            {
-                "completed_30d": int,
-                "median_lead_time_hours": float | None,  # None when no tasks
-            }
-        """
-        import statistics
-
-        cutoff = datetime.now(UTC) - timedelta(days=30)
-        result = await self.session.execute(
-            select(TaskTable.created_at, TaskTable.completed_at).where(
-                TaskTable.status == TaskStatus.COMPLETED,
-                TaskTable.completed_at.is_not(None),
-                TaskTable.completed_at >= cutoff,
-                TaskTable.parent_task_id.is_(None),
-                TaskTable.task_type != TaskType.ADMINISTRATIVE,
-                TaskTable.source.notin_(LEAD_TIME_EXCLUDED_SOURCES),
-            )
-        )
-        rows = result.all()
-        completed_30d = len(rows)
-        median_lead_time_hours: float | None = None
-        if rows:
-            lead_times = [
-                (row.completed_at - row.created_at).total_seconds() / 3600
-                for row in rows
-            ]
-            median_lead_time_hours = float(statistics.median(lead_times))
-        return {
-            "completed_30d": completed_30d,
-            "median_lead_time_hours": median_lead_time_hours,
-        }
-
-    async def count_by_team(self) -> dict[str, int]:
-        """Count tasks by team."""
-        result = await self.session.execute(
-            select(
-                TaskTable.team,
-                func.count(TaskTable.id),
-            ).group_by(TaskTable.team)
-        )
-        return {row[0].value: row[1] for row in result.all()}
-
-    async def get_active_count(self, agent_id: UUID) -> int:
-        """Get count of active tasks for an agent."""
-        result = await self.session.execute(
-            select(func.count(TaskTable.id)).where(
-                and_(
-                    TaskTable.assigned_to == agent_id,
-                    TaskTable.status.in_(
-                        [
-                            TaskStatus.CLAIMED,
-                            TaskStatus.IN_PROGRESS,
-                            TaskStatus.VERIFYING,
-                        ]
-                    ),
-                )
-            )
-        )
-        return result.scalar() or 0
-
-    async def resolve_agent_id(self, agent_id_str: str) -> UUID:
-        """Resolve a UUID-string-or-slug into an agent UUID.
-
-        Used by claim-style endpoints where callers may pass either form.
-        Raises NotFoundError if the slug doesn't exist. Exists on the service
-        so route modules never issue raw AgentTable queries.
-        """
-        try:
-            return UUID(agent_id_str)
-        except ValueError:
-            pass
-
-        result = await self.session.execute(
-            select(AgentTable.id).where(AgentTable.slug == agent_id_str)
-        )
-        agent_uuid = result.scalar_one_or_none()
-        if not agent_uuid:
-            raise NotFoundError(resource_type="Agent", resource_id=agent_id_str)
-        return UUID(str(agent_uuid))
 
     # =========================================================================
     # ROUTE-LEVEL ORCHESTRATION
@@ -11407,34 +11782,6 @@ class TaskService(BaseService):
             await self.add_progress(task_id, agent_id, notes)
         return await self.submit_for_qa(task_id, agent_role="developer")
 
-    async def list_blocked_for_team(self, team: Team) -> list[TaskTable]:
-        """List blocked tasks for a single team."""
-        return await self.list_blocked(team=team)
-
-    async def list_blocked_all_teams(self) -> list[TaskTable]:
-        """List blocked tasks across all teams."""
-        return await self.list_blocked()
-
-    async def list_awaiting_pm_review_for_team(self, team: Team) -> list[TaskTable]:
-        """List awaiting-PM-review tasks for a single team."""
-        return await self.list_awaiting_pm_review(team=team)
-
-    async def list_assigned_for_agent(self, agent_id: UUID) -> list[TaskTable]:
-        """Active (non-terminal) tasks currently assigned to an agent.
-
-        Oldest-created first: give_me_work walks this list top-down, so
-        agents work their queue FIFO (the updated_at-desc ordering it
-        replaced surfaced the most-recently-touched task first, burying
-        older assigned work).
-        """
-        query = select(TaskTable).where(
-            TaskTable.assigned_to == agent_id,
-            TaskTable.status.in_(self._AGENT_NON_TERMINAL_STATUSES),
-        )
-        query = self.fifo_order(query)
-        result = await self.session.execute(query)
-        return list(result.scalars().all())
-
     async def list_open_review_claims(self, agent_id: UUID) -> list[TaskTable]:
         """Tasks where the agent holds an OPEN specialized claim (QA / doc /
         PR review) but has not yet submitted the decision that closes it.
@@ -11550,228 +11897,6 @@ class TaskService(BaseService):
         task.claimed_at = cast("Any", None)
         task.last_heartbeat_at = cast("Any", None)
         await self.session.flush()
-
-    async def agent_for(self, agent_id: UUID) -> GatewayAgentView | None:
-        """Return a gateway-shaped view of the agent (DB + config derived).
-
-        Combines AgentTable's role/team with `agents_config`'s
-        escalation_target + skills so the Choreographer reads one object.
-        """
-        from roboco.agents_config import (
-            get_agent_skills,
-            get_escalation_target,
-        )
-
-        result = await self.session.execute(
-            select(AgentTable).where(AgentTable.id == agent_id)
-        )
-        agent = result.scalar_one_or_none()
-        if agent is None:
-            return None
-        slug = agent.slug
-        role_value = (
-            agent.role.value if hasattr(agent.role, "value") else str(agent.role)
-        )
-        team_value: str | None = None
-        if agent.team is not None:
-            team_value = (
-                agent.team.value if hasattr(agent.team, "value") else str(agent.team)
-            )
-        return GatewayAgentView(
-            id=UUID(str(agent.id)),
-            role=role_value,
-            team=team_value,
-            escalation_target=get_escalation_target(slug),
-            skills=get_agent_skills(slug),
-        )
-
-    async def _agent_with_role_and_team(
-        self, role: AgentRole, team: Team
-    ) -> AgentTable | None:
-        """Find an agent matching role + team."""
-        result = await self.session.execute(
-            select(AgentTable).where(
-                AgentTable.role == role,
-                AgentTable.team == team,
-            )
-        )
-        return result.scalars().first()
-
-    async def _agent_by_slug(self, slug: str) -> AgentTable | None:
-        """Find an agent by its exact slug."""
-        result = await self.session.execute(
-            select(AgentTable).where(AgentTable.slug == slug)
-        )
-        return result.scalar_one_or_none()
-
-    async def qa_agent_for_team(self, team: Team) -> AgentTable | None:
-        """Find the QA agent for a team."""
-        return await self._agent_with_role_and_team(AgentRole.QA, team)
-
-    async def pr_reviewer_for(self, task: TaskTable) -> AgentTable | None:
-        """The in-path PR-review-gate reviewer for an assembled-PR task.
-
-        Mirrors ``qa_agent_for_team``: a cell-team task (backend/frontend/
-        ux_ui) - the cell→root gate - goes to that cell's dedicated
-        reviewer (be/fe/ux-pr-reviewer); anything else (the root→master
-        gate) goes to the shared board-level ``pr-reviewer-1``. ``pr-
-        reviewer-1`` and the overflow ``cell-pr-reviewer-2`` are both
-        board-team PR_REVIEWER rows, so the root case is resolved by slug
-        rather than role+team to avoid picking either one arbitrarily. The
-        orchestrator's ``_dispatch_pr_gate_work`` mirrors this exact
-        selection so the assignee set here and the reviewer it spawns can
-        never disagree (its own overflow fallback reassigns when it
-        legitimately spawns ``cell-pr-reviewer-2`` instead).
-        """
-        try:
-            team = Team(task.team) if task.team else None
-        except ValueError:
-            team = None
-        if team in (Team.BACKEND, Team.FRONTEND, Team.UX_UI):
-            return await self._agent_with_role_and_team(AgentRole.PR_REVIEWER, team)
-        return await self._agent_by_slug("pr-reviewer-1")
-
-    async def documenter_for_team(self, team: Team) -> AgentTable | None:
-        """Find the Documenter agent for a team."""
-        return await self._agent_with_role_and_team(AgentRole.DOCUMENTER, team)
-
-    async def cell_pm_for_team(self, team: Team) -> AgentTable | None:
-        """Find the Cell PM for a team."""
-        return await self._agent_with_role_and_team(AgentRole.CELL_PM, team)
-
-    async def main_pm_agent(self) -> AgentTable | None:
-        """Find the Main PM (org-wide; takes the earliest-created if many)."""
-        result = await self.session.execute(
-            select(AgentTable)
-            .where(AgentTable.role == AgentRole.MAIN_PM)
-            .order_by(AgentTable.created_at)
-            .limit(1)
-        )
-        return result.scalar_one_or_none()
-
-    async def get_active_task_for_agent(self, agent_id: UUID) -> TaskTable | None:
-        """Most-recently-updated task currently being worked by the agent."""
-        query = (
-            select(TaskTable)
-            .where(
-                TaskTable.assigned_to == agent_id,
-                TaskTable.status.in_(self._DEV_ACTIVE_STATUSES),
-            )
-            .order_by(TaskTable.updated_at.desc().nullslast())
-            .limit(1)
-        )
-        result = await self.session.execute(query)
-        return result.scalar_one_or_none()
-
-    async def get_journal_context_task_for_agent(
-        self, agent_id: UUID
-    ) -> TaskTable | None:
-        """Most-recently-updated task the agent owns for journal/content context.
-
-        Wider than ``get_active_task_for_agent`` — includes BLOCKED, PAUSED,
-        and NEEDS_REVISION so journal entries written while stuck still
-        get the task_id auto-attached. Dogfooding surfaced the bug: PMs
-        wrote decisions during blocked state, auto-injection returned
-        None, entries persisted with task_id=NULL, the C8 tracing gate
-        never saw them, agents spiraled forever.
-        """
-        query = (
-            select(TaskTable)
-            .where(
-                TaskTable.assigned_to == agent_id,
-                TaskTable.status.in_(self._JOURNAL_CONTEXT_STATUSES),
-            )
-            .order_by(TaskTable.updated_at.desc().nullslast())
-            .limit(1)
-        )
-        result = await self.session.execute(query)
-        return result.scalar_one_or_none()
-
-    async def list_pending_for_agent(self, agent_id: UUID) -> list[TaskTable]:
-        """Tasks assigned to this agent that are still in PENDING status.
-
-        Pre-gateway parity: give_me_work missed the
-        pre-assigned case before this. PMs whose root was seeded with
-        assigned_to=<them> + status=pending got 'no work' until they
-        triage()'d explicitly.
-
-        A pre-assigned task with unmet (non-terminal) dependencies is held
-        back: offering it would let the agent claim and work ahead of a
-        dependency that has not resolved (e.g. a frontend dev coding before
-        the UX/UI design lands). The pre-assigned path bypasses
-        `list_pending(filter_by_dependencies=True)`, so the dependency gate
-        must be applied here too — and so must the sequence claim-gate
-        (`_claim_blocked_by_sequence`): without it, give_me_work offered a
-        sequence-held pre-assigned task that `i_will_work_on`'s claim() then
-        rejected (the give_me_work/i_will_work_on disagreement this closes
-        on the PENDING side; `_drop_dependency_held` closes the same class
-        of gap for the `list_assigned_for_agent` NEEDS_REVISION fallback).
-
-        F059: a self-heal fix task held for the CEO's Approve-&-Start
-        (``source=self_heal`` + ``confirmed_by_human=False``) is NOT offered
-        here — an already-alive PM must not grab it via give_me_work before the
-        CEO opens the gate. The hold is scoped to self-heal: ordinary delegated
-        subtasks default to ``confirmed_by_human=False`` (the PM delegated them,
-        which is itself the authorization to start) and MUST still be offered.
-        The same hold covers every ``X_SOURCES`` member (``x_post``/``x_reply``/
-        ``x_feature``) — CEO-gated X drafts owned by the Secretary, who has no
-        ``give_me_work`` verb, but held here too for the same belt-and-suspenders
-        reason. ``VIDEO_HELD_SOURCES`` (``video_post``) gets the identical
-        treatment; the video-authoring source (``video``) is NOT held — it is
-        pre-assigned to a ux-dev and must still be offered like any other
-        delegated code task. A ``vault_note`` draft is NOT held either — like a
-        prompter board draft, its board assignment IS the gate (board roles have
-        no ``give_me_work``), so no source exclusion is needed.
-
-        Oldest eligible first (see fifo_order); the loop below still
-        applies the dependency and sequence claim-gates as filters.
-        """
-        query = select(TaskTable).where(
-            TaskTable.assigned_to == agent_id,
-            TaskTable.status == TaskStatus.PENDING,
-            or_(
-                TaskTable.source.notin_(
-                    (SELF_HEAL_SOURCE, *X_SOURCES, *VIDEO_HELD_SOURCES)
-                ),
-                TaskTable.confirmed_by_human.is_(True),
-            ),
-        )
-        query = self.fifo_order(query)
-        result = await self.session.execute(query)
-        tasks = list(result.scalars().all())
-        available: list[TaskTable] = []
-        for task in tasks:
-            if await self.unmet_dependency_ids(list(task.dependency_ids or [])):
-                continue
-            if await self._claim_blocked_by_sequence(task) is not None:
-                continue
-            available.append(task)
-        return available
-
-    async def list_paused_for_agent(self, agent_id: UUID) -> list[TaskTable]:
-        """Paused tasks assigned to the agent, oldest eligible first."""
-        query = select(TaskTable).where(
-            TaskTable.assigned_to == agent_id,
-            TaskTable.status == TaskStatus.PAUSED,
-        )
-        query = self.fifo_order(query)
-        result = await self.session.execute(query)
-        return list(result.scalars().all())
-
-    async def list_awaiting_main_pm_all(self) -> list[TaskTable]:
-        """Root tasks (no parent) awaiting PM review across all teams.
-
-        Used by Main PM triage — root tasks have escalated past their
-        cell PMs and need final approval/escalation to CEO. Oldest
-        eligible first (see fifo_order).
-        """
-        query = select(TaskTable).where(
-            TaskTable.parent_task_id.is_(None),
-            TaskTable.status == TaskStatus.AWAITING_PM_REVIEW,
-        )
-        query = self.fifo_order(query)
-        result = await self.session.execute(query)
-        return list(result.scalars().all())
 
     async def all_subtasks_terminal(self, task_id: UUID) -> bool:
         """True iff every direct subtask is in a terminal status.
@@ -13567,27 +13692,6 @@ class TaskService(BaseService):
         )
         return task if applied else None
 
-    async def _is_board_advisory_agent(self, agent_id: UUID) -> bool:
-        """True if ``agent_id`` is a board/advisory role (PO / marketing / auditor)."""
-        result = await self.session.execute(
-            select(AgentTable.role).where(AgentTable.id == agent_id)
-        )
-        role = result.scalar_one_or_none()
-        return role in _BOARD_ADVISORY_ROLES
-
-    async def _is_main_pm_agent(self, agent_id: UUID) -> bool:
-        """True if ``agent_id`` is the Main PM role (the coordinator with no code verb).
-
-        Twin of ``_is_board_advisory_agent`` for the impossibility invariant —
-        consulted by the escalation / reassign / claim guards that divert or
-        refuse a ``main_pm`` + ``code`` hand-off to a Main-PM target.
-        """
-        result = await self.session.execute(
-            select(AgentTable.role).where(AgentTable.id == agent_id)
-        )
-        role = result.scalar_one_or_none()
-        return role == AgentRole.MAIN_PM
-
     async def _divert_owned_task_to_pool(self, task: TaskTable, *, note: str) -> None:
         """Clear ownership and return ``task`` to PENDING for a role-matched claim.
 
@@ -13709,74 +13813,6 @@ class TaskService(BaseService):
         # apply_escalation refuses terminal tasks (F043); mirror escalate()'s
         # contract so the gateway emits a clean invalid_state envelope.
         return task if applied else None
-
-    async def list_in_progress_for_agent(self, agent_id: UUID) -> list[TaskTable]:
-        """Tasks the agent is still on the hook for: every status
-        ``already_active_guard`` counts as actively worked (claimed,
-        in_progress, verifying, blocked), not only ``in_progress``.
-
-        F018: ``blocked`` is included because a blocked task is still owned and
-        ``unblock_with_restore`` resumes it to ``in_progress``; the claim guard
-        (``already_active_guard``) must see it or a dev could claim a second
-        task while blocked and end up with two ``in_progress`` tasks once the
-        first is unblocked. The same holds for a task escalated AWAY from the
-        agent: escalation moves ``assigned_to`` to the resolver but snapshots
-        the agent into ``pre_block_assignee``, which ``unblock_with_restore``
-        hands the task straight back to (live 2026-10-28: be-dev-1 escalated
-        11a83407, claimed f5d66db6 a minute later, and the PM's restore left it
-        two in_progress tasks). ``claimed`` / ``verifying`` were already in the
-        guard's status set but never fetched here, so a dev holding a claimed,
-        not-yet-started task could start a second one.
-
-        Callers that only want pausable (in_progress) tasks — the
-        ``i_am_idle`` auto-pause path — filter on ``status`` themselves
-        (``pause()`` no-ops on non-in_progress regardless).
-        """
-        query = (
-            select(TaskTable)
-            .where(
-                or_(
-                    and_(
-                        TaskTable.assigned_to == agent_id,
-                        TaskTable.status.in_(
-                            [
-                                TaskStatus.CLAIMED,
-                                TaskStatus.IN_PROGRESS,
-                                TaskStatus.VERIFYING,
-                                TaskStatus.BLOCKED,
-                            ]
-                        ),
-                    ),
-                    and_(
-                        TaskTable.pre_block_assignee == agent_id,
-                        TaskTable.status == TaskStatus.BLOCKED,
-                    ),
-                )
-            )
-            .order_by(TaskTable.priority, TaskTable.updated_at.desc())
-        )
-        result = await self.session.execute(query)
-        return list(result.scalars().all())
-
-    async def held_task_blocking_claim(
-        self, agent_id: UUID, task_id: UUID
-    ) -> TaskTable | None:
-        """The held task that keeps ``agent_id`` from starting ``task_id``.
-
-        The single-active-task rule the gateway's ``already_active_guard`` and
-        ``paused_tasks_guard`` apply to a developer's own ``i_will_work_on``
-        (an actively worked task first, else a paused one, never ``task_id``
-        itself), as one service predicate. The claim chokepoint, the
-        dispatcher's spawn/claim pre-filters and the PM ``reassign`` verb ask
-        it, so none of them hands a developer work it would be refused.
-        """
-        for held in await self.list_in_progress_for_agent(agent_id):
-            if held.id != task_id:
-                return held
-        for held in await self.list_paused_for_agent(agent_id):
-            if held.id != task_id:
-                return held
-        return None
 
     async def pause_for_agent(
         self, agent_id: UUID, task_id: UUID, agent_role: str | None = None
