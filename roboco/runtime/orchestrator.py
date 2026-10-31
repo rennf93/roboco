@@ -1383,7 +1383,10 @@ from roboco.runtime.engines.dispatch_work import (
 from roboco.runtime.engines.entire_trails import EntireTrailsEngine
 from roboco.runtime.engines.env_sync import EnvSyncEngine
 from roboco.runtime.engines.interactive_sessions import InteractiveSessionsEngine
-from roboco.runtime.engines.rate_limit_probe import RateLimitProbeEngine
+from roboco.runtime.engines.rate_limit_probe import (
+    RateLimitProbeEngine,
+    WaitResolutionEngine,
+)
 from roboco.runtime.engines.reconcile import ReconcileEngine
 from roboco.runtime.engines.release_manager import ReleaseManagerEngine
 from roboco.runtime.engines.spawn_config import (
@@ -1509,6 +1512,7 @@ class AgentOrchestrator(
     UsageTokensEngine,
     VaultEngine,
     VideoRenderEngine,
+    WaitResolutionEngine,
     WedgedAgentEngine,
     XMentionsEngine,
 ):

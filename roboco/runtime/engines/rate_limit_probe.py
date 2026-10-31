@@ -1,7 +1,7 @@
 """Rate limits: probing a parked provider, and resuming the agents waiting on
 it once the limit lifts.
 
-Engine mixin composed into AgentOrchestrator."""
+Engine mixins composed into AgentOrchestrator."""
 
 from __future__ import annotations
 
@@ -35,235 +35,9 @@ else:
 
 
 class RateLimitProbeEngine(_Base):
-    """Rate limits: the probe loop and each pass over parked providers, the
-    probe itself, resolving a wait by resuming its agent (with the parking
-    grades and the liveness confirmation), and the CEO alert for a
-    persistent limit."""
-
-    async def _delete_waiting_record(self, agent_id: str) -> None:
-        """Delete a persisted waiting record when its wait resolves."""
-        try:
-            from sqlalchemy import delete
-
-            from roboco.db.base import get_session_factory
-            from roboco.db.tables import WaitingRecordTable
-
-            session_factory = get_session_factory()
-            async with session_factory() as db:
-                await db.execute(
-                    delete(WaitingRecordTable).where(
-                        WaitingRecordTable.agent_id == agent_id
-                    )
-                )
-                await db.commit()
-        except Exception as e:
-            logger.error(
-                "Failed to delete waiting record",
-                agent_id=agent_id,
-                error=str(e),
-            )
-
-    async def resolve_wait(
-        self,
-        agent_id: str,
-        resolution: dict[str, Any],
-    ) -> AgentInstance | None:
-        """
-        Resolve a wait condition and respawn the agent.
-
-        Args:
-            agent_id: The waiting agent
-            resolution: Details about the resolution
-
-        Returns:
-            Respawned AgentInstance or None
-        """
-        if agent_id not in self._waiting_records:
-            return None
-
-        # #71: a lingering record (a prior resume whose liveness confirmation
-        # hasn't torn it down yet) must not double-spawn an already-active agent.
-        if self._is_agent_active(agent_id):
-            return None
-
-        record = self._waiting_records[agent_id]
-
-        # Generate resume prompt
-        resume_prompt = self._generate_resume_prompt(record, resolution)
-        git_context = await self._fresh_or_prior_git_context(record.task_id, agent_id)
-
-        # Respawn FIRST, then tear down the record only once a container actually
-        # launched. The old order deleted the record (in-memory + durable) before
-        # the spawn: a re-park during the resume window — the provider's rate limit
-        # lifts then immediately re-limits, or a second provider limit lands —
-        # bails spawn with an OFFLINE instance (the parked-provider short-circuit),
-        # and deleting the record first orphaned the agent. With no record the
-        # probe-resume loop can never revive it and the spawn gate bails every
-        # tick, so the agent is lost until the operator intervenes. Keeping the
-        # record through a bail lets the next probe-success re-attempt the resume.
-        try:
-            instance = await self.spawn_agent(
-                agent_id=agent_id,
-                initial_prompt=resume_prompt,
-                task_id=record.task_id,
-                git_context=git_context,
-                spawned_by="resolve_wait",
-            )
-        except Exception:
-            # Spawn failed (e.g. readiness refused → task auto-blocked). Tear
-            # down the record so the probe loop doesn't keep re-resuming a task
-            # that has moved to a different state; the blocked-task path takes
-            # over. This matches the pre-fix behavior where the record was
-            # deleted before the spawn attempt.
-            del self._waiting_records[agent_id]
-            await self._delete_waiting_record(agent_id)
-            raise
-        if instance is None or instance.state == AgentState.OFFLINE:
-            # Spawn bailed without launching (provider re-parked). Keep the record
-            # so the probe-resume loop re-attempts on the next clear. The bail is
-            # ALSO the parking pilot's repeated-failure evidence: the limit came
-            # back, so the escalate option was true for this subject's unlabeled
-            # park decisions (spec 12.1).
-            await self._stamp_parking_re_limit(record, agent_id)
-            return instance
-        if record.waiting_for == "rate_limit_lifted":
-            # #71: don't tear down the record on a bare launch — a container that
-            # launches then dies immediately would orphan the task until the
-            # reaper's TTL. Keep the record past the launch and confirm liveness
-            # in the background; if the container dies the probe-resume orphan
-            # fallback re-resumes on the next tick instead of waiting the full TTL.
-            # The successful resume is ALSO the parking pilot's lift evidence:
-            # the latency split grades retry_soon vs park_standard (spec 12.1).
-            await self._stamp_parking_lift(record, agent_id)
-            self._schedule_bg(self._confirm_resume_liveness(agent_id))
-            return instance
-        del self._waiting_records[agent_id]
-        await self._delete_waiting_record(agent_id)
-        return instance
-
-    def _parking_stamp_context(self, record: Any) -> tuple[str, str] | None:
-        """(provider, kind) for a rate-lift waiting record, or None when
-        this wait is not a provider rate limit or carries no provider."""
-        if record.waiting_for != "rate_limit_lifted":
-            return None
-        context = record.context or {}
-        provider = str(context.get("provider") or "")
-        if not provider:
-            return None
-        return provider, str(context.get("kind") or "")
-
-    async def _stamp_parking_lift(self, record: Any, agent_id: str) -> None:
-        """Grade this subject's unlabeled parking rows on a successful
-        resume: lift latency splits retry_soon vs park_standard."""
-        stamped = self._parking_stamp_context(record)
-        if stamped is None:
-            return
-        try:
-            from roboco.services.decisions import trajectory
-
-            await trajectory.stamp_parking_lift(stamped[0], stamped[1], agent_id)
-        except Exception as exc:
-            logger.debug("parking lift stamp failed", agent_id=agent_id, error=str(exc))
-
-    async def _stamp_parking_re_limit(self, record: Any, agent_id: str) -> None:
-        """Grade this subject's unlabeled parking rows when a resume bails
-        on a re-limit: the escalate option was true."""
-        stamped = self._parking_stamp_context(record)
-        if stamped is None:
-            return
-        try:
-            from roboco.services.decisions import trajectory
-
-            await trajectory.stamp_parking_re_limit(stamped[0], stamped[1], agent_id)
-        except Exception as exc:
-            logger.debug(
-                "parking re-limit stamp failed", agent_id=agent_id, error=str(exc)
-            )
-
-    async def _confirm_resume_liveness(self, agent_id: str) -> None:
-        """Tear down a resumed agent's WaitingRecord once it is confirmed alive.
-
-        A container that launches then dies immediately must not strand its task
-        until the reaper's TTL: the record is kept past the launch (``resolve_wait``
-        schedules this) and deleted only once the agent is still active past a
-        short confirmation window. If the container died, the record survives so
-        the probe-resume orphan fallback re-resumes on the next tick (#71). The
-        confirmation reads ``_is_agent_active`` — the same signal the spawn gate
-        trusts — so a container the health loop has marked dead keeps its record.
-        Best-effort: a delete error is swallowed (the in-memory record is gone
-        either way once the process exits, and the orphan fallback is in-memory).
-        """
-        if agent_id not in self._waiting_records:
-            return
-        await asyncio.sleep(self._resume_confirm_delay)
-        if not self._is_agent_active(agent_id):
-            # Container died — keep the record for the orphan fallback
-            return
-        del self._waiting_records[agent_id]
-        try:
-            await self._delete_waiting_record(agent_id)
-        except Exception:
-            logger.warning(
-                "resume-liveness confirm failed to delete the durable record",
-                agent_id=agent_id,
-            )
-
-    def _generate_resume_prompt(
-        self,
-        record: WaitingRecord,
-        resolution: dict[str, Any],
-    ) -> str:
-        """Generate a resume prompt for a respawning agent."""
-        if record.waiting_for == "blocker_resolution":
-            return f"""
-You were working on TASK-{record.task_id} and got blocked.
-The blocker has been resolved: {resolution.get("details", "Resolved")}
-
-Resume by:
-1. Reading your checkpoint from .tasks/active/TASK-{record.task_id}/
-2. Call unblock("{record.task_id}")
-3. Continue from where you left off
-"""
-
-        elif record.waiting_for == "qa_result":
-            if resolution.get("passed"):
-                return f"""
-TASK-{record.task_id} has passed QA review.
-The task is now awaiting documentation.
-You may return to scanning for new work with give_me_work().
-"""
-            else:
-                return f"""
-TASK-{record.task_id} needs revision based on QA feedback.
-QA notes: {resolution.get("notes", "See task for details")}
-
-Resume by:
-1. Reading the QA feedback
-2. Updating your TODOs to address each issue
-3. Making the fixes
-4. Re-submitting for QA
-"""
-
-        elif record.waiting_for == "answer":
-            return f"""
-You asked a question about TASK-{record.task_id}:
-Your question: {record.context.get("question", "Unknown")}
-Answer received: {resolution.get("answer", "Unknown")}
-
-Resume by incorporating this information and continuing from where you stopped.
-"""
-
-        elif record.waiting_for == "assignment":
-            return f"""
-You have been assigned a new task: TASK-{resolution.get("task_id")}
-
-Start by:
-1. Review the task details provided in your briefing / context_briefing
-2. Follow the standard workflow: UNDERSTAND → PLAN → EXECUTE → VERIFY → NOTES
-"""
-
-        else:
-            return f"Resuming. Wait condition '{record.waiting_for}' resolved."
+    """The rate-limit probe: the loop and each pass over parked providers, a
+    free liveness probe per provider, lifting the limit on success, and the
+    CEO alert once failures reach the threshold."""
 
     async def _rate_limit_probe_loop(self) -> None:
         """Background loop: probe rate-limited providers every ~30 seconds.
@@ -595,3 +369,234 @@ Start by:
                     provider=provider,
                     error=str(e),
                 )
+
+
+class WaitResolutionEngine(_Base):
+    """Resolving an agent's wait: respawn it with a resume prompt, grade its
+    parking rows on the lift or a re-limit, and drop its waiting record once
+    it is confirmed alive."""
+
+    async def _delete_waiting_record(self, agent_id: str) -> None:
+        """Delete a persisted waiting record when its wait resolves."""
+        try:
+            from sqlalchemy import delete
+
+            from roboco.db.base import get_session_factory
+            from roboco.db.tables import WaitingRecordTable
+
+            session_factory = get_session_factory()
+            async with session_factory() as db:
+                await db.execute(
+                    delete(WaitingRecordTable).where(
+                        WaitingRecordTable.agent_id == agent_id
+                    )
+                )
+                await db.commit()
+        except Exception as e:
+            logger.error(
+                "Failed to delete waiting record",
+                agent_id=agent_id,
+                error=str(e),
+            )
+
+    async def resolve_wait(
+        self,
+        agent_id: str,
+        resolution: dict[str, Any],
+    ) -> AgentInstance | None:
+        """
+        Resolve a wait condition and respawn the agent.
+
+        Args:
+            agent_id: The waiting agent
+            resolution: Details about the resolution
+
+        Returns:
+            Respawned AgentInstance or None
+        """
+        if agent_id not in self._waiting_records:
+            return None
+
+        # #71: a lingering record (a prior resume whose liveness confirmation
+        # hasn't torn it down yet) must not double-spawn an already-active agent.
+        if self._is_agent_active(agent_id):
+            return None
+
+        record = self._waiting_records[agent_id]
+
+        # Generate resume prompt
+        resume_prompt = self._generate_resume_prompt(record, resolution)
+        git_context = await self._fresh_or_prior_git_context(record.task_id, agent_id)
+
+        # Respawn FIRST, then tear down the record only once a container actually
+        # launched. The old order deleted the record (in-memory + durable) before
+        # the spawn: a re-park during the resume window — the provider's rate limit
+        # lifts then immediately re-limits, or a second provider limit lands —
+        # bails spawn with an OFFLINE instance (the parked-provider short-circuit),
+        # and deleting the record first orphaned the agent. With no record the
+        # probe-resume loop can never revive it and the spawn gate bails every
+        # tick, so the agent is lost until the operator intervenes. Keeping the
+        # record through a bail lets the next probe-success re-attempt the resume.
+        try:
+            instance = await self.spawn_agent(
+                agent_id=agent_id,
+                initial_prompt=resume_prompt,
+                task_id=record.task_id,
+                git_context=git_context,
+                spawned_by="resolve_wait",
+            )
+        except Exception:
+            # Spawn failed (e.g. readiness refused → task auto-blocked). Tear
+            # down the record so the probe loop doesn't keep re-resuming a task
+            # that has moved to a different state; the blocked-task path takes
+            # over. This matches the pre-fix behavior where the record was
+            # deleted before the spawn attempt.
+            del self._waiting_records[agent_id]
+            await self._delete_waiting_record(agent_id)
+            raise
+        if instance is None or instance.state == AgentState.OFFLINE:
+            # Spawn bailed without launching (provider re-parked). Keep the record
+            # so the probe-resume loop re-attempts on the next clear. The bail is
+            # ALSO the parking pilot's repeated-failure evidence: the limit came
+            # back, so the escalate option was true for this subject's unlabeled
+            # park decisions (spec 12.1).
+            await self._stamp_parking_re_limit(record, agent_id)
+            return instance
+        if record.waiting_for == "rate_limit_lifted":
+            # #71: don't tear down the record on a bare launch — a container that
+            # launches then dies immediately would orphan the task until the
+            # reaper's TTL. Keep the record past the launch and confirm liveness
+            # in the background; if the container dies the probe-resume orphan
+            # fallback re-resumes on the next tick instead of waiting the full TTL.
+            # The successful resume is ALSO the parking pilot's lift evidence:
+            # the latency split grades retry_soon vs park_standard (spec 12.1).
+            await self._stamp_parking_lift(record, agent_id)
+            self._schedule_bg(self._confirm_resume_liveness(agent_id))
+            return instance
+        del self._waiting_records[agent_id]
+        await self._delete_waiting_record(agent_id)
+        return instance
+
+    def _parking_stamp_context(self, record: Any) -> tuple[str, str] | None:
+        """(provider, kind) for a rate-lift waiting record, or None when
+        this wait is not a provider rate limit or carries no provider."""
+        if record.waiting_for != "rate_limit_lifted":
+            return None
+        context = record.context or {}
+        provider = str(context.get("provider") or "")
+        if not provider:
+            return None
+        return provider, str(context.get("kind") or "")
+
+    async def _stamp_parking_lift(self, record: Any, agent_id: str) -> None:
+        """Grade this subject's unlabeled parking rows on a successful
+        resume: lift latency splits retry_soon vs park_standard."""
+        stamped = self._parking_stamp_context(record)
+        if stamped is None:
+            return
+        try:
+            from roboco.services.decisions import trajectory
+
+            await trajectory.stamp_parking_lift(stamped[0], stamped[1], agent_id)
+        except Exception as exc:
+            logger.debug("parking lift stamp failed", agent_id=agent_id, error=str(exc))
+
+    async def _stamp_parking_re_limit(self, record: Any, agent_id: str) -> None:
+        """Grade this subject's unlabeled parking rows when a resume bails
+        on a re-limit: the escalate option was true."""
+        stamped = self._parking_stamp_context(record)
+        if stamped is None:
+            return
+        try:
+            from roboco.services.decisions import trajectory
+
+            await trajectory.stamp_parking_re_limit(stamped[0], stamped[1], agent_id)
+        except Exception as exc:
+            logger.debug(
+                "parking re-limit stamp failed", agent_id=agent_id, error=str(exc)
+            )
+
+    async def _confirm_resume_liveness(self, agent_id: str) -> None:
+        """Tear down a resumed agent's WaitingRecord once it is confirmed alive.
+
+        A container that launches then dies immediately must not strand its task
+        until the reaper's TTL: the record is kept past the launch (``resolve_wait``
+        schedules this) and deleted only once the agent is still active past a
+        short confirmation window. If the container died, the record survives so
+        the probe-resume orphan fallback re-resumes on the next tick (#71). The
+        confirmation reads ``_is_agent_active`` — the same signal the spawn gate
+        trusts — so a container the health loop has marked dead keeps its record.
+        Best-effort: a delete error is swallowed (the in-memory record is gone
+        either way once the process exits, and the orphan fallback is in-memory).
+        """
+        if agent_id not in self._waiting_records:
+            return
+        await asyncio.sleep(self._resume_confirm_delay)
+        if not self._is_agent_active(agent_id):
+            # Container died — keep the record for the orphan fallback
+            return
+        del self._waiting_records[agent_id]
+        try:
+            await self._delete_waiting_record(agent_id)
+        except Exception:
+            logger.warning(
+                "resume-liveness confirm failed to delete the durable record",
+                agent_id=agent_id,
+            )
+
+    def _generate_resume_prompt(
+        self,
+        record: WaitingRecord,
+        resolution: dict[str, Any],
+    ) -> str:
+        """Generate a resume prompt for a respawning agent."""
+        if record.waiting_for == "blocker_resolution":
+            return f"""
+You were working on TASK-{record.task_id} and got blocked.
+The blocker has been resolved: {resolution.get("details", "Resolved")}
+
+Resume by:
+1. Reading your checkpoint from .tasks/active/TASK-{record.task_id}/
+2. Call unblock("{record.task_id}")
+3. Continue from where you left off
+"""
+
+        elif record.waiting_for == "qa_result":
+            if resolution.get("passed"):
+                return f"""
+TASK-{record.task_id} has passed QA review.
+The task is now awaiting documentation.
+You may return to scanning for new work with give_me_work().
+"""
+            else:
+                return f"""
+TASK-{record.task_id} needs revision based on QA feedback.
+QA notes: {resolution.get("notes", "See task for details")}
+
+Resume by:
+1. Reading the QA feedback
+2. Updating your TODOs to address each issue
+3. Making the fixes
+4. Re-submitting for QA
+"""
+
+        elif record.waiting_for == "answer":
+            return f"""
+You asked a question about TASK-{record.task_id}:
+Your question: {record.context.get("question", "Unknown")}
+Answer received: {resolution.get("answer", "Unknown")}
+
+Resume by incorporating this information and continuing from where you stopped.
+"""
+
+        elif record.waiting_for == "assignment":
+            return f"""
+You have been assigned a new task: TASK-{resolution.get("task_id")}
+
+Start by:
+1. Review the task details provided in your briefing / context_briefing
+2. Follow the standard workflow: UNDERSTAND → PLAN → EXECUTE → VERIFY → NOTES
+"""
+
+        else:
+            return f"Resuming. Wait condition '{record.waiting_for}' resolved."
