@@ -19,7 +19,7 @@ Cross-cutting support layer beneath the delivery services: the service-base/erro
 | `roboco/services/toolchain.py` | Pure resolver: target project's Python interpreter from `pyproject.toml` / `.python-version` | 117 |
 | `roboco/services/provider.py` | `ProviderService` CRUD for `provider_configs` rows + Fernet-encrypted token tri-state updates | 229 |
 | `roboco/services/llm.py` | `ModelRoutingService`: resolve (provider, model) per agent spawn; assignment CRUD; mode apply (anthropic/grok/ollama/self_hosted/mix); Ollama probe | 1742 |
-| `roboco/services/_model_routing_types.py` | `ModelRoutingServiceSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `ModelRoutingService` mixins reach through `self`, plus its instance attributes; `tests/unit/services/test_model_routing_service_mixins.py` fails on a stray stub or a member defined twice | 116 |
+| `roboco/services/_model_routing_types.py` | `ModelRoutingServiceSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `ModelRoutingService` mixins reach through `self`, plus its instance attributes; `tests/unit/services/test_model_routing_service_mixins.py` fails on a stray stub or a member defined twice | 115 |
 | `roboco/services/proactive.py` | `ProactiveKnowledgeService`: assemble RAG context packages on task-claim / session-start | 542 |
 | `roboco/services/transcription.py` | `TranscriptionService`: buffer raw LLM stream chunks into extractable segments | 278 |
 | `roboco/services/second_review.py` | Cross-vendor second-review selection: settings-driven risk-threshold classifier + a pure provider-difference resolver over `ProviderService`'s enabled-provider set (never a hardcoded vendor list); non-raising skip when only one provider is enabled | 231 |
@@ -27,7 +27,7 @@ Cross-cutting support layer beneath the delivery services: the service-base/erro
 | `roboco/events/bus.py` | Backward-compat shim: `EventBus = StreamEventBus`, `get_event_bus`, `init_event_bus` | 57 |
 | `roboco/events/handlers.py` | Workflow trigger handlers (task status → notifications, QA result, blocker, question, auditor spawn) + `register_default_handlers` | 419 |
 | `roboco/events/stream_bus.py` | `StreamEventBus`: Redis Streams durable event bus with consumer groups, ACK, pending recovery, periodic reclaim loop, dead-letter for undecodable messages | 604 |
-| `roboco/events/_stream_bus_types.py` | `StreamEventBusSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `StreamEventBus` mixins reach through `self`, plus its instance attributes; `tests/unit/events/test_stream_event_bus_mixins.py` fails on a stray stub or a member defined twice | 77 |
+| `roboco/events/_stream_bus_types.py` | `StreamEventBusSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `StreamEventBus` mixins reach through `self`, plus its instance attributes; `tests/unit/events/test_stream_event_bus_mixins.py` fails on a stray stub or a member defined twice | 76 |
 | `roboco/seeds/__init__.py` | Re-exports seed constants | 17 |
 | `roboco/seeds/initial_data.py` | Static seed data (agents) derived from `foundation` catalogs | 114 |
 | `roboco/utils/__init__.py` | Re-exports crypto + converter helpers | 23 |

@@ -1,17 +1,16 @@
 """Structural type for the composed StreamEventBus, TYPE_CHECKING-only.
 
 ``StreamEventBus`` is composed from mixins (``roboco/events/stream_bus.py``) whose
-methods were moved verbatim out of the one class. mypy checks each mixin
-against its own bases only, so a call into a sibling mixin, or into
-StreamEventBus's own members, would not resolve.
+methods were moved verbatim out of the one class. mypy checks each mixin against its own
+bases only, so a call into a sibling mixin, or into StreamEventBus's own members, would
+not resolve.
 
-Each mixin gives its class a TYPE_CHECKING-only base of ``StreamEventBusSelf``,
-which declares that cross-class surface: ``FooSurface`` holds what ``Foo``
-offers the other classes (``StreamEventBusSurface`` what ``StreamEventBus`` itself
-does),
-with each method's own decorators, parameters and return type, so no moved
-body changes. ``tests/unit/services/test_stream_event_bus_mixins.py`` fails on a
-stub its surface's class does not define.
+Each mixin gives its class a TYPE_CHECKING-only base of ``StreamEventBusSelf``, which
+declares that cross-class surface: ``FooSurface`` holds what ``Foo`` offers the other
+classes (``StreamEventBusSurface`` what ``StreamEventBus`` itself does), with each
+method's own decorators, parameters and return type, so no moved body changes.
+``tests/unit/events/test_stream_event_bus_mixins.py`` fails on a stub its surface's
+class does not define.
 """
 
 from __future__ import annotations

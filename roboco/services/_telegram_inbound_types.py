@@ -1,18 +1,16 @@
 """Structural type for the composed TelegramInboundEngine, TYPE_CHECKING-only.
 
 ``TelegramInboundEngine`` is composed from mixins
-(``roboco/services/telegram_inbound.py``) whose
-methods were moved verbatim out of the one class. mypy checks each mixin
-against its own bases only, so a call into a sibling mixin, or into
-TelegramInboundEngine's own members, would not resolve.
+(``roboco/services/telegram_inbound.py``) whose methods were moved verbatim out of the
+one class. mypy checks each mixin against its own bases only, so a call into a sibling
+mixin, or into TelegramInboundEngine's own members, would not resolve.
 
 Each mixin gives its class a TYPE_CHECKING-only base of ``TelegramInboundEngineSelf``,
-which declares that cross-class surface: ``FooSurface`` holds what ``Foo``
-offers the other classes (``TelegramInboundSurface`` what ``TelegramInboundEngine``
-itself does),
-with each method's own decorators, parameters and return type, so no moved
-body changes. ``tests/unit/services/test_telegram_inbound_engine_mixins.py`` fails on a
-stub its surface's class does not define.
+which declares that cross-class surface: ``FooSurface`` holds what ``Foo`` offers the
+other classes (``TelegramInboundSurface`` what ``TelegramInboundEngine`` itself does),
+with each method's own decorators, parameters and return type, so no moved body changes.
+``tests/unit/services/test_telegram_inbound_engine_mixins.py`` fails on a stub its
+surface's class does not define.
 """
 
 from __future__ import annotations

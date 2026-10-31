@@ -1,17 +1,16 @@
 """Structural type for the composed ModelRoutingService, TYPE_CHECKING-only.
 
 ``ModelRoutingService`` is composed from mixins (``roboco/services/llm.py``) whose
-methods were moved verbatim out of the one class. mypy checks each mixin
-against its own bases only, so a call into a sibling mixin, or into
-ModelRoutingService's own members, would not resolve.
+methods were moved verbatim out of the one class. mypy checks each mixin against its own
+bases only, so a call into a sibling mixin, or into ModelRoutingService's own members,
+would not resolve.
 
 Each mixin gives its class a TYPE_CHECKING-only base of ``ModelRoutingServiceSelf``,
-which declares that cross-class surface: ``FooSurface`` holds what ``Foo``
-offers the other classes (``ModelRoutingSurface`` what ``ModelRoutingService`` itself
-does),
-with each method's own decorators, parameters and return type, so no moved
-body changes. ``tests/unit/services/test_model_routing_service_mixins.py`` fails on a
-stub its surface's class does not define.
+which declares that cross-class surface: ``FooSurface`` holds what ``Foo`` offers the
+other classes (``ModelRoutingSurface`` what ``ModelRoutingService`` itself does), with
+each method's own decorators, parameters and return type, so no moved body changes.
+``tests/unit/services/test_model_routing_service_mixins.py`` fails on a stub its
+surface's class does not define.
 """
 
 from __future__ import annotations
