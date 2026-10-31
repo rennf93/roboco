@@ -3130,11 +3130,8 @@ class BaseChoreographer(_Base):
         distinguish "the local gate already decided" from "CI green, gate
         skipped" so it never double-gates.
         """
-        # ``_resolve_ci_status`` lives on ``PRGatePassMixin``; ``_LegacyChoreographer``
-        # reaches it via the typed-helpers cast (same idiom as the pr_pass path).
-        status = await cast("ChoreographerHelpers", self)._resolve_ci_status(
-            ctx.task_id, ctx.task
-        )
+        # ``_resolve_ci_status`` lives on ``PRGatePassMixin``.
+        status = await self._resolve_ci_status(ctx.task_id, ctx.task)
         if status is not None:
             state = status.get("state")
             if state == "success":
@@ -9736,12 +9733,11 @@ class BaseChoreographer(_Base):
         if not pr_number:
             return None
         try:
-            # ``_LegacyChoreographer`` doesn't inherit ``ChoreographerHelpers``,
-            # so cast to the typed view the mixins use to reach the shared
-            # ``_project_slug_for`` resolver (it delegates to the module-level
-            # ``resolve_task_project_slug``). Same resolver the pr_fail capture
-            # path uses, so one stub controls both gate paths.
-            slug = await cast("ChoreographerHelpers", self)._project_slug_for(t)
+            # The shared ``_project_slug_for`` resolver (``PRReviewerMixin``; it
+            # delegates to the module-level ``resolve_task_project_slug``). Same
+            # resolver the pr_fail capture path uses, so one stub controls both
+            # gate paths.
+            slug = await self._project_slug_for(t)
             if not slug:
                 return None
             sha = await self.git.get_pr_head_sha(slug, int(pr_number))

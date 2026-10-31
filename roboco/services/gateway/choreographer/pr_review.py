@@ -597,21 +597,18 @@ class PRReviewerMixin(_Base):
 
     async def _project_slug_for(self, t: Any) -> str | None:
         """Resolve the project slug for a task (read-only PR API calls + the
-        in-path gate's PR comment). Delegates to the module-level resolver so
-        the unchanged-PR gate in ``_impl.py`` reuses the EXACT same path (it
-        can't see this mixin method — ``_LegacyChoreographer`` does not inherit
-        ``ChoreographerHelpers``). See ``resolve_task_project_slug``.
+        in-path gate's PR comment). The unchanged-PR gate in ``_impl.py`` calls
+        it too, so every gate path resolves the slug the same way. See
+        ``resolve_task_project_slug``.
         """
         return await resolve_task_project_slug(self.task.session, t)
 
 
 async def resolve_task_project_slug(session: Any, t: Any) -> str | None:
     """Resolve the project slug for a task (read-only PR API calls + the
-    in-path gate's PR comment). Module-level so it is shared by
-    ``PRReviewerMixin._project_slug_for`` and the unchanged-PR gate's
-    ``_current_root_pr_head_sha`` (in ``_impl.py``) — DRY, and the only way the
-    legacy choreographer class can reach the resolver without inheriting
-    ``ChoreographerHelpers``.
+    in-path gate's PR comment), behind ``PRReviewerMixin._project_slug_for``,
+    which the PR review verbs, the in-path gate and the unchanged-PR gate's
+    ``_current_pr_head_sha`` (in ``_impl.py``) all call.
 
     A normal task carries ``project_id``. A Main-PM coordination root — the
     only task a root→master PR ever sits on — often carries just a
