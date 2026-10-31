@@ -166,7 +166,9 @@ def _render_completed_task(task_id: UUID) -> None:
     owns its own short DB sessions (2026-08 pool-exhaustion hardening) and
     resolves via ``get_db_context``, which the e2e stack's patched
     ``settings.database_*`` already route at this stack's own DB, so no
-    session needs to be handed in."""
+    session needs to be handed in. The background engine it opens on this
+    ``asyncio.run`` loop is closed before the loop ends."""
+    from roboco.db.base import run_then_close_db
     from roboco.runtime.orchestrator import AgentOrchestrator
 
     workspace = SimpleNamespace(
@@ -187,7 +189,7 @@ def _render_completed_task(task_id: UUID) -> None:
         ):
             await orch._render_video_task(task_id)
 
-    asyncio.run(_run())
+    asyncio.run(run_then_close_db(_run()))
 
 
 def _task_dict(stack: E2EStack, task_id: UUID) -> dict[str, Any]:

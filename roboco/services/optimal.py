@@ -14,9 +14,10 @@ by a specialized plugin that implements the BaseIndexPlugin interface.
 
 import asyncio
 import re
+import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 from uuid import UUID
 
 import structlog
@@ -2422,39 +2423,51 @@ class OptimalService:
 
 
 class _OptimalServiceHolder:
-    """Holder for singleton OptimalService instance."""
+    """The OptimalService of each event loop, and the lock that builds it.
 
-    instance: OptimalService | None = None
-    lock: asyncio.Lock | None = None
-
-
-def _get_init_lock() -> asyncio.Lock:
-    """Return the init lock, lazily bound to the running event loop.
-
-    The lock is created on first use (not at import time) so it binds to the
-    loop that is actually running; a lock created at import time would bind to
-    the wrong loop and raise "bound to a different event loop".
+    A service's vector stores hold asyncpg pools, which belong to the loop
+    that opened them, as database engines do (``roboco.db.base._PoolEngines``).
+    Production runs one loop, so this holds one service. A test process runs
+    several (each test's loop, the e2e harness's uvicorn threads), and each
+    gets its own service instead of using, or closing, another loop's pools.
+    Whoever owns a loop closes its service before the loop ends
+    (``close_optimal_service``): once the loop is gone, nothing can.
     """
-    if _OptimalServiceHolder.lock is None:
-        _OptimalServiceHolder.lock = asyncio.Lock()
-    return _OptimalServiceHolder.lock
+
+    instances: ClassVar[
+        weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, OptimalService]
+    ] = weakref.WeakKeyDictionary()
+    init_locks: ClassVar[
+        weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]
+    ] = weakref.WeakKeyDictionary()
+
+
+def _get_init_lock(loop: asyncio.AbstractEventLoop) -> asyncio.Lock:
+    """``loop``'s init lock: an ``asyncio.Lock`` can only wait on one loop."""
+    lock = _OptimalServiceHolder.init_locks.get(loop)
+    if lock is None:
+        lock = _OptimalServiceHolder.init_locks[loop] = asyncio.Lock()
+    return lock
 
 
 async def get_optimal_service() -> OptimalService:
-    """Get or create the OptimalService instance.
+    """Get or create the running loop's OptimalService.
 
     The instance is only published *after* ``initialize()`` completes. A lock
     serializes concurrent first-callers so a second coroutine can never observe
     a half-built, ``_initialized == False`` singleton mid-initialization (which
     previously surfaced as "OptimalService not initialized" during indexing).
     """
-    if _OptimalServiceHolder.instance is not None:
-        return _OptimalServiceHolder.instance
+    loop = asyncio.get_running_loop()
+    service = _OptimalServiceHolder.instances.get(loop)
+    if service is not None:
+        return service
 
-    async with _get_init_lock():
+    async with _get_init_lock(loop):
         # Re-check under the lock: another coroutine may have built it while
         # we waited to acquire.
-        if _OptimalServiceHolder.instance is None:
+        service = _OptimalServiceHolder.instances.get(loop)
+        if service is None:
             service = OptimalService()
             try:
                 await service.initialize()
@@ -2464,14 +2477,17 @@ async def get_optimal_service() -> OptimalService:
                 # that cancels a first request's initialize lands here too.
                 await service.close()
                 raise
-            _OptimalServiceHolder.instance = service
-    return _OptimalServiceHolder.instance
+            _OptimalServiceHolder.instances[loop] = service
+    return service
 
 
 async def close_optimal_service() -> None:
-    """Close the OptimalService instance."""
-    if _OptimalServiceHolder.instance is not None:
-        await _OptimalServiceHolder.instance.close()
-        _OptimalServiceHolder.instance = None
-    # Drop the lock so the next initialization rebinds to the running loop.
-    _OptimalServiceHolder.lock = None
+    """Close the running loop's OptimalService.
+
+    Another loop's is that loop's to close (see ``_OptimalServiceHolder``).
+    """
+    loop = asyncio.get_running_loop()
+    _OptimalServiceHolder.init_locks.pop(loop, None)
+    service = _OptimalServiceHolder.instances.pop(loop, None)
+    if service is not None:
+        await service.close()

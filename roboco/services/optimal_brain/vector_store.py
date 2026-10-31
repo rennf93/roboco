@@ -202,20 +202,13 @@ class VectorStore:
     async def close(self) -> None:
         """Release the connection pool.
 
-        Tolerates a closed event loop. The optimal-service singleton can
-        outlive the loop that created its pool (e.g. cross-loop teardown
-        between tests, where ``close_optimal_service`` runs on a new loop);
-        ``asyncpg.Pool.close()`` then raises ``RuntimeError: Event loop is
-        closed``. The connections died with the loop, so there is nothing left
-        to release — drop the reference and move on. Any other RuntimeError
-        still propagates.
+        Runs on the loop that opened the pool: each loop closes only its own
+        OptimalService (``roboco.services.optimal._OptimalServiceHolder``).
+        Once that loop has ended, the pool's connections can't be closed, and
+        the error propagates.
         """
         if self._pool is not None:
-            try:
-                await self._pool.close()
-            except RuntimeError as exc:
-                if "Event loop is closed" not in str(exc):
-                    raise
+            await self._pool.close()
             self._pool = None
 
     # ------------------------------------------------------------------

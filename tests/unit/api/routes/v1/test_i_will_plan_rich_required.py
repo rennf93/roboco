@@ -45,11 +45,13 @@ def _make_envelope(error: str, missing: list[str] | None = None) -> MagicMock:
 
 
 def _build_app(mock_choreographer: MagicMock | None = None) -> FastAPI:
-    """Minimal FastAPI app with the flow_main_pm router and optional mocked dep."""
+    """Minimal FastAPI app with the flow_main_pm router and a mocked
+    choreographer: the real one opens a database session for every request,
+    even one its body validation rejects."""
     app = FastAPI()
     app.include_router(router)
-    if mock_choreographer is not None:
-        app.dependency_overrides[get_choreographer] = lambda: mock_choreographer
+    choreographer = MagicMock() if mock_choreographer is None else mock_choreographer
+    app.dependency_overrides[get_choreographer] = lambda: choreographer
     return app
 
 

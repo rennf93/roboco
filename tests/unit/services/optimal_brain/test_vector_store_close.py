@@ -1,10 +1,8 @@
-"""VectorStore.close() must tolerate a closed event loop.
+"""VectorStore.close() releases its asyncpg pool, and says so when it can't.
 
-The optimal-service singleton can outlive the loop that created its asyncpg
-pool (cross-loop teardown between tests). asyncpg's ``pool.close()`` then raises
-``RuntimeError: Event loop is closed``; the connections are already gone, so
-close() drops the pool instead of propagating. Any other RuntimeError still
-propagates.
+A pool whose loop has ended can't close its connections: they stay open until
+garbage collection. close() lets that error reach the caller: it means the
+loop's owner never closed its service.
 """
 
 from __future__ import annotations
@@ -17,16 +15,26 @@ from roboco.services.optimal_brain.vector_store import VectorStore
 
 
 @pytest.mark.asyncio
-async def test_close_swallows_event_loop_closed() -> None:
+async def test_close_closes_the_pool_and_drops_it() -> None:
+    vs = VectorStore.__new__(VectorStore)
+    pool = AsyncMock()
+    vs._pool = pool
+
+    await vs.close()
+
+    pool.close.assert_awaited_once()
+    assert vs._pool is None
+
+
+@pytest.mark.asyncio
+async def test_close_on_an_ended_loop_raises() -> None:
     vs = VectorStore.__new__(VectorStore)
     pool = AsyncMock()
     pool.close = AsyncMock(side_effect=RuntimeError("Event loop is closed"))
     vs._pool = pool
 
-    # Must not raise
-    await vs.close()
-
-    assert vs._pool is None
+    with pytest.raises(RuntimeError, match="Event loop is closed"):
+        await vs.close()
 
 
 @pytest.mark.asyncio

@@ -12,9 +12,11 @@ from typing import TYPE_CHECKING, Annotated, Any, cast
 from uuid import UUID
 
 import httpx
+import pytest
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from pydantic import BaseModel, field_validator
+from roboco.api import middleware as middleware_module
 from roboco.api.middleware import (
     DbCommitMiddleware,
     _uuid_field_remediation,
@@ -47,6 +49,20 @@ from structlog.testing import capture_logs
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
+
+
+@pytest.fixture(autouse=True)
+def _no_verb_latency_writes(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A flow-verb request here would write its latency sample through the
+    real engine, on TestClient's own loop: that loop ends with the request and
+    never closes the engine. ``test_verb_latency_telemetry.py`` covers the
+    write itself."""
+
+    async def _skip_write(*_sample: object) -> None:
+        return None
+
+    monkeypatch.setattr(middleware_module, "_persist_verb_latency", _skip_write)
+
 
 # ---------------------------------------------------------------------------
 # get_status_code

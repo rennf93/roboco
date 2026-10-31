@@ -45,6 +45,7 @@ import pytest
 import pytest_asyncio
 from cryptography.fernet import Fernet
 from roboco.config import settings as _settings
+from roboco.db import base as db_base
 from roboco.db import tables as roboco_tables
 from roboco.db.base import Base, close_db
 from roboco.db.tables import (
@@ -65,6 +66,8 @@ from roboco.models.base import (
     TaskType,
     Team,
 )
+from roboco.services import optimal as optimal_module
+from roboco.services.optimal import close_optimal_service
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -73,7 +76,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterable
+    from collections.abc import AsyncIterator, Iterable, Iterator
 
 
 # Isolate every test-spawned git subprocess from the developer machine's
@@ -86,16 +89,50 @@ os.environ.setdefault("GIT_CONFIG_GLOBAL", "/dev/null")
 os.environ.setdefault("GIT_CONFIG_SYSTEM", "/dev/null")
 
 
-@pytest_asyncio.fixture(autouse=True)
-async def _dispose_global_db_engine() -> AsyncIterator[None]:
-    """Close the engines this test's loop opened before the loop ends.
+@pytest.fixture(autouse=True)
+def _nothing_left_open_on_an_ended_loop() -> Iterator[None]:
+    """Fail a test that leaves a DB engine or RAG service on an ended loop.
 
-    Production code reaching ``get_db_context()``/``get_engine()`` opens an
-    engine of the test's own event loop (``roboco.db.base._PoolEngines``).
-    pytest-asyncio closes that loop after the test, and connections still
-    open then can never be closed. A no-op when nothing touched the DB.
+    Nothing can close them once their loop is gone, and their registries keep
+    them alive, so their connections would stay open, unnoticed, until the
+    process exits. The loop's owner closes them first: the fixture below for
+    a test's own loop, ``run_then_close_db`` for an ``asyncio.run``, the
+    app's lifespan for a server's. Defined before that fixture, this one is
+    set up before pytest-asyncio's loop and torn down after it closes, so it
+    names the test that left them.
     """
     yield
+    left: list[str] = []
+    for kind, by_loop in (
+        ("primary DB engine", db_base._PRIMARY_ENGINES._by_loop),
+        ("background DB engine", db_base._BACKGROUND_ENGINES._by_loop),
+        ("RAG service", optimal_module._OptimalServiceHolder.instances),
+    ):
+        for loop in [loop for loop in by_loop if loop.is_closed()]:
+            left.append(f"{kind} on {loop!r}")
+            # Dropped, so the next test doesn't fail for this one.
+            del by_loop[loop]
+    if left:
+        pytest.fail(
+            "Left open on an event loop that has ended: " + "; ".join(left),
+            pytrace=False,
+        )
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _close_this_loops_db_and_rag() -> AsyncIterator[None]:
+    """Close the engines and RAG service this test's loop opened before the
+    loop ends.
+
+    Production code reaching ``get_db_context()``/``get_engine()`` or
+    ``get_optimal_service()`` opens them on the test's own event loop
+    (``roboco.db.base._PoolEngines``,
+    ``roboco.services.optimal._OptimalServiceHolder``). pytest-asyncio closes
+    that loop after the test, and connections still open then can never be
+    closed. A no-op when nothing touched them.
+    """
+    yield
+    await close_optimal_service()
     await close_db()
 
 

@@ -10,6 +10,10 @@ Covers three failure modes that surfaced at runtime:
    400 at the route.
 3. The mentor route let exceptions from ``mentor.ask`` escape as a bare 500
    with no log of the true upstream cause.
+4. The service was one per process, though its vector-store pools belong to
+   the loop that opened them: a test's ``close_optimal_service`` closed an
+   earlier test's service on the wrong loop, and its connections stayed open
+   until garbage collection.
 """
 
 from __future__ import annotations
@@ -92,7 +96,6 @@ async def test_get_optimal_service_never_returns_uninitialized(
     "OptimalService not initialized" when ``_initialized`` is False. This test
     asserts no concurrent caller can observe that state.
     """
-    await close_optimal_service()
     _SlowInitService.init_calls = 0
     monkeypatch.setattr(optimal_module, "OptimalService", _SlowInitService)
 
@@ -116,7 +119,6 @@ async def test_indexing_entrypoint_does_not_raise_not_initialized(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A caller obtaining the service mid-init must not hit _get_plugin's guard."""
-    await close_optimal_service()
     _SlowInitService.init_calls = 0
     monkeypatch.setattr(optimal_module, "OptimalService", _SlowInitService)
 
@@ -171,13 +173,70 @@ async def test_a_failed_initialize_closes_the_unpublished_service(
     """An initialize that raises leaves the service unpublished, where
     close_optimal_service can't reach it: get_optimal_service closes it,
     releasing the stores the plugins already opened."""
-    await close_optimal_service()
     _FailingInitService.closed = 0
     monkeypatch.setattr(optimal_module, "OptimalService", _FailingInitService)
     try:
         with pytest.raises(RuntimeError, match="plugin init failed"):
             await get_optimal_service()
         assert _FailingInitService.closed == 1
-        assert optimal_module._OptimalServiceHolder.instance is None
+        assert asyncio.get_running_loop() not in (
+            optimal_module._OptimalServiceHolder.instances
+        )
     finally:
         await close_optimal_service()
+
+
+class _CountingCloseService(OptimalService):
+    """A service with no stores, counting its closes."""
+
+    closed = 0
+
+    async def initialize(self) -> None:
+        self._initialized = True
+
+    async def close(self) -> None:
+        type(self).closed += 1
+
+
+@pytest.mark.asyncio
+async def test_each_event_loop_gets_its_own_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Another loop can't use this loop's vector-store pools, nor close them."""
+    _CountingCloseService.closed = 0
+    monkeypatch.setattr(optimal_module, "OptimalService", _CountingCloseService)
+
+    async def _theirs() -> OptimalService:
+        service = await get_optimal_service()
+        await close_optimal_service()
+        return service
+
+    try:
+        ours = await get_optimal_service()
+        theirs = await asyncio.to_thread(asyncio.run, _theirs())
+        assert theirs is not ours
+        assert await get_optimal_service() is ours
+        assert _CountingCloseService.closed == 1
+    finally:
+        await close_optimal_service()
+
+
+@pytest.mark.asyncio
+async def test_close_optimal_service_leaves_another_loops_service_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Closed from here, another loop's pools stay open: that loop's owner
+    closes them, before the loop ends."""
+    _CountingCloseService.closed = 0
+    monkeypatch.setattr(optimal_module, "OptimalService", _CountingCloseService)
+
+    async def _theirs() -> tuple[OptimalService, asyncio.AbstractEventLoop]:
+        return await get_optimal_service(), asyncio.get_running_loop()
+
+    theirs, their_loop = await asyncio.to_thread(asyncio.run, _theirs())
+    try:
+        await close_optimal_service()
+        assert _CountingCloseService.closed == 0
+        assert optimal_module._OptimalServiceHolder.instances[their_loop] is theirs
+    finally:
+        optimal_module._OptimalServiceHolder.instances.pop(their_loop, None)

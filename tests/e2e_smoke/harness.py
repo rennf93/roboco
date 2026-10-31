@@ -286,10 +286,10 @@ class E2EStack:
         """Run ``coro_fn(session)`` against a fresh engine/session and return.
 
         Production code ``coro_fn`` reaches (a hook's ``get_db_context()``)
-        opens the app's own engine on this ``asyncio.run`` loop; it is closed
-        here too, before the loop ends.
+        opens the app's own engine on this ``asyncio.run`` loop;
+        ``run_then_close_db`` closes it before the loop ends.
         """
-        from roboco.db.base import close_db
+        from roboco.db.base import run_then_close_db
 
         async def _run() -> Any:
             engine = create_async_engine(self.db_url)
@@ -301,9 +301,8 @@ class E2EStack:
                     return result
             finally:
                 await engine.dispose()
-                await close_db()
 
-        return asyncio.run(_run())
+        return asyncio.run(run_then_close_db(_run()))
 
 
 def _free_port() -> int:
@@ -345,12 +344,14 @@ def _make_admin_clone(root: Path, origin: Path) -> Path:
 
 
 @asynccontextmanager
-async def _close_db_on_shutdown(_app: FastAPI) -> AsyncIterator[None]:
-    """Close the engines the server's loop opened before that loop ends, as
-    the production lifespan does (``roboco/api/app.py``)."""
+async def _close_db_and_rag_on_shutdown(_app: FastAPI) -> AsyncIterator[None]:
+    """Close the RAG service and engines the server's loop opened before that
+    loop ends, as the production lifespan does (``roboco/api/app.py``)."""
     from roboco.db.base import close_db
+    from roboco.services.optimal import close_optimal_service
 
     yield
+    await close_optimal_service()
     await close_db()
 
 
@@ -373,7 +374,7 @@ def _build_app(gh: _FakeGitHub) -> FastAPI:
     from roboco.api.routes.v1 import flow_pr_reviewer as fpr
     from roboco.api.routes.v1 import flow_qa as fq
 
-    app = FastAPI(title="roboco-e2e-smoke", lifespan=_close_db_on_shutdown)
+    app = FastAPI(title="roboco-e2e-smoke", lifespan=_close_db_and_rag_on_shutdown)
     setup_middleware(app)
     app.include_router(health_router)
     for module in (fd, fq, fdoc, fcp, fmp, fb, fa, fpr, fdv):
