@@ -431,6 +431,25 @@ html, body {
   will-change: transform;
   transform-origin: 50% 42%;
 }
+
+/* ---------------------------------------------------------------------- *
+ * pk-band — the 9:16 platform band. TikTok draws its own UI over a
+ * vertical: the status and search bar across the top 168px, the caption,
+ * handle and buttons below y 1330, and the action rail down the right
+ * edge. A vertical cut puts its whole scene (hero, camera, frame) inside
+ * this window, so no word or product leaves y 168..1330 whatever the
+ * camera does; outside it the stage background is all that shows. The
+ * window does not clear the rail: keep words left of x 900 below y 840
+ * (see motion/README.md, "The 9:16 platform band").
+ * ---------------------------------------------------------------------- */
+.pk-band {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 168px;
+  bottom: 590px;
+  overflow: hidden;
+}
 .pk-cursor__ring {
   position: absolute;
   left: -14px;

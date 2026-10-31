@@ -120,35 +120,60 @@
       }
 
       /* ---- Content placement --------------------------------------------- */
-      .pk-intake { --pk-intake-top: 36px; }
-      .pk-column { --pk-column-top: 280px; width: 690px; }
-      .pk-column .pk-card { position: static; margin-bottom: 26px; }
+      .pk-intake { --pk-intake-top: 20px; }
+      .pk-column { --pk-column-top: 150px; width: 600px; }
+      /* Inside the platform band the frame is 1162px tall, so the cards
+         take the square cut's compact build: chip and status pill share
+         one row, which leaves the toast a row of its own between the last
+         card and the lockup. */
+      .pk-column .pk-card {
+        position: static;
+        display: grid;
+        grid-template-columns: auto 1fr;
+        align-items: center;
+        column-gap: 12px;
+        margin-bottom: 12px;
+        padding: 14px 26px;
+      }
+      .pk-card__title, .rc-sub { grid-column: 1 / -1; }
+      .pk-card__meta, .pk-card__status { margin-top: 14px; }
+      .pk-card__status { height: 48px; }
       .rc-sub {
-        margin-top: 12px;
-        font-size: 21px;
+        margin-top: 8px;
+        font-size: 18px;
         line-height: 1.35;
         color: var(--pk-text-muted);
       }
 
-      /* Kinetic stat beat, right-anchored under the cards. */
+      /* Kinetic stat beat over the whole panel, centred in the 680px left
+         of the action rail: the lines below y 840 would otherwise run
+         under it. */
       .rc-stats {
         position: absolute;
-        right: 64px;
-        bottom: 330px;
-        text-align: right;
+        inset: 0;
+        padding-right: 180px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        text-align: center;
+        background: rgba(10, 10, 10, 0.88);
+        z-index: 20;
         font-family: var(--pk-font-display);
+        opacity: 0;
+        animation: rc-stats-in 0.4s var(--pk-ease) 13s forwards, rc-stats-out 0.5s var(--pk-ease) 14.4s forwards;
       }
+      @keyframes rc-stats-in { to { opacity: 1; } }
       .rc-stats__line {
-        font-size: 64px;
-        line-height: 1.22;
+        font-size: 84px;
+        line-height: 1.25;
         color: var(--pk-text);
         opacity: 0;
         transform: translateY(24px) scale(0.96);
         animation: pk-enter-rise-scale 0.55s var(--pk-ease) forwards;
       }
       .rc-stats__line--accent { color: var(--pk-accent); }
-      /* The stat block yields before the toast/outro close. */
-      .rc-stats { animation: rc-stats-out 0.5s var(--pk-ease) 15.2s forwards; }
       @keyframes rc-stats-out { to { opacity: 0; } }
 
       /* Cursor: base-hidden + a delayed animation, per motion/README.md's
@@ -166,11 +191,13 @@
         to   { opacity: 1; transform: translate(var(--pk-cursor-x1, 0px), var(--pk-cursor-y1, 0px)); }
       }
 
-      .pk-toast { --pk-toast-bottom: 150px; }
+      /* The toast's right edge at x 900, so none of its words sit under the
+         action rail. */
+      .pk-toast { --pk-toast-bottom: 104px; right: 180px; width: 480px; }
 
       /* Closing lockup: small tile + domain. */
       .pk-outro {
-        --pk-outro-bottom: 64px;
+        --pk-outro-bottom: 28px;
         display: flex;
         align-items: center;
         gap: 20px;
@@ -196,129 +223,131 @@
   </head>
   <body>
     <div data-hf-id="hf-zoxj" id="stage" data-composition-id="release-recap" data-width="1080" data-height="1920" data-start="0" data-duration="18" data-fps="30">
+      <div data-hf-id="hf-b9nh" class="pk-band">
 
-      <!-- Beat 1: identity cold open. The tile settles, the accent ring sweeps
-           once, the wordmark and tag rise; the whole layer yields to the
-           panel at 3.2s. -->
-      <div data-hf-id="hf-ip31" class="rc-hero clip" data-start="0" data-duration="3.8" data-track-index="15">
-        <div data-hf-id="hf-oztz" class="rc-hero__markwrap">
-          <img data-hf-id="hf-t3lh" class="rc-hero__mark" src="../../public/roboco-logo-darkmode.png" alt="RoboCo" />
-          <div data-hf-id="hf-v5wq" class="rc-hero__ring"></div>
+        <!-- Beat 1: identity cold open. The tile settles, the accent ring sweeps
+             once, the wordmark and tag rise; the whole layer yields to the
+             panel at 3.2s. -->
+        <div data-hf-id="hf-ip31" class="rc-hero clip" data-start="0" data-duration="3.8" data-track-index="15">
+          <div data-hf-id="hf-oztz" class="rc-hero__markwrap">
+            <img data-hf-id="hf-t3lh" class="rc-hero__mark" src="../../public/roboco-logo-darkmode.png" alt="RoboCo" />
+            <div data-hf-id="hf-v5wq" class="rc-hero__ring"></div>
+          </div>
+          <div data-hf-id="hf-mqod" class="rc-hero__tag">the AI company that ships itself</div>
         </div>
-        <div data-hf-id="hf-mqod" class="rc-hero__tag">the AI company that ships itself</div>
-      </div>
 
-      <!-- Beat 2: the panel assembles - labeled sidebar like the real UI. -->
-      <div data-hf-id="hf-a6ev" class="pk-frame clip" data-start="0" data-duration="18" data-track-index="1">
-        <aside data-hf-id="hf-vf6m" class="pk-frame__sidebar">
-          <div data-hf-id="hf-xs04" class="rc-side__logo"><img data-hf-id="hf-08pr" src="../../public/roboco-logo.png" alt="" /></div>
-          <div data-hf-id="hf-admy" class="rc-nav">Overview</div>
-          <div data-hf-id="hf-a56j" class="rc-nav">Business</div>
-          <div data-hf-id="hf-1tya" class="rc-nav">Social</div>
-          <div data-hf-id="hf-gyyg" class="rc-nav rc-nav--active">Tasks</div>
-          <div data-hf-id="hf-zs0u" class="rc-nav">Kanban</div>
-          <div data-hf-id="hf-muu3" class="rc-nav">Git</div>
-          <div data-hf-id="hf-6tj3" class="rc-nav">Agents</div>
-          <div data-hf-id="hf-th7q" class="rc-nav">Metrics</div>
-        </aside>
+        <!-- Beat 2: the panel assembles - labeled sidebar like the real UI. -->
+        <div data-hf-id="hf-a6ev" class="pk-frame clip" data-start="0" data-duration="18" data-track-index="1">
+          <aside data-hf-id="hf-vf6m" class="pk-frame__sidebar">
+            <div data-hf-id="hf-xs04" class="rc-side__logo"><img data-hf-id="hf-08pr" src="../../public/roboco-logo.png" alt="" /></div>
+            <div data-hf-id="hf-admy" class="rc-nav">Overview</div>
+            <div data-hf-id="hf-a56j" class="rc-nav">Business</div>
+            <div data-hf-id="hf-1tya" class="rc-nav">Social</div>
+            <div data-hf-id="hf-gyyg" class="rc-nav rc-nav--active">Tasks</div>
+            <div data-hf-id="hf-zs0u" class="rc-nav">Kanban</div>
+            <div data-hf-id="hf-muu3" class="rc-nav">Git</div>
+            <div data-hf-id="hf-6tj3" class="rc-nav">Agents</div>
+            <div data-hf-id="hf-th7q" class="rc-nav">Metrics</div>
+          </aside>
 
-        <header data-hf-id="hf-jd7p" class="pk-frame__topbar">
-          <div data-hf-id="hf-zsox" class="pk-frame__search">Search tasks, agents...</div>
-          <div data-hf-id="hf-wg6z" class="rc-user">
-            <div data-hf-id="hf-kjme" class="pk-frame__status clip" data-start="0" data-duration="18" data-track-index="0">
-              <span data-hf-id="hf-tl8v" class="pk-frame__statusdot"></span>
-              <span data-hf-id="hf-zhpv">Live</span>
+          <header data-hf-id="hf-jd7p" class="pk-frame__topbar">
+            <div data-hf-id="hf-zsox" class="pk-frame__search">Search tasks, agents...</div>
+            <div data-hf-id="hf-wg6z" class="rc-user">
+              <div data-hf-id="hf-kjme" class="pk-frame__status clip" data-start="0" data-duration="18" data-track-index="0">
+                <span data-hf-id="hf-tl8v" class="pk-frame__statusdot"></span>
+                <span data-hf-id="hf-zhpv">Live</span>
+              </div>
+              <span data-hf-id="hf-lze6" class="rc-user__chip">CEO · Renzo</span>
             </div>
-            <span data-hf-id="hf-lze6" class="rc-user__chip">CEO · Renzo</span>
-          </div>
-        </header>
+          </header>
 
-        <div data-hf-id="hf-bp68" class="pk-frame__content">
-          <!-- Beat 3: the recap line types into intake. Base-hidden +
-               delayed animation (motion/README.md's animation clock rule) -
-               pk-intake's own kit.css entrance already owns this. -->
-          <div data-hf-id="hf-ps68" class="pk-intake" style="animation-delay: 4.2s;">
-            <div data-hf-id="hf-sstf" class="pk-intake__label">New task</div>
-            <div data-hf-id="hf-kbxq" class="pk-intake__field"><span data-hf-id="hf-st8p" id="typeIntro">3 releases in 6 days</span><span data-hf-id="hf-txmw" class="pk-caret"></span></div>
-          </div>
-
-          <!-- Beat 4: three releases stack and accumulate, each with a
-               one-line explainer; each flips completed as the next ships.
-               Base-hidden + animation-delay per motion/README.md's
-               animation clock rule - never a data-start on a beat. Pills reuse
-               kit.css's pk-pill--swap-out/-in, which already own their own
-               enter+exit via --pk-pill-enter-delay/--pk-pill-exit-delay. -->
-          <div data-hf-id="hf-vk0y" class="pk-column">
-            <div data-hf-id="hf-9y36" class="pk-column__header">Shipped</div>
-
-            <div data-hf-id="hf-2fg0" class="pk-card" style="animation-delay: 6s;">
-              <div data-hf-id="hf-wnsy" class="pk-card__title">v0.18.0 · Fleet doctrine</div>
-              <div data-hf-id="hf-n2am" class="rc-sub">One behavioral doctrine and one design bar across all 25 agents.</div>
-              <div data-hf-id="hf-rftz" class="pk-card__meta">
-                <span data-hf-id="hf-aw9n" class="pk-chip pk-chip--gray">Jul 4</span>
-              </div>
-              <div data-hf-id="hf-j9zq" class="pk-card__status">
-                <span data-hf-id="hf-fusu" class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 6s; --pk-pill-exit-delay: 7.6s;">in progress</span>
-                <span data-hf-id="hf-4ihs" class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 7.8s;">completed</span>
-              </div>
+          <div data-hf-id="hf-bp68" class="pk-frame__content">
+            <!-- Beat 3: the recap line types into intake. Base-hidden +
+                 delayed animation (motion/README.md's animation clock rule) -
+                 pk-intake's own kit.css entrance already owns this. -->
+            <div data-hf-id="hf-ps68" class="pk-intake" style="animation-delay: 4.2s;">
+              <div data-hf-id="hf-sstf" class="pk-intake__label">New task</div>
+              <div data-hf-id="hf-kbxq" class="pk-intake__field"><span data-hf-id="hf-st8p" id="typeIntro">3 releases in 6 days</span><span data-hf-id="hf-txmw" class="pk-caret"></span></div>
             </div>
 
-            <div data-hf-id="hf-g3ci" class="pk-card" style="animation-delay: 8.2s;">
-              <div data-hf-id="hf-7a1u" class="pk-card__title">v0.19.0 · Video engine</div>
-              <div data-hf-id="hf-23h4" class="rc-sub">Releases become videos. Every agent gets its own dev sandbox.</div>
-              <div data-hf-id="hf-wtjb" class="pk-card__meta">
-                <span data-hf-id="hf-chhr" class="pk-chip pk-chip--gray">Jul 8</span>
+            <!-- Beat 4: three releases stack and accumulate, each with a
+                 one-line explainer; each flips completed as the next ships.
+                 Base-hidden + animation-delay per motion/README.md's
+                 animation clock rule - never a data-start on a beat. Pills reuse
+                 kit.css's pk-pill--swap-out/-in, which already own their own
+                 enter+exit via --pk-pill-enter-delay/--pk-pill-exit-delay. -->
+            <div data-hf-id="hf-vk0y" class="pk-column">
+              <div data-hf-id="hf-9y36" class="pk-column__header">Shipped</div>
+
+              <div data-hf-id="hf-2fg0" class="pk-card" style="animation-delay: 6s;">
+                <div data-hf-id="hf-wnsy" class="pk-card__title">v0.18.0 · Fleet doctrine</div>
+                <div data-hf-id="hf-n2am" class="rc-sub">One behavioral doctrine and one design bar across all 25 agents.</div>
+                <div data-hf-id="hf-rftz" class="pk-card__meta">
+                  <span data-hf-id="hf-aw9n" class="pk-chip pk-chip--gray">Jul 4</span>
+                </div>
+                <div data-hf-id="hf-j9zq" class="pk-card__status">
+                  <span data-hf-id="hf-fusu" class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 6s; --pk-pill-exit-delay: 7.6s;">in progress</span>
+                  <span data-hf-id="hf-4ihs" class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 7.8s;">completed</span>
+                </div>
               </div>
-              <div data-hf-id="hf-0nju" class="pk-card__status">
-                <span data-hf-id="hf-bz68" class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 8.2s; --pk-pill-exit-delay: 9.8s;">in progress</span>
-                <span data-hf-id="hf-yhv2" class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 10s;">completed</span>
+
+              <div data-hf-id="hf-g3ci" class="pk-card" style="animation-delay: 8.2s;">
+                <div data-hf-id="hf-7a1u" class="pk-card__title">v0.19.0 · Video engine</div>
+                <div data-hf-id="hf-23h4" class="rc-sub">Releases become videos. Every agent gets its own dev sandbox.</div>
+                <div data-hf-id="hf-wtjb" class="pk-card__meta">
+                  <span data-hf-id="hf-chhr" class="pk-chip pk-chip--gray">Jul 8</span>
+                </div>
+                <div data-hf-id="hf-0nju" class="pk-card__status">
+                  <span data-hf-id="hf-bz68" class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 8.2s; --pk-pill-exit-delay: 9.8s;">in progress</span>
+                  <span data-hf-id="hf-yhv2" class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 10s;">completed</span>
+                </div>
+              </div>
+
+              <div data-hf-id="hf-51rf" class="pk-card" style="animation-delay: 10.4s;">
+                <div data-hf-id="hf-rc01" class="pk-card__title">v0.20.0 · Root-owned coverage</div>
+                <div data-hf-id="hf-m32h" class="rc-sub">Acceptance criteria owned at the root. Plus the kit this video is built with.</div>
+                <div data-hf-id="hf-wf8a" class="pk-card__meta">
+                  <span data-hf-id="hf-cvss" class="pk-chip pk-chip--gray">Jul 9</span>
+                </div>
+                <div data-hf-id="hf-11uv" class="pk-card__status">
+                  <span data-hf-id="hf-o5ct" class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 10.4s; --pk-pill-exit-delay: 12.4s;">in progress</span>
+                  <span data-hf-id="hf-oa5k" class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 12.6s;">completed</span>
+                </div>
               </div>
             </div>
 
-            <div data-hf-id="hf-51rf" class="pk-card" style="animation-delay: 10.4s;">
-              <div data-hf-id="hf-rc01" class="pk-card__title">v0.20.0 · Root-owned coverage</div>
-              <div data-hf-id="hf-m32h" class="rc-sub">Acceptance criteria owned at the root. Plus the kit this video is built with.</div>
-              <div data-hf-id="hf-wf8a" class="pk-card__meta">
-                <span data-hf-id="hf-cvss" class="pk-chip pk-chip--gray">Jul 9</span>
-              </div>
-              <div data-hf-id="hf-11uv" class="pk-card__status">
-                <span data-hf-id="hf-o5ct" class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 10.4s; --pk-pill-exit-delay: 12.4s;">in progress</span>
-                <span data-hf-id="hf-oa5k" class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 12.6s;">completed</span>
+            <!-- One cursor, one glide, one click at the newest pill's edge.
+                 Base-hidden + a delayed animation (animation clock rule); see the
+                 local .pk-cursor override in <style> above for the fade. -->
+            <div data-hf-id="hf-686a" class="pk-cursor" style="--pk-cursor-delay: 11s; --pk-cursor-x0: 700px; --pk-cursor-y0: 340px; --pk-cursor-x1: 341px; --pk-cursor-y1: 746px;">
+              <div data-hf-id="hf-teu6" class="pk-cursor__glyph"></div>
+              <div data-hf-id="hf-wrpp" class="pk-cursor__ring" style="--pk-click-delay: 12.4s;"></div>
+            </div>
+
+            <!-- Beat 5: the kinetic stat lines. rc-stats itself has no
+                 base-visible content (children are individually base-hidden,
+                 entering at 13/13.3/13.6s), and the composition-local
+                 rc-stats-out rule below already fades the whole group before
+                 the toast - no clip window needed. -->
+            <div data-hf-id="hf-aqvr" class="rc-stats">
+              <div data-hf-id="hf-oi5y" class="rc-stats__line" style="animation-delay: 13s;">3 releases</div>
+              <div data-hf-id="hf-apjr" class="rc-stats__line" style="animation-delay: 13.3s;">6 days</div>
+              <div data-hf-id="hf-nv94" class="rc-stats__line rc-stats__line--accent" style="animation-delay: 13.6s;">1 human</div>
+            </div>
+
+            <!-- Beat 6: confirmation toast, then the lockup outro. -->
+            <div data-hf-id="hf-ifvw" class="pk-toast" style="animation-delay: 14.8s;">
+              <div data-hf-id="hf-p9jw" class="pk-toast__icon"></div>
+              <div data-hf-id="hf-d4kz" class="pk-toast__body">
+                <div data-hf-id="hf-xs92" class="pk-toast__title" id="toastTitle">3 releases shipped</div>
+                <div data-hf-id="hf-ro87" class="pk-toast__text" id="toastBody">0.18.0 to 0.20.0 in six days.</div>
               </div>
             </div>
-          </div>
 
-          <!-- One cursor, one glide, one click at the newest pill's edge.
-               Base-hidden + a delayed animation (animation clock rule); see the
-               local .pk-cursor override in <style> above for the fade. -->
-          <div data-hf-id="hf-686a" class="pk-cursor" style="--pk-cursor-delay: 11s; --pk-cursor-x0: 700px; --pk-cursor-y0: 500px; --pk-cursor-x1: 240px; --pk-cursor-y1: 1210px;">
-            <div data-hf-id="hf-teu6" class="pk-cursor__glyph"></div>
-            <div data-hf-id="hf-wrpp" class="pk-cursor__ring" style="--pk-click-delay: 12.4s;"></div>
-          </div>
-
-          <!-- Beat 5: the kinetic stat lines. rc-stats itself has no
-               base-visible content (children are individually base-hidden,
-               entering at 13/13.3/13.6s), and the composition-local
-               rc-stats-out rule below already fades the whole group before
-               the toast - no clip window needed. -->
-          <div data-hf-id="hf-aqvr" class="rc-stats">
-            <div data-hf-id="hf-oi5y" class="rc-stats__line" style="animation-delay: 13s;">3 releases</div>
-            <div data-hf-id="hf-apjr" class="rc-stats__line" style="animation-delay: 13.3s;">6 days</div>
-            <div data-hf-id="hf-nv94" class="rc-stats__line rc-stats__line--accent" style="animation-delay: 13.6s;">1 human</div>
-          </div>
-
-          <!-- Beat 6: confirmation toast, then the lockup outro. -->
-          <div data-hf-id="hf-ifvw" class="pk-toast" style="animation-delay: 14.4s;">
-            <div data-hf-id="hf-p9jw" class="pk-toast__icon"></div>
-            <div data-hf-id="hf-d4kz" class="pk-toast__body">
-              <div data-hf-id="hf-xs92" class="pk-toast__title" id="toastTitle">3 releases shipped</div>
-              <div data-hf-id="hf-ro87" class="pk-toast__text" id="toastBody">0.18.0 to 0.20.0 in six days.</div>
+            <div data-hf-id="hf-07c9" class="pk-outro" style="animation-delay: 15.4s;">
+              <span data-hf-id="hf-u7e1" class="rc-outro__logo"><img data-hf-id="hf-fijj" src="../../public/roboco-logo.png" alt="" /></span>
+              <span data-hf-id="hf-fac3">roboco.tech</span>
             </div>
-          </div>
-
-          <div data-hf-id="hf-07c9" class="pk-outro" style="animation-delay: 15.4s;">
-            <span data-hf-id="hf-u7e1" class="rc-outro__logo"><img data-hf-id="hf-fijj" src="../../public/roboco-logo.png" alt="" /></span>
-            <span data-hf-id="hf-fac3">roboco.tech</span>
           </div>
         </div>
       </div>

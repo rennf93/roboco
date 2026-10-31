@@ -164,6 +164,8 @@ async def test_open_video_task_creates_assigned_authoring_task(
     # would auto-block for subtasks it never owns and deadlock.
     assert task.estimated_complexity == Complexity.LOW
     assert task.acceptance_criteria  # non-empty
+    # First AC line: both cuts render, the 9:16 inside TikTok's band.
+    assert "between y 168 and 1330" in task.acceptance_criteria[0]
     # Third AC line: composition follows the design bar / demo-kit register.
     assert len(task.acceptance_criteria) == FOUR
     assert "motion/README.md" in task.acceptance_criteria[2]

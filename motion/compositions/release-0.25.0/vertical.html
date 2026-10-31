@@ -75,10 +75,10 @@
          2.6s delay, which ran at 5.2s and left the panel empty until then.) */
       .pk-frame { animation-delay: 2.6s; }
       .pk-frame__sidebar {
-        width: 250px;
+        width: 220px;
         align-items: stretch;
         gap: 6px;
-        padding: 28px 18px 0 18px;
+        padding: 24px 16px 0 16px;
         transform: translateX(-40px);
         opacity: 0;
         animation: r25-side-in 0.7s var(--pk-ease) 2.8s forwards;
@@ -86,102 +86,111 @@
       @keyframes r25-side-in { to { transform: translateX(0); opacity: 1; } }
 
       .r25-side__logo {
-        width: 44px;
-        height: 44px;
+        width: 40px;
+        height: 40px;
         border-radius: 12px;
         background: #f4f6f8;
         display: flex;
         align-items: center;
         justify-content: center;
-        margin: 0 0 22px 4px;
+        margin: 0 0 18px 4px;
       }
-      .r25-side__logo img { width: 34px; height: 34px; }
+      .r25-side__logo img { width: 30px; height: 30px; }
 
       .r25-nav {
         display: flex;
         align-items: center;
-        height: 52px;
-        padding: 0 16px;
+        height: 44px;
+        padding: 0 14px;
         border-radius: 10px;
-        font-size: 21px;
+        font-size: 18px;
         color: var(--pk-text-muted);
       }
       .r25-nav--active { background: var(--pk-active-bg); color: var(--pk-active-fg); font-weight: 600; }
 
-      .pk-frame__topbar { left: 250px; }
-      .pk-frame__content { left: 250px; }
-      .r25-user {
-        display: flex;
-        align-items: center;
-        gap: 12px;
-        color: var(--pk-text-muted);
-        font-size: 20px;
-      }
-      .r25-user__chip {
-        background: var(--pk-surface-raised);
-        border: 1px solid var(--pk-border);
-        border-radius: 999px;
-        padding: 8px 18px;
-        color: var(--pk-text);
-      }
+      .pk-frame__topbar { left: 220px; height: 84px; padding: 0 32px; }
+      .pk-frame__content { left: 220px; top: 84px; }
+      .r25-user { font-size: 18px; }
+      .r25-user__chip { padding: 6px 14px; }
 
-      /* ---- Content placement --------------------------------------------- */
-      .pk-intake { --pk-intake-top: 32px; }
-      .pk-column { --pk-column-top: 220px; width: 720px; }
+      .pk-frame__search { width: 280px; height: 42px; font-size: 18px; }
+
+      .pk-intake { --pk-intake-top: 18px; }
+      .pk-intake__field { height: 60px; font-size: 28px; }
+      .pk-column { --pk-column-top: 130px; width: 560px; }
+      /* Inside the platform band the frame is 1162px tall, so the cards
+         take the square cut's compact build: chip and status pill share
+         one row, the 164px pitch the cursor's waypoints and the camera's
+         shots are measured against. */
       .pk-column .pk-card {
         position: static;
-        margin-bottom: 20px;
+        display: grid;
+        grid-template-columns: auto 1fr;
+        align-items: center;
+        column-gap: 12px;
+        margin-bottom: 12px;
+        padding: 16px 24px;
         /* Springy entrance with a hint of overshoot; a flat fade on every
            card is the metronome that makes the cut feel like a slideshow. */
         animation-duration: 0.55s;
         animation-timing-function: cubic-bezier(0.34, 1.4, 0.64, 1);
       }
-      .r25-sub {
-        margin-top: 10px;
-        font-size: 22px;
-        line-height: 1.35;
-        color: var(--pk-text-muted);
-      }
+      .pk-card__title { font-size: 28px; }
+      .r25-sub { font-size: 18px; }
+      .pk-card__title, .r25-sub { grid-column: 1 / -1; }
+      .pk-card__meta, .pk-card__status { margin-top: 14px; }
+      .pk-card__status { height: 48px; }
 
-      /* Receipt stats overlay. */
+      /* Centred in the 680px left of the action rail, not the full width:
+         the lines below y 840 would otherwise run under it. */
       .r25-stats {
         position: absolute;
-        right: 64px;
-        bottom: 320px;
-        text-align: right;
+        inset: 0;
+        padding-right: 180px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        text-align: center;
+        background: rgba(10, 10, 10, 0.88);
+        z-index: 20;
         font-family: var(--pk-font-display);
+        opacity: 0;
+        animation: r25-stats-in 0.4s var(--pk-ease) 24.0s forwards, r25-stats-out 0.5s var(--pk-ease) 32.0s forwards;
       }
+      @keyframes r25-stats-in { to { opacity: 1; } }
       .r25-stats__line {
-        font-size: 64px;
-        line-height: 1.22;
+        font-size: 80px;
+        line-height: 1.25;
         color: var(--pk-text);
         opacity: 0;
         transform: translateY(24px) scale(0.96);
         animation: pk-enter-rise-scale 0.55s var(--pk-ease) forwards;
       }
       .r25-stats__line--accent { color: var(--pk-accent); }
-      .r25-stats { animation: r25-stats-out 0.5s var(--pk-ease) 32.0s forwards; }
       @keyframes r25-stats-out { to { opacity: 0; } }
 
-      .pk-toast { --pk-toast-bottom: 140px; }
+      /* The end: the toast on a row of its own above the lockup, its right
+         edge at x 900 so none of its words sit under the action rail. */
+      .pk-toast { --pk-toast-bottom: 108px; right: 180px; }
 
-      /* Closing lockup. */
       .pk-outro {
-        --pk-outro-bottom: 56px;
+        --pk-outro-bottom: 28px;
         display: flex;
         align-items: center;
         gap: 20px;
       }
       .r25-outro__logo {
-        width: 52px;
-        height: 52px;
+        width: 48px;
+        height: 48px;
         border-radius: 14px;
         background: #f4f6f8;
         display: flex;
         align-items: center;
         justify-content: center;
       }
-      .r25-outro__logo img { width: 40px; height: 40px; }
+      .r25-outro__logo img { width: 36px; height: 36px; }
 
       #typeIntro { display: inline-block; overflow: hidden; white-space: pre; vertical-align: bottom; width: 0; }
       @keyframes type-reveal { to { width: var(--type-ch, 20ch); } }
@@ -189,152 +198,155 @@
   </head>
   <body>
     <div data-hf-id="hf-r2km" id="stage" data-composition-id="release-0.25.0" data-width="1080" data-height="1920" data-start="0" data-duration="40" data-fps="30">
+      <div data-hf-id="hf-b9ne" class="pk-band">
 
-      <!-- Beat 1: identity cold open. -->
-      <div data-hf-id="hf-60pk" class="r25-hero clip" data-start="0" data-duration="3.2" data-track-index="16">
-        <div data-hf-id="hf-b6ur" class="r25-hero__markwrap">
-          <img data-hf-id="hf-bd3p" class="r25-hero__mark" src="../../public/roboco-logo-darkmode.png" alt="RoboCo" />
-          <div data-hf-id="hf-67vq" class="r25-hero__ring"></div>
+        <!-- Beat 1: identity cold open. -->
+        <div data-hf-id="hf-60pk" class="r25-hero clip" data-start="0" data-duration="3.2" data-track-index="16">
+          <div data-hf-id="hf-b6ur" class="r25-hero__markwrap">
+            <img data-hf-id="hf-bd3p" class="r25-hero__mark" src="../../public/roboco-logo-darkmode.png" alt="RoboCo" />
+            <div data-hf-id="hf-67vq" class="r25-hero__ring"></div>
+          </div>
+          <div data-hf-id="hf-wi7f" class="r25-hero__version">v0.25.0</div>
+          <div data-hf-id="hf-vchq" class="r25-hero__tag">governance gets a better UI</div>
         </div>
-        <div data-hf-id="hf-wi7f" class="r25-hero__version">v0.25.0</div>
-        <div data-hf-id="hf-vchq" class="r25-hero__tag">governance gets a better UI</div>
-      </div>
 
-      <!-- Beat 2: the panel assembles, and the camera lives on it: start a
-           touch tight, push toward each card as it completes, pull wide for
-           the receipt, ease onto the toast, settle for the lockup. -->
-      <div data-hf-id="hf-t6ux" class="pk-camera"
-           data-shots="2.6 0 14 1.025; 4.8 0 8 1.03;
-                       6.4 34 96 1.055; 9.2 30 88 1.05;
-                       10.4 30 30 1.06; 13.6 26 24 1.055;
-                       15.4 32 -52 1.065; 18.6 28 -58 1.06;
-                       20.4 30 -150 1.065; 22.6 26 -156 1.06;
-                       25.0 0 0 1.0; 29.2 0 0 1.0;
-                       30.8 -26 -120 1.035; 33.4 -22 -116 1.03;
-                       37.0 0 0 1.0; 39.6 0 6 1.005">
-      <div data-hf-id="hf-xqw0" class="pk-frame clip" data-start="0" data-duration="40" data-track-index="1">
-        <aside data-hf-id="hf-vf6m" class="pk-frame__sidebar">
-          <div data-hf-id="hf-mbww" class="r25-side__logo"><img data-hf-id="hf-08pr" src="../../public/roboco-logo.png" alt="" /></div>
-          <div data-hf-id="hf-dn32" class="r25-nav">Overview</div>
-          <div data-hf-id="hf-w91j" class="r25-nav">Business</div>
-          <div data-hf-id="hf-hi1i" class="r25-nav">Social</div>
-          <div data-hf-id="hf-qm3i" class="r25-nav r25-nav--active">Tasks</div>
-          <div data-hf-id="hf-621e" class="r25-nav">Kanban</div>
-          <div data-hf-id="hf-mjqf" class="r25-nav">Git</div>
-          <div data-hf-id="hf-pk37" class="r25-nav">Agents</div>
-          <div data-hf-id="hf-eawq" class="r25-nav">Metrics</div>
-        </aside>
+        <!-- Beat 2: the panel assembles, and the camera lives on it: start a
+             touch tight, push toward each card as it completes, pull wide for
+             the receipt, ease onto the toast, settle for the lockup. -->
+        <div data-hf-id="hf-t6ux" class="pk-camera"
+             data-shots="2.6 0 10 1.03; 4.8 0 6 1.035;
+                         6.4 30 62 1.055; 9.2 26 56 1.05;
+                         10.4 28 8 1.06; 13.6 24 4 1.055;
+                         15.4 30 -46 1.06; 18.6 26 -50 1.055;
+                         20.4 28 -96 1.06; 22.4 22 -98 1.05;
+                         23.8 0 0 1.0; 32.6 0 0 1.0;
+                         33.8 -20 -60 1.03; 35.6 -18 -58 1.028;
+                         37.4 0 0 1.0; 39.6 0 4 1.004">
+        <div data-hf-id="hf-xqw0" class="pk-frame clip" data-start="0" data-duration="40" data-track-index="1">
+          <aside data-hf-id="hf-vf6m" class="pk-frame__sidebar">
+            <div data-hf-id="hf-mbww" class="r25-side__logo"><img data-hf-id="hf-08pr" src="../../public/roboco-logo.png" alt="" /></div>
+            <div data-hf-id="hf-dn32" class="r25-nav">Overview</div>
+            <div data-hf-id="hf-w91j" class="r25-nav">Business</div>
+            <div data-hf-id="hf-hi1i" class="r25-nav">Social</div>
+            <div data-hf-id="hf-qm3i" class="r25-nav r25-nav--active">Tasks</div>
+            <div data-hf-id="hf-621e" class="r25-nav">Kanban</div>
+            <div data-hf-id="hf-mjqf" class="r25-nav">Git</div>
+            <div data-hf-id="hf-pk37" class="r25-nav">Agents</div>
+            <div data-hf-id="hf-eawq" class="r25-nav">Metrics</div>
+          </aside>
 
-        <header data-hf-id="hf-jd7p" class="pk-frame__topbar">
-          <div data-hf-id="hf-zsox" class="pk-frame__search">Search tasks, agents...</div>
-          <div data-hf-id="hf-q79j" class="r25-user">
-            <div data-hf-id="hf-2khl" class="pk-frame__status clip" data-start="0" data-duration="40" data-track-index="0">
-              <span data-hf-id="hf-tl8v" class="pk-frame__statusdot"></span>
-              <span data-hf-id="hf-zhpv">Live</span>
+          <header data-hf-id="hf-jd7p" class="pk-frame__topbar">
+            <div data-hf-id="hf-zsox" class="pk-frame__search">Search tasks, agents...</div>
+            <div data-hf-id="hf-q79j" class="r25-user">
+              <div data-hf-id="hf-2khl" class="pk-frame__status clip" data-start="0" data-duration="40" data-track-index="0">
+                <span data-hf-id="hf-tl8v" class="pk-frame__statusdot"></span>
+                <span data-hf-id="hf-zhpv">Live</span>
+              </div>
+              <span data-hf-id="hf-cel0" class="r25-user__chip">CEO · Renzo</span>
             </div>
-            <span data-hf-id="hf-cel0" class="r25-user__chip">CEO · Renzo</span>
-          </div>
-        </header>
+          </header>
 
-        <div data-hf-id="hf-bp68" class="pk-frame__content">
-          <!-- Beat 3: the hook types into intake. -->
-          <div data-hf-id="hf-sysr" class="pk-intake" style="animation-delay: 3.6s;">
-            <div data-hf-id="hf-sstf" class="pk-intake__label">New task</div>
-            <div data-hf-id="hf-kbxq" class="pk-intake__field"><span data-hf-id="hf-13u2" id="typeIntro">Governance gets a better UI</span><span data-hf-id="hf-txmw" class="pk-caret"></span></div>
-          </div>
-
-          <!-- Beat 4: four feature cards, one per ~5s scene, each fully visible before the next enters. -->
-          <div data-hf-id="hf-vk0y" class="pk-column">
-            <div data-hf-id="hf-safe" class="pk-column__header">Shipped in v0.25.0</div>
-
-            <div data-hf-id="hf-ygat" class="pk-card" style="animation-delay: 5.0s;">
-              <div data-hf-id="hf-iyjz" class="pk-card__title">Env ladder</div>
-              <div data-hf-id="hf-1u3m" class="r25-sub">Dev to prod, one rung at a time.</div>
-              <div data-hf-id="hf-rftz" class="pk-card__meta">
-                <span data-hf-id="hf-0lve" class="pk-chip pk-chip--gray">project settings</span>
-              </div>
-              <div data-hf-id="hf-j9zq" class="pk-card__status">
-                <span data-hf-id="hf-dpeo" class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 5.0s; --pk-pill-exit-delay: 6.4s;">in progress</span>
-                <span data-hf-id="hf-v5m9" class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 6.6s;">completed</span>
-              </div>
+          <div data-hf-id="hf-bp68" class="pk-frame__content">
+            <!-- Beat 3: the hook types into intake. -->
+            <div data-hf-id="hf-sysr" class="pk-intake" style="animation-delay: 3.6s;">
+              <div data-hf-id="hf-sstf" class="pk-intake__label">New task</div>
+              <div data-hf-id="hf-kbxq" class="pk-intake__field"><span data-hf-id="hf-13u2" id="typeIntro">Governance gets a better UI</span><span data-hf-id="hf-txmw" class="pk-caret"></span></div>
             </div>
 
-            <div data-hf-id="hf-difj" class="pk-card" style="animation-delay: 10.0s;">
-              <div data-hf-id="hf-pyo8" class="pk-card__title">Collision map</div>
-              <div data-hf-id="hf-9jhd" class="r25-sub">See who touched what before you review.</div>
-              <div data-hf-id="hf-wtjb" class="pk-card__meta">
-                <span data-hf-id="hf-g4k6" class="pk-chip pk-chip--gray">task detail</span>
+            <!-- Beat 4: four feature cards, one per ~5s scene, each fully visible before the next enters. -->
+            <div data-hf-id="hf-vk0y" class="pk-column">
+              <div data-hf-id="hf-safe" class="pk-column__header">Shipped in v0.25.0</div>
+
+              <div data-hf-id="hf-ygat" class="pk-card" style="animation-delay: 5.0s;">
+                <div data-hf-id="hf-iyjz" class="pk-card__title">Env ladder</div>
+                <div data-hf-id="hf-1u3m" class="r25-sub">Dev to prod, one rung at a time.</div>
+                <div data-hf-id="hf-rftz" class="pk-card__meta">
+                  <span data-hf-id="hf-0lve" class="pk-chip pk-chip--gray">project settings</span>
+                </div>
+                <div data-hf-id="hf-j9zq" class="pk-card__status">
+                  <span data-hf-id="hf-dpeo" class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 5.0s; --pk-pill-exit-delay: 6.4s;">in progress</span>
+                  <span data-hf-id="hf-v5m9" class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 6.6s;">completed</span>
+                </div>
               </div>
-              <div data-hf-id="hf-0nju" class="pk-card__status">
-                <span data-hf-id="hf-1wnc" class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 10.0s; --pk-pill-exit-delay: 11.4s;">in progress</span>
-                <span data-hf-id="hf-0tnp" class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 11.6s;">completed</span>
+
+              <div data-hf-id="hf-difj" class="pk-card" style="animation-delay: 10.0s;">
+                <div data-hf-id="hf-pyo8" class="pk-card__title">Collision map</div>
+                <div data-hf-id="hf-9jhd" class="r25-sub">See who touched what before you review.</div>
+                <div data-hf-id="hf-wtjb" class="pk-card__meta">
+                  <span data-hf-id="hf-g4k6" class="pk-chip pk-chip--gray">task detail</span>
+                </div>
+                <div data-hf-id="hf-0nju" class="pk-card__status">
+                  <span data-hf-id="hf-1wnc" class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 10.0s; --pk-pill-exit-delay: 11.4s;">in progress</span>
+                  <span data-hf-id="hf-0tnp" class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 11.6s;">completed</span>
+                </div>
+              </div>
+
+              <div data-hf-id="hf-p9ji" class="pk-card" style="animation-delay: 15.0s;">
+                <div data-hf-id="hf-1tcf" class="pk-card__title">Metrics donut</div>
+                <div data-hf-id="hf-8iui" class="r25-sub">90 days of real task flow.</div>
+                <div data-hf-id="hf-wf8a" class="pk-card__meta">
+                  <span data-hf-id="hf-j3cp" class="pk-chip pk-chip--gray">performance tab</span>
+                </div>
+                <div data-hf-id="hf-11uv" class="pk-card__status">
+                  <span data-hf-id="hf-03go" class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 15.0s; --pk-pill-exit-delay: 16.4s;">in progress</span>
+                  <span data-hf-id="hf-jwk4" class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 16.6s;">completed</span>
+                </div>
+              </div>
+
+              <div data-hf-id="hf-8tx2" class="pk-card" style="animation-delay: 20.0s;">
+                <div data-hf-id="hf-dip6" class="pk-card__title">Notification bell</div>
+                <div data-hf-id="hf-uv7r" class="r25-sub">Real read/ack actions on every alert.</div>
+                <div data-hf-id="hf-w0x9" class="pk-card__meta">
+                  <span data-hf-id="hf-f1jg" class="pk-chip pk-chip--gray">notifications</span>
+                </div>
+                <div data-hf-id="hf-1g5w" class="pk-card__status">
+                  <span data-hf-id="hf-i2q2" class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 20.0s; --pk-pill-exit-delay: 21.4s;">in progress</span>
+                  <span data-hf-id="hf-0vtm" class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 21.6s;">completed</span>
+                </div>
               </div>
             </div>
 
-            <div data-hf-id="hf-p9ji" class="pk-card" style="animation-delay: 15.0s;">
-              <div data-hf-id="hf-1tcf" class="pk-card__title">Metrics donut</div>
-              <div data-hf-id="hf-8iui" class="r25-sub">90 days of real task flow.</div>
-              <div data-hf-id="hf-wf8a" class="pk-card__meta">
-                <span data-hf-id="hf-j3cp" class="pk-chip pk-chip--gray">performance tab</span>
-              </div>
-              <div data-hf-id="hf-11uv" class="pk-card__status">
-                <span data-hf-id="hf-03go" class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 15.0s; --pk-pill-exit-delay: 16.4s;">in progress</span>
-                <span data-hf-id="hf-jwk4" class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 16.6s;">completed</span>
+            <!-- The cursor is the CEO's hand: settle on the intake while it
+                 types, ONE submit click just before the org takes over, then
+                 travel to witness each card completing (the agents do the
+                 clicking-free work), step out before the stats overlay covers
+                 the panel, come back to acknowledge the toast, and leave the
+                 frame; never freeze, never blink out. -->
+            <div data-hf-id="hf-hkbr" class="pk-cursor"
+                 data-waypoints="4.0 520 130; 4.5 452 80; 4.8 445 76 click;
+                                 5.6 250 185; 6.4 138 250; 7.6 152 262;
+                                 9.6 220 340; 10.4 148 412; 12.0 134 424;
+                                 14.6 215 505; 15.4 140 576; 17.0 155 588;
+                                 19.6 220 668; 20.4 150 740; 22.0 136 752;
+                                 23.0 480 780; 23.9 920 820;
+                                 32.0 920 920; 32.9 500 930; 33.3 485 925 click;
+                                 34.7 640 1010; 35.7 940 1060">
+              <div data-hf-id="hf-teu6" class="pk-cursor__glyph"></div>
+            </div>
+
+            <!-- Beat 5: receipt stats. -->
+            <div data-hf-id="hf-cqtn" class="r25-stats">
+              <div data-hf-id="hf-5f6v" class="r25-stats__line" style="animation-delay: 24.0s;">1 release</div>
+              <div data-hf-id="hf-3t54" class="r25-stats__line r25-stats__line--accent" style="animation-delay: 24.3s;">25 agents</div>
+              <div data-hf-id="hf-ofx1" class="r25-stats__line" style="animation-delay: 24.6s;">1 human</div>
+            </div>
+
+            <!-- Beat 6: confirmation toast, then lockup. -->
+            <div data-hf-id="hf-wns6" class="pk-toast" style="animation-delay: 30.0s;">
+              <div data-hf-id="hf-p9jw" class="pk-toast__icon"></div>
+              <div data-hf-id="hf-d4kz" class="pk-toast__body">
+                <div data-hf-id="hf-a5ig" class="pk-toast__title" id="toastTitle">v0.25.0 shipped</div>
+                <div data-hf-id="hf-7ly9" class="pk-toast__text" id="toastBody">I approved once. 25 agents did the rest.</div>
               </div>
             </div>
 
-            <div data-hf-id="hf-8tx2" class="pk-card" style="animation-delay: 20.0s;">
-              <div data-hf-id="hf-dip6" class="pk-card__title">Notification bell</div>
-              <div data-hf-id="hf-uv7r" class="r25-sub">Real read/ack actions on every alert.</div>
-              <div data-hf-id="hf-w0x9" class="pk-card__meta">
-                <span data-hf-id="hf-f1jg" class="pk-chip pk-chip--gray">notifications</span>
-              </div>
-              <div data-hf-id="hf-1g5w" class="pk-card__status">
-                <span data-hf-id="hf-i2q2" class="pk-pill pk-pill--progress pk-pill--swap-out" style="--pk-pill-enter-delay: 20.0s; --pk-pill-exit-delay: 21.4s;">in progress</span>
-                <span data-hf-id="hf-0vtm" class="pk-pill pk-pill--completed pk-pill--swap-in" style="--pk-pill-enter-delay: 21.6s;">completed</span>
-              </div>
+            <div data-hf-id="hf-peqc" class="pk-outro" style="animation-delay: 36.0s;">
+              <span data-hf-id="hf-7smv" class="r25-outro__logo"><img data-hf-id="hf-fijj" src="../../public/roboco-logo.png" alt="" /></span>
+              <span data-hf-id="hf-fac3">roboco.tech</span>
             </div>
-          </div>
-
-          <!-- The cursor is the CEO's hand: settle on the intake while it
-               types, ONE submit click just before the org takes over, then
-               travel to witness each card completing (the agents do the
-               clicking-free work), drift to the receipt, acknowledge the
-               toast, and leave the frame; never freeze, never blink out. -->
-          <div data-hf-id="hf-hkbr" class="pk-cursor"
-               data-waypoints="4.0 640 210; 4.5 552 104; 4.8 545 100 click;
-                               5.6 300 330; 6.4 160 405; 7.6 178 420;
-                               9.6 260 557; 10.4 190 695; 12.0 172 710;
-                               14.6 250 848; 15.4 162 986; 17.0 180 1001;
-                               19.6 255 1138; 20.4 190 1276; 22.0 174 1291;
-                               23.6 300 1440; 24.8 300 1520; 28.6 315 1530;
-                               29.6 560 1560; 30.8 612 1622 click; 33.2 700 1720;
-                               35.0 940 1790">
-            <div data-hf-id="hf-teu6" class="pk-cursor__glyph"></div>
-          </div>
-
-          <!-- Beat 5: receipt stats. -->
-          <div data-hf-id="hf-cqtn" class="r25-stats">
-            <div data-hf-id="hf-5f6v" class="r25-stats__line" style="animation-delay: 24.0s;">1 release</div>
-            <div data-hf-id="hf-3t54" class="r25-stats__line r25-stats__line--accent" style="animation-delay: 24.3s;">25 agents</div>
-            <div data-hf-id="hf-ofx1" class="r25-stats__line" style="animation-delay: 24.6s;">1 human</div>
-          </div>
-
-          <!-- Beat 6: confirmation toast, then lockup. -->
-          <div data-hf-id="hf-wns6" class="pk-toast" style="animation-delay: 30.0s;">
-            <div data-hf-id="hf-p9jw" class="pk-toast__icon"></div>
-            <div data-hf-id="hf-d4kz" class="pk-toast__body">
-              <div data-hf-id="hf-a5ig" class="pk-toast__title" id="toastTitle">v0.25.0 shipped</div>
-              <div data-hf-id="hf-7ly9" class="pk-toast__text" id="toastBody">I approved once. 25 agents did the rest.</div>
-            </div>
-          </div>
-
-          <div data-hf-id="hf-peqc" class="pk-outro" style="animation-delay: 36.0s;">
-            <span data-hf-id="hf-7smv" class="r25-outro__logo"><img data-hf-id="hf-fijj" src="../../public/roboco-logo.png" alt="" /></span>
-            <span data-hf-id="hf-fac3">roboco.tech</span>
           </div>
         </div>
-      </div>
+        </div>
       </div>
     </div>
 

@@ -47,7 +47,9 @@ if TYPE_CHECKING:
     from roboco.db.tables import ProjectTable, TaskTable
 
 _AUTHORING_ACCEPTANCE_CRITERIA = [
-    "Both 9:16 and 1:1 cuts render",
+    "Both 9:16 and 1:1 cuts render, and every word in the 9:16 stays between "
+    "y 168 and 1330, none right of x 900 below y 840 (TikTok's UI covers the "
+    "rest; motion/README.md)",
     "Captions within platform limits",
     "Composition follows motion/README.md's design bar and uses the "
     "panel-demo kit register where the occasion shows the product",
