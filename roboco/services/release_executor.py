@@ -51,6 +51,11 @@ if TYPE_CHECKING:
     from roboco.services.forge.base import GitProvider, RepoRef
     from roboco.services.release_readiness import ReleaseReadinessReport
 
+if TYPE_CHECKING:
+    from roboco.services._release_executor_types import _GitReleaseOpsSelf as _Base
+else:
+    _Base = object
+
 # CHANGELOG.md is in the canonical bump set but is NOT version-string-replaced —
 # it receives a NEW entry. The bump skips it (and any path ending in it).
 _CHANGELOG_NAME = "CHANGELOG.md"
@@ -460,53 +465,9 @@ def _require_status(resp: Any, expected: int, step: str) -> None:
         )
 
 
-class _GitReleaseOps:
-    """Real release steps on a dispatcher-owned writable clone of RoboCo."""
-
-    def __init__(self, session: AsyncSession, ctx: _ReleaseContext) -> None:
-        self._session = session
-        self._slug = ctx.slug
-        self._default_branch = ctx.prod_branch
-        self._root = ctx.root
-        self._git_url = ctx.git_url
-        self._relay = ctx.relay
-        self._head_branch = ctx.env_chain[0] if ctx.env_chain else ctx.prod_branch
-        self._ci_workflow = ctx.ci_workflow
-        self._env_chain = ctx.env_chain
-        # What promote_env_chain did, for the GitHub path to re-create.
-        self._promotion: list[_PromotionStep] = []
-
-    async def _git(self, *args: str) -> tuple[int, str]:
-        """``git <args>`` in the release clone; ``(rc, stdout+stderr)``.
-
-        An ``origin`` command goes through the relay; anything else runs as
-        root in the clone (dispatcher-owned, under the private root). A hang
-        past the deadline reports rc 124 so every fail-closed branch fires.
-        """
-        root = self._root
-
-        def _local(local_args: Sequence[str]) -> subprocess.CompletedProcess[str]:
-            return run_private_git(
-                root, local_args, timeout=_GIT_OP_TIMEOUT_SECONDS, check=False
-            )
-
-        def _run() -> subprocess.CompletedProcess[str]:
-            if not is_origin_command(args):
-                return _local(args)
-            ctx = OriginContext(
-                relay=self._relay,
-                repo=root,
-                local_git=_local,
-                from_workspace=False,
-                timeout=_GIT_OP_TIMEOUT_SECONDS,
-            )
-            return run_origin_command(ctx, args)
-
-        try:
-            result = await asyncio.to_thread(_run)
-        except subprocess.TimeoutExpired:
-            return _TIMEOUT_RC, f"subprocess timed out after {_GIT_OP_TIMEOUT_SECONDS}s"
-        return result.returncode, result.stdout + result.stderr
+class _GitReleaseVersioning(_Base):
+    """The release's version: whether it is already published or half-landed, the
+    version the repo ships, the bumps across the plan, and the changelog entry."""
 
     async def is_already_published(self, version: str) -> bool:
         rc, out = await self._git("ls-remote", "--tags", "origin", f"v{version}")
@@ -581,6 +542,179 @@ class _GitReleaseOps:
         path = self._root / _CHANGELOG_NAME
         existing = path.read_text(encoding="utf-8") if path.is_file() else ""
         path.write_text(_insert_changelog_entry(existing, entry), encoding="utf-8")
+
+
+class _GitReleaseForgeLanding(_Base):
+    """Landing a release through the forge's API when prod takes no push: replaying
+    the promotion and the release commit on staging, the file changes, the same-tree
+    guard, and the commit messages."""
+
+    async def _land_through_forge_api(self, version: str) -> str | None:
+        """Have the forge write the release's commits and fast-forward prod to
+        them; the release sha it wrote, or None when the remote has no such
+        API (the adapter answers 501, or the forge layer does not resolve the
+        URL) and the caller pushes with git.
+
+        GitHub re-creates the local commits on the staging branch, the
+        env-chain merges through its merges API and the release commit
+        through ``createCommitOnBranch``, each checked to hold exactly the
+        tree the clone built. Prod moves last, in one fast-forward.
+        """
+        import httpx
+
+        from roboco.exceptions import GitError
+        from roboco.services.forge.router import ForgeRouter
+        from roboco.services.git import GitService
+
+        try:
+            repo = GitService._parse_git_url(self._git_url)
+        except GitError:
+            return None
+        token = await self._forge_token()
+        if not token:
+            raise RuntimeError(f"release push failed: no git token for {self._slug}")
+        if self._promotion:
+            base = self._promotion[0].before
+        else:
+            base = await self._rev_parse("HEAD^")
+        commits = _ForgeCommits(ForgeRouter(), repo, token)
+        try:
+            if not await commits.open_staging(base):
+                return None
+            try:
+                head = await self._recreate_promotion(commits, base)
+                landed = await self._recreate_release_commit(commits, head, version)
+                await commits.fast_forward(self._default_branch, landed)
+            finally:
+                await commits.close_staging()
+        except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
+            # A transport failure or an answer missing the expected fields.
+            logger.error("release push failed", error=str(exc)[:300])
+            raise RuntimeError(f"release push failed: {exc!s}"[:280]) from exc
+        return landed
+
+    async def _recreate_promotion(self, commits: _ForgeCommits, base: str) -> str:
+        """Replay ``promote_env_chain``'s merges on staging; the head after."""
+        head = base
+        for step in self._promotion:
+            if step.after == step.before:
+                continue
+            if step.after == step.source:
+                await commits.fast_forward(_STAGING_BRANCH, step.source)
+                head = step.source
+                continue
+            message = await self._commit_message(step.after)
+            head, tree = await commits.merge_into_staging(step.source, message)
+            await self._require_same_tree(step.after, tree, f"{step.branch} merge")
+        return head
+
+    async def _recreate_release_commit(
+        self, commits: _ForgeCommits, head: str, version: str
+    ) -> str:
+        """Commit the local release commit's file changes on staging; its sha."""
+        local_release = await self._rev_parse("HEAD")
+        additions, deletions = await self._file_changes(
+            await self._rev_parse("HEAD^"), local_release
+        )
+        sha, tree = await commits.commit_on_staging(
+            head, _release_subject(version), additions, deletions
+        )
+        await self._require_same_tree(local_release, tree, "release commit")
+        return sha
+
+    async def _file_changes(
+        self, old: str, new: str
+    ) -> tuple[dict[str, bytes], list[str]]:
+        """What ``new`` changes against ``old``: whole contents of the files it
+        adds or modifies (read from the clone, which has ``new`` checked out)
+        and the paths it deletes. A checkout filter (eol, clean/smudge) on a
+        changed file would make these bytes differ from the committed blob;
+        the tree check after the commit then refuses the landing."""
+        rc, out = await self._git(
+            "diff-tree", "-r", "--no-renames", "--name-status", "-z", old, new
+        )
+        if rc != 0:
+            raise RuntimeError(f"release push failed: diff-tree: {out.strip()[:200]}")
+        # -z ends every field, status and path alike, with a NUL.
+        fields = out.split("\0")[:-1]
+        additions: dict[str, bytes] = {}
+        deletions: list[str] = []
+        for status, path in zip(fields[0::2], fields[1::2], strict=True):
+            if status == "D":
+                deletions.append(path)
+                continue
+            try:
+                additions[path] = (self._root / path).read_bytes()
+            except OSError as exc:
+                raise RuntimeError(f"release push failed: read {path}: {exc}") from exc
+        return additions, deletions
+
+    async def _require_same_tree(
+        self, local_commit: str, remote_tree: str, what: str
+    ) -> None:
+        """Fail closed unless GitHub's commit holds the tree the clone built.
+        Trees are content-addressed: equal ids mean byte-identical files."""
+        local_tree = await self._rev_parse(f"{local_commit}^{{tree}}")
+        if remote_tree != local_tree:
+            raise RuntimeError(
+                f"release push failed: GitHub's {what} has tree "
+                f"{remote_tree[:12]}, the clone's {local_tree[:12]}; prod not moved"
+            )
+
+    async def _commit_message(self, sha: str) -> str:
+        rc, out = await self._git("show", "-s", "--format=%B", sha)
+        if rc != 0:
+            raise RuntimeError(f"cannot read the message of {sha[:12]}")
+        return out.strip()
+
+
+class _GitReleaseOps(_GitReleaseForgeLanding, _GitReleaseVersioning):
+    """Real release steps on a dispatcher-owned writable clone of RoboCo."""
+
+    def __init__(self, session: AsyncSession, ctx: _ReleaseContext) -> None:
+        self._session = session
+        self._slug = ctx.slug
+        self._default_branch = ctx.prod_branch
+        self._root = ctx.root
+        self._git_url = ctx.git_url
+        self._relay = ctx.relay
+        self._head_branch = ctx.env_chain[0] if ctx.env_chain else ctx.prod_branch
+        self._ci_workflow = ctx.ci_workflow
+        self._env_chain = ctx.env_chain
+        # What promote_env_chain did, for the GitHub path to re-create.
+        self._promotion: list[_PromotionStep] = []
+
+    async def _git(self, *args: str) -> tuple[int, str]:
+        """``git <args>`` in the release clone; ``(rc, stdout+stderr)``.
+
+        An ``origin`` command goes through the relay; anything else runs as
+        root in the clone (dispatcher-owned, under the private root). A hang
+        past the deadline reports rc 124 so every fail-closed branch fires.
+        """
+        root = self._root
+
+        def _local(local_args: Sequence[str]) -> subprocess.CompletedProcess[str]:
+            return run_private_git(
+                root, local_args, timeout=_GIT_OP_TIMEOUT_SECONDS, check=False
+            )
+
+        def _run() -> subprocess.CompletedProcess[str]:
+            if not is_origin_command(args):
+                return _local(args)
+            ctx = OriginContext(
+                relay=self._relay,
+                repo=root,
+                local_git=_local,
+                from_workspace=False,
+                timeout=_GIT_OP_TIMEOUT_SECONDS,
+            )
+            return run_origin_command(ctx, args)
+
+        try:
+            result = await asyncio.to_thread(_run)
+        except subprocess.TimeoutExpired:
+            return _TIMEOUT_RC, f"subprocess timed out after {_GIT_OP_TIMEOUT_SECONDS}s"
+        return result.returncode, result.stdout + result.stderr
 
     async def promote_env_chain(self) -> None:
         """Merge the env ladder head→…→just-below-prod into the prod checkout.
@@ -696,130 +830,12 @@ class _GitReleaseOps:
             raise RuntimeError(f"release push failed: {push_out.strip()[:200]}")
         return sha
 
-    async def _land_through_forge_api(self, version: str) -> str | None:
-        """Have the forge write the release's commits and fast-forward prod to
-        them; the release sha it wrote, or None when the remote has no such
-        API (the adapter answers 501, or the forge layer does not resolve the
-        URL) and the caller pushes with git.
-
-        GitHub re-creates the local commits on the staging branch, the
-        env-chain merges through its merges API and the release commit
-        through ``createCommitOnBranch``, each checked to hold exactly the
-        tree the clone built. Prod moves last, in one fast-forward.
-        """
-        import httpx
-
-        from roboco.exceptions import GitError
-        from roboco.services.forge.router import ForgeRouter
-        from roboco.services.git import GitService
-
-        try:
-            repo = GitService._parse_git_url(self._git_url)
-        except GitError:
-            return None
-        token = await self._forge_token()
-        if not token:
-            raise RuntimeError(f"release push failed: no git token for {self._slug}")
-        if self._promotion:
-            base = self._promotion[0].before
-        else:
-            base = await self._rev_parse("HEAD^")
-        commits = _ForgeCommits(ForgeRouter(), repo, token)
-        try:
-            if not await commits.open_staging(base):
-                return None
-            try:
-                head = await self._recreate_promotion(commits, base)
-                landed = await self._recreate_release_commit(commits, head, version)
-                await commits.fast_forward(self._default_branch, landed)
-            finally:
-                await commits.close_staging()
-        except (httpx.HTTPError, KeyError, TypeError, ValueError) as exc:
-            # A transport failure or an answer missing the expected fields.
-            logger.error("release push failed", error=str(exc)[:300])
-            raise RuntimeError(f"release push failed: {exc!s}"[:280]) from exc
-        return landed
-
-    async def _recreate_promotion(self, commits: _ForgeCommits, base: str) -> str:
-        """Replay ``promote_env_chain``'s merges on staging; the head after."""
-        head = base
-        for step in self._promotion:
-            if step.after == step.before:
-                continue
-            if step.after == step.source:
-                await commits.fast_forward(_STAGING_BRANCH, step.source)
-                head = step.source
-                continue
-            message = await self._commit_message(step.after)
-            head, tree = await commits.merge_into_staging(step.source, message)
-            await self._require_same_tree(step.after, tree, f"{step.branch} merge")
-        return head
-
-    async def _recreate_release_commit(
-        self, commits: _ForgeCommits, head: str, version: str
-    ) -> str:
-        """Commit the local release commit's file changes on staging; its sha."""
-        local_release = await self._rev_parse("HEAD")
-        additions, deletions = await self._file_changes(
-            await self._rev_parse("HEAD^"), local_release
-        )
-        sha, tree = await commits.commit_on_staging(
-            head, _release_subject(version), additions, deletions
-        )
-        await self._require_same_tree(local_release, tree, "release commit")
-        return sha
-
-    async def _file_changes(
-        self, old: str, new: str
-    ) -> tuple[dict[str, bytes], list[str]]:
-        """What ``new`` changes against ``old``: whole contents of the files it
-        adds or modifies (read from the clone, which has ``new`` checked out)
-        and the paths it deletes. A checkout filter (eol, clean/smudge) on a
-        changed file would make these bytes differ from the committed blob;
-        the tree check after the commit then refuses the landing."""
-        rc, out = await self._git(
-            "diff-tree", "-r", "--no-renames", "--name-status", "-z", old, new
-        )
-        if rc != 0:
-            raise RuntimeError(f"release push failed: diff-tree: {out.strip()[:200]}")
-        # -z ends every field, status and path alike, with a NUL.
-        fields = out.split("\0")[:-1]
-        additions: dict[str, bytes] = {}
-        deletions: list[str] = []
-        for status, path in zip(fields[0::2], fields[1::2], strict=True):
-            if status == "D":
-                deletions.append(path)
-                continue
-            try:
-                additions[path] = (self._root / path).read_bytes()
-            except OSError as exc:
-                raise RuntimeError(f"release push failed: read {path}: {exc}") from exc
-        return additions, deletions
-
-    async def _require_same_tree(
-        self, local_commit: str, remote_tree: str, what: str
-    ) -> None:
-        """Fail closed unless GitHub's commit holds the tree the clone built.
-        Trees are content-addressed: equal ids mean byte-identical files."""
-        local_tree = await self._rev_parse(f"{local_commit}^{{tree}}")
-        if remote_tree != local_tree:
-            raise RuntimeError(
-                f"release push failed: GitHub's {what} has tree "
-                f"{remote_tree[:12]}, the clone's {local_tree[:12]}; prod not moved"
-            )
-
     async def _rev_parse(self, ref: str) -> str:
         rc, out = await self._git("rev-parse", "--verify", "--quiet", ref)
         words = out.split()
         if rc != 0 or not words:
             raise RuntimeError(f"cannot resolve {ref} in the release clone")
         return words[0]
-
-    async def _commit_message(self, sha: str) -> str:
-        rc, out = await self._git("show", "-s", "--format=%B", sha)
-        if rc != 0:
-            raise RuntimeError(f"cannot read the message of {sha[:12]}")
-        return out.strip()
 
     async def _forge_token(self) -> str | None:
         """The project's forge token, resolved per call: a GitHub App
