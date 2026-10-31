@@ -2440,7 +2440,14 @@ async def get_optimal_service() -> OptimalService:
         # we waited to acquire.
         if _OptimalServiceHolder.instance is None:
             service = OptimalService()
-            await service.initialize()
+            try:
+                await service.initialize()
+            except BaseException:
+                # Unpublished, so close_optimal_service can't reach it: release
+                # the stores of the plugins that did initialize. A shutdown
+                # that cancels a first request's initialize lands here too.
+                await service.close()
+                raise
             _OptimalServiceHolder.instance = service
     return _OptimalServiceHolder.instance
 

@@ -9,9 +9,10 @@ propagates.
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from roboco.services.optimal_brain import vector_store as vector_store_module
 from roboco.services.optimal_brain.vector_store import VectorStore
 
 
@@ -43,6 +44,31 @@ async def test_close_noop_when_no_pool() -> None:
     vs = VectorStore.__new__(VectorStore)
     vs._pool = None
     await vs.close()
+    assert vs._pool is None
+
+
+@pytest.mark.asyncio
+async def test_initialize_closes_the_pool_when_provisioning_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A store whose table provisioning fails (or is cancelled) closes the pool
+    it just opened: its index plugin is never registered, so nothing else
+    would."""
+    conn = MagicMock()
+    conn.execute = AsyncMock(side_effect=RuntimeError("no pgvector"))
+    pool = MagicMock()
+    pool.acquire.return_value.__aenter__ = AsyncMock(return_value=conn)
+    pool.acquire.return_value.__aexit__ = AsyncMock(return_value=False)
+    pool.close = AsyncMock()
+    monkeypatch.setattr(
+        vector_store_module.asyncpg, "create_pool", AsyncMock(return_value=pool)
+    )
+    vs = VectorStore("postgresql://x/y", "chunks_documentation", 8)
+
+    with pytest.raises(RuntimeError, match="no pgvector"):
+        await vs.initialize()
+
+    pool.close.assert_awaited_once()
     assert vs._pool is None
 
 

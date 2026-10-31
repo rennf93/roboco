@@ -149,3 +149,35 @@ class _FakePlugin(BaseIndexPlugin):
 
     async def close(self) -> None:  # pragma: no cover - never awaited here
         return None
+
+
+class _FailingInitService(OptimalService):
+    """An initialize that fails, as a plugin's error or a shutdown's
+    cancellation makes it fail after earlier plugins opened their stores."""
+
+    closed = 0
+
+    async def initialize(self) -> None:
+        raise RuntimeError("plugin init failed")
+
+    async def close(self) -> None:
+        type(self).closed += 1
+
+
+@pytest.mark.asyncio
+async def test_a_failed_initialize_closes_the_unpublished_service(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An initialize that raises leaves the service unpublished, where
+    close_optimal_service can't reach it: get_optimal_service closes it,
+    releasing the stores the plugins already opened."""
+    await close_optimal_service()
+    _FailingInitService.closed = 0
+    monkeypatch.setattr(optimal_module, "OptimalService", _FailingInitService)
+    try:
+        with pytest.raises(RuntimeError, match="plugin init failed"):
+            await get_optimal_service()
+        assert _FailingInitService.closed == 1
+        assert optimal_module._OptimalServiceHolder.instance is None
+    finally:
+        await close_optimal_service()

@@ -29,7 +29,7 @@ import socket
 import subprocess
 import threading
 import time
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -42,7 +42,7 @@ from sqlalchemy.engine.url import make_url
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import AsyncIterator, Iterator
     from pathlib import Path
     from types import ModuleType
     from typing import Protocol
@@ -337,6 +337,19 @@ def _make_admin_clone(root: Path, origin: Path) -> Path:
     return admin
 
 
+@asynccontextmanager
+async def _e2e_lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """At shutdown, close what the app's requests opened, on the server's own
+    loop, as production's lifespan does: the RAG stores' asyncpg pools and
+    the DB engines. Left to garbage collection, their connections stay open."""
+    yield
+    from roboco.db.base import close_db
+    from roboco.services.optimal import close_optimal_service
+
+    await close_optimal_service()
+    await close_db()
+
+
 def _build_app(gh: _FakeGitHub) -> FastAPI:
     from roboco.api.middleware import setup_middleware
     from roboco.api.routes.dashboard import router as dashboard_router
@@ -356,7 +369,7 @@ def _build_app(gh: _FakeGitHub) -> FastAPI:
     from roboco.api.routes.v1 import flow_pr_reviewer as fpr
     from roboco.api.routes.v1 import flow_qa as fq
 
-    app = FastAPI(title="roboco-e2e-smoke")
+    app = FastAPI(title="roboco-e2e-smoke", lifespan=_e2e_lifespan)
     setup_middleware(app)
     app.include_router(health_router)
     for module in (fd, fq, fdoc, fcp, fmp, fb, fa, fpr, fdv):
@@ -471,8 +484,6 @@ def build_e2e_stack(
     finally:
         server.should_exit = True
         thread.join(timeout=10)
-        db_base._DbHolder.engine = None
-        db_base._DbHolder.session_factory = None
         mp.undo()
 
 
