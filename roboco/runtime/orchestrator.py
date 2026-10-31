@@ -1382,7 +1382,12 @@ from roboco.runtime.engines.dispatch_work import (
 )
 from roboco.runtime.engines.entire_trails import EntireTrailsEngine
 from roboco.runtime.engines.env_sync import EnvSyncEngine
-from roboco.runtime.engines.interactive_sessions import InteractiveSessionsEngine
+from roboco.runtime.engines.interactive_sessions import (
+    IntakeScopeEngine,
+    IntakeSessionEngine,
+    LiveChatContainerEngine,
+    SecretarySessionEngine,
+)
 from roboco.runtime.engines.rate_limit_probe import (
     RateLimitProbeEngine,
     WaitResolutionEngine,
@@ -1407,6 +1412,7 @@ from roboco.runtime.engines.spawn_exit import (
     ProviderParkLanesEngine,
     SessionFinalizeEngine,
     TranscriptNotesEngine,
+    UsageDirsEngine,
     UsageFilesEngine,
     UsageTokensEngine,
 )
@@ -1474,7 +1480,9 @@ class AgentOrchestrator(
     ExternalPRIntakeEngine,
     HealthLoopEngine,
     IdleSessionReaperEngine,
-    InteractiveSessionsEngine,
+    IntakeScopeEngine,
+    IntakeSessionEngine,
+    LiveChatContainerEngine,
     ManagementPromptsEngine,
     MarketingExplorationsEngine,
     MarketingProgramPromptsEngine,
@@ -1500,6 +1508,7 @@ class AgentOrchestrator(
     RespawnTripEngine,
     RoutingClassifierEngine,
     SandboxEngine,
+    SecretarySessionEngine,
     SessionFinalizeEngine,
     SpawnAgentEngine,
     SpawnGitContextEngine,
@@ -1515,6 +1524,7 @@ class AgentOrchestrator(
     TaskBudgetEngine,
     TelegramPollEngine,
     TranscriptNotesEngine,
+    UsageDirsEngine,
     UsageFilesEngine,
     UsageRollupEngine,
     UsageTokensEngine,

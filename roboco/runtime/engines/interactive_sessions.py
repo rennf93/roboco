@@ -1,5 +1,7 @@
-"""Auto-extracted engine mixin -- see decomp/extract.py. Method bodies below are
-moved verbatim from AgentOrchestrator (family: interactive_sessions)."""
+"""The live chats: the intake interviewer and the Secretary, each a
+persistent container the CEO talks to through a relay.
+
+Engine mixins composed into AgentOrchestrator."""
 
 from __future__ import annotations
 
@@ -15,14 +17,9 @@ from roboco.agent_sdk.live_providers import (
     LIVE_INTERACTIVE_DOCKERFILE,
     LIVE_INTERACTIVE_IMAGE,
 )
-from roboco.agents_config import (
-    get_agent_role,
-    get_agent_team,
-)
+from roboco.agents_config import get_agent_role, get_agent_team
 from roboco.config import settings
-from roboco.models.runtime import (
-    AgentInstance,
-)
+from roboco.models.runtime import AgentInstance
 from roboco.runtime.compose_labels import compose_label_args
 from roboco.runtime.orchestrator import (
     _GROK_INTERACTIVE_DOCKERFILES,
@@ -34,8 +31,6 @@ from roboco.runtime.orchestrator import (
     GROK_PROMPTER_IMAGE,
     GROK_SECRETARY_IMAGE,
     INTAKE_AGENT_ID,
-    NEBIUS_USAGE_DATA_DIR,
-    OPENROUTER_USAGE_DATA_DIR,
     PROJECT_HOST_PATH,
     SECRETARY_AGENT_ID,
     AgentConfig,
@@ -52,18 +47,13 @@ from roboco.runtime.orchestrator import (
 from roboco.utils.docker_env import docker_cli_env, docker_options_without_env_values
 
 if TYPE_CHECKING:
-    # Also bound into this module's real (non-TYPE_CHECKING) globals at
-    # runtime by orchestrator.py, right after the class is defined -- see
-    # its bottom-of-file comment.
-    from roboco.runtime.orchestrator import (
-        AgentOrchestrator,
-    )
-
+    from roboco.runtime.orchestrator import AgentOrchestrator
 
 if TYPE_CHECKING:
     from roboco.runtime.engines._types import AgentOrchestratorSelf as _Base
 else:
     _Base = object
+
 
 # The compose mount ${ROBOCO_DATA_DIR}/mcp-configs:/app/mcp-configs, whose host
 # side is DATA_HOST_PATH/mcp-configs (same dir spawn_config writes agent configs).
@@ -109,499 +99,10 @@ def _interactive_api_url() -> str:
     return f"http://127.0.0.1:{settings.port}"
 
 
-class InteractiveSessionsEngine(_Base):
-    """Mixin holding the "interactive_sessions" methods moved out of
-    AgentOrchestrator."""
-
-    async def _ensure_grok_interactive_image(self, image: str) -> None:
-        """Ensure a Grok interactive image and its base→runtime chain exist.
-
-        The grok-prompter / grok-secretary images build FROM roboco-agent-grok,
-        which builds FROM the agent base, so the whole chain must be present
-        before a local build of the interactive image can succeed (on the
-        registry path each is already pulled and this just verifies presence).
-        """
-        if PROJECT_HOST_PATH:
-            build_context = PROJECT_HOST_PATH
-            docker_dir = f"{PROJECT_HOST_PATH}/docker"
-        else:
-            build_context = str(self.project_root)
-            docker_dir = str(self.project_root / "docker")
-        chain = [
-            (AGENT_BASE_IMAGE, "agent-base.Dockerfile"),
-            ("roboco-agent-grok", "agent-grok.Dockerfile"),
-            (image, _GROK_INTERACTIVE_DOCKERFILES[image]),
-        ]
-        for img, dockerfile in chain:
-            await self._ensure_image_present(
-                img, f"{docker_dir}/{dockerfile}", build_context
-            )
-
-    async def _ensure_live_interactive_image(self, image: str) -> None:
-        """Ensure a provider-generic live-chat image (roboco-agent-<p>-live).
-
-        The live image builds FROM roboco-agent-<p> (the delivery runtime),
-        which builds FROM the agent base - same chain rule as the grok path.
-        """
-        if PROJECT_HOST_PATH:
-            build_context = PROJECT_HOST_PATH
-            docker_dir = f"{PROJECT_HOST_PATH}/docker"
-        else:
-            build_context = str(self.project_root)
-            docker_dir = str(self.project_root / "docker")
-        provider = next(p for p, img in LIVE_INTERACTIVE_IMAGE.items() if img == image)
-        chain = [
-            (AGENT_BASE_IMAGE, "agent-base.Dockerfile"),
-            (
-                f"roboco-agent-{provider if provider != 'openai' else 'codex'}",
-                f"agent-{'codex' if provider == 'openai' else provider}.Dockerfile",
-            ),
-            (image, LIVE_INTERACTIVE_DOCKERFILE[provider]),
-        ]
-        for img, dockerfile in chain:
-            await self._ensure_image_present(
-                img, f"{docker_dir}/{dockerfile}", build_context
-            )
-
-    # Metered-key live providers: provider value -> (key env, base-url env).
-    _LIVE_KEY_ENV: ClassVar[dict[str, tuple[str, str]]] = {
-        "hummin": ("ZAI_API_KEY", ""),
-        "openrouter": ("OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"),
-        "nebius": ("NEBIUS_API_KEY", "NEBIUS_BASE_URL"),
-    }
-
-    @classmethod
-    def _append_live_provider_auth(
-        cls,
-        cmd: list[str],
-        provider_type: str,
-        base_url: str | None,
-        auth_token: str | None,
-    ) -> None:
-        """Per-provider auth for a live-chat container: subscription CLIs
-        mount their host auth dir; metered-key providers take env."""
-        from roboco.models.base import ModelProvider
-
-        key_env = cls._LIVE_KEY_ENV.get(provider_type)
-        if key_env is not None:
-            key_name, base_name = key_env
-            cmd.extend(["-e", f"{key_name}={auth_token or ''}"])
-            if base_url and base_name:
-                cmd.extend(["-e", f"{base_name}={base_url}"])
-            return
-        mounts = {
-            ModelProvider.OPENAI.value: (
-                "roboco.llm.providers.codex",
-                "CodexCliProvider",
-                "_append_codex_auth_mount",
-            ),
-            ModelProvider.GEMINI.value: (
-                "roboco.llm.providers.gemini",
-                "GeminiCliProvider",
-                "_append_gemini_auth_mount",
-            ),
-            ModelProvider.KIMI.value: (
-                "roboco.llm.providers.kimi",
-                "KimiCliProvider",
-                "_append_kimi_auth_mount",
-            ),
-        }
-        mount = mounts.get(provider_type)
-        if mount is None:
-            return
-        module_name, class_name, method_name = mount
-        module = __import__(module_name, fromlist=[class_name])
-        getattr(getattr(module, class_name), method_name)(cmd)
-
-    @staticmethod
-    def _write_live_mcp_config(role: str, session_id: str, api_url: str) -> str:
-        """Write the LIVE mcp-config.json for an MCP-capable live chat.
-
-        The delivery renderers near-passthrough whatever mcp-config.json is
-        mounted at /app/mcp-config.json - so mounting a config that carries
-        ONLY the roboco-secretary / roboco-intake stdio server gives the live
-        chat the CEO-authority / intake tool surface with the delivery
-        render step untouched. Returns the HOST path for the -v mount.
-        """
-        import json as _json
-        import tempfile
-
-        server_name = "roboco-secretary" if role == "secretary" else "roboco-intake"
-        module = f"roboco.mcp.{role if role == 'secretary' else 'intake'}_server"
-        env: dict[str, str] = {
-            "ROBOCO_API_URL": api_url,
-            "ROBOCO_AGENT_ID": os.environ.get("ROBOCO_AGENT_ID", ""),
-            "ROBOCO_AGENT_ROLE": role,
-            "UV_PROJECT_ENVIRONMENT": "/app/.venv",
-        }
-        token = os.environ.get("ROBOCO_AGENT_TOKEN", "")
-        if token:
-            env["ROBOCO_AGENT_TOKEN"] = token
-        if role == "secretary":
-            env["ROBOCO_SECRETARY_SESSION_ID"] = session_id
-        else:
-            env["ROBOCO_PROMPTER_SESSION_ID"] = session_id
-        config = {
-            "mcpServers": {
-                server_name: {
-                    "command": "uv",
-                    "args": [
-                        "run",
-                        "--directory",
-                        "/app",
-                        "--no-sync",
-                        "python",
-                        "-m",
-                        module,
-                    ],
-                    "env": env,
-                }
-            }
-        }
-        # Two paths when containerized, as for the agent mcp-configs and the
-        # manifests: write into this container's /app/mcp-configs mount, hand
-        # the docker daemon the host side of that same mount. Writing to the
-        # host path from inside the container never reaches the host, and the
-        # daemon then bind-mounts an empty directory over /app/mcp-config.json.
-        name = f"live-{role}-{session_id}.json"
-        if DATA_HOST_PATH:
-            write_dir = _LIVE_MCP_WRITE_DIR
-        else:
-            write_dir = Path(tempfile.gettempdir()) / "roboco-mcp-configs"
-        write_dir.mkdir(parents=True, exist_ok=True)
-        (write_dir / name).write_text(_json.dumps(config), encoding="utf-8")
-        if DATA_HOST_PATH:
-            return f"{DATA_HOST_PATH}/mcp-configs/{name}"
-        return str(write_dir / name)
-
-    @staticmethod
-    def _grok_usage_dir(agent_id: str) -> Path:
-        """Per-agent grok usage dir under :meth:`_grok_usage_root`.
-
-        Single source of truth for BOTH the pre-create/mount side
-        (``_ensure_grok_usage_dir``) and the finalize read side
-        (``_grok_usage_json``) so they can never drift. ``agent_id`` is validated
-        as a single safe path segment first — ``_safe_agent_path_segment`` rejects
-        ``.`` / ``..`` / separators / NUL so a bad id raises rather than silently
-        remapping or traversing. The read side additionally reduces the id to its
-        final path component (``os.path.basename``) — the CodeQL-recognized
-        path-injection barrier.
-        """
-        return AgentOrchestrator._grok_usage_root() / (
-            AgentOrchestrator._safe_agent_path_segment(agent_id)
-        )
-
-    def _ensure_grok_usage_dir(self, agent_id: str) -> None:
-        """Pre-create the agent's grok usage dir (world-writable) before the mount.
-
-        On Linux, ``docker run -v`` auto-creates a MISSING bind source as
-        ``root:root``, so the non-root ``agent`` user EACCESes when the grok
-        entrypoint / interactive driver writes ``usage.json`` there. Creating the
-        dir ``0777`` first makes the mounted dir writable regardless of the agent
-        uid; the orchestrator (root) can still read it back at finalize.
-        """
-        target = self._grok_usage_dir(agent_id)
-        try:
-            target.mkdir(parents=True, exist_ok=True)
-            target.chmod(0o777)
-        except OSError as exc:
-            logger.warning(
-                "could not pre-create grok usage dir; grok agent may EACCES",
-                agent_id=agent_id,
-                path=str(target),
-                error=str(exc),
-            )
-
-    @staticmethod
-    def _codex_usage_dir(agent_id: str) -> Path:
-        """Per-agent codex usage dir under :meth:`_codex_usage_root`.
-
-        Single source of truth for BOTH the pre-create/mount side
-        (``_ensure_codex_usage_dir``) and the finalize read side
-        (``_codex_usage_json``), mirroring ``_grok_usage_dir``.
-        """
-        return AgentOrchestrator._codex_usage_root() / (
-            AgentOrchestrator._safe_agent_path_segment(agent_id)
-        )
-
-    def _ensure_codex_usage_dir(self, agent_id: str) -> None:
-        """Pre-create the agent's codex usage dir (world-writable) before the mount.
-
-        Same EACCES concern as ``_ensure_grok_usage_dir``: a missing bind
-        source is auto-created ``root:root`` on Linux, which the non-root
-        ``agent`` user can't write into.
-        """
-        target = self._codex_usage_dir(agent_id)
-        try:
-            target.mkdir(parents=True, exist_ok=True)
-            target.chmod(0o777)
-        except OSError as exc:
-            logger.warning(
-                "could not pre-create codex usage dir; codex agent may EACCES",
-                agent_id=agent_id,
-                path=str(target),
-                error=str(exc),
-            )
-
-    @staticmethod
-    def _gemini_usage_dir(agent_id: str) -> Path:
-        """Per-agent gemini usage dir under :meth:`_gemini_usage_root`.
-
-        Single source of truth for BOTH the pre-create/mount side
-        (``_ensure_gemini_usage_dir``) and the finalize read side
-        (``_gemini_usage_json``) — see :meth:`_grok_usage_dir`'s docstring for
-        the ``_safe_agent_path_segment`` traversal-rejection rationale, shared
-        verbatim here.
-        """
-        return AgentOrchestrator._gemini_usage_root() / (
-            AgentOrchestrator._safe_agent_path_segment(agent_id)
-        )
-
-    def _ensure_gemini_usage_dir(self, agent_id: str) -> None:
-        """Pre-create the agent's gemini usage dir (world-writable) before the mount.
-
-        Same EACCES rationale as :meth:`_ensure_grok_usage_dir`: a missing
-        Linux bind-mount source is auto-created ``root:root``, so the non-root
-        ``agent`` user would fail to write ``usage.json`` there without this.
-        """
-        target = self._gemini_usage_dir(agent_id)
-        try:
-            target.mkdir(parents=True, exist_ok=True)
-            target.chmod(0o777)
-        except OSError as exc:
-            logger.warning(
-                "could not pre-create gemini usage dir; gemini agent may EACCES",
-                agent_id=agent_id,
-                path=str(target),
-                error=str(exc),
-            )
-
-    @staticmethod
-    def _kimi_usage_dir(agent_id: str) -> Path:
-        """Per-agent kimi usage dir under :meth:`_kimi_usage_root`.
-
-        Single source of truth for BOTH the pre-create/mount side
-        (``_ensure_kimi_usage_dir``) and the finalize read side
-        (``_kimi_usage_json``), mirroring ``_grok_usage_dir``.
-        """
-        return AgentOrchestrator._kimi_usage_root() / (
-            AgentOrchestrator._safe_agent_path_segment(agent_id)
-        )
-
-    def _ensure_kimi_usage_dir(self, agent_id: str) -> None:
-        """Pre-create the agent's kimi usage dir (world-writable) before the mount.
-
-        Same EACCES concern as ``_ensure_grok_usage_dir``: a missing bind
-        source is auto-created ``root:root`` on Linux, which the non-root
-        ``agent`` user can't write into.
-        """
-        target = self._kimi_usage_dir(agent_id)
-        try:
-            target.mkdir(parents=True, exist_ok=True)
-            target.chmod(0o777)
-        except OSError as exc:
-            logger.warning(
-                "could not pre-create kimi usage dir; kimi agent may EACCES",
-                agent_id=agent_id,
-                path=str(target),
-                error=str(exc),
-            )
-
-    @staticmethod
-    def _hummin_usage_dir(agent_id: str) -> Path:
-        """Per-agent hummin usage dir under :meth:`_hummin_usage_root`.
-
-        Single source of truth for BOTH the pre-create/mount side
-        (``_ensure_hummin_usage_dir``) and the finalize read side
-        (``_hummin_usage_json``), mirroring ``_kimi_usage_dir``.
-        """
-        return AgentOrchestrator._hummin_usage_root() / (
-            AgentOrchestrator._safe_agent_path_segment(agent_id)
-        )
-
-    def _ensure_hummin_usage_dir(self, agent_id: str) -> None:
-        """Pre-create the agent's hummin usage dir (world-writable) before the mount.
-
-        Same EACCES concern as ``_ensure_kimi_usage_dir``: a missing bind
-        source is auto-created ``root:root`` on Linux, which the non-root
-        ``agent`` user can't write into.
-        """
-        target = self._hummin_usage_dir(agent_id)
-        try:
-            target.mkdir(parents=True, exist_ok=True)
-            target.chmod(0o777)
-        except OSError as exc:
-            logger.warning(
-                "could not pre-create hummin usage dir; hummin agent may EACCES",
-                agent_id=agent_id,
-                path=str(target),
-                error=str(exc),
-            )
-
-    @staticmethod
-    def _openrouter_usage_root() -> Path:
-        """The base dir all per-agent openrouter usage dirs live under (no agent id).
-
-        Same compose-vs-local branch as :meth:`_grok_usage_root`.
-        """
-        if PROJECT_HOST_PATH:
-            return Path(OPENROUTER_USAGE_DATA_DIR)
-        return Path(tempfile.gettempdir()) / "roboco-openrouter-usage"
-
-    @staticmethod
-    def _openrouter_usage_dir(agent_id: str) -> Path:
-        """Per-agent openrouter usage dir under :meth:`_openrouter_usage_root`.
-
-        Single source of truth for BOTH the pre-create/mount side
-        (``_ensure_openrouter_usage_dir``) and the finalize read side
-        (``_openrouter_usage_json``), mirroring ``_kimi_usage_dir``.
-        """
-        return AgentOrchestrator._openrouter_usage_root() / (
-            AgentOrchestrator._safe_agent_path_segment(agent_id)
-        )
-
-    def _ensure_openrouter_usage_dir(self, agent_id: str) -> None:
-        """Pre-create the agent's openrouter usage dir before the mount.
-
-        Same EACCES concern as ``_ensure_kimi_usage_dir``: a missing bind
-        source is auto-created ``root:root`` on Linux, which the non-root
-        ``agent`` user can't write into.
-        """
-        target = self._openrouter_usage_dir(agent_id)
-        try:
-            target.mkdir(parents=True, exist_ok=True)
-            target.chmod(0o777)
-        except OSError as exc:
-            logger.warning(
-                "could not pre-create openrouter usage dir; agent may EACCES",
-                agent_id=agent_id,
-                path=str(target),
-                error=str(exc),
-            )
-
-    @staticmethod
-    def _nebius_usage_root() -> Path:
-        """The base dir all per-agent nebius usage dirs live under (no agent id).
-
-        Same compose-vs-local branch as :meth:`_openrouter_usage_root`.
-        """
-        if PROJECT_HOST_PATH:
-            return Path(NEBIUS_USAGE_DATA_DIR)
-        return Path(tempfile.gettempdir()) / "roboco-nebius-usage"
-
-    @staticmethod
-    def _nebius_usage_dir(agent_id: str) -> Path:
-        """Per-agent nebius usage dir under :meth:`_nebius_usage_root`.
-
-        Single source of truth for BOTH the pre-create/mount side
-        (``_ensure_nebius_usage_dir``) and the finalize read side
-        (``_nebius_usage_json``), mirroring ``_openrouter_usage_dir``.
-        """
-        return AgentOrchestrator._nebius_usage_root() / (
-            AgentOrchestrator._safe_agent_path_segment(agent_id)
-        )
-
-    def _ensure_nebius_usage_dir(self, agent_id: str) -> None:
-        """Pre-create the agent's nebius usage dir before the mount.
-
-        Same EACCES concern as ``_ensure_kimi_usage_dir``: a missing bind
-        source is auto-created ``root:root`` on Linux, which the non-root
-        ``agent`` user can't write into.
-        """
-        target = self._nebius_usage_dir(agent_id)
-        try:
-            target.mkdir(parents=True, exist_ok=True)
-            target.chmod(0o777)
-        except OSError as exc:
-            logger.warning(
-                "could not pre-create nebius usage dir; agent may EACCES",
-                agent_id=agent_id,
-                path=str(target),
-                error=str(exc),
-            )
-
-    async def _resolve_history_digest_ambient(
-        self,
-        project_slug: str | None,
-        product_id: str | None = None,
-        project_ids: list[str] | None = None,
-    ) -> str | None:
-        """Resolve the prompter's task-history-digest ambient block for this scope.
-
-        Covers all three intake scopes including ``project_ids`` (a MegaTask) —
-        the digest is meant to span every project the intake agent is reading.
-        Best-effort: returns None on any failure or empty scope so history
-        resolution can never block a spawn.
-        """
-        try:
-            from roboco.db.base import get_session_factory
-            from roboco.services.prompter import history_digest_layer
-
-            factory = get_session_factory()
-            async with factory() as db:
-                projects = await self._resolve_history_digest_projects(
-                    db,
-                    project_slug=project_slug,
-                    product_id=product_id,
-                    project_ids=project_ids,
-                )
-                return await history_digest_layer(db, projects)
-        except Exception as exc:
-            logger.warning(
-                "History digest ambient resolution failed (non-fatal)",
-                project_slug=project_slug,
-                error=str(exc),
-            )
-            return None
-
-    @staticmethod
-    async def _resolve_history_digest_projects(
-        db: Any,
-        *,
-        project_slug: str | None,
-        product_id: str | None,
-        project_ids: list[str] | None,
-    ) -> list[Any]:
-        """The in-scope ProjectTable rows for the history digest — single repo,
-        product (all cell projects), or an explicit MegaTask project_ids set."""
-        if project_ids:
-            return await AgentOrchestrator._projects_by_ids(db, project_ids)
-        if product_id is not None:
-            return await AgentOrchestrator._ambient_product_projects(db, product_id)
-        if project_slug:
-            from roboco.services.project import get_project_service
-
-            project = await get_project_service(db).get_by_slug(project_slug)
-            return [project] if project is not None else []
-        return []
-
-    async def _resolve_intake_ambient(
-        self,
-        project_slug: str | None,
-        *,
-        product_id: str | None,
-        project_ids: list[str] | None,
-    ) -> str | None:
-        """The intake spawn's full ambient block: conventions + history digest,
-        joined with ``compose_prompt``'s own layer separator."""
-        conventions_ambient = await self._resolve_conventions_ambient(
-            project_slug, product_id=product_id, project_ids=project_ids
-        )
-        history_ambient = await self._resolve_history_digest_ambient(
-            project_slug, product_id=product_id, project_ids=project_ids
-        )
-        return (
-            "\n\n---\n\n".join(
-                part
-                for part in (
-                    _INTAKE_WORKSPACE_AMBIENT,
-                    conventions_ambient,
-                    history_ambient,
-                )
-                if part
-            )
-            or None
-        )
+class IntakeSessionEngine(_Base):
+    """The intake chat: open the relay, spawn the container (in the background
+    or synchronously) with its mounts and run command, and deliver and
+    record the CEO's opening message."""
 
     @staticmethod
     def _require_one_intake_scope(
@@ -888,6 +389,401 @@ class InteractiveSessionsEngine(_Base):
                 )
             return instance
 
+    @staticmethod
+    async def _scoped_project_uuid(project_slug: str | None) -> str:
+        """The scoped project's UUID for the live draft bridge ("" unscoped).
+
+        The panel validates ``the_work[].project_id`` as a project UUID, which
+        the intake agent cannot discover from its workspace or prompt on its
+        own - the orchestrator hands it over so the draft bridge can inject it.
+        """
+        if not project_slug:
+            return ""
+        from roboco.db.base import get_session_factory
+        from roboco.services.project import get_project_service
+
+        factory = get_session_factory()
+        async with factory() as db:
+            scoped = await get_project_service(db).get_by_slug(project_slug)
+            return str(scoped.id) if scoped else ""
+
+    def _resolve_intake_host_paths(self) -> dict[str, str | None]:
+        """Host paths for the intake container's three mounts (claude/prompt/ws).
+
+        Mirrors ``_resolve_host_paths`` but only for what the driver needs —
+        there is no settings.json, MCP config, or briefing for the intake agent.
+        """
+        if PROJECT_HOST_PATH:
+            return {
+                "claude": CLAUDE_AUTH_HOST_PATH,
+                "prompt": (
+                    f"{DATA_HOST_PATH}/prompts-generated/{INTAKE_AGENT_ID}-prompt.md"
+                ),
+                "workspaces": f"{DATA_HOST_PATH}/workspaces",
+                "grok_usage": f"{DATA_HOST_PATH}/grok-usage/{INTAKE_AGENT_ID}",
+            }
+        return {
+            "claude": CLAUDE_AUTH_HOST_PATH,
+            "prompt": str(
+                Path(tempfile.gettempdir())
+                / "roboco-prompts"
+                / f"{INTAKE_AGENT_ID}-prompt.md"
+            ),
+            "workspaces": str(Path(settings.workspaces_root)),
+            "grok_usage": str(
+                Path(tempfile.gettempdir()) / "roboco-grok-usage" / INTAKE_AGENT_ID
+            ),
+        }
+
+    @staticmethod
+    def _build_intake_run_cmd(spec: _IntakeRunSpec) -> list[str]:
+        """Compose the `docker run` argv for the persistent intake container.
+
+        No claude CLI args (the image ENTRYPOINT is the SDK driver), no
+        settings.json/hook mount (the driver owns port 9000), no MCP config.
+        The driver reads ``/app/system-prompt.md`` and the env below.
+        """
+        cmd: list[str] = [
+            "docker",
+            "run",
+            "-d",
+            "--name",
+            spec.container_name,
+            "--network",
+            AGENT_NETWORK,
+            "-v",
+            f"{spec.hosts['claude']}:/home/agent/.claude",
+        ]
+        AgentOrchestrator._append_claude_json_mount(cmd, spec.hosts)
+        cmd.extend(
+            [
+                "-v",
+                f"{spec.hosts['prompt']}:/app/system-prompt.md:ro",
+                "-v",
+                f"{spec.hosts['workspaces']}:/data/workspaces",
+                "-e",
+                f"ROBOCO_AGENT_ID={INTAKE_AGENT_ID}",
+                "-e",
+                f"ROBOCO_AGENT_ROLE={get_agent_role(INTAKE_AGENT_ID) or 'prompter'}",
+                "-e",
+                f"ROBOCO_API_URL={spec.api_url}",
+                "-e",
+                f"ROBOCO_PROMPTER_SESSION_ID={spec.session_id}",
+                "-e",
+                f"ROBOCO_WORKSPACE={spec.cwd}",
+                "-e",
+                f"CLAUDE_CODE_SUBAGENT_MODEL={spec.cli_model}",
+            ]
+        )
+        # The draft bridge bakes this into the propose_draft description: the
+        # panel validates the_work[].project_id as a UUID the agent cannot
+        # guess from its workspace or prompt.
+        if spec.project_uuid:
+            cmd.extend(["-e", f"ROBOCO_INTAKE_PROJECT_ID={spec.project_uuid}"])
+        # GROK mounts the subscription auth + usage dir; other providers use the
+        # ANTHROPIC_* injection or the mounted ~/.claude default.
+        AgentOrchestrator._append_interactive_provider_env(cmd, spec)
+        cmd.append(spec.image)
+        return cmd
+
+    def _schedule_intake_first_message(
+        self, session_id: str, text: str, *, persist: bool = False
+    ) -> None:
+        """Fire-and-forget the opening message once the container is reachable.
+
+        ``persist`` is True only for intake sessions (durably recorded via
+        ``PrompterService``, matching every later turn) — the Secretary's
+        equivalent call site leaves it False since Secretary chats have no
+        durable-message table wired.
+        """
+        self._schedule_bg(self._deliver_when_ready(session_id, text, persist=persist))
+
+    async def _deliver_when_ready(
+        self,
+        session_id: str,
+        text: str,
+        *,
+        attempts: int = 150,
+        delay: float = 1.0,
+        persist: bool = False,
+    ) -> None:
+        """Retry-deliver the first message until the container receiver is up.
+
+        This is the single seam every intake opening turn (a fresh ``/live/start``,
+        a cold or MegaTask re-interview brief, and a Telegram-bridged
+        ``/newtask``) converges through — closing it here, rather than at each
+        caller, is what makes the fix cover all of them. ``persist=True``
+        durably records the turn in ``prompter_messages`` once delivered, so the
+        first message survives a restart exactly like every later one
+        (``send_message`` already does this for turn 2+).
+
+        150 attempts (~2.5 min) instead of 30: the hummin-live container's
+        measured boot on the NAS is 20-40s, but the spawn itself can queue
+        behind workspace prep for 100s+ (2026-09-28 03:21 session: the
+        receiver came up 7.9s AFTER the old 30s window gave up and the chat
+        was declared dead). On exhaustion the relay is closed WITH an error
+        frame so the panel shows why the chat died instead of hanging silent.
+        """
+        from roboco.services.prompter_live import get_live_registry
+
+        registry = get_live_registry()
+        for _ in range(attempts):
+            if await registry.deliver(session_id, text):
+                if persist:
+                    await self._persist_intake_first_message(session_id, text)
+                return
+            await asyncio.sleep(delay)
+        logger.warning(
+            "Intake first message never delivered (receiver never came up)",
+            session_id=session_id,
+        )
+        session = registry.get(session_id)
+        if session is not None and not session.closed:
+            registry.close_by_agent(
+                session.agent_id,
+                error=(
+                    "The intake agent did not come up in time. Start a new"
+                    " chat to retry."
+                ),
+            )
+
+    async def _persist_intake_first_message(self, session_id: str, text: str) -> None:
+        """Durably record a live intake session's opening human turn.
+
+        Best-effort (mirrors ``_inject_board_brief_into_parked_intake``): a
+        persistence failure is logged, never raised into the delivery path.
+        """
+        from roboco.db.base import get_db_context
+        from roboco.services.prompter import get_prompter_service
+
+        try:
+            async with get_db_context() as db:
+                await get_prompter_service(db).record_live_message(
+                    session_id, "user", text
+                )
+        except Exception as exc:
+            logger.warning(
+                "Failed to persist intake opening message",
+                session_id=session_id,
+                error=str(exc),
+            )
+
+
+class IntakeScopeEngine(_Base):
+    """What the intake chat works on: the scope's project slugs (one project,
+    a product, or a MegaTask's set), their cloned repos, and the ambient
+    block of conventions and task-history digest."""
+
+    async def _resolve_history_digest_ambient(
+        self,
+        project_slug: str | None,
+        product_id: str | None = None,
+        project_ids: list[str] | None = None,
+    ) -> str | None:
+        """Resolve the prompter's task-history-digest ambient block for this scope.
+
+        Covers all three intake scopes including ``project_ids`` (a MegaTask) —
+        the digest is meant to span every project the intake agent is reading.
+        Best-effort: returns None on any failure or empty scope so history
+        resolution can never block a spawn.
+        """
+        try:
+            from roboco.db.base import get_session_factory
+            from roboco.services.prompter import history_digest_layer
+
+            factory = get_session_factory()
+            async with factory() as db:
+                projects = await self._resolve_history_digest_projects(
+                    db,
+                    project_slug=project_slug,
+                    product_id=product_id,
+                    project_ids=project_ids,
+                )
+                return await history_digest_layer(db, projects)
+        except Exception as exc:
+            logger.warning(
+                "History digest ambient resolution failed (non-fatal)",
+                project_slug=project_slug,
+                error=str(exc),
+            )
+            return None
+
+    @staticmethod
+    async def _resolve_history_digest_projects(
+        db: Any,
+        *,
+        project_slug: str | None,
+        product_id: str | None,
+        project_ids: list[str] | None,
+    ) -> list[Any]:
+        """The in-scope ProjectTable rows for the history digest — single repo,
+        product (all cell projects), or an explicit MegaTask project_ids set."""
+        if project_ids:
+            return await AgentOrchestrator._projects_by_ids(db, project_ids)
+        if product_id is not None:
+            return await AgentOrchestrator._ambient_product_projects(db, product_id)
+        if project_slug:
+            from roboco.services.project import get_project_service
+
+            project = await get_project_service(db).get_by_slug(project_slug)
+            return [project] if project is not None else []
+        return []
+
+    async def _resolve_intake_ambient(
+        self,
+        project_slug: str | None,
+        *,
+        product_id: str | None,
+        project_ids: list[str] | None,
+    ) -> str | None:
+        """The intake spawn's full ambient block: conventions + history digest,
+        joined with ``compose_prompt``'s own layer separator."""
+        conventions_ambient = await self._resolve_conventions_ambient(
+            project_slug, product_id=product_id, project_ids=project_ids
+        )
+        history_ambient = await self._resolve_history_digest_ambient(
+            project_slug, product_id=product_id, project_ids=project_ids
+        )
+        return (
+            "\n\n---\n\n".join(
+                part
+                for part in (
+                    _INTAKE_WORKSPACE_AMBIENT,
+                    conventions_ambient,
+                    history_ambient,
+                )
+                if part
+            )
+            or None
+        )
+
+    async def _clone_intake_scope(
+        self,
+        project_slug: str | None,
+        product_id: str | None,
+        project_ids: list[str] | None = None,
+    ) -> tuple[str, list[str]]:
+        """Clone the chat scope's repo(s); return (container cwd, all paths).
+
+        ``project`` → one repo; ``product`` → each distinct cell project (the
+        Main-PM-style distinct-repo set, kept in its deterministic team order so
+        the primary is stable); ``project_ids`` → a MegaTask's explicit set of
+        (possibly unrelated) projects, in the order given. The agent's cwd is the
+        primary project's intake workspace; for a multi-repo scope the sibling
+        repos sit alongside it under ``/data/workspaces`` and are readable via
+        Grep/Glob/Read.
+        """
+        from roboco.db.base import get_session_factory
+        from roboco.services.project import get_project_service
+        from roboco.services.workspace import WorkspaceService
+
+        team = get_agent_team(INTAKE_AGENT_ID) or "board"
+        factory = get_session_factory()
+        async with factory() as db:
+            slugs = await self._intake_scope_slugs(
+                db, project_slug, product_id, project_ids
+            )
+            # ponytail: a multi-project scope may list several projects pointing
+            # at the same repo (a monorepo's cell-projects share one git_url);
+            # clone each git_url once, mirroring CI-watch's per-git_url dedupe.
+            project_svc = get_project_service(db)
+            slugs_with_urls: list[tuple[str, str | None]] = []
+            for slug in slugs:
+                project = await project_svc.get_by_slug(slug)
+                slugs_with_urls.append((slug, project.git_url if project else None))
+            slugs = AgentOrchestrator._dedupe_slugs_by_git_url(slugs_with_urls)
+            ws = WorkspaceService(db)
+            for slug in slugs:
+                await ws.ensure_workspace(slug, INTAKE_AGENT_ID)
+        # Container-side paths (the workspaces tree is mounted at
+        # /data/workspaces inside the container, regardless of the host root).
+        paths = [_agent_workspace_path(slug, team, INTAKE_AGENT_ID) for slug in slugs]
+        return paths[0], paths
+
+    @staticmethod
+    def _dedupe_slugs_by_git_url(
+        slugs_with_urls: list[tuple[str, str | None]],
+    ) -> list[str]:
+        """Keep the first slug for each non-empty git_url (a monorepo's
+        cell-projects share one git_url — clone it once, mirroring CI-watch's
+        per-git_url dedupe). A slug with no/empty git_url is never collapsed
+        onto another, so each distinct local repo still clones. Order is
+        preserved; the primary (first) slug of a shared url wins.
+        """
+        seen: set[str] = set()
+        deduped: list[str] = []
+        for slug, git_url in slugs_with_urls:
+            key = (git_url or "").strip()
+            if key:
+                if key in seen:
+                    continue
+                seen.add(key)
+            deduped.append(slug)
+        return deduped
+
+    @staticmethod
+    async def _intake_scope_slugs(
+        db: Any,
+        project_slug: str | None,
+        product_id: str | None,
+        project_ids: list[str] | None = None,
+    ) -> list[str]:
+        """Resolve the chat scope to the project slug(s) to clone."""
+        if project_slug:
+            return [project_slug]
+        if project_ids:
+            return await AgentOrchestrator._slugs_for_project_ids(db, project_ids)
+        if product_id:
+            return await AgentOrchestrator._slugs_for_product(db, product_id)
+        raise ValueError(
+            "intake scope requires project_slug, product_id, or project_ids"
+        )
+
+    @staticmethod
+    async def _slugs_for_project_ids(db: Any, project_ids: list[str]) -> list[str]:
+        """MegaTask scope: the slugs of an explicit set of (unrelated) projects."""
+        from uuid import UUID
+
+        from roboco.services.project import get_project_service
+
+        project_svc = get_project_service(db)
+        slugs: list[str] = []
+        for pid in project_ids:
+            project = await project_svc.get(UUID(pid))
+            # Fail loud on ANY unresolvable id (matching the single-project route's
+            # 404) rather than silently cloning fewer repos — a partial scope would
+            # let the agent draft against an incomplete workspace with no signal.
+            if not (project and project.slug):
+                raise ValueError(f"MegaTask scope: project {pid} not found")
+            slugs.append(project.slug)
+        if not slugs:
+            raise ValueError("MegaTask scope resolves to no projects")
+        return slugs
+
+    @staticmethod
+    async def _slugs_for_product(db: Any, product_id: str) -> list[str]:
+        """Product scope: the distinct cell-project slugs, in deterministic order."""
+        from uuid import UUID
+
+        from roboco.services.product import ProductService
+        from roboco.services.project import get_project_service
+
+        project_ids = await ProductService(db).distinct_project_ids(UUID(product_id))
+        project_svc = get_project_service(db)
+        slugs: list[str] = []
+        for pid in project_ids:
+            project = await project_svc.get(pid)
+            if project and project.slug:
+                slugs.append(project.slug)
+        if not slugs:
+            raise ValueError(f"product {product_id} resolves to no projects")
+        return slugs
+
+
+class SecretarySessionEngine(_Base):
+    """The Secretary chat: open the relay and spawn its persistent container,
+    with its mounts and run command."""
+
     async def start_secretary_session(
         self, session_id: str, *, initial_message: str | None = None
     ) -> None:
@@ -1138,173 +1034,172 @@ class InteractiveSessionsEngine(_Base):
         cmd.append(spec.image)
         return cmd
 
-    @staticmethod
-    async def _scoped_project_uuid(project_slug: str | None) -> str:
-        """The scoped project's UUID for the live draft bridge ("" unscoped).
 
-        The panel validates ``the_work[].project_id`` as a project UUID, which
-        the intake agent cannot discover from its workspace or prompt on its
-        own - the orchestrator hands it over so the draft bridge can inject it.
-        """
-        if not project_slug:
-            return ""
-        from roboco.db.base import get_session_factory
-        from roboco.services.project import get_project_service
+class LiveChatContainerEngine(_Base):
+    """What every live-chat container shares: its image (Grok's chain or the
+    provider-generic live image), the provider env and auth, the live MCP
+    config, and the detached `docker run`."""
 
-        factory = get_session_factory()
-        async with factory() as db:
-            scoped = await get_project_service(db).get_by_slug(project_slug)
-            return str(scoped.id) if scoped else ""
+    # Metered-key live providers: provider value -> (key env, base-url env).
+    _LIVE_KEY_ENV: ClassVar[dict[str, tuple[str, str]]] = {
+        "hummin": ("ZAI_API_KEY", ""),
+        "openrouter": ("OPENROUTER_API_KEY", "OPENROUTER_BASE_URL"),
+        "nebius": ("NEBIUS_API_KEY", "NEBIUS_BASE_URL"),
+    }
 
-    async def _clone_intake_scope(
-        self,
-        project_slug: str | None,
-        product_id: str | None,
-        project_ids: list[str] | None = None,
-    ) -> tuple[str, list[str]]:
-        """Clone the chat scope's repo(s); return (container cwd, all paths).
+    async def _ensure_grok_interactive_image(self, image: str) -> None:
+        """Ensure a Grok interactive image and its base→runtime chain exist.
 
-        ``project`` → one repo; ``product`` → each distinct cell project (the
-        Main-PM-style distinct-repo set, kept in its deterministic team order so
-        the primary is stable); ``project_ids`` → a MegaTask's explicit set of
-        (possibly unrelated) projects, in the order given. The agent's cwd is the
-        primary project's intake workspace; for a multi-repo scope the sibling
-        repos sit alongside it under ``/data/workspaces`` and are readable via
-        Grep/Glob/Read.
-        """
-        from roboco.db.base import get_session_factory
-        from roboco.services.project import get_project_service
-        from roboco.services.workspace import WorkspaceService
-
-        team = get_agent_team(INTAKE_AGENT_ID) or "board"
-        factory = get_session_factory()
-        async with factory() as db:
-            slugs = await self._intake_scope_slugs(
-                db, project_slug, product_id, project_ids
-            )
-            # ponytail: a multi-project scope may list several projects pointing
-            # at the same repo (a monorepo's cell-projects share one git_url);
-            # clone each git_url once, mirroring CI-watch's per-git_url dedupe.
-            project_svc = get_project_service(db)
-            slugs_with_urls: list[tuple[str, str | None]] = []
-            for slug in slugs:
-                project = await project_svc.get_by_slug(slug)
-                slugs_with_urls.append((slug, project.git_url if project else None))
-            slugs = AgentOrchestrator._dedupe_slugs_by_git_url(slugs_with_urls)
-            ws = WorkspaceService(db)
-            for slug in slugs:
-                await ws.ensure_workspace(slug, INTAKE_AGENT_ID)
-        # Container-side paths (the workspaces tree is mounted at
-        # /data/workspaces inside the container, regardless of the host root).
-        paths = [_agent_workspace_path(slug, team, INTAKE_AGENT_ID) for slug in slugs]
-        return paths[0], paths
-
-    @staticmethod
-    def _dedupe_slugs_by_git_url(
-        slugs_with_urls: list[tuple[str, str | None]],
-    ) -> list[str]:
-        """Keep the first slug for each non-empty git_url (a monorepo's
-        cell-projects share one git_url — clone it once, mirroring CI-watch's
-        per-git_url dedupe). A slug with no/empty git_url is never collapsed
-        onto another, so each distinct local repo still clones. Order is
-        preserved; the primary (first) slug of a shared url wins.
-        """
-        seen: set[str] = set()
-        deduped: list[str] = []
-        for slug, git_url in slugs_with_urls:
-            key = (git_url or "").strip()
-            if key:
-                if key in seen:
-                    continue
-                seen.add(key)
-            deduped.append(slug)
-        return deduped
-
-    @staticmethod
-    async def _intake_scope_slugs(
-        db: Any,
-        project_slug: str | None,
-        product_id: str | None,
-        project_ids: list[str] | None = None,
-    ) -> list[str]:
-        """Resolve the chat scope to the project slug(s) to clone."""
-        if project_slug:
-            return [project_slug]
-        if project_ids:
-            return await AgentOrchestrator._slugs_for_project_ids(db, project_ids)
-        if product_id:
-            return await AgentOrchestrator._slugs_for_product(db, product_id)
-        raise ValueError(
-            "intake scope requires project_slug, product_id, or project_ids"
-        )
-
-    @staticmethod
-    async def _slugs_for_project_ids(db: Any, project_ids: list[str]) -> list[str]:
-        """MegaTask scope: the slugs of an explicit set of (unrelated) projects."""
-        from uuid import UUID
-
-        from roboco.services.project import get_project_service
-
-        project_svc = get_project_service(db)
-        slugs: list[str] = []
-        for pid in project_ids:
-            project = await project_svc.get(UUID(pid))
-            # Fail loud on ANY unresolvable id (matching the single-project route's
-            # 404) rather than silently cloning fewer repos — a partial scope would
-            # let the agent draft against an incomplete workspace with no signal.
-            if not (project and project.slug):
-                raise ValueError(f"MegaTask scope: project {pid} not found")
-            slugs.append(project.slug)
-        if not slugs:
-            raise ValueError("MegaTask scope resolves to no projects")
-        return slugs
-
-    @staticmethod
-    async def _slugs_for_product(db: Any, product_id: str) -> list[str]:
-        """Product scope: the distinct cell-project slugs, in deterministic order."""
-        from uuid import UUID
-
-        from roboco.services.product import ProductService
-        from roboco.services.project import get_project_service
-
-        project_ids = await ProductService(db).distinct_project_ids(UUID(product_id))
-        project_svc = get_project_service(db)
-        slugs: list[str] = []
-        for pid in project_ids:
-            project = await project_svc.get(pid)
-            if project and project.slug:
-                slugs.append(project.slug)
-        if not slugs:
-            raise ValueError(f"product {product_id} resolves to no projects")
-        return slugs
-
-    def _resolve_intake_host_paths(self) -> dict[str, str | None]:
-        """Host paths for the intake container's three mounts (claude/prompt/ws).
-
-        Mirrors ``_resolve_host_paths`` but only for what the driver needs —
-        there is no settings.json, MCP config, or briefing for the intake agent.
+        The grok-prompter / grok-secretary images build FROM roboco-agent-grok,
+        which builds FROM the agent base, so the whole chain must be present
+        before a local build of the interactive image can succeed (on the
+        registry path each is already pulled and this just verifies presence).
         """
         if PROJECT_HOST_PATH:
-            return {
-                "claude": CLAUDE_AUTH_HOST_PATH,
-                "prompt": (
-                    f"{DATA_HOST_PATH}/prompts-generated/{INTAKE_AGENT_ID}-prompt.md"
-                ),
-                "workspaces": f"{DATA_HOST_PATH}/workspaces",
-                "grok_usage": f"{DATA_HOST_PATH}/grok-usage/{INTAKE_AGENT_ID}",
-            }
-        return {
-            "claude": CLAUDE_AUTH_HOST_PATH,
-            "prompt": str(
-                Path(tempfile.gettempdir())
-                / "roboco-prompts"
-                / f"{INTAKE_AGENT_ID}-prompt.md"
+            build_context = PROJECT_HOST_PATH
+            docker_dir = f"{PROJECT_HOST_PATH}/docker"
+        else:
+            build_context = str(self.project_root)
+            docker_dir = str(self.project_root / "docker")
+        chain = [
+            (AGENT_BASE_IMAGE, "agent-base.Dockerfile"),
+            ("roboco-agent-grok", "agent-grok.Dockerfile"),
+            (image, _GROK_INTERACTIVE_DOCKERFILES[image]),
+        ]
+        for img, dockerfile in chain:
+            await self._ensure_image_present(
+                img, f"{docker_dir}/{dockerfile}", build_context
+            )
+
+    async def _ensure_live_interactive_image(self, image: str) -> None:
+        """Ensure a provider-generic live-chat image (roboco-agent-<p>-live).
+
+        The live image builds FROM roboco-agent-<p> (the delivery runtime),
+        which builds FROM the agent base - same chain rule as the grok path.
+        """
+        if PROJECT_HOST_PATH:
+            build_context = PROJECT_HOST_PATH
+            docker_dir = f"{PROJECT_HOST_PATH}/docker"
+        else:
+            build_context = str(self.project_root)
+            docker_dir = str(self.project_root / "docker")
+        provider = next(p for p, img in LIVE_INTERACTIVE_IMAGE.items() if img == image)
+        chain = [
+            (AGENT_BASE_IMAGE, "agent-base.Dockerfile"),
+            (
+                f"roboco-agent-{provider if provider != 'openai' else 'codex'}",
+                f"agent-{'codex' if provider == 'openai' else provider}.Dockerfile",
             ),
-            "workspaces": str(Path(settings.workspaces_root)),
-            "grok_usage": str(
-                Path(tempfile.gettempdir()) / "roboco-grok-usage" / INTAKE_AGENT_ID
+            (image, LIVE_INTERACTIVE_DOCKERFILE[provider]),
+        ]
+        for img, dockerfile in chain:
+            await self._ensure_image_present(
+                img, f"{docker_dir}/{dockerfile}", build_context
+            )
+
+    @classmethod
+    def _append_live_provider_auth(
+        cls,
+        cmd: list[str],
+        provider_type: str,
+        base_url: str | None,
+        auth_token: str | None,
+    ) -> None:
+        """Per-provider auth for a live-chat container: subscription CLIs
+        mount their host auth dir; metered-key providers take env."""
+        from roboco.models.base import ModelProvider
+
+        key_env = cls._LIVE_KEY_ENV.get(provider_type)
+        if key_env is not None:
+            key_name, base_name = key_env
+            cmd.extend(["-e", f"{key_name}={auth_token or ''}"])
+            if base_url and base_name:
+                cmd.extend(["-e", f"{base_name}={base_url}"])
+            return
+        mounts = {
+            ModelProvider.OPENAI.value: (
+                "roboco.llm.providers.codex",
+                "CodexCliProvider",
+                "_append_codex_auth_mount",
+            ),
+            ModelProvider.GEMINI.value: (
+                "roboco.llm.providers.gemini",
+                "GeminiCliProvider",
+                "_append_gemini_auth_mount",
+            ),
+            ModelProvider.KIMI.value: (
+                "roboco.llm.providers.kimi",
+                "KimiCliProvider",
+                "_append_kimi_auth_mount",
             ),
         }
+        mount = mounts.get(provider_type)
+        if mount is None:
+            return
+        module_name, class_name, method_name = mount
+        module = __import__(module_name, fromlist=[class_name])
+        getattr(getattr(module, class_name), method_name)(cmd)
+
+    @staticmethod
+    def _write_live_mcp_config(role: str, session_id: str, api_url: str) -> str:
+        """Write the LIVE mcp-config.json for an MCP-capable live chat.
+
+        The delivery renderers near-passthrough whatever mcp-config.json is
+        mounted at /app/mcp-config.json - so mounting a config that carries
+        ONLY the roboco-secretary / roboco-intake stdio server gives the live
+        chat the CEO-authority / intake tool surface with the delivery
+        render step untouched. Returns the HOST path for the -v mount.
+        """
+        import json as _json
+        import tempfile
+
+        server_name = "roboco-secretary" if role == "secretary" else "roboco-intake"
+        module = f"roboco.mcp.{role if role == 'secretary' else 'intake'}_server"
+        env: dict[str, str] = {
+            "ROBOCO_API_URL": api_url,
+            "ROBOCO_AGENT_ID": os.environ.get("ROBOCO_AGENT_ID", ""),
+            "ROBOCO_AGENT_ROLE": role,
+            "UV_PROJECT_ENVIRONMENT": "/app/.venv",
+        }
+        token = os.environ.get("ROBOCO_AGENT_TOKEN", "")
+        if token:
+            env["ROBOCO_AGENT_TOKEN"] = token
+        if role == "secretary":
+            env["ROBOCO_SECRETARY_SESSION_ID"] = session_id
+        else:
+            env["ROBOCO_PROMPTER_SESSION_ID"] = session_id
+        config = {
+            "mcpServers": {
+                server_name: {
+                    "command": "uv",
+                    "args": [
+                        "run",
+                        "--directory",
+                        "/app",
+                        "--no-sync",
+                        "python",
+                        "-m",
+                        module,
+                    ],
+                    "env": env,
+                }
+            }
+        }
+        # Two paths when containerized, as for the agent mcp-configs and the
+        # manifests: write into this container's /app/mcp-configs mount, hand
+        # the docker daemon the host side of that same mount. Writing to the
+        # host path from inside the container never reaches the host, and the
+        # daemon then bind-mounts an empty directory over /app/mcp-config.json.
+        name = f"live-{role}-{session_id}.json"
+        if DATA_HOST_PATH:
+            write_dir = _LIVE_MCP_WRITE_DIR
+        else:
+            write_dir = Path(tempfile.gettempdir()) / "roboco-mcp-configs"
+        write_dir.mkdir(parents=True, exist_ok=True)
+        (write_dir / name).write_text(_json.dumps(config), encoding="utf-8")
+        if DATA_HOST_PATH:
+            return f"{DATA_HOST_PATH}/mcp-configs/{name}"
+        return str(write_dir / name)
 
     @staticmethod
     def _append_interactive_provider_env(
@@ -1365,57 +1260,6 @@ class InteractiveSessionsEngine(_Base):
         if auth_token:
             cmd.extend(["-e", f"ANTHROPIC_AUTH_TOKEN={auth_token}"])
 
-    @staticmethod
-    def _build_intake_run_cmd(spec: _IntakeRunSpec) -> list[str]:
-        """Compose the `docker run` argv for the persistent intake container.
-
-        No claude CLI args (the image ENTRYPOINT is the SDK driver), no
-        settings.json/hook mount (the driver owns port 9000), no MCP config.
-        The driver reads ``/app/system-prompt.md`` and the env below.
-        """
-        cmd: list[str] = [
-            "docker",
-            "run",
-            "-d",
-            "--name",
-            spec.container_name,
-            "--network",
-            AGENT_NETWORK,
-            "-v",
-            f"{spec.hosts['claude']}:/home/agent/.claude",
-        ]
-        AgentOrchestrator._append_claude_json_mount(cmd, spec.hosts)
-        cmd.extend(
-            [
-                "-v",
-                f"{spec.hosts['prompt']}:/app/system-prompt.md:ro",
-                "-v",
-                f"{spec.hosts['workspaces']}:/data/workspaces",
-                "-e",
-                f"ROBOCO_AGENT_ID={INTAKE_AGENT_ID}",
-                "-e",
-                f"ROBOCO_AGENT_ROLE={get_agent_role(INTAKE_AGENT_ID) or 'prompter'}",
-                "-e",
-                f"ROBOCO_API_URL={spec.api_url}",
-                "-e",
-                f"ROBOCO_PROMPTER_SESSION_ID={spec.session_id}",
-                "-e",
-                f"ROBOCO_WORKSPACE={spec.cwd}",
-                "-e",
-                f"CLAUDE_CODE_SUBAGENT_MODEL={spec.cli_model}",
-            ]
-        )
-        # The draft bridge bakes this into the propose_draft description: the
-        # panel validates the_work[].project_id as a UUID the agent cannot
-        # guess from its workspace or prompt.
-        if spec.project_uuid:
-            cmd.extend(["-e", f"ROBOCO_INTAKE_PROJECT_ID={spec.project_uuid}"])
-        # GROK mounts the subscription auth + usage dir; other providers use the
-        # ANTHROPIC_* injection or the mounted ~/.claude default.
-        AgentOrchestrator._append_interactive_provider_env(cmd, spec)
-        cmd.append(spec.image)
-        return cmd
-
     async def _run_container_cmd(self, cmd: list[str]) -> str:
         """Run a detached `docker run` and return the container id.
 
@@ -1435,85 +1279,3 @@ class InteractiveSessionsEngine(_Base):
         if proc.returncode != 0:
             raise RuntimeError(f"Failed to start intake container: {stderr.decode()}")
         return stdout.decode().strip()
-
-    def _schedule_intake_first_message(
-        self, session_id: str, text: str, *, persist: bool = False
-    ) -> None:
-        """Fire-and-forget the opening message once the container is reachable.
-
-        ``persist`` is True only for intake sessions (durably recorded via
-        ``PrompterService``, matching every later turn) — the Secretary's
-        equivalent call site leaves it False since Secretary chats have no
-        durable-message table wired.
-        """
-        self._schedule_bg(self._deliver_when_ready(session_id, text, persist=persist))
-
-    async def _deliver_when_ready(
-        self,
-        session_id: str,
-        text: str,
-        *,
-        attempts: int = 150,
-        delay: float = 1.0,
-        persist: bool = False,
-    ) -> None:
-        """Retry-deliver the first message until the container receiver is up.
-
-        This is the single seam every intake opening turn (a fresh ``/live/start``,
-        a cold or MegaTask re-interview brief, and a Telegram-bridged
-        ``/newtask``) converges through — closing it here, rather than at each
-        caller, is what makes the fix cover all of them. ``persist=True``
-        durably records the turn in ``prompter_messages`` once delivered, so the
-        first message survives a restart exactly like every later one
-        (``send_message`` already does this for turn 2+).
-
-        150 attempts (~2.5 min) instead of 30: the hummin-live container's
-        measured boot on the NAS is 20-40s, but the spawn itself can queue
-        behind workspace prep for 100s+ (2026-09-28 03:21 session: the
-        receiver came up 7.9s AFTER the old 30s window gave up and the chat
-        was declared dead). On exhaustion the relay is closed WITH an error
-        frame so the panel shows why the chat died instead of hanging silent.
-        """
-        from roboco.services.prompter_live import get_live_registry
-
-        registry = get_live_registry()
-        for _ in range(attempts):
-            if await registry.deliver(session_id, text):
-                if persist:
-                    await self._persist_intake_first_message(session_id, text)
-                return
-            await asyncio.sleep(delay)
-        logger.warning(
-            "Intake first message never delivered (receiver never came up)",
-            session_id=session_id,
-        )
-        session = registry.get(session_id)
-        if session is not None and not session.closed:
-            registry.close_by_agent(
-                session.agent_id,
-                error=(
-                    "The intake agent did not come up in time. Start a new"
-                    " chat to retry."
-                ),
-            )
-
-    async def _persist_intake_first_message(self, session_id: str, text: str) -> None:
-        """Durably record a live intake session's opening human turn.
-
-        Best-effort (mirrors ``_inject_board_brief_into_parked_intake``): a
-        persistence failure is logged, never raised into the delivery path.
-        """
-        from roboco.db.base import get_db_context
-        from roboco.services.prompter import get_prompter_service
-
-        try:
-            async with get_db_context() as db:
-                await get_prompter_service(db).record_live_message(
-                    session_id, "user", text
-                )
-        except Exception as exc:
-            logger.warning(
-                "Failed to persist intake opening message",
-                session_id=session_id,
-                error=str(exc),
-            )

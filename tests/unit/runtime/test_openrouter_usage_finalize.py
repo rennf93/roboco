@@ -17,7 +17,7 @@ from uuid import uuid4
 import httpx
 import pytest
 from roboco.models.runtime import AgentInstance
-from roboco.runtime.engines import interactive_sessions as usage_root_mod
+from roboco.runtime.engines import spawn_exit as usage_root_mod
 from roboco.runtime.orchestrator import AgentOrchestrator
 
 if TYPE_CHECKING:

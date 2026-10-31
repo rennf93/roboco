@@ -61,6 +61,8 @@ from roboco.runtime.orchestrator import (
     GROK_USAGE_DATA_DIR,
     HUMMIN_USAGE_DATA_DIR,
     KIMI_USAGE_DATA_DIR,
+    NEBIUS_USAGE_DATA_DIR,
+    OPENROUTER_USAGE_DATA_DIR,
     PROJECT_HOST_PATH,
     SDK_PORT,
     AgentState,
@@ -909,6 +911,26 @@ class UsageFilesEngine(_Base):
         docstring promised. Returns ``None`` when absent / unreadable.
         """
         return self._read_usage_json_contained(self._nebius_usage_root(), agent_id)
+
+    @staticmethod
+    def _openrouter_usage_root() -> Path:
+        """The base dir all per-agent openrouter usage dirs live under (no agent id).
+
+        Same compose-vs-local branch as :meth:`_grok_usage_root`.
+        """
+        if PROJECT_HOST_PATH:
+            return Path(OPENROUTER_USAGE_DATA_DIR)
+        return Path(tempfile.gettempdir()) / "roboco-openrouter-usage"
+
+    @staticmethod
+    def _nebius_usage_root() -> Path:
+        """The base dir all per-agent nebius usage dirs live under (no agent id).
+
+        Same compose-vs-local branch as :meth:`_openrouter_usage_root`.
+        """
+        if PROJECT_HOST_PATH:
+            return Path(NEBIUS_USAGE_DATA_DIR)
+        return Path(tempfile.gettempdir()) / "roboco-nebius-usage"
 
 
 class UsageTokensEngine(_Base):
@@ -2755,3 +2777,234 @@ class ProviderParkLanesEngine(_Base):
             retry_after=getattr(self, "_hummin_auth_retry_after_s", 60.0),
             kind="auth_missing",
         )
+
+
+class UsageDirsEngine(_Base):
+    """Each agent's own usage dir under its provider's root, created
+    world-writable before the provider CLI's container mounts it."""
+
+    @staticmethod
+    def _grok_usage_dir(agent_id: str) -> Path:
+        """Per-agent grok usage dir under :meth:`_grok_usage_root`.
+
+        Single source of truth for BOTH the pre-create/mount side
+        (``_ensure_grok_usage_dir``) and the finalize read side
+        (``_grok_usage_json``) so they can never drift. ``agent_id`` is validated
+        as a single safe path segment first — ``_safe_agent_path_segment`` rejects
+        ``.`` / ``..`` / separators / NUL so a bad id raises rather than silently
+        remapping or traversing. The read side additionally reduces the id to its
+        final path component (``os.path.basename``) — the CodeQL-recognized
+        path-injection barrier.
+        """
+        return AgentOrchestrator._grok_usage_root() / (
+            AgentOrchestrator._safe_agent_path_segment(agent_id)
+        )
+
+    def _ensure_grok_usage_dir(self, agent_id: str) -> None:
+        """Pre-create the agent's grok usage dir (world-writable) before the mount.
+
+        On Linux, ``docker run -v`` auto-creates a MISSING bind source as
+        ``root:root``, so the non-root ``agent`` user EACCESes when the grok
+        entrypoint / interactive driver writes ``usage.json`` there. Creating the
+        dir ``0777`` first makes the mounted dir writable regardless of the agent
+        uid; the orchestrator (root) can still read it back at finalize.
+        """
+        target = self._grok_usage_dir(agent_id)
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            target.chmod(0o777)
+        except OSError as exc:
+            logger.warning(
+                "could not pre-create grok usage dir; grok agent may EACCES",
+                agent_id=agent_id,
+                path=str(target),
+                error=str(exc),
+            )
+
+    @staticmethod
+    def _codex_usage_dir(agent_id: str) -> Path:
+        """Per-agent codex usage dir under :meth:`_codex_usage_root`.
+
+        Single source of truth for BOTH the pre-create/mount side
+        (``_ensure_codex_usage_dir``) and the finalize read side
+        (``_codex_usage_json``), mirroring ``_grok_usage_dir``.
+        """
+        return AgentOrchestrator._codex_usage_root() / (
+            AgentOrchestrator._safe_agent_path_segment(agent_id)
+        )
+
+    def _ensure_codex_usage_dir(self, agent_id: str) -> None:
+        """Pre-create the agent's codex usage dir (world-writable) before the mount.
+
+        Same EACCES concern as ``_ensure_grok_usage_dir``: a missing bind
+        source is auto-created ``root:root`` on Linux, which the non-root
+        ``agent`` user can't write into.
+        """
+        target = self._codex_usage_dir(agent_id)
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            target.chmod(0o777)
+        except OSError as exc:
+            logger.warning(
+                "could not pre-create codex usage dir; codex agent may EACCES",
+                agent_id=agent_id,
+                path=str(target),
+                error=str(exc),
+            )
+
+    @staticmethod
+    def _gemini_usage_dir(agent_id: str) -> Path:
+        """Per-agent gemini usage dir under :meth:`_gemini_usage_root`.
+
+        Single source of truth for BOTH the pre-create/mount side
+        (``_ensure_gemini_usage_dir``) and the finalize read side
+        (``_gemini_usage_json``) — see :meth:`_grok_usage_dir`'s docstring for
+        the ``_safe_agent_path_segment`` traversal-rejection rationale, shared
+        verbatim here.
+        """
+        return AgentOrchestrator._gemini_usage_root() / (
+            AgentOrchestrator._safe_agent_path_segment(agent_id)
+        )
+
+    def _ensure_gemini_usage_dir(self, agent_id: str) -> None:
+        """Pre-create the agent's gemini usage dir (world-writable) before the mount.
+
+        Same EACCES rationale as :meth:`_ensure_grok_usage_dir`: a missing
+        Linux bind-mount source is auto-created ``root:root``, so the non-root
+        ``agent`` user would fail to write ``usage.json`` there without this.
+        """
+        target = self._gemini_usage_dir(agent_id)
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            target.chmod(0o777)
+        except OSError as exc:
+            logger.warning(
+                "could not pre-create gemini usage dir; gemini agent may EACCES",
+                agent_id=agent_id,
+                path=str(target),
+                error=str(exc),
+            )
+
+    @staticmethod
+    def _kimi_usage_dir(agent_id: str) -> Path:
+        """Per-agent kimi usage dir under :meth:`_kimi_usage_root`.
+
+        Single source of truth for BOTH the pre-create/mount side
+        (``_ensure_kimi_usage_dir``) and the finalize read side
+        (``_kimi_usage_json``), mirroring ``_grok_usage_dir``.
+        """
+        return AgentOrchestrator._kimi_usage_root() / (
+            AgentOrchestrator._safe_agent_path_segment(agent_id)
+        )
+
+    def _ensure_kimi_usage_dir(self, agent_id: str) -> None:
+        """Pre-create the agent's kimi usage dir (world-writable) before the mount.
+
+        Same EACCES concern as ``_ensure_grok_usage_dir``: a missing bind
+        source is auto-created ``root:root`` on Linux, which the non-root
+        ``agent`` user can't write into.
+        """
+        target = self._kimi_usage_dir(agent_id)
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            target.chmod(0o777)
+        except OSError as exc:
+            logger.warning(
+                "could not pre-create kimi usage dir; kimi agent may EACCES",
+                agent_id=agent_id,
+                path=str(target),
+                error=str(exc),
+            )
+
+    @staticmethod
+    def _hummin_usage_dir(agent_id: str) -> Path:
+        """Per-agent hummin usage dir under :meth:`_hummin_usage_root`.
+
+        Single source of truth for BOTH the pre-create/mount side
+        (``_ensure_hummin_usage_dir``) and the finalize read side
+        (``_hummin_usage_json``), mirroring ``_kimi_usage_dir``.
+        """
+        return AgentOrchestrator._hummin_usage_root() / (
+            AgentOrchestrator._safe_agent_path_segment(agent_id)
+        )
+
+    def _ensure_hummin_usage_dir(self, agent_id: str) -> None:
+        """Pre-create the agent's hummin usage dir (world-writable) before the mount.
+
+        Same EACCES concern as ``_ensure_kimi_usage_dir``: a missing bind
+        source is auto-created ``root:root`` on Linux, which the non-root
+        ``agent`` user can't write into.
+        """
+        target = self._hummin_usage_dir(agent_id)
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            target.chmod(0o777)
+        except OSError as exc:
+            logger.warning(
+                "could not pre-create hummin usage dir; hummin agent may EACCES",
+                agent_id=agent_id,
+                path=str(target),
+                error=str(exc),
+            )
+
+    @staticmethod
+    def _openrouter_usage_dir(agent_id: str) -> Path:
+        """Per-agent openrouter usage dir under :meth:`_openrouter_usage_root`.
+
+        Single source of truth for BOTH the pre-create/mount side
+        (``_ensure_openrouter_usage_dir``) and the finalize read side
+        (``_openrouter_usage_json``), mirroring ``_kimi_usage_dir``.
+        """
+        return AgentOrchestrator._openrouter_usage_root() / (
+            AgentOrchestrator._safe_agent_path_segment(agent_id)
+        )
+
+    def _ensure_openrouter_usage_dir(self, agent_id: str) -> None:
+        """Pre-create the agent's openrouter usage dir before the mount.
+
+        Same EACCES concern as ``_ensure_kimi_usage_dir``: a missing bind
+        source is auto-created ``root:root`` on Linux, which the non-root
+        ``agent`` user can't write into.
+        """
+        target = self._openrouter_usage_dir(agent_id)
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            target.chmod(0o777)
+        except OSError as exc:
+            logger.warning(
+                "could not pre-create openrouter usage dir; agent may EACCES",
+                agent_id=agent_id,
+                path=str(target),
+                error=str(exc),
+            )
+
+    @staticmethod
+    def _nebius_usage_dir(agent_id: str) -> Path:
+        """Per-agent nebius usage dir under :meth:`_nebius_usage_root`.
+
+        Single source of truth for BOTH the pre-create/mount side
+        (``_ensure_nebius_usage_dir``) and the finalize read side
+        (``_nebius_usage_json``), mirroring ``_openrouter_usage_dir``.
+        """
+        return AgentOrchestrator._nebius_usage_root() / (
+            AgentOrchestrator._safe_agent_path_segment(agent_id)
+        )
+
+    def _ensure_nebius_usage_dir(self, agent_id: str) -> None:
+        """Pre-create the agent's nebius usage dir before the mount.
+
+        Same EACCES concern as ``_ensure_kimi_usage_dir``: a missing bind
+        source is auto-created ``root:root`` on Linux, which the non-root
+        ``agent`` user can't write into.
+        """
+        target = self._nebius_usage_dir(agent_id)
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            target.chmod(0o777)
+        except OSError as exc:
+            logger.warning(
+                "could not pre-create nebius usage dir; agent may EACCES",
+                agent_id=agent_id,
+                path=str(target),
+                error=str(exc),
+            )
