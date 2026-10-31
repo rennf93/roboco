@@ -52,6 +52,11 @@ from roboco.services.base import NotFoundError, ServiceError, ValidationError
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+if TYPE_CHECKING:
+    from roboco.services._prompter_service_types import PrompterServiceSelf as _Base
+else:
+    _Base = object
+
 logger = structlog.get_logger()
 
 # A board/advisory assignee means a product coordination root is still in board
@@ -138,101 +143,10 @@ class BatchPlacement:
     team_override: Team | None = None
 
 
-class PrompterService:
-    """Create tasks from confirmed intake drafts.
-
-    Accepts an optional SQLAlchemy ``AsyncSession`` for the DB-backed task
-    creation. The pure draft/description helpers below need no session.
-    """
-
-    def __init__(self, db: AsyncSession | None = None) -> None:
-        self.log = logger.bind(component="prompter_service")
-        self._db = db
-
-    @property
-    def _session(self) -> AsyncSession:
-        """Return DB session, raising if not configured."""
-        if self._db is None:
-            raise ServiceError(
-                "PrompterService was created without a DB session; "
-                "session-based methods are unavailable"
-            )
-        return self._db
-
-    # -- Live-session durable persistence -----------------------------------
-    #
-    # The live intake chat (``prompter_live.py``) is in-memory-only plumbing
-    # (an SSE queue + a container handle) — nothing survived an orchestrator
-    # restart or a container loss until these three methods. ``task_drafts``
-    # and ``prompter_messages`` existed since migration 024 but nothing wrote
-    # them (CEO-directed fix after the 2026-08-08 NAS recovery proved the gap
-    # twice). The live session id (``uuid4().hex``, from ``start_live``) is
-    # reused verbatim as ``prompter_sessions.id`` so drafts/messages FK onto it.
-
-    async def get_or_create_live_session(self, session_id: str) -> PrompterSessionTable:
-        """Get-or-create the durable session row for a live intake chat.
-
-        Owned by the single seeded "intake-1" agent (the PROMPTER role) — a
-        live chat has no other real agent identity to attribute the session to.
-        """
-        session_uuid = UUID(session_id)
-        existing = await self._session.get(PrompterSessionTable, session_uuid)
-        if existing is not None:
-            return existing
-        from roboco.seeds.initial_data import AGENT_UUIDS
-
-        row = PrompterSessionTable(
-            id=session_uuid, agent_id=UUID(AGENT_UUIDS["intake-1"])
-        )
-        self._session.add(row)
-        await self._session.flush()
-        return row
-
-    async def record_live_draft(
-        self, session_id: str, draft_data: dict[str, Any]
-    ) -> TaskDraftTable:
-        """Durably persist a proposed draft/batch payload.
-
-        Called BEFORE the event reaches the panel's SSE queue (the write-first
-        half of the NAS-loss fix): an unconfirmed draft now survives a
-        container/session loss instead of living only in the in-memory relay.
-        Committed immediately so it is durable even if the request that
-        triggered it fails downstream.
-        """
-        await self.get_or_create_live_session(session_id)
-        row = TaskDraftTable(session_id=UUID(session_id), draft_data=draft_data)
-        self._session.add(row)
-        await self._session.commit()
-        return row
-
-    async def mark_live_drafts_consumed(self, session_id: str, task_id: UUID) -> None:
-        """Mark every still-open draft row for this session consumed.
-
-        Never deletes — a confirmed draft's row is the durable record of what
-        was proposed, kept alongside the task it became. Covers every draft
-        proposed in the session (including earlier board-redraft rounds), not
-        just the most recent one.
-        """
-        await self._session.execute(
-            update(TaskDraftTable)
-            .where(TaskDraftTable.session_id == UUID(session_id))
-            .where(TaskDraftTable.confirmed_at.is_(None))
-            .values(confirmed_at=datetime.now(UTC), task_id=task_id)
-        )
-
-    async def record_live_message(
-        self, session_id: str, role: str, content: str
-    ) -> PrompterMessageTable:
-        """Durably persist one turn (human or assistant) of a live intake chat."""
-        await self.get_or_create_live_session(session_id)
-        row = PrompterMessageTable(
-            session_id=UUID(session_id), role=role, content=content
-        )
-        self._session.add(row)
-        await self._session.commit()
-        if role == "user":
-            await self._log_intake_preroute_advisory(session_id, content)
-        return row
+class PrompterDraftValidation(_Base):
+    """Validating and coercing an intake draft: its target, owning team and
+    assignee, the no-PM-code rule, its enum fields and priority, and the pre-route
+    advisory."""
 
     async def _log_intake_preroute_advisory(
         self, session_id: str, content: str
@@ -438,6 +352,100 @@ class PrompterService:
             return TaskType.PLANNING
         return task_type
 
+    @staticmethod
+    def _resolve_uuid_field(draft_data: dict[str, Any], key: str) -> UUID | None:
+        """Parse ``draft_data[key]`` as a UUID; None if absent, raises if malformed."""
+        raw = draft_data.get(key)
+        if not raw:
+            return None
+        try:
+            return UUID(str(raw))
+        except ValueError as exc:
+            raise ValidationError(
+                message=f"Invalid {key} UUID: {raw}",
+                field=key,
+            ) from exc
+
+    @staticmethod
+    def _lead_cell_team(draft_data: dict[str, Any], default: Team) -> Team:
+        """Owner of a single-cell task: first *valid* cell in the_work, else default.
+
+        Skips cell names that aren't valid ``Team`` values rather than raising —
+        the intake agent is an LLM and can emit an off-enum cell name.
+        """
+        for raw in _cell_teams(draft_data.get("the_work") or []):
+            try:
+                return Team(raw)
+            except ValueError:
+                continue
+        return default
+
+    @staticmethod
+    def _coerce_draft_enums(
+        draft_data: dict[str, Any],
+    ) -> tuple[Team, TaskType, TaskNature, Complexity]:
+        """Coerce the draft's enum fields to valid values; default on invalid/missing.
+
+        The intake agent is an LLM and will occasionally emit an off-enum value
+        (e.g. ``task_type="feature"``, which is not a ``TaskType``). The
+        confirm/launch action must NEVER hard-fail on a cosmetic enum guess — that
+        forces the agent to self-correct in-chat, which is unacceptable UX. Coerce
+        to a sane default instead; ``team`` falls back to the lead cell, then backend.
+        """
+        try:
+            team = Team(draft_data["team"])
+        except (KeyError, ValueError, TypeError):
+            team = PrompterService._lead_cell_team(draft_data, Team.BACKEND)
+        try:
+            task_type = TaskType(draft_data["task_type"])
+        except (KeyError, ValueError, TypeError):
+            task_type = TaskType.CODE
+        try:
+            nature = TaskNature(draft_data["nature"])
+        except (KeyError, ValueError, TypeError):
+            nature = TaskNature.TECHNICAL
+        try:
+            complexity = Complexity(draft_data["estimated_complexity"])
+        except (KeyError, ValueError, TypeError):
+            complexity = Complexity.MEDIUM
+        return team, task_type, nature, complexity
+
+    @staticmethod
+    def _coerce_priority(value: Any) -> int:
+        """Coerce the draft's priority to a valid int (0=urgent … 3=low).
+
+        priority is the one non-enum field the intake agent guesses, and it
+        guesses a word ("high") as often as a number. Map the words, clamp
+        numbers to 0-3, and default to 2 (medium) on anything unrecognized so the
+        launch never crashes on a priority guess (it did: ``int("high")``).
+        """
+        words = {
+            "urgent": 0,
+            "critical": 0,
+            "high": 1,
+            "medium": 2,
+            "normal": 2,
+            "low": 3,
+        }
+        if isinstance(value, bool):
+            return 2
+        if isinstance(value, int):
+            return min(max(value, 0), 3)
+        if isinstance(value, str):
+            key = value.strip().lower()
+            if key in words:
+                return words[key]
+            try:
+                return min(max(int(key), 0), 3)
+            except ValueError:
+                return 2
+        return 2
+
+
+class PrompterDraftConfirm(_Base):
+    """Turning one live draft into a task: creating it, its source, confirming it,
+    and updating the draft first."""
+
     async def create_task_from_draft(
         self,
         draft_data: dict[str, Any],
@@ -610,6 +618,59 @@ class PrompterService:
             assigned_to=assignee_slug,
         )
         return UUID(str(task.id))
+
+    async def update_live_draft(
+        self,
+        task_id: UUID,
+        draft: dict[str, Any],
+        *,
+        route: Literal["board", "main_pm"] = "main_pm",
+    ) -> UUID:
+        """Apply a board-informed re-draft to an existing task, then route it.
+
+        The board reviewed the task; the prompter folded that feedback into a
+        revised draft. This updates the *same* coordination task in place
+        (title / description / acceptance criteria) — never a new task, which
+        would duplicate the one the board already reviewed — then routes per the
+        button the CEO pressed on the re-draft:
+
+        - ``"main_pm"`` ("Approve & Start") → hand the revised task to the Main
+          PM via ``approve_and_start`` (board review is already complete).
+        - ``"board"`` → send it back for another review round: clear
+          ``board_review_complete`` so the orchestrator re-dispatches the board.
+        """
+        from roboco.services.task import get_task_service
+
+        draft_data: dict[str, Any] = dict(draft)
+        draft_data["description"] = compose_description(draft_data)
+        task_service = get_task_service(self._session)
+        task = await task_service.update(
+            task_id,
+            title=draft_data.get("title"),
+            description=draft_data["description"],
+            acceptance_criteria=draft_data.get("acceptance_criteria"),
+        )
+        if task is None:
+            raise NotFoundError(resource_type="Task", resource_id=str(task_id))
+
+        if route == "main_pm":
+            await task_service.approve_and_start(
+                task_id,
+                notes="Re-drafted with board feedback; approved to build.",
+            )
+        else:  # re-board: another review round on the revised draft
+            await task_service.update(task_id, board_review_complete=False)
+        self.log.info(
+            "Live intake re-draft applied",
+            task_id=str(task_id),
+            route=route,
+        )
+        return task_id
+
+
+class PrompterBatchConfirm(_Base):
+    """Confirming a batch of drafts: their declared dependencies and sequence, the
+    preview, the batch scope, the confirm guard, and building the batch."""
 
     @staticmethod
     def _coerce_declared_deps(raw: Any, idx: int) -> tuple[int, ...]:
@@ -974,53 +1035,10 @@ class PrompterService:
         await self._persist_confirm_result(session_id, result)
         return result
 
-    async def update_live_draft(
-        self,
-        task_id: UUID,
-        draft: dict[str, Any],
-        *,
-        route: Literal["board", "main_pm"] = "main_pm",
-    ) -> UUID:
-        """Apply a board-informed re-draft to an existing task, then route it.
 
-        The board reviewed the task; the prompter folded that feedback into a
-        revised draft. This updates the *same* coordination task in place
-        (title / description / acceptance criteria) — never a new task, which
-        would duplicate the one the board already reviewed — then routes per the
-        button the CEO pressed on the re-draft:
-
-        - ``"main_pm"`` ("Approve & Start") → hand the revised task to the Main
-          PM via ``approve_and_start`` (board review is already complete).
-        - ``"board"`` → send it back for another review round: clear
-          ``board_review_complete`` so the orchestrator re-dispatches the board.
-        """
-        from roboco.services.task import get_task_service
-
-        draft_data: dict[str, Any] = dict(draft)
-        draft_data["description"] = compose_description(draft_data)
-        task_service = get_task_service(self._session)
-        task = await task_service.update(
-            task_id,
-            title=draft_data.get("title"),
-            description=draft_data["description"],
-            acceptance_criteria=draft_data.get("acceptance_criteria"),
-        )
-        if task is None:
-            raise NotFoundError(resource_type="Task", resource_id=str(task_id))
-
-        if route == "main_pm":
-            await task_service.approve_and_start(
-                task_id,
-                notes="Re-drafted with board feedback; approved to build.",
-            )
-        else:  # re-board: another review round on the revised draft
-            await task_service.update(task_id, board_review_complete=False)
-        self.log.info(
-            "Live intake re-draft applied",
-            task_id=str(task_id),
-            route=route,
-        )
-        return task_id
+class PrompterBatchUpdate(_Base):
+    """Updating a live batch: its umbrella and backlog children, the batch scope,
+    and patching or rewriting the children."""
 
     async def _require_batch_umbrella(self, task_id: UUID) -> TaskTable:
         """The umbrella row for ``task_id``, or raise (not found / not a batch)."""
@@ -1231,94 +1249,107 @@ class PrompterService:
             "warnings": plan.warnings,
         }
 
-    @staticmethod
-    def _resolve_uuid_field(draft_data: dict[str, Any], key: str) -> UUID | None:
-        """Parse ``draft_data[key]`` as a UUID; None if absent, raises if malformed."""
-        raw = draft_data.get(key)
-        if not raw:
-            return None
-        try:
-            return UUID(str(raw))
-        except ValueError as exc:
-            raise ValidationError(
-                message=f"Invalid {key} UUID: {raw}",
-                field=key,
-            ) from exc
 
-    @staticmethod
-    def _lead_cell_team(draft_data: dict[str, Any], default: Team) -> Team:
-        """Owner of a single-cell task: first *valid* cell in the_work, else default.
+class PrompterService(
+    PrompterBatchConfirm,
+    PrompterBatchUpdate,
+    PrompterDraftConfirm,
+    PrompterDraftValidation,
+):
+    """Create tasks from confirmed intake drafts.
 
-        Skips cell names that aren't valid ``Team`` values rather than raising —
-        the intake agent is an LLM and can emit an off-enum cell name.
+    Accepts an optional SQLAlchemy ``AsyncSession`` for the DB-backed task
+    creation. The pure draft/description helpers below need no session.
+    """
+
+    def __init__(self, db: AsyncSession | None = None) -> None:
+        self.log = logger.bind(component="prompter_service")
+        self._db = db
+
+    @property
+    def _session(self) -> AsyncSession:
+        """Return DB session, raising if not configured."""
+        if self._db is None:
+            raise ServiceError(
+                "PrompterService was created without a DB session; "
+                "session-based methods are unavailable"
+            )
+        return self._db
+
+    # -- Live-session durable persistence -----------------------------------
+    #
+    # The live intake chat (``prompter_live.py``) is in-memory-only plumbing
+    # (an SSE queue + a container handle) — nothing survived an orchestrator
+    # restart or a container loss until these three methods. ``task_drafts``
+    # and ``prompter_messages`` existed since migration 024 but nothing wrote
+    # them (CEO-directed fix after the 2026-08-08 NAS recovery proved the gap
+    # twice). The live session id (``uuid4().hex``, from ``start_live``) is
+    # reused verbatim as ``prompter_sessions.id`` so drafts/messages FK onto it.
+
+    async def get_or_create_live_session(self, session_id: str) -> PrompterSessionTable:
+        """Get-or-create the durable session row for a live intake chat.
+
+        Owned by the single seeded "intake-1" agent (the PROMPTER role) — a
+        live chat has no other real agent identity to attribute the session to.
         """
-        for raw in _cell_teams(draft_data.get("the_work") or []):
-            try:
-                return Team(raw)
-            except ValueError:
-                continue
-        return default
+        session_uuid = UUID(session_id)
+        existing = await self._session.get(PrompterSessionTable, session_uuid)
+        if existing is not None:
+            return existing
+        from roboco.seeds.initial_data import AGENT_UUIDS
 
-    @staticmethod
-    def _coerce_draft_enums(
-        draft_data: dict[str, Any],
-    ) -> tuple[Team, TaskType, TaskNature, Complexity]:
-        """Coerce the draft's enum fields to valid values; default on invalid/missing.
+        row = PrompterSessionTable(
+            id=session_uuid, agent_id=UUID(AGENT_UUIDS["intake-1"])
+        )
+        self._session.add(row)
+        await self._session.flush()
+        return row
 
-        The intake agent is an LLM and will occasionally emit an off-enum value
-        (e.g. ``task_type="feature"``, which is not a ``TaskType``). The
-        confirm/launch action must NEVER hard-fail on a cosmetic enum guess — that
-        forces the agent to self-correct in-chat, which is unacceptable UX. Coerce
-        to a sane default instead; ``team`` falls back to the lead cell, then backend.
+    async def record_live_draft(
+        self, session_id: str, draft_data: dict[str, Any]
+    ) -> TaskDraftTable:
+        """Durably persist a proposed draft/batch payload.
+
+        Called BEFORE the event reaches the panel's SSE queue (the write-first
+        half of the NAS-loss fix): an unconfirmed draft now survives a
+        container/session loss instead of living only in the in-memory relay.
+        Committed immediately so it is durable even if the request that
+        triggered it fails downstream.
         """
-        try:
-            team = Team(draft_data["team"])
-        except (KeyError, ValueError, TypeError):
-            team = PrompterService._lead_cell_team(draft_data, Team.BACKEND)
-        try:
-            task_type = TaskType(draft_data["task_type"])
-        except (KeyError, ValueError, TypeError):
-            task_type = TaskType.CODE
-        try:
-            nature = TaskNature(draft_data["nature"])
-        except (KeyError, ValueError, TypeError):
-            nature = TaskNature.TECHNICAL
-        try:
-            complexity = Complexity(draft_data["estimated_complexity"])
-        except (KeyError, ValueError, TypeError):
-            complexity = Complexity.MEDIUM
-        return team, task_type, nature, complexity
+        await self.get_or_create_live_session(session_id)
+        row = TaskDraftTable(session_id=UUID(session_id), draft_data=draft_data)
+        self._session.add(row)
+        await self._session.commit()
+        return row
 
-    @staticmethod
-    def _coerce_priority(value: Any) -> int:
-        """Coerce the draft's priority to a valid int (0=urgent … 3=low).
+    async def mark_live_drafts_consumed(self, session_id: str, task_id: UUID) -> None:
+        """Mark every still-open draft row for this session consumed.
 
-        priority is the one non-enum field the intake agent guesses, and it
-        guesses a word ("high") as often as a number. Map the words, clamp
-        numbers to 0-3, and default to 2 (medium) on anything unrecognized so the
-        launch never crashes on a priority guess (it did: ``int("high")``).
+        Never deletes — a confirmed draft's row is the durable record of what
+        was proposed, kept alongside the task it became. Covers every draft
+        proposed in the session (including earlier board-redraft rounds), not
+        just the most recent one.
         """
-        words = {
-            "urgent": 0,
-            "critical": 0,
-            "high": 1,
-            "medium": 2,
-            "normal": 2,
-            "low": 3,
-        }
-        if isinstance(value, bool):
-            return 2
-        if isinstance(value, int):
-            return min(max(value, 0), 3)
-        if isinstance(value, str):
-            key = value.strip().lower()
-            if key in words:
-                return words[key]
-            try:
-                return min(max(int(key), 0), 3)
-            except ValueError:
-                return 2
-        return 2
+        await self._session.execute(
+            update(TaskDraftTable)
+            .where(TaskDraftTable.session_id == UUID(session_id))
+            .where(TaskDraftTable.confirmed_at.is_(None))
+            .values(confirmed_at=datetime.now(UTC), task_id=task_id)
+        )
+
+    async def record_live_message(
+        self, session_id: str, role: str, content: str
+    ) -> PrompterMessageTable:
+        """Durably persist one turn (human or assistant) of a live intake chat."""
+        await self.get_or_create_live_session(session_id)
+        row = PrompterMessageTable(
+            session_id=UUID(session_id), role=role, content=content
+        )
+        self._session.add(row)
+        await self._session.commit()
+        if role == "user":
+            await self._log_intake_preroute_advisory(session_id, content)
+        return row
 
 
 # ---------------------------------------------------------------------------
