@@ -551,7 +551,6 @@ class BaseChoreographer(_Base):
     _TERMINAL_STATUSES: ClassVar[frozenset[str]] = frozenset({"completed", "cancelled"})
 
 
-
 class RejectionMixin(_Base):
     """The rejection envelopes every verb shares: the audited rejection with its
     sandbox teardown, the free-text soup guard, the reassigned-task and
