@@ -187,7 +187,8 @@ async def _portfolio_spend_by_project(session: AsyncSession) -> dict[UUID, float
     burn: dict[UUID, float] = {}
     for row in result.all():
         if row.project_id is None:
-            continue  # filtered server-side; narrows for mypy
+            # Filtered server-side; narrows for mypy
+            continue
         cost = row.estimated_cost_usd
         if cost is None and row.ended_at is None:
             cost = calculate_cost(
@@ -1682,7 +1683,8 @@ class MetricsService(
                     "epoch",
                     TaskTable.completed_at - TaskTable.started_at,
                 )
-                / 3600  # Convert to hours
+                # Convert to hours
+                / 3600
             )
         ).where(
             and_(
