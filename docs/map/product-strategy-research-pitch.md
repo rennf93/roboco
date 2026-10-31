@@ -12,6 +12,7 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `roboco/services/_project_service_types.py` | `ProjectServiceSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `ProjectService` mixins reach through `self`, plus its instance attributes; `tests/unit/services/test_project_service_mixins.py` fails on a stray stub or a member defined twice | 42 |
 | `roboco/services/product.py` | Product CRUD + per-cell `project_for` routing resolver + idempotent cell-map replace | 247 |
 | `roboco/services/kanban.py` | Role-specific kanban board views (dev/qa/documenter/pm/main-pm/board) from task data | 587 |
+| `roboco/services/_kanban_service_types.py` | `KanbanServiceSelf`, a TYPE_CHECKING-only Protocol declaring the attributes the `KanbanService` mixin reads through `self` (no moved body calls across classes, so it has no `<Class>Surface` yet); `tests/unit/services/test_kanban_service_mixins.py` fails on a stray stub or a member defined twice | 28 |
 | `roboco/services/company_goals.py` | CRUD for the singleton company charter (north star + objectives + constraints + policy + brand_voice + company_name); `resolve_product_name` is the shared product-name fallback chain `XEngine`/`VideoEngine` both call | 110 |
 | `roboco/services/strategy_engine.py` | Dormant "engine 2": assesses company state vs goals; `idle`→roadmap and `stranded_blocked`→Coroner both trigger a Board Program before the CEO notification | 337 |
 | `roboco/services/research.py` | Pluggable web-search/fetch — provider adapters (Tavily/Brave/Exa/Null) + clamping service | 570 |
@@ -78,14 +79,15 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `ProductService.distinct_project_ids` | method | product.py:198 | Distinct repos a product spans (one Main-PM integration branch each) |
 | `ProductService._replace_cells` | method | product.py:217 | Idempotent full cell-map replace via cascade collection; flushes DELETEs before INSERTs to avoid `uq_product_projects_product_team` 409 |
 | `get_product_service` | factory | product.py:245 | Session-bound constructor |
-| `KanbanService` | class | kanban.py:35 | Role-specific board generation with optional swimlanes |
-| `KanbanService._load_subtask_counts` | method | kanban.py:52 | Batch-count direct children per parent in ONE grouped query (fixes the always-0 stub; #198) |
-| `KanbanService._task_to_card` | method | kanban.py:66 | Task → KanbanCard; accepts optional `subtask_counts` dict for real subtask counts |
-| `KanbanService.get_dev_board` | method | kanban.py:122 | Dev cell board with optional priority/assignee swimlanes |
-| `KanbanService.get_qa_board` / `get_documenter_board` / `get_pm_board` | method | kanban.py:345 / 376 / 410 | Role-filtered flat boards |
-| `KanbanService.get_main_pm_board` / `get_main_pm_board_flat` | method | kanban.py:429 / 445 | Cross-cell view (team swimlanes / team columns) |
-| `KanbanService.get_board_kanban` | method | kanban.py:548 | Board roadmap (P0/P1 only) |
-| `KanbanService.get_board_stats` | method | kanban.py:568 | Status-count aggregation |
+| `KanbanService` | class | kanban.py:304 | Role-specific board generation with optional swimlanes |
+| `KanbanBoardLayout` | class | kanban.py:40 | Mixin of `KanbanService` (9 methods): How tasks become a board: each task as a card with its subtask count, laid out in plain columns or in swimlanes by priority or assignee, with the board's and each lane's title. |
+| `KanbanService._load_subtask_counts` | method | kanban.py:45 | Batch-count direct children per parent in ONE grouped query (fixes the always-0 stub; #198) |
+| `KanbanService._task_to_card` | method | kanban.py:59 | Task → KanbanCard; accepts optional `subtask_counts` dict for real subtask counts |
+| `KanbanService.get_dev_board` | method | kanban.py:325 | Dev cell board with optional priority/assignee swimlanes |
+| `KanbanService.get_qa_board` / `get_documenter_board` / `get_pm_board` | method | kanban.py:356 / 387 / 421 | Role-filtered flat boards |
+| `KanbanService.get_main_pm_board` / `get_main_pm_board_flat` | method | kanban.py:440 / 456 | Cross-cell view (team swimlanes / team columns) |
+| `KanbanService.get_board_kanban` | method | kanban.py:559 | Board roadmap (P0/P1 only) |
+| `KanbanService.get_board_stats` | method | kanban.py:579 | Status-count aggregation |
 | `CompanyGoalsService` | class | company_goals.py:50 | Singleton charter CRUD |
 | `SINGLETON_ID` | constant | company_goals.py:25 | Fixed UUID 0…0 — charter is one row |
 | `CompanyGoalsService.get` / `upsert` | method | company_goals.py:53 / 59 | Partial-key upsert; caller commits |
@@ -519,6 +521,8 @@ product-strategy-research-pitch
 > **2026-10-31** (Planning trail #51, wave 3): `ProjectService` splits in place into 4 mixins in `project.py`, every method body byte-identical: `ProjectListings` (3), `ProjectWorkspaceState` (2), `ProjectTokens` (3), `ProjectAccess` (3). `ProjectService` keeps its CRUD (create with the git-URL and forge checks and conventions scaffold, the lookups, update, delete), composes them, and is no longer a god class. Rows naming `ProjectService.<method>` still hold through inheritance. Each mixin's TYPE_CHECKING-only base is `ProjectServiceSelf` (`roboco/services/_project_service_types.py`).
 
 > **2026-10-31** (Planning trail #51, wave 3): `BoardProgramEngine` splits in place into 2 mixins in `board_programs.py`, every method body byte-identical: `BoardProgramDecisions` (6), `BoardProgramCycles` (6). `BoardProgramEngine` keeps its run loop (`enabled`, `run_due_programs`, the metric-predicate and per-program runs, the early-decision check, opening a cycle, the scope gate, opted-in projects, originating and recording), composes them, and is no longer a god class. Rows naming `BoardProgramEngine.<method>` still hold through inheritance. Each mixin's TYPE_CHECKING-only base is `BoardProgramEngineSelf` (`roboco/services/_board_program_engine_types.py`).
+
+> **2026-10-31** (Planning trail #51, wave 3): `KanbanService` splits in place into a mixin in `kanban.py`, every method body byte-identical: `KanbanBoardLayout` (9). `KanbanService` keeps the boards each role sees (developer, QA, documenter, PM, the Main PM's cross-cell board in lanes or flat, and the Board's roadmap) and the board stats, composes it, and is no longer a god class. Rows naming `KanbanService.<method>` still hold through inheritance. The mixin's TYPE_CHECKING-only base is `KanbanServiceSelf` (`roboco/services/_kanban_service_types.py`).
 
 ## Regression Risks
 
