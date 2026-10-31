@@ -245,3 +245,26 @@ def test_state_key_is_content_addressed() -> None:
     a = state_key({"bump_kind": "minor", "summary": "x"})
     assert a == state_key({"summary": "x", "bump_kind": "minor"})
     assert a != state_key({"bump_kind": "patch", "summary": "x"})
+
+
+def test_main_closes_its_loops_engines_before_the_loop_ends(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``asyncio.run`` ends the loop the export's engine opened its
+    connections on; nothing could close them afterwards."""
+    import roboco.db.base as db_base
+
+    calls: list[str] = []
+
+    async def _export_corpus(out_path: str, pilot: str | None, limit: int) -> int:
+        calls.append("export")
+        return 0
+
+    async def _close_db() -> None:
+        calls.append("close_db")
+
+    monkeypatch.setattr(export, "export_corpus", _export_corpus)
+    monkeypatch.setattr(db_base, "close_db", _close_db)
+
+    assert export.main(["--out", str(tmp_path / "corpus.jsonl")]) == 0
+    assert calls == ["export", "close_db"]

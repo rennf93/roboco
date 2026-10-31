@@ -4,7 +4,7 @@ Database base configuration and session management.
 
 import asyncio
 import weakref
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -498,3 +498,15 @@ async def close_db() -> None:
         released = engines.release()
         if released is not None:
             await released.engine.dispose()
+
+
+async def run_then_close_db[T](work: Awaitable[T]) -> T:
+    """Await ``work``, then close the running loop's engines.
+
+    For a one-shot ``asyncio.run(...)``, whose loop ends with ``work``: an
+    engine left on it can never close its connections once it has.
+    """
+    try:
+        return await work
+    finally:
+        await close_db()

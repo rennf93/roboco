@@ -32,6 +32,7 @@ from roboco.db.base import (
     get_session_factory,
     init_db,
     run_migrations,
+    run_then_close_db,
 )
 
 if TYPE_CHECKING:
@@ -705,3 +706,32 @@ async def test_close_db_leaves_another_loops_engine_alone() -> None:
 async def test_close_db_when_no_engine_is_noop() -> None:
     await close_db()
     assert db_base._PRIMARY_ENGINES.current() is None
+
+
+@pytest.mark.asyncio
+async def test_run_then_close_db_closes_the_loops_engines_after_the_work() -> None:
+    engine = MagicMock()
+    engine.dispose = AsyncMock()
+    _install(engine)
+
+    async def _work() -> str:
+        engine.dispose.assert_not_awaited()
+        return "done"
+
+    assert await run_then_close_db(_work()) == "done"
+    engine.dispose.assert_awaited_once()
+    assert db_base._PRIMARY_ENGINES.current() is None
+
+
+@pytest.mark.asyncio
+async def test_run_then_close_db_closes_the_engines_when_the_work_raises() -> None:
+    engine = MagicMock()
+    engine.dispose = AsyncMock()
+    _install(engine)
+
+    async def _work() -> None:
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await run_then_close_db(_work())
+    engine.dispose.assert_awaited_once()
