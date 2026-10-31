@@ -1,5 +1,8 @@
-"""Auto-extracted engine mixin -- see decomp/extract.py. Method bodies below are
-moved verbatim from AgentOrchestrator (family: spawn_config)."""
+"""What a spawned agent is configured with: its Claude Code settings and MCP
+servers, its composed system prompt, and the task briefing its SessionStart
+hook reads.
+
+Engine mixins composed into AgentOrchestrator."""
 
 from __future__ import annotations
 
@@ -14,17 +17,12 @@ import httpx
 from fastapi import status as http_status
 
 from roboco.agents.factories._base import compose_prompt
-from roboco.agents_config import (
-    get_agent_role,
-    get_agent_team,
-    get_escalation_target,
-)
+from roboco.agents_config import get_agent_role, get_agent_team, get_escalation_target
 from roboco.config import settings
 from roboco.models import AgentRole, Team
 from roboco.runtime.orchestrator import (
     DATA_HOST_PATH,
     PROJECT_HOST_PATH,
-    UUID_TO_SLUG,
     AgentConfig,
     _resolve_agent_cli_model,
     _system_api_headers,
@@ -33,17 +31,8 @@ from roboco.runtime.orchestrator import (
 from roboco.seeds.initial_data import AGENT_UUIDS
 
 if TYPE_CHECKING:
-    from roboco.models.runtime import (
-        SpawnGitContext,
-    )
-
-    # Also bound into this module's real (non-TYPE_CHECKING) globals at
-    # runtime by orchestrator.py, right after the class is defined -- see
-    # its bottom-of-file comment.
-    from roboco.runtime.orchestrator import (
-        AgentOrchestrator,
-    )
-
+    from roboco.models.runtime import SpawnGitContext
+    from roboco.runtime.orchestrator import AgentOrchestrator
 
 if TYPE_CHECKING:
     from roboco.runtime.engines._types import AgentOrchestratorSelf as _Base
@@ -51,8 +40,10 @@ else:
     _Base = object
 
 
-class SpawnConfigEngine(_Base):
-    """Mixin holding the "spawn_config" methods moved out of AgentOrchestrator."""
+class AgentSettingsEngine(_Base):
+    """The agent's Claude Code configuration: role-scoped tool permissions,
+    the Fable-mode hook groups, the per-agent settings file, the CLI model,
+    and the MCP config with its role-scoped servers."""
 
     def _get_role_permissions(
         self, role: str, workspace_path: str, cell_workspace_path: str
@@ -546,20 +537,6 @@ class SpawnConfigEngine(_Base):
         return settings_path
 
     @staticmethod
-    def _default_spawn_prompt() -> str:
-        """Fallback prompt when the caller provided none."""
-        return (
-            "You may have been spawned without a specific task assignment. "
-            "Follow your standard workflow:\n\n"
-            "1. Call `give_me_work()` to find work for your role\n"
-            "2. Begin the assigned task (its details arrive in the "
-            "response): UNDERSTAND -> PLAN -> EXECUTE -> VERIFY -> HANDOFF\n"
-            "3. If no tasks available, call `i_am_idle()` "
-            "to shutdown gracefully\n\n"
-            "Start now by scanning for work."
-        )
-
-    @staticmethod
     def _resolve_cli_model(config: AgentConfig) -> str:
         """Return the string to pass to `claude --model`."""
         return _resolve_agent_cli_model(config.provider_type, config.model)
@@ -818,6 +795,25 @@ class SpawnConfigEngine(_Base):
                 "args": [],
             }
 
+
+class SystemPromptEngine(_Base):
+    """The agent's prompts: the composed system prompt, its conventions
+    ambient layer with the projects in scope, and the fallback spawn prompt."""
+
+    @staticmethod
+    def _default_spawn_prompt() -> str:
+        """Fallback prompt when the caller provided none."""
+        return (
+            "You may have been spawned without a specific task assignment. "
+            "Follow your standard workflow:\n\n"
+            "1. Call `give_me_work()` to find work for your role\n"
+            "2. Begin the assigned task (its details arrive in the "
+            "response): UNDERSTAND -> PLAN -> EXECUTE -> VERIFY -> HANDOFF\n"
+            "3. If no tasks available, call `i_am_idle()` "
+            "to shutdown gracefully\n\n"
+            "Start now by scanning for work."
+        )
+
     def _generate_composed_prompt(
         self, agent_id: str, ambient: str | None = None
     ) -> Path:
@@ -998,6 +994,11 @@ class SpawnConfigEngine(_Base):
         ids = await get_product_service(db).distinct_project_ids(UUID(product_id))
         resolved = [await project_service.get(pid) for pid in ids]
         return [p for p in resolved if p is not None]
+
+
+class AgentBriefingEngine(_Base):
+    """The task briefing the SessionStart hook reads: the current task block,
+    the tool-load note, the steering messages, and the B27 tool spotlight."""
 
     def _build_tool_load_block(self, role: str) -> str:
         """Briefing block affirming the role's built-in tools are ready.
@@ -1305,16 +1306,3 @@ class SpawnConfigEngine(_Base):
                 task_description=description,
                 verbs=do_tools,
             )
-
-    def _resolve_agent_slug(self, agent_id_or_uuid: str) -> str:
-        """Resolve agent UUID to slug. Returns input if already a slug."""
-        # Check if it's a known UUID and convert to slug
-        if agent_id_or_uuid in UUID_TO_SLUG:
-            return UUID_TO_SLUG[agent_id_or_uuid]
-        # Already a slug or unknown UUID
-        return agent_id_or_uuid
-
-    def _mark_task_handled(self, task_id: str | None) -> None:
-        """Record that `task_id` was acted on earlier in this dispatch tick."""
-        if task_id:
-            self._tick_handled_tasks.add(task_id)

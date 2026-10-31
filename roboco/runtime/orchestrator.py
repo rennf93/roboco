@@ -1386,7 +1386,11 @@ from roboco.runtime.engines.interactive_sessions import InteractiveSessionsEngin
 from roboco.runtime.engines.rate_limit_probe import RateLimitProbeEngine
 from roboco.runtime.engines.reconcile import ReconcileEngine
 from roboco.runtime.engines.release_manager import ReleaseManagerEngine
-from roboco.runtime.engines.spawn_config import SpawnConfigEngine
+from roboco.runtime.engines.spawn_config import (
+    AgentBriefingEngine,
+    AgentSettingsEngine,
+    SystemPromptEngine,
+)
 from roboco.runtime.engines.spawn_exit import SpawnExitEngine
 from roboco.runtime.engines.spawn_launch import SpawnLaunchEngine
 from roboco.runtime.engines.strategy import StrategyEngine
@@ -1399,6 +1403,8 @@ from roboco.runtime.engines.x_mentions import XMentionsEngine
 
 class AgentOrchestrator(
     SharedEngine,
+    AgentBriefingEngine,
+    AgentSettingsEngine,
     AgentWorkSignalEngine,
     AuditDispatchEngine,
     AuditorExplorationsEngine,
@@ -1440,7 +1446,6 @@ class AgentOrchestrator(
     RespawnBreakerEngine,
     RespawnTripEngine,
     RoutingClassifierEngine,
-    SpawnConfigEngine,
     SpawnExitEngine,
     SpawnLaunchEngine,
     SpawnReadinessEngine,
@@ -1448,6 +1453,7 @@ class AgentOrchestrator(
     StrategyEngine,
     StuckTaskEngine,
     SweepsEngine,
+    SystemPromptEngine,
     TelegramPollEngine,
     VaultEngine,
     VideoRenderEngine,

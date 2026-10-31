@@ -1,5 +1,6 @@
-"""Auto-extracted engine mixin -- see decomp/extract.py. Method bodies below are
-moved verbatim from AgentOrchestrator (family: _shared)."""
+"""Helpers every engine family uses.
+
+Engine mixin composed into AgentOrchestrator."""
 
 from __future__ import annotations
 
@@ -12,6 +13,7 @@ from fastapi import status as http_status
 
 from roboco.foundation import identity as _foundation
 from roboco.runtime.orchestrator import (
+    UUID_TO_SLUG,
     AgentState,
     logger,
 )
@@ -25,7 +27,6 @@ if TYPE_CHECKING:
     from roboco.services.maintenance_pause import PauseScope
     from roboco.services.uptime import UptimeLedger
 
-
 if TYPE_CHECKING:
     from roboco.runtime.engines._types import AgentOrchestratorSelf as _Base
 else:
@@ -33,7 +34,10 @@ else:
 
 
 class SharedEngine(_Base):
-    """Mixin holding the "_shared" methods moved out of AgentOrchestrator."""
+    """Helpers every engine family uses: the loop heartbeat, audit fire,
+    background scheduling, the repo key and one project per key, the agent
+    team and active-agent checks, the uptime refresh, the pause check, the
+    subtask fetch, and resolving an agent UUID to its slug."""
 
     # Re-declared (not just inherited from _Base above): mypy's Protocol
     # attribute inference cannot determine the type of an inherited member
@@ -213,3 +217,11 @@ class SharedEngine(_Base):
                 "Failed to fetch subtasks", parent_id=parent_id, error=str(e)
             )
         return []
+
+    def _resolve_agent_slug(self, agent_id_or_uuid: str) -> str:
+        """Resolve agent UUID to slug. Returns input if already a slug."""
+        # Check if it's a known UUID and convert to slug
+        if agent_id_or_uuid in UUID_TO_SLUG:
+            return UUID_TO_SLUG[agent_id_or_uuid]
+        # Already a slug or unknown UUID
+        return agent_id_or_uuid

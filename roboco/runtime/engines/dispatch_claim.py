@@ -45,7 +45,7 @@ class DispatcherLoopEngine(_Base):
     """The dispatcher loop, its heartbeat, and each tick's run of every work
     dispatcher (`_dispatch_all_work`), the reads they make (tasks,
     notifications, one task's fields, descendants and children), and the
-    handled-this-tick check."""
+    handled-this-tick record and check."""
 
     # Re-declared (not just inherited from _Base above): mypy's Protocol
     # attribute inference cannot determine the type of an inherited member
@@ -373,6 +373,11 @@ class DispatcherLoopEngine(_Base):
                 "dispatch_paused": paused,
             },
         )
+
+    def _mark_task_handled(self, task_id: str | None) -> None:
+        """Record that `task_id` was acted on earlier in this dispatch tick."""
+        if task_id:
+            self._tick_handled_tasks.add(task_id)
 
 
 class DispatchClaimEngine(_Base):
