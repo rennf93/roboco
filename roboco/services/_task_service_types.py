@@ -26,8 +26,31 @@ if TYPE_CHECKING:
     from roboco.db.tables import AgentTable, TaskTable
     from roboco.models.base import TaskStatus, Team
     from roboco.models.task import TaskCreateRequest
-    from roboco.services.task import _ClaimFieldSnapshot
+    from roboco.services.task import _ClaimFieldSnapshot, _LineageCutContext
     from roboco.services.uptime import UptimeLedger
+
+
+class TaskBranchesSurface(Protocol):
+    """``TaskBranches``'s members that other classes reach."""
+
+    async def _resolve_parent_branch(self, task: TaskTable, project: Any) -> str: ...
+
+
+class TaskCreationSurface(Protocol):
+    """``TaskCreation``'s members that other classes reach."""
+
+    async def _task_has_cell_map(self, task: TaskTable) -> bool: ...
+    @staticmethod
+    def assert_batch_shape_intact(task: TaskTable) -> None: ...
+    async def create(self, req: TaskCreateRequest) -> TaskTable: ...
+
+
+class TaskLineageSurface(Protocol):
+    """``TaskLineage``'s members that other classes reach."""
+
+    async def _apply_dependency_lineage(
+        self, task: TaskTable, ctx: _LineageCutContext
+    ) -> None: ...
 
 
 class TaskListQueriesSurface(Protocol):
@@ -39,6 +62,13 @@ class TaskListQueriesSurface(Protocol):
     ) -> list[TaskTable]: ...
 
 
+class TaskRecordsSurface(Protocol):
+    """``TaskRecords``'s members that other classes reach."""
+
+    async def get(self, task_id: UUID) -> TaskTable | None: ...
+    async def get_live_subtasks(self, parent_task_id: UUID) -> list[TaskTable]: ...
+
+
 class TaskSurface(Protocol):
     """``TaskService``'s members that other classes reach."""
 
@@ -46,14 +76,40 @@ class TaskSurface(Protocol):
     _DEV_ACTIVE_STATUSES: ClassVar[set[TaskStatus]]
     _JOURNAL_CONTEXT_STATUSES: ClassVar[set[TaskStatus]]
 
+    async def _admin_out_of_blocked(
+        self,
+        task: TaskTable,
+        from_status: str,
+        new_status: TaskStatus,
+        *,
+        actor_id: str | UUID | None,
+        actor_role: str | None,
+    ) -> TaskTable | None: ...
+    async def _apply_forced_override_effects(
+        self,
+        task: TaskTable,
+        from_status: str,
+        new_status: TaskStatus,
+        actor_id: str | UUID | None,
+        actor_role: str | None,
+    ) -> None: ...
     async def _claim_blocked_by_sequence(self, task: TaskTable) -> str | None: ...
     async def _clear_agent_current_task(
         self, agent_id: UUID | None, task_id: UUID
     ) -> None: ...
-    async def _load_uptime_ledger(self, now: datetime) -> UptimeLedger | None: ...
+    def _emit_status_transition_audit(
+        self,
+        task: TaskTable,
+        *,
+        from_status: str,
+        to_status: str,
+        agent_role: str | None,
+        audit_agent_id: str | UUID | None,
+    ) -> None: ...
     def _mark_agent_active_for_claim(
         self, agent: AgentTable | None, task_id: Any
     ) -> None: ...
+    async def _materialize_vault_note(self, task: TaskTable) -> None: ...
     @staticmethod
     def _record_pr_review(
         task: TaskTable,
@@ -62,6 +118,10 @@ class TaskSurface(Protocol):
         verdict: str,
         issues: list[str] | None = ...,
     ) -> None: ...
+    def _refuse_terminal_resurrection(
+        self, task: TaskTable, from_status: str, new_status: TaskStatus, force: bool
+    ) -> None: ...
+    async def _unblock_dependents(self, completed_task_id: UUID) -> None: ...
     def _validate_and_set_status(
         self,
         task: TaskTable,
@@ -70,12 +130,27 @@ class TaskSurface(Protocol):
         audit_agent_id: str | UUID | None = ...,
         extra_allowed_roles: tuple[str, ...] = ...,
     ) -> None: ...
-    async def create(self, req: TaskCreateRequest) -> TaskTable: ...
-    async def get(self, task_id: UUID) -> TaskTable | None: ...
+    async def get_all_descendants(self, task_id: UUID) -> list[TaskTable]: ...
+    async def get_subtasks(self, parent_task_id: UUID) -> list[TaskTable]: ...
     async def unmet_dependency_ids(self, dependency_ids: list[UUID]) -> list[UUID]: ...
 
 
-class TaskServiceSelf(TaskListQueriesSurface, TaskSurface, Protocol):
+class TaskStalledSurface(Protocol):
+    """``TaskStalled``'s members that other classes reach."""
+
+    async def _load_uptime_ledger(self, now: datetime) -> UptimeLedger | None: ...
+
+
+class TaskServiceSelf(
+    TaskBranchesSurface,
+    TaskCreationSurface,
+    TaskLineageSurface,
+    TaskListQueriesSurface,
+    TaskRecordsSurface,
+    TaskSurface,
+    TaskStalledSurface,
+    Protocol,
+):
     """Every cross-class member a moved method body reaches via ``self``:
     BaseService's and TaskService's instance attributes here, each class's
     members on its surface."""
