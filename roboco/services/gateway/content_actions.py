@@ -895,10 +895,6 @@ class CommitActions(_Base):
     """Git writes on the caller's task: ``commit``, with its git-error
     envelope, and ``pr_update``, with its input check and authorization."""
 
-    _PM_ROLES_FOR_PR_UPDATE: ClassVar[frozenset[str]] = frozenset(
-        {"cell_pm", "main_pm"}
-    )
-
     @classmethod
     def _pr_update_input_check(
         cls, title: str | None, body: str | None, reviewers: list[str] | None
@@ -1154,10 +1150,6 @@ class NoteActions(_Base):
     """Notes and progress: the journal note or the role's handoff section,
     completing the caller's exploration task, and ``progress`` with its
     preconditions."""
-
-    # =========================================================================
-    # Wave 1 — pre-gateway parity restoration
-    # =========================================================================
 
     _PROGRESS_ACTIVE_STATUSES: ClassVar[frozenset[str]] = frozenset(
         {"in_progress", "verifying", "awaiting_qa", "awaiting_documentation"}
