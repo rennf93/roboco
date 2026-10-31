@@ -17,7 +17,7 @@ Why Postgres and not SQLite:
 
 Behaviour:
     Tests that request `db_session` or `smoke_test_batch` are skipped at
-    collection time when no Postgres is reachable on `localhost:5432`. Set
+    collection time when no Postgres is reachable on `localhost:15432`. Set
     `ROBOCO_TEST_DB_HOST`, `ROBOCO_TEST_DB_PORT`, `ROBOCO_TEST_DB_USER`, or
     `ROBOCO_TEST_DB_PASSWORD` to override. The terminal summary's "test
     environment" section counts those skips.
