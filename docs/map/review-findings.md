@@ -18,7 +18,8 @@ The revision-findings ledger: the structured replacement for prose-only QA/PR-ga
 | `roboco/services/content_notes.py` | `_MIRROR_COLUMN["pm_review"] = "pm_notes"` | (1-line addition within a shared file) |
 | `roboco/services/gateway/choreographer/findings.py` | Shared producer helpers: shim, count guard, criterion check, ledger insert/render, verify-stamp | 350 |
 | `roboco/services/gateway/choreographer/qa.py` | `fail_review` — QA-origin producer | (slice within a shared file) |
-| `roboco/services/gateway/choreographer/pr_gate.py` | `pr_fail` — pr_gate-origin producer; `pr_pass` — verify-stamp; `_run_second_review_pass` — advisory second_review-origin producer (no verify-stamp) | (slice within a shared file) |
+| `roboco/services/gateway/choreographer/pr_gate.py` | `pr_fail` — pr_gate-origin producer | (slice within a shared file) |
+| `roboco/services/gateway/choreographer/pr_gate_pass.py` | `_stamp_gate_findings_verified_or_rejection` — `pr_pass`'s verify-stamp; `_run_second_review_pass` — advisory second_review-origin producer (no verify-stamp) | (slice within a shared file) |
 | `roboco/services/gateway/choreographer/second_review_gate.py` | `SECOND_REVIEW_ORIGIN="second_review"`; `insert_second_review_findings` — thin wrapper over `findings_lib.insert_and_render` for this origin | 181 |
 | `roboco/services/gateway/choreographer/_impl.py` | `request_changes` — pm-origin producer; `i_am_done`/`submit_up`/`submit_root` — `resolved_findings` resolution; `complete` — verify-stamp | (slice within a shared file) |
 | `roboco/services/task.py` | `ceo_reject` — ceo-origin producer + reason validation; `ceo_approve` — best-effort verify-stamp; `_audit_events_for` — `task.request_changes`/`task.ceo_reject`; `qa_fail`/`request_changes` dev_notes-append removal | (slice within an 8.7k-line file) |
@@ -116,7 +117,7 @@ review-findings slice
 │   ├── pr_fail (pr_gate.py, origin=pr_gate)
 │   ├── request_changes (_impl.py, origin=pm) -> pm_notes
 │   ├── ceo_reject (task.py, origin=ceo) -> reason validation + coordination-root bump
-│   └── _run_second_review_pass (pr_gate.py + second_review_gate.py, origin=second_review) -> advisory, no transition/bump/verdict-note; inserts pre-STATUS_ADDRESSED, no verify-stamp call site (see Gotchas)
+│   └── _run_second_review_pass (pr_gate_pass.py + second_review_gate.py, origin=second_review) -> advisory, no transition/bump/verdict-note; inserts pre-STATUS_ADDRESSED, no verify-stamp call site (see Gotchas)
 ├── Resolution
 │   ├── i_am_done / submit_up / submit_root (resolved_findings)
 │   ├── Requirement.FINDINGS_ADDRESSED (tracing.py)

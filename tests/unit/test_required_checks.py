@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 import yaml
-from roboco.services.gateway.choreographer import pr_gate
+from roboco.services.gateway.choreographer import pr_gate_pass
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -232,7 +232,7 @@ def test_pr_gate_maps_each_codeql_check_to_the_paths_its_workflow_analyzes(
     workflow = REQUIRED_CHECKS[check]
     own_file = f".github/workflows/{workflow}"
     analyzed = tuple(p for p in _triggers(workflow)["push"]["paths"] if p != own_file)
-    assert pr_gate._CODEQL_CHECK_SCOPES[check] == analyzed
+    assert pr_gate_pass._CODEQL_CHECK_SCOPES[check] == analyzed
 
 
 @cache
@@ -251,7 +251,7 @@ def test_every_file_codeql_analyzes_is_under_its_workflows_paths(
 ) -> None:
     # A change to a file outside the paths runs no analysis on its PR, so an
     # alert it adds reaches slave unseen (#1196's two motion/ alerts did), and
-    # pr_gate's scope map, which mirrors the paths, would excuse it as out of
+    # pr_gate_pass's scope map, which mirrors the paths, would excuse it as out of
     # scope.
     patterns = [_script().github_glob(p) for p in _triggers(workflow)["push"]["paths"]]
     files = [f for f in _tracked_files() if f.endswith(suffixes)]

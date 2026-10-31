@@ -226,7 +226,7 @@ class TestGateCollisionEvidenceDegradesOnBuilderFailure:
         task_service.get_subtasks.return_value = [_sib()]
         c = _make_choreographer(task_service=task_service)
         monkeypatch.setattr(
-            "roboco.services.gateway.choreographer.pr_gate.build_collision_context",
+            "roboco.services.gateway.choreographer.pr_gate_evidence.build_collision_context",
             lambda **_kw: (_ for _ in ()).throw(RuntimeError("boom")),
         )
 

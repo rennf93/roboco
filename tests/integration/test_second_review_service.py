@@ -4,7 +4,7 @@
 (``enabled_providers`` / ``resolve_second_reviewer`` /
 ``resolve_second_reviewer_for_agent`` / ``get_second_review_service``) had
 never run under test. This also covers the resolver ``_authoring_providers``
-(pr_gate.py) now calls via ``resolve_for_agent`` for finding F-8b364f1c.
+(pr_gate_pass.py) now calls via ``resolve_for_agent`` for finding F-8b364f1c.
 """
 
 from __future__ import annotations
