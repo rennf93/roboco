@@ -109,7 +109,8 @@ _MULTI_CELL_MIN = 2
 # root-subtasks; a result sidecar lets the retry return the first call's result.
 _MEGATASK_CONFIRM_KEY_PREFIX = "roboco:megatask_confirm:"
 _MEGATASK_CONFIRM_RESULT_PREFIX = "roboco:megatask_confirm:result:"
-_MEGATASK_CONFIRM_KEY_TTL_SECONDS = 3600  # 1h — covers any late retry window
+# 1h — covers any late retry window
+_MEGATASK_CONFIRM_KEY_TTL_SECONDS = 3600
 
 
 @dataclass
@@ -658,7 +659,8 @@ class PrompterDraftConfirm(_Base):
                 task_id,
                 notes="Re-drafted with board feedback; approved to build.",
             )
-        else:  # re-board: another review round on the revised draft
+        else:
+            # Re-board: another review round on the revised draft
             await task_service.update(task_id, board_review_complete=False)
         self.log.info(
             "Live intake re-draft applied",
@@ -1233,7 +1235,8 @@ class PrompterBatchUpdate(_Base):
                 task_id,
                 notes="Re-drafted with board feedback; approved to build.",
             )
-        else:  # re-board: another review round on the revised batch
+        else:
+            # Re-board: another review round on the revised batch
             await task_service.update(task_id, board_review_complete=False)
 
         self.log.info(
