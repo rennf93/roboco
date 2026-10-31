@@ -7483,7 +7483,7 @@ This slice is the git substrate every delivery agent works on. `GitService` runs
 | Path | Role | approx LOC |
 |------|------|------------|
 | `roboco/services/work_session.py` | WorkSession CRUD, commit/file tracking, PR-lifecycle record, single-active invariant | 685 |
-| `roboco/services/_work_session_types.py` | `WorkSessionServiceSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `WorkSessionService` mixins reach through `self`, plus its instance attributes; `tests/unit/services/test_work_session_service_mixins.py` fails on a stray stub or a member defined twice | 43 |
+| `roboco/services/_work_session_types.py` | `WorkSessionServiceSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `WorkSessionService` mixins reach through `self`, plus its instance attributes; `tests/unit/services/test_work_session_service_mixins.py` fails on a stray stub or a member defined twice | 41 |
 | `roboco/services/git.py` | Git subprocess execution, branch/commit/PR/rebase/merge/sync, GitHub REST API, conventions validator runner; `GitService` composed from 20 mixins defined above it | 6963 |
 | `roboco/services/_git_service_types.py` | `GitServiceSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `GitService` mixins reach through `self` (`GitSurface` for `GitService` itself), stubs keeping each method's signature; `tests/unit/services/test_git_service_mixins.py` fails on a stray stub or a member defined twice | 297 |
 | `roboco/templates/git/__init__.py` | Package re-exports for branch/commit/PR templates | 48 |

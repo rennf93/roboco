@@ -1,18 +1,16 @@
 """Structural type for the composed WorkSessionService, TYPE_CHECKING-only.
 
 ``WorkSessionService`` is composed from mixins (``roboco/services/work_session.py``)
-whose
-methods were moved verbatim out of the one class. mypy checks each mixin
-against its own bases only, so a call into a sibling mixin, or into
-WorkSessionService's own members, would not resolve.
+whose methods were moved verbatim out of the one class. mypy checks each mixin against
+its own bases only, so a call into a sibling mixin, or into WorkSessionService's own
+members, would not resolve.
 
 Each mixin gives its class a TYPE_CHECKING-only base of ``WorkSessionServiceSelf``,
-which declares that cross-class surface: ``FooSurface`` holds what ``Foo``
-offers the other classes (``WorkSessionSurface`` what ``WorkSessionService`` itself
-does),
-with each method's own decorators, parameters and return type, so no moved
-body changes. ``tests/unit/services/test_work_session_service_mixins.py`` fails on a
-stub its surface's class does not define.
+which declares that cross-class surface: ``FooSurface`` holds what ``Foo`` offers the
+other classes (``WorkSessionSurface`` what ``WorkSessionService`` itself does), with
+each method's own decorators, parameters and return type, so no moved body changes.
+``tests/unit/services/test_work_session_service_mixins.py`` fails on a stub its
+surface's class does not define.
 """
 
 from __future__ import annotations
