@@ -9465,18 +9465,18 @@ The product / strategy / research / pitch slice covers the "company layer" above
 
 | Name | Kind | File:Line | Responsibility |
 |------|------|-----------|----------------|
-| `ProjectService` | class | project.py:427 | Project CRUD, slug lookup, cell listing, workspace path, git-token encrypt/decrypt, agent access control |
+| `ProjectService` | class | project.py:443 | Project CRUD, slug lookup, cell listing, workspace path, git-token encrypt/decrypt, agent access control |
 | `ProjectListings` | class | project.py:41 | Mixin of `ProjectService` (3 methods): Listing projects: all of them, by cell, and their task counts. |
-| `ProjectWorkspaceState` | class | project.py:144 | Mixin of `ProjectService` (2 methods): A project's workspace path and its sync state. |
-| `ProjectTokens` | class | project.py:212 | Mixin of `ProjectService` (3 methods): A project's git token: resolving it (a stored PAT or a GitHub App installation token) and decrypting it by id or slug. |
-| `ProjectAccess` | class | project.py:304 | Mixin of `ProjectService` (3 methods): Which agents may work on a project: adding, removing and checking one. |
-| `ProjectService._assert_git_url_allowed` | method | project.py:446 | Reject `git_url` matching a protected/denylisted repo |
-| `ProjectService.create` | method | project.py:474 | Register project, encrypt token, best-effort conventions scaffold |
-| `ProjectService._maybe_scaffold_conventions` | method | project.py:556 | Lazy-imports conventions service; scaffold hiccup is non-fatal |
-| `ProjectService.update` | method | project.py:627 | Selective field apply; empty-string `git_token` clears, None leaves unchanged |
-| `ProjectService.delete` | method | project.py:704 | Abandons ACTIVE work sessions first; optional on-disk workspace cleanup; DB RESTRICT on tasks |
-| `ProjectService.get_decrypted_token` / `get_decrypted_token_by_slug` | method | project.py:256 / 282 | On-demand Fernet decrypt of git token (never cached) |
-| `ProjectService.check_agent_access` | method | project.py:389 | Cell membership + optional `allowed_agents` allowlist |
+| `ProjectWorkspaceState` | class | project.py:148 | Mixin of `ProjectService` (2 methods): A project's workspace path and its sync state. |
+| `ProjectTokens` | class | project.py:220 | Mixin of `ProjectService` (3 methods): A project's git token: resolving it (a stored PAT or a GitHub App installation token) and decrypting it by id or slug. |
+| `ProjectAccess` | class | project.py:316 | Mixin of `ProjectService` (3 methods): Which agents may work on a project: adding, removing and checking one. |
+| `ProjectService._assert_git_url_allowed` | method | project.py:462 | Reject `git_url` matching a protected/denylisted repo |
+| `ProjectService.create` | method | project.py:490 | Register project, encrypt token, best-effort conventions scaffold |
+| `ProjectService._maybe_scaffold_conventions` | method | project.py:572 | Lazy-imports conventions service; scaffold hiccup is non-fatal |
+| `ProjectService.update` | method | project.py:643 | Selective field apply; empty-string `git_token` clears, None leaves unchanged |
+| `ProjectService.delete` | method | project.py:720 | Abandons ACTIVE work sessions first; optional on-disk workspace cleanup; DB RESTRICT on tasks |
+| `ProjectService.get_decrypted_token` / `get_decrypted_token_by_slug` | method | project.py:268 / 294 | On-demand Fernet decrypt of git token (never cached) |
+| `ProjectService.check_agent_access` | method | project.py:405 | Cell membership + optional `allowed_agents` allowlist |
 | `get_project_service` | factory | project.py:813 | Session-bound constructor |
 | `ProductService` | class | product.py:42 | Product CRUD + cell→project routing |
 | `ProductService.project_for` | method | product.py:182 | **Per-cell routing keystone** — resolve Project for (product, team); None → caller falls back to parent task's project |

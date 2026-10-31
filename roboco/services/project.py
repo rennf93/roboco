@@ -41,6 +41,10 @@ _INACTIVE_STATUSES = (
 class ProjectListings(_Base):
     """Listing projects: all of them, by cell, and their task counts."""
 
+    # =========================================================================
+    # QUERIES
+    # =========================================================================
+
     async def list_all(
         self,
         active_only: bool = True,
@@ -144,6 +148,10 @@ class ProjectListings(_Base):
 class ProjectWorkspaceState(_Base):
     """A project's workspace path and its sync state."""
 
+    # =========================================================================
+    # WORKSPACE MANAGEMENT
+    # =========================================================================
+
     async def set_workspace_path(
         self,
         project_id: UUID,
@@ -212,6 +220,10 @@ class ProjectWorkspaceState(_Base):
 class ProjectTokens(_Base):
     """A project's git token: resolving it (a stored PAT or a GitHub App
     installation token) and decrypting it by id or slug."""
+
+    # =========================================================================
+    # GIT TOKEN MANAGEMENT
+    # =========================================================================
 
     async def _resolve_token(
         self, project: ProjectTable, *, log_ref: str
@@ -303,6 +315,10 @@ class ProjectTokens(_Base):
 
 class ProjectAccess(_Base):
     """Which agents may work on a project: adding, removing and checking one."""
+
+    # =========================================================================
+    # ACCESS CONTROL
+    # =========================================================================
 
     async def add_allowed_agent(
         self,
@@ -787,22 +803,6 @@ class ProjectService(
 
         self.log.info("Project deleted", project_id=str(project_id))
         return True
-
-    # =========================================================================
-    # QUERIES
-    # =========================================================================
-
-    # =========================================================================
-    # WORKSPACE MANAGEMENT
-    # =========================================================================
-
-    # =========================================================================
-    # GIT TOKEN MANAGEMENT
-    # =========================================================================
-
-    # =========================================================================
-    # ACCESS CONTROL
-    # =========================================================================
 
 
 # =============================================================================
