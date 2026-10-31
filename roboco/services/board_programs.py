@@ -402,7 +402,8 @@ class _QueueItemShape(NamedTuple):
     task marker payload. ``list_key`` is None for Coroner, whose payload
     carries a single ``process_change`` dict rather than a list."""
 
-    getter: Any  # Callable[[TaskTable], dict[str, Any] | None]
+    # Callable[[TaskTable], dict[str, Any] | None]
+    getter: Any
     list_key: str | None
     title_field: str
     evidence_field: str | None
