@@ -11,13 +11,20 @@ Handles cross-agent learning by:
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 import structlog
 
 from roboco.foundation.identity import Role as _Role
 from roboco.models.optimal import IndexType, SearchResult
+
+if TYPE_CHECKING:
+    from roboco.services._learning_propagation_types import (
+        LearningPropagationServiceSelf as _Base,
+    )
+else:
+    _Base = object
 
 # Human / human-driven roles are never agent learning recipients: the CEO is the
 # human operator, and the prompter (intake) + secretary act only under direct CEO
@@ -93,114 +100,10 @@ class RecordLearningParams:
     source_file: str | None = None
 
 
-class LearningPropagationService:
-    """
-    Service for propagating learnings across agents.
-
-    Responsibilities:
-    1. Index learnings immediately for searchability
-    2. Determine which agents should be notified
-    3. Track learning usage and helpfulness
-    4. Manage learning lifecycle
-    """
-
-    def __init__(self) -> None:
-        """Initialize LearningPropagationService."""
-        self._optimal_service: Any = None
-        self._notification_queue: list[LearningNotification] = []
-
-    async def initialize(self, optimal_service: Any) -> None:
-        """
-        Initialize with OptimalService reference.
-
-        Args:
-            optimal_service: The OptimalService instance
-        """
-        self._optimal_service = optimal_service
-        logger.info("LearningPropagationService initialized")
-
-    async def record_learning(self, params: RecordLearningParams) -> Learning:
-        """
-        Record a new learning and propagate it.
-
-        Args:
-            params: RecordLearningParams containing:
-                - agent_id: ID of the agent recording the learning
-                - agent_role: Role of the agent (developer, qa, pm)
-                - content: The learning content
-                - learning_type: Type of learning
-                - scope: Visibility scope
-                - tags: Optional tags for categorization
-                - task_id: Optional associated task
-                - source_file: Optional source file reference
-
-        Returns:
-            The created Learning object
-        """
-        if not self._optimal_service:
-            raise RuntimeError("LearningPropagationService not initialized")
-
-        # Normalize enum values
-        learning_type = params.learning_type
-        scope = params.scope
-        if isinstance(learning_type, str):
-            learning_type = LearningType(learning_type)
-        if isinstance(scope, str):
-            scope = LearningScope(scope)
-
-        # Generate learning ID
-        import hashlib
-
-        content_hash = hashlib.md5(
-            params.content.encode(), usedforsecurity=False
-        ).hexdigest()[:12]
-        learning_id = f"lrn-{content_hash}"
-
-        # Create learning object
-        learning = Learning(
-            learning_id=learning_id,
-            agent_id=params.agent_id,
-            agent_role=params.agent_role,
-            content=params.content,
-            learning_type=learning_type,
-            scope=scope,
-            tags=params.tags,
-            task_id=params.task_id,
-            source_file=params.source_file,
-        )
-
-        # 1. Index immediately for searchability
-        await self._index_learning(learning)
-
-        # 2. Determine who should be notified
-        if scope != LearningScope.PERSONAL:
-            await self._create_notifications(learning)
-
-        logger.info(
-            "Learning recorded",
-            learning_id=learning_id,
-            agent_id=str(params.agent_id),
-            scope=scope.value,
-            type=learning_type.value,
-        )
-
-        return learning
-
-    async def _index_learning(self, learning: Learning) -> None:
-        """Index a learning for searchability."""
-        from roboco.services.optimal_brain.indexes.learnings import (
-            RecordLearningParams as LearningParams,
-        )
-
-        params = LearningParams(
-            content=learning.content,
-            category=learning.learning_type.value,
-            agent_role=learning.agent_role,
-            team=None,  # Could be derived from agent role
-            shareable=learning.scope != LearningScope.PERSONAL,
-            tags=learning.tags,
-        )
-        await self._optimal_service.record_learning(params)
+class LearningPropagationNotices(_Base):
+    """Telling agents about a learning: who to notify by its scope (never the author
+    or a human), the notice's text, the in-memory queue and the persisted
+    notifications, and an agent's pending notices and their acknowledgement."""
 
     async def _create_notifications(self, learning: Learning) -> None:
         """Create notifications for agents who should see this learning."""
@@ -354,6 +257,161 @@ class LearningPropagationService:
         await db.execute(insert(NotificationTable), rows)
         return notification_ids
 
+    async def get_pending_notifications(
+        self,
+        agent_id: UUID,
+    ) -> list[LearningNotification]:
+        """
+        Get unacknowledged learning notifications for an agent.
+
+        Args:
+            agent_id: ID of the agent
+
+        Returns:
+            List of pending notifications
+        """
+        # In a full implementation, this would query the DB
+        # For now, return from memory queue
+        return [
+            n
+            for n in self._notification_queue
+            if n.target_agent_id == agent_id and not n.acknowledged
+        ]
+
+    async def acknowledge_notification(
+        self,
+        notification_id: str,
+        agent_id: UUID,
+    ) -> bool:
+        """
+        Mark a notification as acknowledged.
+
+        Args:
+            notification_id: ID of the notification
+            agent_id: ID of the acknowledging agent
+
+        Returns:
+            True if notification was found and acknowledged
+        """
+        for notification in self._notification_queue:
+            if (
+                notification.notification_id == notification_id
+                and notification.target_agent_id == agent_id
+            ):
+                notification.acknowledged = True
+                return True
+        return False
+
+
+class LearningPropagationService(LearningPropagationNotices):
+    """
+    Service for propagating learnings across agents.
+
+    Responsibilities:
+    1. Index learnings immediately for searchability
+    2. Determine which agents should be notified
+    3. Track learning usage and helpfulness
+    4. Manage learning lifecycle
+    """
+
+    def __init__(self) -> None:
+        """Initialize LearningPropagationService."""
+        self._optimal_service: Any = None
+        self._notification_queue: list[LearningNotification] = []
+
+    async def initialize(self, optimal_service: Any) -> None:
+        """
+        Initialize with OptimalService reference.
+
+        Args:
+            optimal_service: The OptimalService instance
+        """
+        self._optimal_service = optimal_service
+        logger.info("LearningPropagationService initialized")
+
+    async def record_learning(self, params: RecordLearningParams) -> Learning:
+        """
+        Record a new learning and propagate it.
+
+        Args:
+            params: RecordLearningParams containing:
+                - agent_id: ID of the agent recording the learning
+                - agent_role: Role of the agent (developer, qa, pm)
+                - content: The learning content
+                - learning_type: Type of learning
+                - scope: Visibility scope
+                - tags: Optional tags for categorization
+                - task_id: Optional associated task
+                - source_file: Optional source file reference
+
+        Returns:
+            The created Learning object
+        """
+        if not self._optimal_service:
+            raise RuntimeError("LearningPropagationService not initialized")
+
+        # Normalize enum values
+        learning_type = params.learning_type
+        scope = params.scope
+        if isinstance(learning_type, str):
+            learning_type = LearningType(learning_type)
+        if isinstance(scope, str):
+            scope = LearningScope(scope)
+
+        # Generate learning ID
+        import hashlib
+
+        content_hash = hashlib.md5(
+            params.content.encode(), usedforsecurity=False
+        ).hexdigest()[:12]
+        learning_id = f"lrn-{content_hash}"
+
+        # Create learning object
+        learning = Learning(
+            learning_id=learning_id,
+            agent_id=params.agent_id,
+            agent_role=params.agent_role,
+            content=params.content,
+            learning_type=learning_type,
+            scope=scope,
+            tags=params.tags,
+            task_id=params.task_id,
+            source_file=params.source_file,
+        )
+
+        # 1. Index immediately for searchability
+        await self._index_learning(learning)
+
+        # 2. Determine who should be notified
+        if scope != LearningScope.PERSONAL:
+            await self._create_notifications(learning)
+
+        logger.info(
+            "Learning recorded",
+            learning_id=learning_id,
+            agent_id=str(params.agent_id),
+            scope=scope.value,
+            type=learning_type.value,
+        )
+
+        return learning
+
+    async def _index_learning(self, learning: Learning) -> None:
+        """Index a learning for searchability."""
+        from roboco.services.optimal_brain.indexes.learnings import (
+            RecordLearningParams as LearningParams,
+        )
+
+        params = LearningParams(
+            content=learning.content,
+            category=learning.learning_type.value,
+            agent_role=learning.agent_role,
+            team=None,  # Could be derived from agent role
+            shareable=learning.scope != LearningScope.PERSONAL,
+            tags=learning.tags,
+        )
+        await self._optimal_service.record_learning(params)
+
     async def get_learnings_for_agent(
         self,
         agent_id: UUID,
@@ -454,51 +512,6 @@ class LearningPropagationService:
             agent_id=str(agent_id),
             has_context=context is not None,
         )
-
-    async def get_pending_notifications(
-        self,
-        agent_id: UUID,
-    ) -> list[LearningNotification]:
-        """
-        Get unacknowledged learning notifications for an agent.
-
-        Args:
-            agent_id: ID of the agent
-
-        Returns:
-            List of pending notifications
-        """
-        # In a full implementation, this would query the DB
-        # For now, return from memory queue
-        return [
-            n
-            for n in self._notification_queue
-            if n.target_agent_id == agent_id and not n.acknowledged
-        ]
-
-    async def acknowledge_notification(
-        self,
-        notification_id: str,
-        agent_id: UUID,
-    ) -> bool:
-        """
-        Mark a notification as acknowledged.
-
-        Args:
-            notification_id: ID of the notification
-            agent_id: ID of the acknowledging agent
-
-        Returns:
-            True if notification was found and acknowledged
-        """
-        for notification in self._notification_queue:
-            if (
-                notification.notification_id == notification_id
-                and notification.target_agent_id == agent_id
-            ):
-                notification.acknowledged = True
-                return True
-        return False
 
     async def get_learning_stats(
         self,

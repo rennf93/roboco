@@ -3667,7 +3667,8 @@ The organizational-memory + playbooks slice: captures cross-agent learnings and 
 |---|---|---|
 | roboco/services/memory_distiller.py | Local-LLM distiller: turns a completed task into one <=120-word Problem/Approach/Gotcha lesson (best-effort, returns None on failure) | 131 |
 | roboco/services/playbook.py | PlaybookService: draft + Auditor curation state machine (draft/approve/reject/archive) + post-commit RAG index/de-index orchestration | 415 |
-| roboco/services/learning.py | LearningPropagationService: record a learning, index it, notify same-scope non-human agents, scope-filtered retrieval (legacy pre-distiller capture path) | 579 |
+| roboco/services/learning.py | LearningPropagationService: record a learning, index it, notify same-scope non-human agents, scope-filtered retrieval (legacy pre-distiller capture path) | 592 |
+| roboco/services/_learning_propagation_types.py | `LearningPropagationServiceSelf`, a TYPE_CHECKING-only Protocol declaring the attributes the `LearningPropagationService` mixin reads through `self` (no moved body calls across classes, so it has no `<Class>Surface` yet); `tests/unit/services/test_learning_propagation_service_mixins.py` fails on a stray stub or a member defined twice | 29 |
 | roboco/services/optimal.py | OptimalService: plugin-based RAG hub over pgvector; owns index_playbook/unindex_playbook/record_learning/search/search_learnings and the singleton accessor | 2548 |
 | roboco/services/_optimal_service_types.py | `OptimalServiceSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `OptimalService` mixins reach through `self` (`OptimalSurface` for `OptimalService` itself), plus its instance attributes; the ones a mixin assigns carry `__init__`'s value, since mypy reads an assignment to an annotation-only Protocol member as a new definition. `tests/unit/services/test_optimal_service_mixins.py` fails on a stray stub or a member defined twice | 97 |
 | roboco/services/optimal_brain/indexes/base.py | BaseIndexPlugin ABC: chunk/filter/embed/store pipeline, hybrid search, 429-retried ask(); atomic replace_chunks reingest semantics | 1188 |
@@ -3698,6 +3699,7 @@ The organizational-memory + playbooks slice: captures cross-agent learnings and 
 
 | Name | Kind | File:Line | Responsibility |
 |---|---|---|---|
+| `LearningPropagationNotices` | class | roboco/services/learning.py:103 | Mixin of `LearningPropagationService` (7 methods): Telling agents about a learning: who to notify by its scope (never the author or a human), the notice's text, the in-memory queue and the persisted notifications, and an agent's pending notices and their acknowledgement. |
 | LessonInput | dataclass | roboco/services/memory_distiller.py:25 | Completed-task facts (title, ACs, dev/qa notes, commit messages) fed to the distiller |
 | _build_prompt | function | roboco/services/memory_distiller.py:40 | Render the fixed Problem/Approach/Gotcha <=120-word distillation prompt |
 | _chat | function | roboco/services/memory_distiller.py:62 | One OpenAI-compatible call to the local LLM (glm-5.3:cloud); None on non-success/empty |
@@ -3710,15 +3712,15 @@ The organizational-memory + playbooks slice: captures cross-agent learnings and 
 | PlaybookService.reject | method | roboco/services/playbook.py:290 | Auditor: draft->archived with a reason; flushes status ONLY, caller commits then unindex_playbook |
 | PlaybookService.unindex_playbook | method | roboco/services/playbook.py:354 | Post-commit: de-index a rejected/archived playbook from PLAYBOOKS; org_memory_enabled-gated, best-effort, idempotent |
 | PlaybookService._get_by_slug | method | roboco/services/playbook.py:397 | Fast-path UX pre-check for slug uniqueness (DB constraint is the real guard) |
-| LearningScope | enum | roboco/services/learning.py:32 | Visibility scope: PERSONAL/TEAM/CELL/ORG |
-| LearningType | enum | roboco/services/learning.py:41 | Learning category: SOLUTION/PATTERN/GOTCHA/INSIGHT/REVIEW_FEEDBACK |
-| LearningPropagationService.record_learning | method | roboco/services/learning.py:122 | Index the learning + create same-scope non-human notifications (skips notifications for PERSONAL) |
-| LearningPropagationService._index_learning | method | roboco/services/learning.py:189 | Bridge to OptimalService.record_learning with shareable = scope != PERSONAL; passes team=None |
-| LearningPropagationService._create_notifications | method | roboco/services/learning.py:205 | Open a DB session, query non-author non-human agents in scope, create formal KNOWLEDGE_SHARE notifications |
-| LearningPropagationService._fetch_notify_agents | method | roboco/services/learning.py:245 | Build the recipient query: TEAM filters by role, CELL resolves author team via AgentTable lookup and filters by team (returns [] on null team), ORG notifies all non-human agents; PERSONAL never reaches here (gated upstream at record_learning) |
-| LearningPropagationService.get_learnings_for_agent | method | roboco/services/learning.py:357 | Role-shaped search_learnings + post-filter by scope visibility (personal/team) |
-| LearningPropagationService.search_similar_learnings | method | roboco/services/learning.py:538 | Similar-learnings search via OptimalService.search over LEARNINGS index |
-| get_learning_service | function | roboco/services/learning.py:575 | Process-wide singleton accessor for LearningPropagationService |
+| LearningScope | enum | roboco/services/learning.py:39 | Visibility scope: PERSONAL/TEAM/CELL/ORG |
+| LearningType | enum | roboco/services/learning.py:48 | Learning category: SOLUTION/PATTERN/GOTCHA/INSIGHT/REVIEW_FEEDBACK |
+| LearningPropagationService.record_learning | method | roboco/services/learning.py:332 | Index the learning + create same-scope non-human notifications (skips notifications for PERSONAL) |
+| LearningPropagationService._index_learning | method | roboco/services/learning.py:399 | Bridge to OptimalService.record_learning with shareable = scope != PERSONAL; passes team=None |
+| LearningPropagationService._create_notifications | method | roboco/services/learning.py:108 | Open a DB session, query non-author non-human agents in scope, create formal KNOWLEDGE_SHARE notifications |
+| LearningPropagationService._fetch_notify_agents | method | roboco/services/learning.py:148 | Build the recipient query: TEAM filters by role, CELL resolves author team via AgentTable lookup and filters by team (returns [] on null team), ORG notifies all non-human agents; PERSONAL never reaches here (gated upstream at record_learning) |
+| LearningPropagationService.get_learnings_for_agent | method | roboco/services/learning.py:415 | Role-shaped search_learnings + post-filter by scope visibility (personal/team) |
+| LearningPropagationService.search_similar_learnings | method | roboco/services/learning.py:551 | Similar-learnings search via OptimalService.search over LEARNINGS index |
+| get_learning_service | function | roboco/services/learning.py:588 | Process-wide singleton accessor for LearningPropagationService |
 | PLUGIN_REGISTRY | dict | roboco/services/optimal.py:206 | IndexType -> plugin class map (includes LEARNINGS, PLAYBOOKS) |
 | OptimalStartup | class | roboco/services/optimal.py:220 | Mixin of `OptimalService` (8 methods): Starting the service: initializing its plugins, warming the embedder, and indexing the docs on startup. |
 | OptimalPeriodicUpdate | class | roboco/services/optimal.py:570 | Mixin of `OptimalService` (10 methods): The periodic update: scanning the docs root for changed and deleted files, reconciling deletions, and re-indexing. |
@@ -3923,6 +3925,8 @@ org-memory-playbooks
 > 2026-10-31, later (trail #32): `OptimalService` is one per event loop, as the database engines are (`roboco/db/base.py` `_PoolEngines`). The process-wide singleton let a test's `close_optimal_service` close an earlier test's service on the wrong loop: its vector-store connections stayed open until garbage collection: 18 unraisable `ResourceWarning`s in the full suite, the 15 that pytest printed being 9 sockets and 6 transports to Postgres. `VectorStore.close` no longer swallows `Event loop is closed`: its premise, that the connections died with the loop, was false, and a close can only reach another loop's pool through a missing close on the right one. `close_shared_embedder` now closes the embedder's sync HTTP client instead of only dropping it. The root conftest closes each test loop's service with its engines, the e2e app's lifespan closes its server loop's, and a guard fails any test that leaves either on an ended loop.
 
 > 2026-10-31, wave 3 (Planning trail #51): `OptimalService` (78 methods) splits in place into eight mixins in `optimal.py`, every method body byte-identical: `OptimalStartup` (8), `OptimalPeriodicUpdate` (10), `OptimalDocsIndexing` (13), `OptimalKnowledgeIndexing` (6), `OptimalSearch` (12), `OptimalSpecializedSearch` (5), `OptimalIndexStats` (8) and `OptimalPromptsAndHealth` (12). `OptimalService` keeps `__init__`, `close`, `_get_plugin` and `is_index_registered`, composes the eight, and is no longer a god class. The module's `get_optimal_service` / `close_optimal_service` and the per-loop `_OptimalServiceHolder` are unchanged; the rows above keep naming methods `OptimalService.<name>`, which they still are through inheritance.
+
+> **2026-11-01** (Planning trail #51, wave 3): `LearningPropagationService` splits in place into a mixin in `learning.py`, every method body byte-identical: `LearningPropagationNotices` (7). `LearningPropagationService` keeps recording a learning and indexing it, the learnings an agent sees, usage and helpfulness marks, stats and the similar-learnings search, composes it, and is no longer a god class. Rows naming `LearningPropagationService.<method>` still hold through inheritance. The mixin's TYPE_CHECKING-only base is `LearningPropagationServiceSelf` (`roboco/services/_learning_propagation_types.py`).
 
 ## Regression Risks
 
