@@ -139,7 +139,8 @@ async def _drain_pending_work(pending: list[Callable[[], Awaitable[None]]]) -> N
     for work in pending:
         try:
             await work()
-        except Exception as e:  # best-effort: never break the drain
+        except Exception as e:
+            # Best-effort: never break the drain
             _log.warning("Deferred after-commit work failed", error=str(e))
 
 
@@ -156,7 +157,8 @@ def _schedule_pending_work(session: AsyncSession) -> None:
         return
     try:
         loop = asyncio.get_running_loop()
-    except RuntimeError:  # no running loop — nothing we can do, drop silently
+    except RuntimeError:
+        # No running loop — nothing we can do, drop silently
         return
     task = loop.create_task(_drain_pending_work(pending))
     session.info.setdefault(_DRAIN_TASKS_KEY, []).append(task)
@@ -524,9 +526,11 @@ class NotificationReescalation(_Base):
             ),
         )
         if decision != "due":
-            return  # "wait": not due yet; "capped": already logged + done
+            # "wait": not due yet; "capped": already logged + done
+            return
         if not await self._claim_reescalation_slot(n, now):
-            return  # another sweep tick already claimed this attempt
+            # Another sweep tick already claimed this attempt
+            return
         # Commit the claim immediately: the row lock the CAS took is released
         # before any delivery work (holding it across delivery is what starved
         # concurrent mark-read/ack UPDATEs into lock_timeout), and the burned
@@ -1417,7 +1421,8 @@ class NotificationCEONotices(_Base):
 
         try:
             creds = await get_telegram_credentials_service(self.session).get_decrypted()
-        except Exception as exc:  # best-effort — never block the producer
+        except Exception as exc:
+            # Best-effort — never block the producer
             _log.warning("telegram_notify_failed", error=str(exc))
             return
 
@@ -1435,7 +1440,8 @@ class NotificationCEONotices(_Base):
                 )
                 if not result.sent:
                     _log.warning("telegram_notify_skip", detail=result.detail)
-            except Exception as exc:  # best-effort — never break the drain
+            except Exception as exc:
+                # Best-effort — never break the drain
                 _log.warning("telegram_notify_failed", error=str(exc))
             finally:
                 if client is not None:
@@ -1884,7 +1890,8 @@ class NotificationCEONotices(_Base):
 
         try:
             metrics = await MetricsService(self.session).get_task_metrics(task_id)
-        except Exception:  # metrics are best-effort — degrade to wall-clock-only
+        except Exception:
+            # Metrics are best-effort — degrade to wall-clock-only
             metrics = None
         from_agent = cast("UUID", task.assigned_to) if task.assigned_to else ceo.id
         notification = NotificationTable(
