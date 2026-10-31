@@ -16,8 +16,21 @@ from __future__ import annotations
 
 from roboco.services.gateway.choreographer._impl import (
     BaseChoreographer,
+    BranchSyncMixin,
+    BriefingMixin,
     ChoreographerDeps,
+    ClaimGuardsMixin,
+    ClaimPlanMixin,
     DelegateInputs,
+    EscalationMixin,
+    IdleGuardsMixin,
+    IdleMixin,
+    LeafClosureMixin,
+    OwnershipMixin,
+    QualityGuardsMixin,
+    RejectionMixin,
+    ResolvedFindingsMixin,
+    TracingGatesMixin,
 )
 from roboco.services.gateway.choreographer.board import BoardMixin
 from roboco.services.gateway.choreographer.dev import (
@@ -62,6 +75,19 @@ class Choreographer(
     SubmitRootMixin,
     SubmitUpMixin,
     SubtaskCreateMixin,
+    BranchSyncMixin,
+    BriefingMixin,
+    ClaimGuardsMixin,
+    ClaimPlanMixin,
+    EscalationMixin,
+    IdleGuardsMixin,
+    IdleMixin,
+    LeafClosureMixin,
+    OwnershipMixin,
+    QualityGuardsMixin,
+    RejectionMixin,
+    ResolvedFindingsMixin,
+    TracingGatesMixin,
     BaseChoreographer,
 ):
     """Composed choreographer.
