@@ -88,6 +88,10 @@ class DispatchPromptsEngine(_Base):
         # default for an executable task.
         return await self._build_dev_prompt(task)
 
+    # =========================================================================
+    # SMART DISPATCHER - PROMPT BUILDERS
+    # =========================================================================
+
     async def _open_findings_prompt_block(self, task_id: str) -> str:
         """Render up to ``_PROMPT_FINDINGS_CAP`` open revision-ledger findings
         for a dispatch prompt: one ``[F-<id8>] file:line — expected -> actual

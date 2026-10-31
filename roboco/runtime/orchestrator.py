@@ -2132,14 +2132,6 @@ class AgentOrchestrator(
         self._stopped = True
         logger.info("Orchestrator stopped")
 
-    # =========================================================================
-    # PER-AGENT SETTINGS GENERATION
-    # =========================================================================
-
-    # =========================================================================
-    # AGENT SPAWNING
-    # =========================================================================
-
     # QA reviews run bash/git in the task project's clone, so QA needs the
     # same per-agent workspace resolution as developers. MISSING from this
     # set, _resolve_workspace_cwd returned None for qa-role spawns and the
@@ -2199,54 +2191,6 @@ class AgentOrchestrator(
     _NOTIFICATION_COOLDOWN_PRUNE_AT = 512
 
     # =========================================================================
-    # INTAKE (PROMPTER) LIVE SESSION
-    #
-    # The intake agent is not task-driven and is never dispatched. It is a
-    # persistent Claude-Agent-SDK driver the CEO chats with live (the container
-    # entrypoint is roboco.agent_sdk.intake_main). One fixed container —
-    # `intake-1`, the seeded board-adjacent interviewer — serves one live
-    # session at a time (single CEO; one-session-per-CEO).
-    #
-    # This spawn is a DELIBERATELY separate path from spawn_agent: no task, no
-    # readiness gate, no `claude -p` CLI args (the image ENTRYPOINT is the
-    # driver), no settings.json/hook mount (the driver owns the receiver on
-    # port 9000, not the inbox sidecar), and no MCP/gateway surface (the live
-    # agent reads code with Read/Grep/Glob and talks only to the human).
-    # =========================================================================
-
-    # ------------------------------------------------------------------ #
-    # Secretary live session (mirrors intake; no scope clone; auth token)
-    # ------------------------------------------------------------------ #
-
-    # =========================================================================
-    # AGENT STOPPING
-    # =========================================================================
-
-    # =========================================================================
-    # WAITING STATE MANAGEMENT
-    # =========================================================================
-
-    # =========================================================================
-    # PROVIDER QUERY HELPERS (used by the choreographer rate-limit path)
-    # =========================================================================
-
-    # =========================================================================
-    # TOKEN USAGE INSTRUMENTATION
-    # =========================================================================
-
-    # =========================================================================
-    # MEMBER-PERFORMANCE ROLLUP (granular per-member scorecards)
-    # =========================================================================
-
-    # =========================================================================
-    # HEALTH MONITORING
-    # =========================================================================
-
-    # =========================================================================
-    # RATE-LIMIT PROBE LOOP
-    # =========================================================================
-
-    # =========================================================================
     # STATUS API
     # =========================================================================
 
@@ -2295,10 +2239,6 @@ class AgentOrchestrator(
             "waiting_count": len(self._waiting_records),
             "agents": agents,
         }
-
-    # =========================================================================
-    # SMART DISPATCHER - API HELPERS
-    # =========================================================================
 
     # =========================================================================
     # SMART ROUTING - TASK CLASSIFICATION
@@ -2432,15 +2372,7 @@ class AgentOrchestrator(
     # busy fleet (trigger_dispatch fires on every status transition).
     _GATE_CI_STATUS_CACHE_TTL_SECONDS: ClassVar[float] = 60.0
 
-    # =========================================================================
-    # SMART DISPATCHER - EVENT-BASED DISPATCHERS
-    # =========================================================================
-
     _MIN_DESCRIPTION_LEN = 10
-
-    # =========================================================================
-    # SMART DISPATCHER - PROMPT BUILDERS
-    # =========================================================================
 
 
 # A handful of the moved-verbatim method bodies above call class-qualified

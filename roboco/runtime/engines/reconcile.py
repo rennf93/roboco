@@ -584,6 +584,10 @@ class HealthLoopEngine(_Base):
                     interval=interval,
                 )
 
+    # =========================================================================
+    # HEALTH MONITORING
+    # =========================================================================
+
     async def _health_loop(self) -> None:
         """Background health check loop."""
         while self._running:

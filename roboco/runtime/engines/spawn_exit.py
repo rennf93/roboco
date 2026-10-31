@@ -637,6 +637,10 @@ class AgentWaitingEngine(_Base):
     """An agent waiting long, and which provider a tracked agent runs on: the
     WAITING_LONG stop with its durable record, and the provider queries."""
 
+    # =========================================================================
+    # WAITING STATE MANAGEMENT
+    # =========================================================================
+
     async def mark_waiting_long(
         self,
         agent_id: str,
@@ -716,6 +720,10 @@ class AgentWaitingEngine(_Base):
                 agent_id=record.agent_id,
                 error=str(e),
             )
+
+    # =========================================================================
+    # PROVIDER QUERY HELPERS (used by the choreographer rate-limit path)
+    # =========================================================================
 
     def get_provider_for_agent(self, agent_slug: str) -> str | None:
         """Return the ``provider_type`` for a currently-tracked agent, or None.

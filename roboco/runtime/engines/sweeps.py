@@ -245,6 +245,10 @@ class AgentStopEngine(_Base):
     """Stopping an agent's container, and releasing the claim it held unless
     its provider is parked on a rate limit."""
 
+    # =========================================================================
+    # AGENT STOPPING
+    # =========================================================================
+
     async def stop_agent(
         self,
         agent_id: str,
@@ -909,6 +913,10 @@ class MemberPerformanceEngine(_Base):
     """The member_performance_daily sweep: each metric's aggregate (spawn
     effort, delivery, revisions caused, QA, escalations, blocking, idle and
     blocked time, the CEO's dwell) merged per member and day."""
+
+    # =========================================================================
+    # MEMBER-PERFORMANCE ROLLUP (granular per-member scorecards)
+    # =========================================================================
 
     async def _sweep_member_performance(self) -> None:
         """Upsert member_performance_daily from spawn sessions + audit_log.

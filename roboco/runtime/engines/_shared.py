@@ -248,6 +248,10 @@ class SharedEngine(_Base):
             raise ValueError(f"unsafe agent id for a filesystem path: {agent_id!r}")
         return agent_id
 
+    # =========================================================================
+    # SMART DISPATCHER - API HELPERS
+    # =========================================================================
+
     @property
     def _api_url(self) -> str:
         """Get the internal API URL for task/notification queries."""
