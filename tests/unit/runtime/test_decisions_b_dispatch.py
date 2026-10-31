@@ -29,7 +29,11 @@ from roboco.runtime.engines.dispatch_prompts import (
 from roboco.runtime.engines.dispatch_prompts_management import (
     ManagementPromptsEngine,
 )
-from roboco.runtime.engines.dispatch_work import DispatchWorkEngine
+from roboco.runtime.engines.dispatch_work import (
+    BoardProgramContextEngine,
+    PRReviewDispatchEngine,
+    QADispatchEngine,
+)
 from roboco.runtime.engines.spawn_exit import SpawnExitEngine
 from roboco.runtime.engines.sweeps import SweepsEngine
 from roboco.services.decisions import pilots_dispatch
@@ -268,7 +272,7 @@ async def test_b14_queue_order_falls_back_to_fetch_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _flag_on(monkeypatch, False)
-    engine = _bare(DispatchWorkEngine)
+    engine = _bare(QADispatchEngine)
     low = {"id": "low", "priority": 0}
     high = {"id": "high", "priority": 3}
     ordered, depths = await engine._decisions_order_qa_queue([low, high])
@@ -280,7 +284,7 @@ async def test_b14_queue_order_falls_back_to_fetch_order(
 async def test_b14_review_dispatch_sorts_by_priority(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    engine = _bare(DispatchWorkEngine)
+    engine = _bare(PRReviewDispatchEngine)
     engine._is_agent_active = lambda _slug: False
     engine._fetch_tasks = AsyncMock(
         return_value=[
@@ -903,7 +907,7 @@ async def test_b35_engine_orders_and_injects_depth(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _flag_on(monkeypatch)
-    engine = _bare(DispatchWorkEngine)
+    engine = _bare(QADispatchEngine)
     low = {"id": "low", "team": "backend"}
     high = {"id": "high", "team": "backend"}
 
@@ -936,7 +940,7 @@ async def test_b35_engine_keeps_tasks_beyond_the_scored_batch(
     made tasks 13+ invisible to the dispatcher while the same head of
     the queue was re-scored every tick)."""
     _flag_on(monkeypatch)
-    engine = _bare(DispatchWorkEngine)
+    engine = _bare(QADispatchEngine)
     candidates = [{"id": f"t{i}", "team": "backend"} for i in range(15)]
 
     async def fake_verdicts(
@@ -1018,7 +1022,7 @@ async def test_b36_empty_evidence_never_skips(monkeypatch: pytest.MonkeyPatch) -
 @pytest.mark.asyncio
 async def test_b36_engine_off_spawns(monkeypatch: pytest.MonkeyPatch) -> None:
     _flag_on(monkeypatch, False)
-    engine = _bare(DispatchWorkEngine)
+    engine = _bare(BoardProgramContextEngine)
     mock = AsyncMock()
     monkeypatch.setattr(pilots_dispatch, "board_evidence_skip", mock)
     assert await engine._decisions_board_evidence_skip("coroner", "context") is False

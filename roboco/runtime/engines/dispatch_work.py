@@ -1,7 +1,9 @@
-"""The work dispatchers `_dispatch_all_work` runs each tick, and the dev, PR
-gate and Auditor dispatch helpers they use.
+"""The role dispatchers `_dispatch_all_work` runs each tick, one class per
+role: the PMs, the board and its Board Programs, developers, QA, the
+documenter, the PR reviewers, the Auditor, and notification-woken agents.
 
-Engine mixins composed into AgentOrchestrator."""
+Engine mixins composed into AgentOrchestrator. The PM closure dispatch
+lives with the auto-submit in dispatch_closure.py."""
 
 from __future__ import annotations
 
@@ -9,7 +11,6 @@ import time
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, ClassVar
 
-import httpx
 from fastapi import status as http_status
 
 from roboco.agents_config import get_agent_role
@@ -29,13 +30,13 @@ from roboco.runtime.orchestrator import (
     _is_branch_pending,
     _is_held_ceo_source,
     _is_non_dev_dispatch_source,
-    _system_api_headers,
     logger,
 )
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.task import PR_REVIEW_SOURCES
 
 if TYPE_CHECKING:
+    import httpx
     from sqlalchemy.ext.asyncio import AsyncSession
 
 if TYPE_CHECKING:
@@ -51,131 +52,9 @@ _QA_DEPTH_FORENSIC = 3
 _QA_QUEUE_MIN_TO_RANK = 2
 
 
-class DispatchWorkEngine(_Base):
-    """Mixin holding the "dispatch_work" methods moved out of AgentOrchestrator."""
-
-    # Re-declared (not just inherited from _Base above): a fresh mypy run
-    # rooted at orchestrator.py alone infers `datetime` from the assignments
-    # in _dispatch_audit_work below and
-    # rejects the class-level `datetime | None`; the bare re-declaration on
-    # the concrete class pins it, as the sibling mixins do.
-    if TYPE_CHECKING:
-        _last_audit_spawn_at: datetime | None
-
-    async def _dispatch_all_work(self) -> None:
-        """Run all dispatchers to check for and assign work.
-
-        Each dispatcher is isolated: if one raises (e.g., a transient API
-        error), the rest still run in this tick instead of waiting for the
-        next one.
-
-        `_tick_handled_tasks` gives downstream dispatchers a way to
-        skip tasks that an earlier dispatcher already acted on this
-        tick. Order-dependent bugs (like the Fix-B scenario where
-        `_dispatch_qa_work` claimed for QA and the next dispatcher
-        re-spawned the dev on the same claimed row) are defanged by
-        early dispatchers marking the task handled.
-
-        The stale-claim reaper runs first, before any dispatcher tries to
-        spawn an agent for a task whose previous holder is dead. Without
-        this ordering, the spawn pass could race against a stale claim and
-        skip work the reaper would have freed in the same tick.
-
-        A ``dispatch``-scope maintenance pause drains every spawn-issuing
-        dispatcher here EXCEPT ``pm_work``, which always runs: it also
-        routes Board Program exploration dispatch (a separate,
-        independently-paused ``board_programs`` scope, see
-        ``_dispatch_board_program_exploration``), so it cannot be skipped
-        wholesale without incorrectly coupling the two scopes. ``pm_work``
-        itself skips its own non-board-program branches while paused (see
-        ``_dispatch_pm_work``).
-        """
-        self._tick_handled_tasks = set()
-
-        # Refresh the fleet uptime ledger first: the reaper and stuck-task
-        # checks below read _active_age, which needs a fresh ledger to
-        # discount a CEO-ordered pause instead of reading it as neglect.
-        # _refresh_uptime fails open internally; this only guards session
-        # acquisition itself.
-        try:
-            from roboco.db.base import get_session_factory
-
-            factory = get_session_factory()
-            async with factory() as db:
-                await self._refresh_uptime(db)
-        except Exception as e:
-            logger.error("Uptime ledger refresh failed; continuing tick", error=str(e))
-
-        # Free any tasks whose claim went stale before the spawn pass runs.
-        # Wrapped because a reaper failure must not block dispatch — the
-        # next tick will retry.
-        try:
-            await self._reap_stale_claims()
-        except Exception as e:
-            logger.error("Stale-claim reaper failed; continuing tick", error=str(e))
-
-        # Enforce the GROK cost ceiling (budget kill-switch parity). Wrapped so a
-        # failure never blocks dispatch; the next tick retries. Unrelated to the
-        # maintenance pause: a genuinely runaway-cost container is a real signal,
-        # not a "nothing is happening" false positive, so it is never suppressed
-        # by a pause; only NEW spawns are.
-        try:
-            await self._enforce_grok_cost_budget()
-        except Exception as e:
-            logger.error("Grok cost-budget sweep failed; continuing tick", error=str(e))
-
-        from roboco.services.maintenance_pause import PauseScope
-
-        dispatch_paused = await self._is_paused(PauseScope.DISPATCH)
-
-        dispatchers: list[tuple[str, Any]] = []
-        async with httpx.AsyncClient(
-            timeout=30.0, headers=_system_api_headers()
-        ) as client:
-            dispatchers = [("pm_work", self._dispatch_pm_work(client))]
-            if not dispatch_paused:
-                dispatchers += [
-                    ("pm_closure_work", self._dispatch_pm_closure_work(client)),
-                    (
-                        "revision_coordination",
-                        self._dispatch_revision_coordination_roots(client),
-                    ),
-                    ("dev_work", self._dispatch_dev_work(client)),
-                    ("qa_work", self._dispatch_qa_work(client)),
-                    # pr_gate_work runs BEFORE pr_review_work: both can spawn
-                    # the shared pr-reviewer-1 (root→master gate reviews vs.
-                    # inbound external/fork PR reviews), and the internal gate
-                    # blocks the delivery pipeline while an external PR can
-                    # wait a tick - see _dispatch_pr_gate_work's docstring.
-                    ("pr_gate_work", self._dispatch_pr_gate_work(client)),
-                    ("pr_review_work", self._dispatch_pr_review_work(client)),
-                    ("doc_work", self._dispatch_doc_work(client)),
-                    ("pm_review_work", self._dispatch_pm_review_work(client)),
-                    ("marketing_work", self._dispatch_marketing_work(client)),
-                    ("blocker_work", self._dispatch_blocker_work(client)),
-                    (
-                        "claimed_without_agent",
-                        self._dispatch_claimed_without_agent(client),
-                    ),
-                    ("escalation_work", self._dispatch_escalation_work(client)),
-                    ("approval_work", self._dispatch_approval_work(client)),
-                    ("a2a_work", self._dispatch_a2a_work(client)),
-                    ("audit_work", self._dispatch_audit_work(client)),
-                    (
-                        "vault_curation_work",
-                        self._dispatch_vault_curation_work(client),
-                    ),
-                    ("detect_stuck_tasks", self._detect_stuck_tasks(client)),
-                ]
-            for name, coro in dispatchers:
-                try:
-                    await coro
-                except Exception as e:
-                    logger.error(
-                        "Dispatcher raised; continuing with next dispatcher",
-                        dispatcher=name,
-                        error=str(e),
-                    )
+class PMDispatchEngine(_Base):
+    """Waking the PMs: triage of new and assigned tasks, PM-owned tasks
+    sent back for revision, PM review, and blocker resolution."""
 
     async def _handle_pm_assigned_task(
         self, task: dict[str, Any], assigned_to: str
@@ -203,6 +82,213 @@ class DispatchWorkEngine(_Base):
             git_context=self._task_git_context(task),
             spawned_by="_handle_pm_assigned_task",
         )
+
+    async def _dispatch_pm_work(self, client: httpx.AsyncClient) -> None:
+        """
+        Dispatch PM triage work - routes new tasks to appropriate level.
+
+        This is the FIRST dispatcher called - it classifies unassigned tasks
+        and routes them to Board, Main PM, Cell PM, or directly to devs.
+        Also handles already-assigned pending tasks for PM agents.
+
+        Monitors: pending tasks (both assigned and unassigned)
+        Spawns: product-owner, main-pm, be-pm, fe-pm, ux-pm (or devs for simple)
+
+        Mixed dispatch-pause scope: a ``dispatch``-scope pause skips this
+        method's own PM/board-review routing (below) but never the Board
+        Program exploration branch, which is gated independently by
+        ``board_programs`` scope inside ``_dispatch_board_program_
+        exploration``, the two scopes must stay decoupled even though they
+        share this one dispatcher.
+
+        Fetches with ``_PM_DISPATCH_FETCH_LIMIT`` (not the API's 100
+        default): this dispatcher's fetch is NOT team-scoped (see that
+        constant's comment for the silent-truncation class of bug a plain
+        default fetch would reintroduce here).
+        """
+        from roboco.services.maintenance_pause import PauseScope
+
+        tasks = await self._fetch_tasks(
+            client, "pending", limit=_PM_DISPATCH_FETCH_LIMIT
+        )
+        dispatch_paused = await self._is_paused(PauseScope.DISPATCH)
+
+        for task in tasks:
+            if self._is_task_handled_this_tick(task.get("id")):
+                continue
+            # CEO-HELD / externally-owned sources are never PM delivery work
+            # (external-PR review, release proposals, X posts/replies, and a
+            # not-yet-confirmed self-heal fix task) — see _is_held_ceo_source.
+            if _is_held_ceo_source(task):
+                continue
+            # A supersede umbrella whose branch cut is still in progress
+            # (background task or pending reconciliation). Main PM must not
+            # be routed until the branch is ready.
+            if _is_branch_pending(task):
+                continue
+            assigned_to = task.get("assigned_to")
+            if assigned_to:
+                # Every registered Board Program (roadmap / x_feature /
+                # pest_control / periscope / coroner / sentinel / spackle /
+                # scales / mirror / megaphone / librarian / war_room /
+                # barfly / dogfood) is solo-authored and bypasses the
+                # two-reviewer board-review gate — routed via the module-level dict
+                # dispatch table so this chain stays flat as new programs
+                # register (xenon budget). Falls through to the generic
+                # board/PM-assigned handlers only for a non-program task.
+                if not await _dispatch_board_program_exploration(self, task):
+                    if dispatch_paused:
+                        continue
+                    if self._resolve_agent_slug(assigned_to) in self._BOARD_AGENTS:
+                        await self._handle_board_assigned_task(task, assigned_to)
+                    else:
+                        await self._handle_pm_assigned_task(task, assigned_to)
+                continue
+
+            if dispatch_paused:
+                continue
+            await self._route_unassigned_pm_task(client, task)
+
+    async def _dispatch_revision_coordination_roots(
+        self, client: httpx.AsyncClient
+    ) -> None:
+        """Re-spawn the owning PM for a PM-owned needs_revision task.
+
+        Two cases land a task in ``needs_revision`` owned by a PM rather than a
+        developer: a CEO-rejected coordination root (team=main_pm, product-linked,
+        no repo), and a gate-failed assembled task (a cell→root or root→master PR
+        the in-path reviewer sent back via pr_fail). The dev dispatcher only
+        spawns developers and the closure path only handles paused parents, so
+        without this such a task would sit in needs_revision forever — the
+        deadlock. The PM-ownership filter below scopes this to exactly those: a
+        leaf dev revision stays owned by its developer and is left to the dev
+        dispatcher.
+        """
+        tasks = await self._fetch_tasks(client, "needs_revision")
+        for task in tasks:
+            if self._is_task_handled_this_tick(task.get("id")):
+                continue
+            owner = task.get("assigned_to") or task.get("claimed_by")
+            agent_slug = self._resolve_agent_slug(owner) if owner else None
+            if not agent_slug or self._is_agent_active(agent_slug):
+                continue
+            if get_agent_role(agent_slug) not in ("cell_pm", "main_pm"):
+                continue
+            # Respawn circuit breaker — a revision the PM can never land must
+            # stop respawning the coordinator (progress resets the strikes).
+            if await self._pm_respawn_should_gate(agent_slug, task):
+                continue
+            await self.spawn_agent(
+                agent_id=agent_slug,
+                task_id=task["id"],
+                initial_prompt=await self._get_prompt_for_agent(agent_slug, task),
+                git_context=self._task_git_context(task),
+                spawned_by="_dispatch_revision_coordination_roots",
+            )
+
+    async def _dispatch_pm_review_work(self, client: httpx.AsyncClient) -> None:
+        """
+        Dispatch PM review work to cell PMs or Main PM.
+
+        Monitors: awaiting_pm_review tasks
+        Spawns: be-pm, fe-pm, ux-pm, main-pm
+        """
+        tasks = await self._fetch_tasks(client, "awaiting_pm_review")
+
+        for task in tasks:
+            # Sequence-ordered merge: don't review/merge a leaf until its
+            # earlier same-team siblings have landed, so they merge into the
+            # shared cell branch in order instead of racing and wedging.
+            if await self._blocked_by_earlier_sibling(task):
+                continue
+
+            assigned_slug = await self._review_pm_slug(client, task)
+            if not assigned_slug:
+                logger.warning(
+                    "Could not resolve/assign an owning PM for awaiting_pm_review task",
+                    task_id=task["id"],
+                )
+                continue
+
+            # Human-only roles (CEO / prompter / secretary) are never
+            # containers — there is no reviewer agent to respawn. Leave
+            # the task for the human (the CEO approves via the panel).
+            # A stale/ex-human slug is also skipped: is_spawnable_agent_slug
+            # is False for it, so a renamed secretary slug can't slip past
+            # the layered guard to a doomed spawn (#49). Mirrors the
+            # spawn_agent human-role guard; a skip here keeps a mis-assigned
+            # human task from aborting this dispatcher's whole tick.
+            if not is_spawnable_agent_slug(assigned_slug):
+                continue
+            if self._is_agent_active(assigned_slug):
+                continue
+            # Loop guard: a review task that keeps re-surfacing without
+            # advancing (e.g. an unmergeable PR that re-blocks every cycle)
+            # must stop respawning the reviewer, else it burns tokens
+            # forever. The gate notifies the CEO once it trips.
+            if await self._pm_respawn_should_gate(assigned_slug, task):
+                continue
+            # Agent not running - spawn them to continue
+            await self.spawn_agent(
+                agent_id=assigned_slug,
+                task_id=task["id"],
+                initial_prompt=self._build_pm_review_prompt(task),
+                git_context=self._task_git_context(task),
+                spawned_by="_dispatch_pm_review_work",
+            )
+
+    async def _dispatch_blocker_work(self, client: httpx.AsyncClient) -> None:
+        """
+        Dispatch blocker resolution to the task's current unblock authority.
+
+        Monitors: blocked tasks
+        Spawns: the task's current PM/board assignee, else the cell PM
+        """
+        tasks = await self._fetch_tasks(client, "blocked")
+
+        for task in tasks:
+            # HITL-blocked tasks wait for a human; never spawn an agent on them.
+            if self._is_hitl_blocked(task):
+                continue
+
+            # A dependency-held blocked task can't be unblocked by any
+            # resolver until the dependency lands — spawn_agent's readiness
+            # gate would refuse anyway, and each refused attempt burned a
+            # respawn-breaker strike + a CEO escalation once tripped
+            # (2026-07-29). Skip quietly; this dispatcher re-checks every
+            # tick and proceeds once the dependency goes terminal.
+            if await self._check_dependencies_terminal(client, task):
+                continue
+
+            agent_id = self._blocker_resolver_slug(task)
+            if not agent_id:
+                continue
+
+            if self._is_agent_active(agent_id):
+                continue
+
+            # Loop guard: a blocked task whose unblock can never succeed (e.g.
+            # a cold-respawned PM that can't satisfy the unblock decision gate,
+            # or an unresolvable merge conflict) must stop respawning the
+            # resolver. The gate notifies the CEO once it trips so the wedged
+            # task surfaces instead of silently burning tokens.
+            if await self._pm_respawn_should_gate(agent_id, task):
+                continue
+
+            await self.spawn_agent(
+                agent_id=agent_id,
+                task_id=task["id"],
+                initial_prompt=self._build_pm_blocker_prompt(task),
+                git_context=self._task_git_context(task),
+                spawned_by="_dispatch_blocker_work",
+            )
+            break
+
+
+class BoardDispatchEngine(_Base):
+    """Waking the board: the two-reviewer board review, its hand-off to the
+    CEO (with the parked intake's redraft), and the Head of Marketing's
+    marketing tasks."""
 
     async def _handle_board_assigned_task(
         self, task: dict[str, Any], assigned_to: str
@@ -266,747 +352,6 @@ class DispatchWorkEngine(_Base):
             git_context=self._task_git_context(task),
             spawned_by="_dispatch_board_reviewer",
         )
-
-    async def _dispatch_roadmap_exploration(self, task: dict[str, Any]) -> None:
-        """One-shot Product-Owner spawn to author a themed roadmap cycle.
-
-        Unlike ``_handle_board_assigned_task`` (the two-reviewer board-review
-        gate), a roadmap cycle is Product-Owner-solo in v1 (see the roadmap
-        spec's non-goals — HoM co-authoring is out of scope), so this bypasses
-        the review-pair machinery and its board-review-complete/Approve & Start
-        handoff entirely: HoM is never spawned for this task, and no CEO
-        "Approve & Start" notification fires. ``propose_roadmap`` (not this
-        dispatcher) marks the cycle authored (a ``roadmap_cycle`` marker); this
-        only ever spawns once per task while that marker is absent, reusing the
-        respawn breaker every
-        other board dispatch uses.
-        """
-        task_id = str(task.get("id"))
-        markers_dict = task.get("orchestration_markers") or {}
-        if markers_dict.get(_markers.ROADMAP_CYCLE) is not None:
-            # Already authored — the CEO roadmap queue owns the rest
-            return
-        po_slug = "product-owner"
-        if self._is_agent_active(po_slug):
-            return
-        if await self._pm_respawn_should_gate(po_slug, task):
-            return
-        logger.info("Spawning Product Owner for roadmap exploration", task_id=task_id)
-        prior_context = await self._board_program_prior_context("roadmap")
-        market_brief_context = await self._periscope_brief_context()
-        digest_context = await self._shipped_work_digest_context()
-        await self.spawn_agent(
-            agent_id=po_slug,
-            task_id=task["id"],
-            initial_prompt=self._build_roadmap_prompt(
-                task, prior_context, market_brief_context, digest_context
-            ),
-            git_context=self._task_git_context(task),
-            spawned_by="_dispatch_roadmap_exploration",
-        )
-
-    async def _board_program_prior_context(self, program_key: str) -> str:
-        """Best-effort LEARN read for prompt injection — mirrors
-        ``_pm_respawn_should_gate``'s tracing-gap audit lookup's best-effort
-        DB posture: a read failure here must never block a spawn, only drop
-        the '## Prior cycles' section from this cycle's prompt."""
-        try:
-            from roboco.db import get_db_context
-            from roboco.services.board_programs import get_board_program_engine
-
-            async with get_db_context() as db:
-                return await get_board_program_engine(db).prior_cycle_context(
-                    program_key
-                )
-        except Exception:
-            logger.warning(
-                "board-program: prior-cycle-context read failed (best-effort)",
-                program=program_key,
-            )
-            return ""
-
-    async def _decisions_board_evidence_skip(
-        self, program: str, evidence_context: str
-    ) -> bool:
-        """B36 board_evidence_skip: True = this cycle's evidence dump is
-        confidently a no-op, so the spawn is skipped entirely (saves a whole
-        container per no-op cycle). Empty evidence never skips; a below-floor
-        verdict, shadow mode, off, or any failure spawns as today. Self-
-        correcting: a wrong skip delays the cycle one tick and the next tick
-        re-judges."""
-        if not settings.decisions_enabled:
-            return False
-        try:
-            from roboco.db import get_db_context
-            from roboco.services.decisions import pilots_dispatch
-
-            async with get_db_context() as db:
-                return await pilots_dispatch.board_evidence_skip(
-                    db, program=program, evidence_context=evidence_context
-                )
-        except Exception as exc:
-            logger.warning(
-                "board evidence-skip check failed (best-effort)",
-                program=program,
-                error=str(exc),
-            )
-            return False
-
-    async def _dispatch_pest_control_exploration(self, task: dict[str, Any]) -> None:
-        """One-shot Product-Owner spawn to author a Pest Control bug hunt.
-
-        Mirrors ``_dispatch_roadmap_exploration`` exactly (PO-solo, the same
-        respawn breaker
-        "already authored" marker pre-check — ``propose_bug_hunt`` marks it
-        via the ``pest_hunt`` marker, not this dispatcher). The extra step is
-        the server-assembled evidence context (rework hotspots + findings-
-        ledger aggregates) the PO cannot gather itself.
-        """
-        task_id = str(task.get("id"))
-        markers_dict = task.get("orchestration_markers") or {}
-        if markers_dict.get(_markers.PEST_HUNT) is not None:
-            # Already authored — the CEO pest-control queue owns the rest
-            return
-        po_slug = "product-owner"
-        if self._is_agent_active(po_slug):
-            return
-        if await self._pm_respawn_should_gate(po_slug, task):
-            return
-        logger.info(
-            "Spawning Product Owner for pest-control exploration", task_id=task_id
-        )
-        prior_context = await self._board_program_prior_context("pest_control")
-        evidence_context = await self._pest_control_evidence_context()
-        digest_context = await self._shipped_work_digest_context()
-        if await self._decisions_board_evidence_skip(
-            "pest_control",
-            "\n\n".join(filter(None, [evidence_context, digest_context])),
-        ):
-            logger.info(
-                "Skipping pest-control cycle: evidence confidently below threshold",
-                task_id=task_id,
-            )
-            return
-        await self.spawn_agent(
-            agent_id=po_slug,
-            task_id=task["id"],
-            initial_prompt=self._build_pest_control_prompt(
-                task, prior_context, evidence_context, digest_context
-            ),
-            git_context=self._task_git_context(task),
-            spawned_by="_dispatch_pest_control_exploration",
-        )
-
-    async def _pest_control_evidence_context(self) -> str:
-        """Best-effort evidence-gathering read for prompt injection — mirrors
-        ``_board_program_prior_context``'s degrade-to-empty-string posture: a
-        read failure here must never block a spawn, only drop the evidence
-        section from this cycle's prompt."""
-        try:
-            from roboco.db import get_db_context
-            from roboco.services.pest_control_engine import get_pest_control_engine
-
-            async with get_db_context() as db:
-                return await get_pest_control_engine(db).evidence_context()
-        except Exception:
-            logger.warning("pest-control: evidence-context read failed (best-effort)")
-            return ""
-
-    async def _dispatch_scales_exploration(self, task: dict[str, Any]) -> None:
-        """One-shot Product-Owner spawn to author a Scales rebalance plan.
-
-        Mirrors ``_dispatch_pest_control_exploration`` exactly (PO-solo, the
-        respawn breaker the
-        same "already authored" marker pre-check — ``propose_rebalance``
-        marks it via the ``rebalance_plan`` marker, not this dispatcher). The
-        extra step is the server-assembled stale-backlog snapshot the PO
-        cannot gather itself.
-        """
-        task_id = str(task.get("id"))
-        markers_dict = task.get("orchestration_markers") or {}
-        if markers_dict.get(_markers.REBALANCE_PLAN) is not None:
-            # Already authored — the CEO Scales queue owns the rest
-            return
-        po_slug = "product-owner"
-        if self._is_agent_active(po_slug):
-            return
-        if await self._pm_respawn_should_gate(po_slug, task):
-            return
-        logger.info("Spawning Product Owner for scales exploration", task_id=task_id)
-        prior_context = await self._board_program_prior_context("scales")
-        evidence_context = await self._scales_evidence_context()
-        if await self._decisions_board_evidence_skip("scales", evidence_context):
-            logger.info(
-                "Skipping scales cycle: evidence confidently below threshold",
-                task_id=task_id,
-            )
-            return
-        await self.spawn_agent(
-            agent_id=po_slug,
-            task_id=task["id"],
-            initial_prompt=self._build_scales_prompt(
-                task, prior_context, evidence_context
-            ),
-            git_context=self._task_git_context(task),
-            spawned_by="_dispatch_scales_exploration",
-        )
-
-    async def _scales_evidence_context(self) -> str:
-        """Best-effort evidence-gathering read for prompt injection — mirrors
-        ``_pest_control_evidence_context``'s degrade-to-empty-string posture: a
-        read failure here must never block a spawn, only drop the stale-
-        backlog snapshot from this cycle's prompt."""
-        try:
-            from roboco.db import get_db_context
-            from roboco.services.scales_engine import get_scales_engine
-
-            async with get_db_context() as db:
-                return await get_scales_engine(db).evidence_context()
-        except Exception:
-            logger.warning("scales: evidence-context read failed (best-effort)")
-            return ""
-
-    async def _dispatch_coroner_exploration(self, task: dict[str, Any]) -> None:
-        """One-shot Auditor spawn to autopsy an incident and author ONE
-        postmortem via ``propose_postmortem``.
-
-        Like ``_dispatch_feature_spotlight_exploration`` (not the roadmap/
-        pest-control "already authored" marker shape): no pre-check is
-        needed — ``propose_postmortem`` completes this task atomically, so a
-        successful call stops it matching the PENDING fetch on the next
-        tick. Reuses respawn breaker every other board dispatch uses. EVENT-triggered
-        (spec §4): this task only ever exists because
-        ``CoronerEngine.open_for_incident`` opened it — there is no LEARN
-        "prior cycles" injection here (no cron cadence to have learned from).
-        """
-        task_id = str(task.get("id"))
-        auditor_slug = "auditor"
-        if self._is_agent_active(auditor_slug):
-            return
-        if await self._pm_respawn_should_gate(auditor_slug, task):
-            return
-        logger.info("Spawning Auditor for Coroner postmortem", task_id=task_id)
-        incident_context = await self._coroner_incident_context(task)
-        if await self._decisions_board_evidence_skip("coroner", incident_context):
-            logger.info(
-                "Skipping coroner cycle: incident evidence confidently below threshold",
-                task_id=task_id,
-            )
-            return
-        await self.spawn_agent(
-            agent_id=auditor_slug,
-            task_id=task["id"],
-            initial_prompt=self._build_coroner_prompt(task, incident_context),
-            git_context=self._task_git_context(task),
-            spawned_by="_dispatch_coroner_exploration",
-        )
-
-    async def _coroner_incident_context(self, task: dict[str, Any]) -> str:
-        """Best-effort evidence-gathering read for prompt injection — mirrors
-        ``_pest_control_evidence_context``'s degrade-to-empty-string posture."""
-        markers_dict = task.get("orchestration_markers") or {}
-        incident_ref = markers_dict.get(_markers.CORONER_INCIDENT) or {}
-        incident_task_id = incident_ref.get("incident_task_id")
-        if not incident_task_id:
-            return ""
-        try:
-            from uuid import UUID as _UUID
-
-            from roboco.db import get_db_context
-            from roboco.services.coroner_engine import get_coroner_engine
-
-            async with get_db_context() as db:
-                return await get_coroner_engine(db).incident_context(
-                    _UUID(str(incident_task_id))
-                )
-        except Exception:
-            logger.warning("coroner: incident-context read failed (best-effort)")
-            return ""
-
-    async def _dispatch_war_room_exploration(self, task: dict[str, Any]) -> None:
-        """One-shot Head-of-Marketing spawn to design ONE War Room campaign
-        and author it via ``propose_campaign``.
-
-        Like ``_dispatch_coroner_exploration`` (not the roadmap/pest-control
-        "already authored" marker shape): no pre-check is needed —
-        ``propose_campaign`` completes this task atomically, so a successful
-        call stops it matching the PENDING fetch on the next tick. Reuses the
-        respawn breaker every
-        other board dispatch uses. EVENT-triggered (spec §4): this task only
-        ever exists because a release just published or the CEO called "run
-        now" — there is no LEARN "prior cycles" injection here (no cron
-        cadence to have learned from, mirrors Coroner). The task's own
-        ``war_room_brief`` marker (release version + highlights, or {} for a
-        blank on-demand cycle) is already server-assembled at origination
-        time — no extra DB read is needed to pass it into the prompt.
-        """
-        task_id = str(task.get("id"))
-        hom_slug = "head-marketing"
-        if self._is_agent_active(hom_slug):
-            return
-        if await self._pm_respawn_should_gate(hom_slug, task):
-            return
-        logger.info(
-            "Spawning Head of Marketing for War Room campaign planning",
-            task_id=task_id,
-        )
-        await self.spawn_agent(
-            agent_id=hom_slug,
-            task_id=task["id"],
-            initial_prompt=self._build_war_room_prompt(task),
-            git_context=self._task_git_context(task),
-            spawned_by="_dispatch_war_room_exploration",
-        )
-
-    async def _dispatch_spackle_exploration(self, task: dict[str, Any]) -> None:
-        """One-shot Product-Owner spawn to author a Spackle gap-fill audit.
-
-        Mirrors ``_dispatch_pest_control_exploration`` exactly (PO-solo, the
-        respawn breaker the
-        same "already authored" marker pre-check — ``propose_gap_fill`` marks
-        it via the ``gap_fill`` marker, not this dispatcher). Unlike Pest
-        Control there is no server-assembled evidence context — the spec
-        deliberately keeps Spackle free of a heavy server-side inventory
-        engine; the inventory diffing is the PO's own read-tool work, ordered
-        explicitly by ``_build_spackle_prompt``.
-        """
-        task_id = str(task.get("id"))
-        markers_dict = task.get("orchestration_markers") or {}
-        if markers_dict.get(_markers.GAP_FILL) is not None:
-            # Already authored — the CEO spackle queue owns the rest
-            return
-        po_slug = "product-owner"
-        if self._is_agent_active(po_slug):
-            return
-        if await self._pm_respawn_should_gate(po_slug, task):
-            return
-        logger.info("Spawning Product Owner for spackle exploration", task_id=task_id)
-        prior_context = await self._board_program_prior_context("spackle")
-        digest_context = await self._shipped_work_digest_context()
-        await self.spawn_agent(
-            agent_id=po_slug,
-            task_id=task["id"],
-            initial_prompt=self._build_spackle_prompt(
-                task, prior_context, digest_context
-            ),
-            git_context=self._task_git_context(task),
-            spawned_by="_dispatch_spackle_exploration",
-        )
-
-    async def _dispatch_mirror_exploration(self, task: dict[str, Any]) -> None:
-        """One-shot Head-of-Marketing spawn to author a Mirror positioning
-        audit.
-
-        Mirrors ``_dispatch_spackle_exploration`` exactly (HoM-solo, the same
-        respawn breaker
-        "already authored" marker pre-check — ``propose_messaging_fixes``
-        marks it via the ``messaging_fixes`` marker, not this dispatcher).
-        Like Spackle there is no server-assembled evidence context — the
-        messaging audit (README claims vs shipped features, docs-site
-        promises vs code, charter alignment) is the HoM's own read-tool
-        work, ordered explicitly by ``_build_mirror_prompt``.
-        """
-        task_id = str(task.get("id"))
-        markers_dict = task.get("orchestration_markers") or {}
-        if markers_dict.get(_markers.MESSAGING_FIXES) is not None:
-            # Already authored — the CEO mirror queue owns the rest
-            return
-        hom_slug = "head-marketing"
-        if self._is_agent_active(hom_slug):
-            return
-        if await self._pm_respawn_should_gate(hom_slug, task):
-            return
-        logger.info(
-            "Spawning Head of Marketing for mirror exploration", task_id=task_id
-        )
-        prior_context = await self._board_program_prior_context("mirror")
-        await self.spawn_agent(
-            agent_id=hom_slug,
-            task_id=task["id"],
-            initial_prompt=self._build_mirror_prompt(task, prior_context),
-            git_context=self._task_git_context(task),
-            spawned_by="_dispatch_mirror_exploration",
-        )
-
-    async def _dispatch_dogfood_exploration(self, task: dict[str, Any]) -> None:
-        """One-shot Product-Owner spawn to walk the product and author a
-        Dogfood friction audit.
-
-        Mirrors ``_dispatch_spackle_exploration`` exactly (PO-solo, the same
-        respawn breaker
-        "already authored" marker pre-check — ``propose_friction_fixes``
-        marks it via the ``friction_fixes`` marker, not this dispatcher).
-        There is no server-assembled evidence context — walking the product
-        live is the PO's own tool work, ordered explicitly by
-        ``_build_dogfood_prompt``. This is the ONE spawn (task-scoped, keyed
-        on ``task["source"] == DOGFOOD_SOURCE``) that also gets the
-        playwright MCP mounted — see ``_is_dogfood_spawn``.
-        """
-        task_id = str(task.get("id"))
-        markers_dict = task.get("orchestration_markers") or {}
-        if markers_dict.get(_markers.FRICTION_FIXES) is not None:
-            # Already authored — the CEO dogfood queue owns the rest
-            return
-        po_slug = "product-owner"
-        if self._is_agent_active(po_slug):
-            return
-        if await self._pm_respawn_should_gate(po_slug, task):
-            return
-        logger.info("Spawning Product Owner for dogfood exploration", task_id=task_id)
-        prior_context = await self._board_program_prior_context("dogfood")
-        await self.spawn_agent(
-            agent_id=po_slug,
-            task_id=task["id"],
-            initial_prompt=self._build_dogfood_prompt(task, prior_context),
-            git_context=self._task_git_context(task),
-            spawned_by="_dispatch_dogfood_exploration",
-        )
-
-    async def _dispatch_feature_spotlight_exploration(
-        self, task: dict[str, Any]
-    ) -> None:
-        """One-shot Head-of-Marketing spawn to investigate + author a spotlight.
-
-        Simpler than _dispatch_roadmap_exploration: no "already authored" marker
-        pre-check is needed here, because a successful propose_feature_spotlight()
-        completes this task atomically (it stops matching the PENDING fetch on the
-        next tick) — unlike the roadmap cycle, which stays open across the CEO's
-        per-item decisions and needs the marker check to avoid re-spawning the PO
-        after authoring. Reuses the respawn breaker every other board dispatch uses.
-        """
-        task_id = str(task.get("id"))
-        hom_slug = "head-marketing"
-        if self._is_agent_active(hom_slug):
-            return
-        if await self._pm_respawn_should_gate(hom_slug, task):
-            return
-        logger.info(
-            "Spawning Head of Marketing for feature-spotlight exploration",
-            task_id=task_id,
-        )
-        prior_context = await self._board_program_prior_context("x_feature")
-        await self.spawn_agent(
-            agent_id=hom_slug,
-            task_id=task["id"],
-            initial_prompt=self._build_feature_spotlight_prompt(task, prior_context),
-            git_context=self._task_git_context(task),
-            spawned_by="_dispatch_feature_spotlight_exploration",
-        )
-
-    async def _dispatch_periscope_exploration(self, task: dict[str, Any]) -> None:
-        """One-shot Head-of-Marketing spawn to research the market and file a
-        Periscope brief.
-
-        Mirrors ``_dispatch_feature_spotlight_exploration``: no "already
-        authored" marker pre-check is needed — ``propose_market_brief``
-        completes this task atomically (the x_feature complete-at-propose
-        asymmetry), so it stops matching the PENDING fetch on the next tick.
-        Reuses respawn breaker every other board dispatch uses.
-        """
-        task_id = str(task.get("id"))
-        hom_slug = "head-marketing"
-        if self._is_agent_active(hom_slug):
-            return
-        if await self._pm_respawn_should_gate(hom_slug, task):
-            return
-        logger.info(
-            "Spawning Head of Marketing for periscope exploration", task_id=task_id
-        )
-        prior_context = await self._board_program_prior_context("periscope")
-        await self.spawn_agent(
-            agent_id=hom_slug,
-            task_id=task["id"],
-            initial_prompt=self._build_periscope_prompt(task, prior_context),
-            git_context=self._task_git_context(task),
-            spawned_by="_dispatch_periscope_exploration",
-        )
-
-    async def _dispatch_barfly_exploration(self, task: dict[str, Any]) -> None:
-        """One-shot Head-of-Marketing spawn to review Barfly's screened X
-        conversations and draft replies.
-
-        Mirrors ``_dispatch_periscope_exploration``: no "already authored"
-        marker pre-check is needed — ``propose_conversation_replies``
-        completes this task atomically (the x_feature/periscope complete-at-
-        propose asymmetry, multiplied across every materialized reply), so
-        it stops matching the PENDING fetch on the next tick. Reuses the
-        respawn breaker every
-        other board dispatch uses.
-        """
-        task_id = str(task.get("id"))
-        hom_slug = "head-marketing"
-        if self._is_agent_active(hom_slug):
-            return
-        if await self._pm_respawn_should_gate(hom_slug, task):
-            return
-        logger.info(
-            "Spawning Head of Marketing for barfly exploration", task_id=task_id
-        )
-        prior_context = await self._board_program_prior_context("barfly")
-        if await self._decisions_board_evidence_skip("barfly", prior_context):
-            logger.info(
-                "Skipping barfly cycle: screened conversations "
-                "confidently below threshold",
-                task_id=task_id,
-            )
-            return
-        await self.spawn_agent(
-            agent_id=hom_slug,
-            task_id=task["id"],
-            initial_prompt=self._build_barfly_prompt(task, prior_context),
-            git_context=self._task_git_context(task),
-            spawned_by="_dispatch_barfly_exploration",
-        )
-
-    async def _periscope_brief_context(self) -> str:
-        """Best-effort "latest market brief" read for the roadmap exploration
-        prompt's cross-role injection (spec §4) — mirrors
-        ``_pest_control_evidence_context``'s degrade-to-empty-string posture:
-        a read failure here must never block the roadmap spawn, only drop
-        the brief section from this cycle's prompt."""
-        try:
-            from roboco.db import get_db_context
-            from roboco.services.periscope_engine import get_periscope_engine
-
-            async with get_db_context() as db:
-                return await get_periscope_engine(db).latest_brief_context()
-        except Exception:
-            logger.warning("periscope: latest-brief read failed (best-effort)")
-            return ""
-
-    async def _dispatch_sentinel_exploration(self, task: dict[str, Any]) -> None:
-        """One-shot Auditor spawn to assess org-wide quality drift and file a
-        Sentinel report.
-
-        Mirrors ``_dispatch_periscope_exploration``: no "already authored"
-        marker pre-check is needed — ``propose_quality_report`` completes
-        this task atomically (the x_feature/periscope complete-at-propose
-        asymmetry), so it stops matching the PENDING fetch on the next tick.
-        Reuses respawn breaker every other board dispatch uses. The extra step is the
-        server-assembled drift evidence (waived-findings trend, open-
-        findings-by-severity, conventions hotspots, budget snapshot) the
-        Auditor cannot gather itself — mirrors
-        ``_dispatch_pest_control_exploration``'s evidence-context shape.
-        """
-        task_id = str(task.get("id"))
-        auditor_slug = "auditor"
-        if self._is_agent_active(auditor_slug):
-            return
-        if await self._pm_respawn_should_gate(auditor_slug, task):
-            return
-        logger.info("Spawning Auditor for sentinel exploration", task_id=task_id)
-        prior_context = await self._board_program_prior_context("sentinel")
-        evidence_context = await self._sentinel_evidence_context()
-        if await self._decisions_board_evidence_skip(
-            "sentinel",
-            "\n\n".join(filter(None, [prior_context, evidence_context])),
-        ):
-            logger.info(
-                "Skipping sentinel cycle: evidence confidently below threshold",
-                task_id=task_id,
-            )
-            return
-        await self.spawn_agent(
-            agent_id=auditor_slug,
-            task_id=task["id"],
-            initial_prompt=self._build_sentinel_prompt(
-                task, prior_context, evidence_context
-            ),
-            git_context=self._task_git_context(task),
-            spawned_by="_dispatch_sentinel_exploration",
-        )
-
-    async def _sentinel_evidence_context(self) -> str:
-        """Best-effort evidence-gathering read for prompt injection — mirrors
-        ``_pest_control_evidence_context``'s degrade-to-empty-string posture:
-        a read failure here must never block a spawn, only drop the evidence
-        section from this cycle's prompt."""
-        try:
-            from roboco.db import get_db_context
-            from roboco.services.sentinel_engine import get_sentinel_engine
-
-            async with get_db_context() as db:
-                return await get_sentinel_engine(db).evidence_context()
-        except Exception:
-            logger.warning("sentinel: evidence-context read failed (best-effort)")
-            return ""
-
-    async def _dispatch_megaphone_exploration(self, task: dict[str, Any]) -> None:
-        """One-shot Head-of-Marketing spawn to pick ONE editorial angle and
-        file a Megaphone post.
-
-        Mirrors ``_dispatch_periscope_exploration``: no "already authored"
-        marker pre-check is needed — ``propose_editorial_post`` completes
-        this task atomically (the x_feature/periscope complete-at-propose
-        asymmetry), so it stops matching the PENDING fetch on the next tick.
-        Reuses respawn breaker every other board dispatch uses. The extra step is the
-        server-assembled shipped-this-week digest (completed tasks +
-        CHANGELOG Unreleased bullets) the Head of Marketing cannot gather
-        itself — mirrors ``_dispatch_pest_control_exploration``'s
-        evidence-context shape.
-        """
-        task_id = str(task.get("id"))
-        hom_slug = "head-marketing"
-        if self._is_agent_active(hom_slug):
-            return
-        if await self._pm_respawn_should_gate(hom_slug, task):
-            return
-        logger.info(
-            "Spawning Head of Marketing for megaphone exploration", task_id=task_id
-        )
-        prior_context = await self._board_program_prior_context("megaphone")
-        digest_context = await self._megaphone_digest_context()
-        await self.spawn_agent(
-            agent_id=hom_slug,
-            task_id=task["id"],
-            initial_prompt=self._build_megaphone_prompt(
-                task, prior_context, digest_context
-            ),
-            git_context=self._task_git_context(task),
-            spawned_by="_dispatch_megaphone_exploration",
-        )
-
-    async def _megaphone_digest_context(self) -> str:
-        """Best-effort shipped-this-week digest read for prompt injection —
-        mirrors ``_sentinel_evidence_context``'s degrade-to-empty-string
-        posture: a read failure here must never block the spawn, only drop
-        the digest section from this cycle's prompt."""
-        try:
-            from roboco.db import get_db_context
-            from roboco.services.megaphone_engine import get_megaphone_engine
-
-            async with get_db_context() as db:
-                return await get_megaphone_engine(db).digest_context()
-        except Exception:
-            logger.warning("megaphone: digest-context read failed (best-effort)")
-            return ""
-
-    async def _shipped_work_digest_context(self) -> str:
-        """Best-effort shipped-this-week digest read for the roadmap, Pest
-        Control, and Spackle exploration prompts — mirrors
-        ``_megaphone_digest_context``'s degrade-to-empty-string posture: a read
-        failure here must never block the spawn, only drop the digest section
-        from this cycle's prompt. Calls the shared helper directly so the
-        Product Owner's prompts don't depend on ``MegaphoneEngine``."""
-        try:
-            from roboco.db import get_db_context
-            from roboco.services.shipped_work_digest import shipped_work_digest
-
-            slug = (settings.self_heal_project_slug or "roboco-api").strip()
-            async with get_db_context() as db:
-                return await shipped_work_digest(db, slug)
-        except Exception:
-            logger.warning(
-                "board-program: shipped-work digest read failed (best-effort)"
-            )
-            return ""
-
-    async def _dispatch_librarian_exploration(self, task: dict[str, Any]) -> None:
-        """One-shot Auditor spawn to mine journals/learnings and draft
-        playbooks (Librarian, Board Program).
-
-        Mirrors ``_dispatch_sentinel_exploration``: no "already authored"
-        marker pre-check is needed — ``propose_playbook_drafts`` completes
-        this task atomically (the x_feature/periscope/sentinel complete-at-
-        propose asymmetry), so it stops matching the PENDING fetch on the
-        next tick. Reuses the respawn breaker every other board dispatch
-        uses. The extra step is
-        the server-assembled mining context (recurring learning-journal
-        topics + existing playbook titles) the Auditor cannot gather itself
-        — mirrors ``_dispatch_sentinel_exploration``'s evidence-context
-        shape.
-        """
-        task_id = str(task.get("id"))
-        auditor_slug = "auditor"
-        if self._is_agent_active(auditor_slug):
-            return
-        if await self._pm_respawn_should_gate(auditor_slug, task):
-            return
-        logger.info("Spawning Auditor for librarian exploration", task_id=task_id)
-        prior_context = await self._board_program_prior_context("librarian")
-        mining_context = await self._librarian_mining_context()
-        if await self._decisions_board_evidence_skip(
-            "librarian",
-            "\n\n".join(filter(None, [prior_context, mining_context])),
-        ):
-            logger.info(
-                "Skipping librarian cycle: mining evidence confidently below threshold",
-                task_id=task_id,
-            )
-            return
-        await self.spawn_agent(
-            agent_id=auditor_slug,
-            task_id=task["id"],
-            initial_prompt=self._build_librarian_prompt(
-                task, prior_context, mining_context
-            ),
-            git_context=self._task_git_context(task),
-            spawned_by="_dispatch_librarian_exploration",
-        )
-
-    async def _decisions_audit_evidence_context(self) -> str:
-        """Best-effort evidence read for the decisions-audit prompt (mirrors
-        ``_librarian_mining_context``'s degrade-to-empty-string posture)."""
-        try:
-            from roboco.db import get_db_context
-            from roboco.services.decisions_audit_engine import (
-                get_decisions_audit_engine,
-            )
-
-            async with get_db_context() as db:
-                return await get_decisions_audit_engine(db).evidence_context()
-        except Exception:
-            logger.warning("decisions-audit: evidence read failed (best-effort)")
-            return ""
-
-    async def _dispatch_decisions_audit_exploration(self, task: dict[str, Any]) -> None:
-        """One-shot Auditor spawn for the daily decisions-audit review
-        (Board Program #15): review the persisted decision_log aggregates
-        injected as evidence and record per-pilot health assessments via
-        note(). Complete-at-note (no propose verb): the breaker marker the
-        respawn gate uses is the same shape as every board dispatch."""
-        task_id = str(task.get("id"))
-        auditor_slug = "auditor"
-        if self._is_agent_active(auditor_slug):
-            return
-        if await self._pm_respawn_should_gate(auditor_slug, task):
-            return
-        logger.info("Spawning Auditor for decisions-audit review", task_id=task_id)
-        prior_context = await self._board_program_prior_context("decisions_audit")
-        evidence_context = await self._decisions_audit_evidence_context()
-        if await self._decisions_board_evidence_skip(
-            "decisions_audit", evidence_context
-        ):
-            logger.info(
-                "Skipping decisions-audit cycle: verdict volume confidently "
-                "a no-op this window",
-                task_id=task_id,
-            )
-            return
-        await self.spawn_agent(
-            agent_id=auditor_slug,
-            task_id=task["id"],
-            initial_prompt=self._build_decisions_audit_prompt(
-                task, prior_context, evidence_context
-            ),
-            git_context=self._task_git_context(task),
-            spawned_by="_dispatch_decisions_audit_exploration",
-        )
-
-    async def _librarian_mining_context(self) -> str:
-        """Best-effort mining-context read for prompt injection — mirrors
-        ``_sentinel_evidence_context``'s degrade-to-empty-string posture: a
-        read failure here must never block a spawn, only drop the mining
-        section from this cycle's prompt."""
-        try:
-            from roboco.db import get_db_context
-            from roboco.services.librarian_engine import get_librarian_engine
-
-            async with get_db_context() as db:
-                return await get_librarian_engine(db).mining_context()
-        except Exception:
-            logger.warning("librarian: mining-context read failed (best-effort)")
-            return ""
 
     def _board_review_complete(self, task_id: str) -> bool:
         """True once EVERY board reviewer has reviewed and gone idle.
@@ -1163,312 +508,910 @@ class DispatchWorkEngine(_Base):
                 error=str(exc),
             )
 
-    async def _pm_spawn_prompt(
-        self, routing: str, agent_id: str, task: dict[str, Any]
-    ) -> str:
-        """Pick the correct prompt for a classified spawn."""
-        if routing == "dev":
-            return await self._build_dev_prompt(task)
-        if routing == "main_pm" or agent_id == "main-pm":
-            return self._build_main_pm_triage_prompt(task)
-        return self._build_pm_triage_prompt(task)
-
-    async def _dispatch_pm_work(self, client: httpx.AsyncClient) -> None:
+    async def _dispatch_marketing_work(self, client: httpx.AsyncClient) -> None:
         """
-        Dispatch PM triage work - routes new tasks to appropriate level.
+        Dispatch marketing work to head-marketing.
 
-        This is the FIRST dispatcher called - it classifies unassigned tasks
-        and routes them to Board, Main PM, Cell PM, or directly to devs.
-        Also handles already-assigned pending tasks for PM agents.
-
-        Monitors: pending tasks (both assigned and unassigned)
-        Spawns: product-owner, main-pm, be-pm, fe-pm, ux-pm (or devs for simple)
-
-        Mixed dispatch-pause scope: a ``dispatch``-scope pause skips this
-        method's own PM/board-review routing (below) but never the Board
-        Program exploration branch, which is gated independently by
-        ``board_programs`` scope inside ``_dispatch_board_program_
-        exploration``, the two scopes must stay decoupled even though they
-        share this one dispatcher.
-
-        Fetches with ``_PM_DISPATCH_FETCH_LIMIT`` (not the API's 100
-        default): this dispatcher's fetch is NOT team-scoped (see that
-        constant's comment for the silent-truncation class of bug a plain
-        default fetch would reintroduce here).
+        Monitors: pending tasks with team=marketing
+        Spawns: head-marketing
         """
-        from roboco.services.maintenance_pause import PauseScope
-
-        tasks = await self._fetch_tasks(
-            client, "pending", limit=_PM_DISPATCH_FETCH_LIMIT
-        )
-        dispatch_paused = await self._is_paused(PauseScope.DISPATCH)
+        tasks = await self._fetch_tasks(client, "pending", team="marketing")
 
         for task in tasks:
-            if self._is_task_handled_this_tick(task.get("id")):
-                continue
-            # CEO-HELD / externally-owned sources are never PM delivery work
-            # (external-PR review, release proposals, X posts/replies, and a
-            # not-yet-confirmed self-heal fix task) — see _is_held_ceo_source.
-            if _is_held_ceo_source(task):
-                continue
-            # A supersede umbrella whose branch cut is still in progress
-            # (background task or pending reconciliation). Main PM must not
-            # be routed until the branch is ready.
-            if _is_branch_pending(task):
-                continue
-            assigned_to = task.get("assigned_to")
-            if assigned_to:
-                # Every registered Board Program (roadmap / x_feature /
-                # pest_control / periscope / coroner / sentinel / spackle /
-                # scales / mirror / megaphone / librarian / war_room /
-                # barfly / dogfood) is solo-authored and bypasses the
-                # two-reviewer board-review gate — routed via the module-level dict
-                # dispatch table so this chain stays flat as new programs
-                # register (xenon budget). Falls through to the generic
-                # board/PM-assigned handlers only for a non-program task.
-                if not await _dispatch_board_program_exploration(self, task):
-                    if dispatch_paused:
-                        continue
-                    if self._resolve_agent_slug(assigned_to) in self._BOARD_AGENTS:
-                        await self._handle_board_assigned_task(task, assigned_to)
-                    else:
-                        await self._handle_pm_assigned_task(task, assigned_to)
+            # Skip already claimed/assigned tasks
+            if task.get("assigned_to"):
                 continue
 
-            if dispatch_paused:
+            if self._is_agent_active("head-marketing"):
+                # Already running, they'll pick up on scan
                 continue
-            await self._route_unassigned_pm_task(client, task)
 
-    async def _dispatch_revision_coordination_roots(
-        self, client: httpx.AsyncClient
-    ) -> None:
-        """Re-spawn the owning PM for a PM-owned needs_revision task.
-
-        Two cases land a task in ``needs_revision`` owned by a PM rather than a
-        developer: a CEO-rejected coordination root (team=main_pm, product-linked,
-        no repo), and a gate-failed assembled task (a cell→root or root→master PR
-        the in-path reviewer sent back via pr_fail). The dev dispatcher only
-        spawns developers and the closure path only handles paused parents, so
-        without this such a task would sit in needs_revision forever — the
-        deadlock. The PM-ownership filter below scopes this to exactly those: a
-        leaf dev revision stays owned by its developer and is left to the dev
-        dispatcher.
-        """
-        tasks = await self._fetch_tasks(client, "needs_revision")
-        for task in tasks:
-            if self._is_task_handled_this_tick(task.get("id")):
-                continue
-            owner = task.get("assigned_to") or task.get("claimed_by")
-            agent_slug = self._resolve_agent_slug(owner) if owner else None
-            if not agent_slug or self._is_agent_active(agent_slug):
-                continue
-            if get_agent_role(agent_slug) not in ("cell_pm", "main_pm"):
-                continue
-            # Respawn circuit breaker — a revision the PM can never land must
-            # stop respawning the coordinator (progress resets the strikes).
-            if await self._pm_respawn_should_gate(agent_slug, task):
-                continue
             await self.spawn_agent(
-                agent_id=agent_slug,
+                agent_id="head-marketing",
                 task_id=task["id"],
-                initial_prompt=await self._get_prompt_for_agent(agent_slug, task),
+                initial_prompt=self._build_marketing_prompt(task),
                 git_context=self._task_git_context(task),
-                spawned_by="_dispatch_revision_coordination_roots",
+                spawned_by="_dispatch_marketing_work",
             )
+            break
 
-    async def _maybe_spawn_pm_closure(
-        self, client: httpx.AsyncClient, task: dict[str, Any]
-    ) -> None:
-        """If this parent task is ready for closure, spawn its PM."""
-        task_id = task.get("id")
-        if not task_id:
-            return
 
-        if self._is_recently_paused(task):
-            logger.debug(
-                "Skipping closure spawn for recently-paused parent",
-                task_id=task_id,
-                last_heartbeat_at=task.get("last_heartbeat_at"),
+class BoardProgramContextEngine(_Base):
+    """What every Board Program exploration shares: the prior cycles' context
+    for its prompt, and the B36 skip of a cycle whose evidence is a no-op."""
+
+    async def _board_program_prior_context(self, program_key: str) -> str:
+        """Best-effort LEARN read for prompt injection — mirrors
+        ``_pm_respawn_should_gate``'s tracing-gap audit lookup's best-effort
+        DB posture: a read failure here must never block a spawn, only drop
+        the '## Prior cycles' section from this cycle's prompt."""
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.board_programs import get_board_program_engine
+
+            async with get_db_context() as db:
+                return await get_board_program_engine(db).prior_cycle_context(
+                    program_key
+                )
+        except Exception:
+            logger.warning(
+                "board-program: prior-cycle-context read failed (best-effort)",
+                program=program_key,
             )
-            return
+            return ""
 
-        descendants = await self._fetch_all_descendants(client, task_id)
-        # A childless task in awaiting_pm_review IS the PM's review turn —
-        # its dev→qa→doc stages ran on the task itself. Without this, a leaf
-        # review stranded by a restart (the submit-time PM session gone) had
-        # no periodic pickup at all — proven live on the docs-sync leaf
-        # after the 0.25.0 redeploy.
-        is_leaf_review = not descendants and task.get("status") == "awaiting_pm_review"
-        if not is_leaf_review and (
-            not descendants or not self._all_descendants_terminal(descendants)
-        ):
-            return
-        if self._already_promoted_for_closure(task):
-            return
+    async def _decisions_board_evidence_skip(
+        self, program: str, evidence_context: str
+    ) -> bool:
+        """B36 board_evidence_skip: True = this cycle's evidence dump is
+        confidently a no-op, so the spawn is skipped entirely (saves a whole
+        container per no-op cycle). Empty evidence never skips; a below-floor
+        verdict, shadow mode, off, or any failure spawns as today. Self-
+        correcting: a wrong skip delays the cycle one tick and the next tick
+        re-judges."""
+        if not settings.decisions_enabled:
+            return False
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.decisions import pilots_dispatch
 
-        pm_id = self._closure_pm_for_team(task.get("team"))
-        if self._is_agent_active(pm_id):
-            return
+            async with get_db_context() as db:
+                return await pilots_dispatch.board_evidence_skip(
+                    db, program=program, evidence_context=evidence_context
+                )
+        except Exception as exc:
+            logger.warning(
+                "board evidence-skip check failed (best-effort)",
+                program=program,
+                error=str(exc),
+            )
+            return False
 
+
+class ProductOwnerExplorationsEngine(_Base):
+    """The Product Owner's explorations (Roadmap, Pest Control, Scales,
+    Spackle, Dogfood) and the evidence they read: the Periscope brief, the
+    shipped-work digest, the Pest Control and Scales evidence."""
+
+    async def _dispatch_roadmap_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Product-Owner spawn to author a themed roadmap cycle.
+
+        Unlike ``_handle_board_assigned_task`` (the two-reviewer board-review
+        gate), a roadmap cycle is Product-Owner-solo in v1 (see the roadmap
+        spec's non-goals — HoM co-authoring is out of scope), so this bypasses
+        the review-pair machinery and its board-review-complete/Approve & Start
+        handoff entirely: HoM is never spawned for this task, and no CEO
+        "Approve & Start" notification fires. ``propose_roadmap`` (not this
+        dispatcher) marks the cycle authored (a ``roadmap_cycle`` marker); this
+        only ever spawns once per task while that marker is absent, reusing the
+        respawn breaker every
+        other board dispatch uses.
+        """
+        task_id = str(task.get("id"))
+        markers_dict = task.get("orchestration_markers") or {}
+        if markers_dict.get(_markers.ROADMAP_CYCLE) is not None:
+            # Already authored — the CEO roadmap queue owns the rest
+            return
+        po_slug = "product-owner"
+        if self._is_agent_active(po_slug):
+            return
+        if await self._pm_respawn_should_gate(po_slug, task):
+            return
+        logger.info("Spawning Product Owner for roadmap exploration", task_id=task_id)
+        prior_context = await self._board_program_prior_context("roadmap")
+        market_brief_context = await self._periscope_brief_context()
+        digest_context = await self._shipped_work_digest_context()
+        await self.spawn_agent(
+            agent_id=po_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_roadmap_prompt(
+                task, prior_context, market_brief_context, digest_context
+            ),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_roadmap_exploration",
+        )
+
+    async def _dispatch_pest_control_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Product-Owner spawn to author a Pest Control bug hunt.
+
+        Mirrors ``_dispatch_roadmap_exploration`` exactly (PO-solo, the same
+        respawn breaker
+        "already authored" marker pre-check — ``propose_bug_hunt`` marks it
+        via the ``pest_hunt`` marker, not this dispatcher). The extra step is
+        the server-assembled evidence context (rework hotspots + findings-
+        ledger aggregates) the PO cannot gather itself.
+        """
+        task_id = str(task.get("id"))
+        markers_dict = task.get("orchestration_markers") or {}
+        if markers_dict.get(_markers.PEST_HUNT) is not None:
+            # Already authored — the CEO pest-control queue owns the rest
+            return
+        po_slug = "product-owner"
+        if self._is_agent_active(po_slug):
+            return
+        if await self._pm_respawn_should_gate(po_slug, task):
+            return
         logger.info(
-            "Parent task ready for closure",
-            task_id=task_id,
-            descendants_count=len(descendants),
-            pm_id=pm_id,
+            "Spawning Product Owner for pest-control exploration", task_id=task_id
         )
-
-        # The parent auto-paused when its PM idled (by design). Resume
-        # it before respawn so the PM lands actionable (in_progress) and can
-        # directly submit_up / complete / escalate — pre-gateway behaviour the
-        # gateway refactor dropped, which wedged a dogfood run (the model
-        # never issued resume() itself).
-        # A parent that is `blocked` at closure (all descendants
-        # terminal) is an errant/stale block — recover it symmetrically so
-        # the chain can't wedge forever waiting for a PM to manually unblock.
-        handled, auto_submit_reason = await self._closure_handled_without_pm(
-            client, task, task_id, pm_id
-        )
-        if handled:
+        prior_context = await self._board_program_prior_context("pest_control")
+        evidence_context = await self._pest_control_evidence_context()
+        digest_context = await self._shipped_work_digest_context()
+        if await self._decisions_board_evidence_skip(
+            "pest_control",
+            "\n\n".join(filter(None, [evidence_context, digest_context])),
+        ):
+            logger.info(
+                "Skipping pest-control cycle: evidence confidently below threshold",
+                task_id=task_id,
+            )
             return
-
-        pm_id = await self._closure_review_pm(client, task, pm_id)
-
-        # B42 pm_closure_confidence: pop the advisory line stashed by the
-        # auto-submit attempt (empty unless the pilot is ON and confident).
-        advisory_line = getattr(self, "_decisions_closure_advisories", {}).pop(
-            str(task_id), ""
+        await self.spawn_agent(
+            agent_id=po_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_pest_control_prompt(
+                task, prior_context, evidence_context, digest_context
+            ),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_pest_control_exploration",
         )
-        prompt = self._build_pm_closure_prompt(
-            task,
-            descendants,
-            auto_submit_reason=auto_submit_reason,
-            advisory_line=advisory_line,
+
+    async def _pest_control_evidence_context(self) -> str:
+        """Best-effort evidence-gathering read for prompt injection — mirrors
+        ``_board_program_prior_context``'s degrade-to-empty-string posture: a
+        read failure here must never block a spawn, only drop the evidence
+        section from this cycle's prompt."""
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.pest_control_engine import get_pest_control_engine
+
+            async with get_db_context() as db:
+                return await get_pest_control_engine(db).evidence_context()
+        except Exception:
+            logger.warning("pest-control: evidence-context read failed (best-effort)")
+            return ""
+
+    async def _dispatch_scales_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Product-Owner spawn to author a Scales rebalance plan.
+
+        Mirrors ``_dispatch_pest_control_exploration`` exactly (PO-solo, the
+        respawn breaker the
+        same "already authored" marker pre-check — ``propose_rebalance``
+        marks it via the ``rebalance_plan`` marker, not this dispatcher). The
+        extra step is the server-assembled stale-backlog snapshot the PO
+        cannot gather itself.
+        """
+        task_id = str(task.get("id"))
+        markers_dict = task.get("orchestration_markers") or {}
+        if markers_dict.get(_markers.REBALANCE_PLAN) is not None:
+            # Already authored — the CEO Scales queue owns the rest
+            return
+        po_slug = "product-owner"
+        if self._is_agent_active(po_slug):
+            return
+        if await self._pm_respawn_should_gate(po_slug, task):
+            return
+        logger.info("Spawning Product Owner for scales exploration", task_id=task_id)
+        prior_context = await self._board_program_prior_context("scales")
+        evidence_context = await self._scales_evidence_context()
+        if await self._decisions_board_evidence_skip("scales", evidence_context):
+            logger.info(
+                "Skipping scales cycle: evidence confidently below threshold",
+                task_id=task_id,
+            )
+            return
+        await self.spawn_agent(
+            agent_id=po_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_scales_prompt(
+                task, prior_context, evidence_context
+            ),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_scales_exploration",
+        )
+
+    async def _scales_evidence_context(self) -> str:
+        """Best-effort evidence-gathering read for prompt injection — mirrors
+        ``_pest_control_evidence_context``'s degrade-to-empty-string posture: a
+        read failure here must never block a spawn, only drop the stale-
+        backlog snapshot from this cycle's prompt."""
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.scales_engine import get_scales_engine
+
+            async with get_db_context() as db:
+                return await get_scales_engine(db).evidence_context()
+        except Exception:
+            logger.warning("scales: evidence-context read failed (best-effort)")
+            return ""
+
+    async def _dispatch_spackle_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Product-Owner spawn to author a Spackle gap-fill audit.
+
+        Mirrors ``_dispatch_pest_control_exploration`` exactly (PO-solo, the
+        respawn breaker the
+        same "already authored" marker pre-check — ``propose_gap_fill`` marks
+        it via the ``gap_fill`` marker, not this dispatcher). Unlike Pest
+        Control there is no server-assembled evidence context — the spec
+        deliberately keeps Spackle free of a heavy server-side inventory
+        engine; the inventory diffing is the PO's own read-tool work, ordered
+        explicitly by ``_build_spackle_prompt``.
+        """
+        task_id = str(task.get("id"))
+        markers_dict = task.get("orchestration_markers") or {}
+        if markers_dict.get(_markers.GAP_FILL) is not None:
+            # Already authored — the CEO spackle queue owns the rest
+            return
+        po_slug = "product-owner"
+        if self._is_agent_active(po_slug):
+            return
+        if await self._pm_respawn_should_gate(po_slug, task):
+            return
+        logger.info("Spawning Product Owner for spackle exploration", task_id=task_id)
+        prior_context = await self._board_program_prior_context("spackle")
+        digest_context = await self._shipped_work_digest_context()
+        await self.spawn_agent(
+            agent_id=po_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_spackle_prompt(
+                task, prior_context, digest_context
+            ),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_spackle_exploration",
+        )
+
+    async def _dispatch_dogfood_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Product-Owner spawn to walk the product and author a
+        Dogfood friction audit.
+
+        Mirrors ``_dispatch_spackle_exploration`` exactly (PO-solo, the same
+        respawn breaker
+        "already authored" marker pre-check — ``propose_friction_fixes``
+        marks it via the ``friction_fixes`` marker, not this dispatcher).
+        There is no server-assembled evidence context — walking the product
+        live is the PO's own tool work, ordered explicitly by
+        ``_build_dogfood_prompt``. This is the ONE spawn (task-scoped, keyed
+        on ``task["source"] == DOGFOOD_SOURCE``) that also gets the
+        playwright MCP mounted — see ``_is_dogfood_spawn``.
+        """
+        task_id = str(task.get("id"))
+        markers_dict = task.get("orchestration_markers") or {}
+        if markers_dict.get(_markers.FRICTION_FIXES) is not None:
+            # Already authored — the CEO dogfood queue owns the rest
+            return
+        po_slug = "product-owner"
+        if self._is_agent_active(po_slug):
+            return
+        if await self._pm_respawn_should_gate(po_slug, task):
+            return
+        logger.info("Spawning Product Owner for dogfood exploration", task_id=task_id)
+        prior_context = await self._board_program_prior_context("dogfood")
+        await self.spawn_agent(
+            agent_id=po_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_dogfood_prompt(task, prior_context),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_dogfood_exploration",
+        )
+
+    async def _periscope_brief_context(self) -> str:
+        """Best-effort "latest market brief" read for the roadmap exploration
+        prompt's cross-role injection (spec §4) — mirrors
+        ``_pest_control_evidence_context``'s degrade-to-empty-string posture:
+        a read failure here must never block the roadmap spawn, only drop
+        the brief section from this cycle's prompt."""
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.periscope_engine import get_periscope_engine
+
+            async with get_db_context() as db:
+                return await get_periscope_engine(db).latest_brief_context()
+        except Exception:
+            logger.warning("periscope: latest-brief read failed (best-effort)")
+            return ""
+
+    async def _shipped_work_digest_context(self) -> str:
+        """Best-effort shipped-this-week digest read for the roadmap, Pest
+        Control, and Spackle exploration prompts — mirrors
+        ``_megaphone_digest_context``'s degrade-to-empty-string posture: a read
+        failure here must never block the spawn, only drop the digest section
+        from this cycle's prompt. Calls the shared helper directly so the
+        Product Owner's prompts don't depend on ``MegaphoneEngine``."""
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.shipped_work_digest import shipped_work_digest
+
+            slug = (settings.self_heal_project_slug or "roboco-api").strip()
+            async with get_db_context() as db:
+                return await shipped_work_digest(db, slug)
+        except Exception:
+            logger.warning(
+                "board-program: shipped-work digest read failed (best-effort)"
+            )
+            return ""
+
+
+class MarketingExplorationsEngine(_Base):
+    """The Head of Marketing's explorations: War Room, Mirror, feature
+    spotlight, Periscope, Barfly and Megaphone (with its digest)."""
+
+    async def _dispatch_war_room_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Head-of-Marketing spawn to design ONE War Room campaign
+        and author it via ``propose_campaign``.
+
+        Like ``_dispatch_coroner_exploration`` (not the roadmap/pest-control
+        "already authored" marker shape): no pre-check is needed —
+        ``propose_campaign`` completes this task atomically, so a successful
+        call stops it matching the PENDING fetch on the next tick. Reuses the
+        respawn breaker every
+        other board dispatch uses. EVENT-triggered (spec §4): this task only
+        ever exists because a release just published or the CEO called "run
+        now" — there is no LEARN "prior cycles" injection here (no cron
+        cadence to have learned from, mirrors Coroner). The task's own
+        ``war_room_brief`` marker (release version + highlights, or {} for a
+        blank on-demand cycle) is already server-assembled at origination
+        time — no extra DB read is needed to pass it into the prompt.
+        """
+        task_id = str(task.get("id"))
+        hom_slug = "head-marketing"
+        if self._is_agent_active(hom_slug):
+            return
+        if await self._pm_respawn_should_gate(hom_slug, task):
+            return
+        logger.info(
+            "Spawning Head of Marketing for War Room campaign planning",
+            task_id=task_id,
         )
         await self.spawn_agent(
-            agent_id=pm_id,
-            task_id=task_id,
-            initial_prompt=prompt,
+            agent_id=hom_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_war_room_prompt(task),
             git_context=self._task_git_context(task),
-            spawned_by="_maybe_spawn_pm_closure",
+            spawned_by="_dispatch_war_room_exploration",
         )
 
-    async def _closure_review_pm(
-        self, client: httpx.AsyncClient, task: dict[str, Any], default_pm: str
-    ) -> str:
-        """The PM to spawn for a closure parent already at awaiting_pm_review.
+    async def _dispatch_mirror_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Head-of-Marketing spawn to author a Mirror positioning
+        audit.
 
-        CLAIM_RULES has no claim() edge into this status, so pr_pass's/
-        mark_pr_created's own PM resolution, or a stale escalate/
-        unblock(restore=True) round trip, may have left assigned_to wrong
-        or unset — assign_review_pm corrects it. ``default_pm`` (the
-        caller's already-correct ``_closure_pm_for_team`` value) is kept on
-        ANY failure: ``_ensure_review_pm_assigned`` returns ``None`` on both
-        an unresolvable owner and a transient route/transport error, and
-        adopting a stale fallback there would spawn the wrong PM in exactly
-        the incident shape this fix targets (a task mis-assigned to main-pm
-        that should be be-pm). A no-op for any other status — ownership
-        there already came from the normal claim/delegate flow.
+        Mirrors ``_dispatch_spackle_exploration`` exactly (HoM-solo, the same
+        respawn breaker
+        "already authored" marker pre-check — ``propose_messaging_fixes``
+        marks it via the ``messaging_fixes`` marker, not this dispatcher).
+        Like Spackle there is no server-assembled evidence context — the
+        messaging audit (README claims vs shipped features, docs-site
+        promises vs code, charter alignment) is the HoM's own read-tool
+        work, ordered explicitly by ``_build_mirror_prompt``.
         """
-        if task.get("status") != "awaiting_pm_review":
-            return default_pm
-        resolved = await self._ensure_review_pm_assigned(client, task)
-        return resolved or default_pm
-
-    async def _dispatch_pm_closure_work(self, client: httpx.AsyncClient) -> None:
-        """
-        Dispatch PM closure work - check parent tasks ready to close.
-
-        When all subtasks of a parent task are completed, spawn the PM
-        to review and close the parent task.
-
-        Monitors: tasks with completed subtasks but parent still open
-        Spawns: be-pm, fe-pm, ux-pm, main-pm (based on parent team)
-        """
-        # Find parent tasks that might have children ready for closure
-        # Include "paused" - PM pauses while waiting, respawned when subtasks done
-        # Include "awaiting_pm_review" - parent awaiting review when children done
-        parent_statuses = ["claimed", "in_progress", "paused", "awaiting_pm_review"]
-
-        for status in parent_statuses:
-            tasks = await self._fetch_tasks(client, status)
-            for task in tasks:
-                await self._maybe_spawn_pm_closure(client, task)
-
-    async def _dispatch_vault_curation_work(self, _client: httpx.AsyncClient) -> None:
-        """Obsidian-vault root-completion hook: spawn the Auditor to write a
-        just-completed root task-tree's narrative.
-
-        Gated on ``ROBOCO_OBSIDIAN_VAULT_ENABLED``; a no-op scan otherwise.
-        Owns ONLY this vault-curation trigger — distinct from
-        ``_dispatch_audit_work`` (scheduled sweeps + alert producers, owned by
-        a separate, queued fleet task). ``_client`` is accepted for
-        dispatcher-tuple shape parity but unused — this reads the DB
-        directly (see ``TaskService.list_completed_roots_pending_vault_curation``).
-        """
-        if not settings.obsidian_vault_enabled:
+        task_id = str(task.get("id"))
+        markers_dict = task.get("orchestration_markers") or {}
+        if markers_dict.get(_markers.MESSAGING_FIXES) is not None:
+            # Already authored — the CEO mirror queue owns the rest
             return
-        from roboco.db.base import get_db_context
-        from roboco.services.task import TaskService
+        hom_slug = "head-marketing"
+        if self._is_agent_active(hom_slug):
+            return
+        if await self._pm_respawn_should_gate(hom_slug, task):
+            return
+        logger.info(
+            "Spawning Head of Marketing for mirror exploration", task_id=task_id
+        )
+        prior_context = await self._board_program_prior_context("mirror")
+        await self.spawn_agent(
+            agent_id=hom_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_mirror_prompt(task, prior_context),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_mirror_exploration",
+        )
 
-        async with get_db_context() as db:
-            candidates = await TaskService(
-                db
-            ).list_completed_roots_pending_vault_curation()
-            for task in candidates:
-                await self._maybe_spawn_vault_curation(str(task.id), task.title)
+    async def _dispatch_feature_spotlight_exploration(
+        self, task: dict[str, Any]
+    ) -> None:
+        """One-shot Head-of-Marketing spawn to investigate + author a spotlight.
 
-    async def _maybe_spawn_vault_curation(self, task_id: str, title: str) -> None:
-        """One-shot Auditor spawn for one completed root task.
-
-        Mirrors ``_dispatch_board_reviewer``'s guard shape: an in-memory
-        one-shot tracker (reuses ``_board_dispatched``) for the same-process
-        race, plus a durable ``vault_curation_dispatched`` marker so a
-        restart can't re-spawn a root another process instance already
-        handled. Spawned WITHOUT a bound task_id (mirrors
-        ``_dispatch_audit_work``'s alert spawn) — the root task is
-        `completed`, so binding it would trip the readiness gate's
-        role-for-status check; the task id is named in the prompt instead,
-        and ``curate_vault`` takes it as an explicit argument.
+        Simpler than _dispatch_roadmap_exploration: no "already authored" marker
+        pre-check is needed here, because a successful propose_feature_spotlight()
+        completes this task atomically (it stops matching the PENDING fetch on the
+        next tick) — unlike the roadmap cycle, which stays open across the CEO's
+        per-item decisions and needs the marker check to avoid re-spawning the PO
+        after authoring. Reuses the respawn breaker every other board dispatch uses.
         """
+        task_id = str(task.get("id"))
+        hom_slug = "head-marketing"
+        if self._is_agent_active(hom_slug):
+            return
+        if await self._pm_respawn_should_gate(hom_slug, task):
+            return
+        logger.info(
+            "Spawning Head of Marketing for feature-spotlight exploration",
+            task_id=task_id,
+        )
+        prior_context = await self._board_program_prior_context("x_feature")
+        await self.spawn_agent(
+            agent_id=hom_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_feature_spotlight_prompt(task, prior_context),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_feature_spotlight_exploration",
+        )
+
+    async def _dispatch_periscope_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Head-of-Marketing spawn to research the market and file a
+        Periscope brief.
+
+        Mirrors ``_dispatch_feature_spotlight_exploration``: no "already
+        authored" marker pre-check is needed — ``propose_market_brief``
+        completes this task atomically (the x_feature complete-at-propose
+        asymmetry), so it stops matching the PENDING fetch on the next tick.
+        Reuses respawn breaker every other board dispatch uses.
+        """
+        task_id = str(task.get("id"))
+        hom_slug = "head-marketing"
+        if self._is_agent_active(hom_slug):
+            return
+        if await self._pm_respawn_should_gate(hom_slug, task):
+            return
+        logger.info(
+            "Spawning Head of Marketing for periscope exploration", task_id=task_id
+        )
+        prior_context = await self._board_program_prior_context("periscope")
+        await self.spawn_agent(
+            agent_id=hom_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_periscope_prompt(task, prior_context),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_periscope_exploration",
+        )
+
+    async def _dispatch_barfly_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Head-of-Marketing spawn to review Barfly's screened X
+        conversations and draft replies.
+
+        Mirrors ``_dispatch_periscope_exploration``: no "already authored"
+        marker pre-check is needed — ``propose_conversation_replies``
+        completes this task atomically (the x_feature/periscope complete-at-
+        propose asymmetry, multiplied across every materialized reply), so
+        it stops matching the PENDING fetch on the next tick. Reuses the
+        respawn breaker every
+        other board dispatch uses.
+        """
+        task_id = str(task.get("id"))
+        hom_slug = "head-marketing"
+        if self._is_agent_active(hom_slug):
+            return
+        if await self._pm_respawn_should_gate(hom_slug, task):
+            return
+        logger.info(
+            "Spawning Head of Marketing for barfly exploration", task_id=task_id
+        )
+        prior_context = await self._board_program_prior_context("barfly")
+        if await self._decisions_board_evidence_skip("barfly", prior_context):
+            logger.info(
+                "Skipping barfly cycle: screened conversations "
+                "confidently below threshold",
+                task_id=task_id,
+            )
+            return
+        await self.spawn_agent(
+            agent_id=hom_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_barfly_prompt(task, prior_context),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_barfly_exploration",
+        )
+
+    async def _dispatch_megaphone_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Head-of-Marketing spawn to pick ONE editorial angle and
+        file a Megaphone post.
+
+        Mirrors ``_dispatch_periscope_exploration``: no "already authored"
+        marker pre-check is needed — ``propose_editorial_post`` completes
+        this task atomically (the x_feature/periscope complete-at-propose
+        asymmetry), so it stops matching the PENDING fetch on the next tick.
+        Reuses respawn breaker every other board dispatch uses. The extra step is the
+        server-assembled shipped-this-week digest (completed tasks +
+        CHANGELOG Unreleased bullets) the Head of Marketing cannot gather
+        itself — mirrors ``_dispatch_pest_control_exploration``'s
+        evidence-context shape.
+        """
+        task_id = str(task.get("id"))
+        hom_slug = "head-marketing"
+        if self._is_agent_active(hom_slug):
+            return
+        if await self._pm_respawn_should_gate(hom_slug, task):
+            return
+        logger.info(
+            "Spawning Head of Marketing for megaphone exploration", task_id=task_id
+        )
+        prior_context = await self._board_program_prior_context("megaphone")
+        digest_context = await self._megaphone_digest_context()
+        await self.spawn_agent(
+            agent_id=hom_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_megaphone_prompt(
+                task, prior_context, digest_context
+            ),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_megaphone_exploration",
+        )
+
+    async def _megaphone_digest_context(self) -> str:
+        """Best-effort shipped-this-week digest read for prompt injection —
+        mirrors ``_sentinel_evidence_context``'s degrade-to-empty-string
+        posture: a read failure here must never block the spawn, only drop
+        the digest section from this cycle's prompt."""
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.megaphone_engine import get_megaphone_engine
+
+            async with get_db_context() as db:
+                return await get_megaphone_engine(db).digest_context()
+        except Exception:
+            logger.warning("megaphone: digest-context read failed (best-effort)")
+            return ""
+
+
+class AuditorExplorationsEngine(_Base):
+    """The Auditor's explorations (Coroner, Sentinel, Librarian, the decisions
+    audit) and the incident, evidence and mining context each reads."""
+
+    async def _dispatch_coroner_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Auditor spawn to autopsy an incident and author ONE
+        postmortem via ``propose_postmortem``.
+
+        Like ``_dispatch_feature_spotlight_exploration`` (not the roadmap/
+        pest-control "already authored" marker shape): no pre-check is
+        needed — ``propose_postmortem`` completes this task atomically, so a
+        successful call stops it matching the PENDING fetch on the next
+        tick. Reuses respawn breaker every other board dispatch uses. EVENT-triggered
+        (spec §4): this task only ever exists because
+        ``CoronerEngine.open_for_incident`` opened it — there is no LEARN
+        "prior cycles" injection here (no cron cadence to have learned from).
+        """
+        task_id = str(task.get("id"))
         auditor_slug = "auditor"
         if self._is_agent_active(auditor_slug):
             return
-        key = (auditor_slug, task_id)
-        if key in self._board_dispatched:
+        if await self._pm_respawn_should_gate(auditor_slug, task):
             return
-        self._board_dispatched.add(key)
-        await self._mark_vault_curation_dispatched(task_id)
-        logger.info("Spawning Auditor for vault curation", task_id=task_id)
+        logger.info("Spawning Auditor for Coroner postmortem", task_id=task_id)
+        incident_context = await self._coroner_incident_context(task)
+        if await self._decisions_board_evidence_skip("coroner", incident_context):
+            logger.info(
+                "Skipping coroner cycle: incident evidence confidently below threshold",
+                task_id=task_id,
+            )
+            return
         await self.spawn_agent(
             agent_id=auditor_slug,
-            initial_prompt=self._build_vault_curation_prompt(task_id, title),
-            spawned_by="_maybe_spawn_vault_curation",
+            task_id=task["id"],
+            initial_prompt=self._build_coroner_prompt(task, incident_context),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_coroner_exploration",
         )
 
-    @staticmethod
-    async def _mark_vault_curation_dispatched(task_id: str) -> None:
-        """Persist the one-shot marker so a restart never re-spawns this
-        root. Best-effort: a failure here only risks a harmless duplicate
-        Auditor spawn (curate_vault's write is idempotent), never a crash."""
-        from uuid import UUID
-
-        from roboco.db.base import get_db_context
-        from roboco.foundation.policy.content import markers
-        from roboco.services.task import TaskService
-
+    async def _coroner_incident_context(self, task: dict[str, Any]) -> str:
+        """Best-effort evidence-gathering read for prompt injection — mirrors
+        ``_pest_control_evidence_context``'s degrade-to-empty-string posture."""
+        markers_dict = task.get("orchestration_markers") or {}
+        incident_ref = markers_dict.get(_markers.CORONER_INCIDENT) or {}
+        incident_task_id = incident_ref.get("incident_task_id")
+        if not incident_task_id:
+            return ""
         try:
+            from uuid import UUID as _UUID
+
+            from roboco.db import get_db_context
+            from roboco.services.coroner_engine import get_coroner_engine
+
             async with get_db_context() as db:
-                svc = TaskService(db)
-                task = await svc.get(UUID(task_id))
-                if task is not None:
-                    markers.mark_vault_curation_dispatched(task)
-                    await db.commit()
-        except Exception as exc:
-            logger.warning(
-                "Failed to persist vault_curation_dispatched marker",
+                return await get_coroner_engine(db).incident_context(
+                    _UUID(str(incident_task_id))
+                )
+        except Exception:
+            logger.warning("coroner: incident-context read failed (best-effort)")
+            return ""
+
+    async def _dispatch_sentinel_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Auditor spawn to assess org-wide quality drift and file a
+        Sentinel report.
+
+        Mirrors ``_dispatch_periscope_exploration``: no "already authored"
+        marker pre-check is needed — ``propose_quality_report`` completes
+        this task atomically (the x_feature/periscope complete-at-propose
+        asymmetry), so it stops matching the PENDING fetch on the next tick.
+        Reuses respawn breaker every other board dispatch uses. The extra step is the
+        server-assembled drift evidence (waived-findings trend, open-
+        findings-by-severity, conventions hotspots, budget snapshot) the
+        Auditor cannot gather itself — mirrors
+        ``_dispatch_pest_control_exploration``'s evidence-context shape.
+        """
+        task_id = str(task.get("id"))
+        auditor_slug = "auditor"
+        if self._is_agent_active(auditor_slug):
+            return
+        if await self._pm_respawn_should_gate(auditor_slug, task):
+            return
+        logger.info("Spawning Auditor for sentinel exploration", task_id=task_id)
+        prior_context = await self._board_program_prior_context("sentinel")
+        evidence_context = await self._sentinel_evidence_context()
+        if await self._decisions_board_evidence_skip(
+            "sentinel",
+            "\n\n".join(filter(None, [prior_context, evidence_context])),
+        ):
+            logger.info(
+                "Skipping sentinel cycle: evidence confidently below threshold",
                 task_id=task_id,
-                error=str(exc),
             )
+            return
+        await self.spawn_agent(
+            agent_id=auditor_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_sentinel_prompt(
+                task, prior_context, evidence_context
+            ),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_sentinel_exploration",
+        )
+
+    async def _sentinel_evidence_context(self) -> str:
+        """Best-effort evidence-gathering read for prompt injection — mirrors
+        ``_pest_control_evidence_context``'s degrade-to-empty-string posture:
+        a read failure here must never block a spawn, only drop the evidence
+        section from this cycle's prompt."""
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.sentinel_engine import get_sentinel_engine
+
+            async with get_db_context() as db:
+                return await get_sentinel_engine(db).evidence_context()
+        except Exception:
+            logger.warning("sentinel: evidence-context read failed (best-effort)")
+            return ""
+
+    async def _dispatch_librarian_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Auditor spawn to mine journals/learnings and draft
+        playbooks (Librarian, Board Program).
+
+        Mirrors ``_dispatch_sentinel_exploration``: no "already authored"
+        marker pre-check is needed — ``propose_playbook_drafts`` completes
+        this task atomically (the x_feature/periscope/sentinel complete-at-
+        propose asymmetry), so it stops matching the PENDING fetch on the
+        next tick. Reuses the respawn breaker every other board dispatch
+        uses. The extra step is
+        the server-assembled mining context (recurring learning-journal
+        topics + existing playbook titles) the Auditor cannot gather itself
+        — mirrors ``_dispatch_sentinel_exploration``'s evidence-context
+        shape.
+        """
+        task_id = str(task.get("id"))
+        auditor_slug = "auditor"
+        if self._is_agent_active(auditor_slug):
+            return
+        if await self._pm_respawn_should_gate(auditor_slug, task):
+            return
+        logger.info("Spawning Auditor for librarian exploration", task_id=task_id)
+        prior_context = await self._board_program_prior_context("librarian")
+        mining_context = await self._librarian_mining_context()
+        if await self._decisions_board_evidence_skip(
+            "librarian",
+            "\n\n".join(filter(None, [prior_context, mining_context])),
+        ):
+            logger.info(
+                "Skipping librarian cycle: mining evidence confidently below threshold",
+                task_id=task_id,
+            )
+            return
+        await self.spawn_agent(
+            agent_id=auditor_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_librarian_prompt(
+                task, prior_context, mining_context
+            ),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_librarian_exploration",
+        )
+
+    async def _decisions_audit_evidence_context(self) -> str:
+        """Best-effort evidence read for the decisions-audit prompt (mirrors
+        ``_librarian_mining_context``'s degrade-to-empty-string posture)."""
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.decisions_audit_engine import (
+                get_decisions_audit_engine,
+            )
+
+            async with get_db_context() as db:
+                return await get_decisions_audit_engine(db).evidence_context()
+        except Exception:
+            logger.warning("decisions-audit: evidence read failed (best-effort)")
+            return ""
+
+    async def _dispatch_decisions_audit_exploration(self, task: dict[str, Any]) -> None:
+        """One-shot Auditor spawn for the daily decisions-audit review
+        (Board Program #15): review the persisted decision_log aggregates
+        injected as evidence and record per-pilot health assessments via
+        note(). Complete-at-note (no propose verb): the breaker marker the
+        respawn gate uses is the same shape as every board dispatch."""
+        task_id = str(task.get("id"))
+        auditor_slug = "auditor"
+        if self._is_agent_active(auditor_slug):
+            return
+        if await self._pm_respawn_should_gate(auditor_slug, task):
+            return
+        logger.info("Spawning Auditor for decisions-audit review", task_id=task_id)
+        prior_context = await self._board_program_prior_context("decisions_audit")
+        evidence_context = await self._decisions_audit_evidence_context()
+        if await self._decisions_board_evidence_skip(
+            "decisions_audit", evidence_context
+        ):
+            logger.info(
+                "Skipping decisions-audit cycle: verdict volume confidently "
+                "a no-op this window",
+                task_id=task_id,
+            )
+            return
+        await self.spawn_agent(
+            agent_id=auditor_slug,
+            task_id=task["id"],
+            initial_prompt=self._build_decisions_audit_prompt(
+                task, prior_context, evidence_context
+            ),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_decisions_audit_exploration",
+        )
+
+    async def _librarian_mining_context(self) -> str:
+        """Best-effort mining-context read for prompt injection — mirrors
+        ``_sentinel_evidence_context``'s degrade-to-empty-string posture: a
+        read failure here must never block a spawn, only drop the mining
+        section from this cycle's prompt."""
+        try:
+            from roboco.db import get_db_context
+            from roboco.services.librarian_engine import get_librarian_engine
+
+            async with get_db_context() as db:
+                return await get_librarian_engine(db).mining_context()
+        except Exception:
+            logger.warning("librarian: mining-context read failed (best-effort)")
+            return ""
+
+
+class DevDispatchEngine(_Base):
+    """Waking developers: the dev work scan and its per-task dispatch (owner
+    by status, the HITL skip, the existing-owner respawn, the
+    role-to-task-type guard, the pending pre-assigned spawn), and the respawn
+    or release of a claimed task with no agent."""
+
+    @staticmethod
+    def _resolve_dev_owner_uuid(task: dict[str, Any]) -> str | None:
+        """Pick the right owner UUID for dev dispatch based on status.
+
+        Always falls back to ``claimed_by`` when ``assigned_to`` is missing, so
+        a task left half-reaped (assigned_to nulled but still claimed) still
+        dispatches to its rightful owner instead of going dormant — the
+        orchestrator knows who to call even when one ownership field was cleared.
+        """
+        status = task.get("status")
+        if status in ("claimed", "blocked"):
+            return task.get("claimed_by") or task.get("assigned_to")
+        return task.get("assigned_to") or task.get("claimed_by")
+
+    @staticmethod
+    def _is_hitl_blocked(task: dict[str, Any]) -> bool:
+        """HITL-blocked tasks wait for human resolution; skip respawn."""
+        return (
+            task.get("status") == "blocked"
+            and task.get("blocker_resolver_type") == "human"
+        )
+
+    async def _handle_dev_existing_owner(
+        self, task: dict[str, Any], status: str, agent_slug: str
+    ) -> None:
+        """Respawn existing dev for needs_revision / in_progress / claimed."""
+        # A `blocked` task is waiting for its blocker to clear (PM / dependency);
+        # the owner has no legal move from `blocked`, so respawning it does
+        # nothing but churn. It is revived only when unblocked back to
+        # in_progress, or released to the pool (unclaim) for re-delegation.
+        if status == "blocked":
+            return
+        if status in (
+            "in_progress",
+            "claimed",
+        ) and not self._is_agent_active(agent_slug):
+            logger.info(
+                "Respawning agent for orphaned task",
+                task_id=task["id"],
+                agent=agent_slug,
+                status=status,
+            )
+        await self._respawn_dev_if_inactive(task, agent_slug)
+
+    @staticmethod
+    def _dev_dispatch_role_matches(task: dict[str, Any], agent_slug: str) -> bool:
+        """Return True if the assignee role matches the task's task_type.
+
+        Dev dispatcher only spawns developer-role agents. A doc/qa task
+        assigned to a dev (or vice versa) should be flagged, not silently
+        spawned. Returns True when the type is unknown or the assignee role
+        is unknown — the validation runs as a guard, not a strict gate, so
+        an unknown classification doesn't block work that would otherwise
+        proceed.
+        """
+        role = get_agent_role(agent_slug)
+        if role == "unknown":
+            return True
+        task_type = task.get("task_type")
+        if task_type == "documentation":
+            return role == "documenter"
+        # DevOps authors infra work, which is code-typed like a developer's
+        # task; a doc-typed assignment is as much a mismatch for it as for a
+        # dev. The dispatcher's flag gate decides whether devops is spawnable
+        # at all: this matcher only answers the type question.
+        if role == "devops":
+            return settings.devops_enabled
+        # `code` / `research` / `planning` / `administrative` / `design` all
+        # route through dev or PM; only the doc-task case is unambiguous.
+        return role == "developer"
+
+    def _claimed_task_needs_agent(self, task: dict[str, Any]) -> str | None:
+        """Return the assignee slug to (re)spawn for an agentless claimed task.
+
+        A task left CLAIMED/IN_PROGRESS with an assignee but no running
+        container (e.g. a reassignment that didn't spawn) is invisibly stuck —
+        only PENDING tasks get fresh dispatch, and the heartbeat reaper can't
+        see it because the claim seeded a fresh heartbeat. Returns the assignee
+        slug when the task has sat past the grace window with no active agent;
+        ``None`` when it is healthy, too fresh, or HITL-blocked.
+        """
+        if self._is_hitl_blocked(task):
+            return None
+        owner_uuid = task.get("assigned_to") or task.get("claimed_by")
+        if not owner_uuid:
+            return None
+        agent_slug = self._resolve_agent_slug(str(owner_uuid))
+        # Human-only roles (CEO / prompter / secretary) are never containers —
+        # there is no agent to respawn. Leave the task as-is for the human to
+        # act on through the panel; do NOT release it to pending (that would
+        # re-route a human-owned task to a PM). A stale slug (None role) is NOT
+        # skipped here — a stale-slug claim SHOULD be released to pending so a
+        # real agent can reclaim it (recovery, not spawning). See spawn_agent's
+        # human-role guard for the structural backstop.
+        if is_human_only_role(role_for_slug_or_none(agent_slug)):
+            return None
+        # The assignee is running, and on THIS task — healthy.
+        instance = self._instances.get(agent_slug)
+        if instance is not None and instance.state == AgentState.ACTIVE:
+            return None
+        # Grace window: a just-claimed task whose spawn is still in flight must
+        # not be churned. _time_in_state under-counts (any update bumps it),
+        # which biases toward "agent is working" — exactly the safe direction.
+        age = self._time_in_state(task)
+        grace = settings.claimed_no_agent_grace_seconds
+        if age is None or age.total_seconds() < grace:
+            return None
+        return agent_slug
 
     async def _dispatch_dev_work(self, client: httpx.AsyncClient) -> None:
         """
@@ -1650,6 +1593,54 @@ class DispatchWorkEngine(_Base):
         # Pending tasks pre-assigned by PM.
         await self._spawn_pending_dev(client, task, agent_slug)
 
+    async def _dispatch_claimed_without_agent(self, client: httpx.AsyncClient) -> None:
+        """(Re)spawn or release claimed/in_progress tasks that have no agent.
+
+        Net for the invisible-stuck case the other dispatchers miss: a task
+        held CLAIMED/IN_PROGRESS by an assignee with no running container. If
+        the assignee is a known spawnable agent, respawn it on the task; if not
+        (unknown slug — e.g. a stale UUID), release the claim to PENDING so the
+        normal routing reclaims it with a role match.
+
+        Throttle: spawns at most ONE container per tick (``break`` after the
+        first respawn), matching every sibling dispatcher. A restart leaves
+        many agentless claims at once; without the cap this single tick would
+        burst-spawn a container for every one of them. The release-to-pending
+        path spawns nothing, so it does not consume the per-tick spawn budget
+        and keeps draining stale claims.
+        """
+        tasks = await self._fetch_tasks(client, ["claimed", "in_progress"])
+        for task in tasks:
+            task_id = task.get("id")
+            if self._is_task_handled_this_tick(task_id):
+                continue
+            agent_slug = self._claimed_task_needs_agent(task)
+            if agent_slug is None:
+                continue
+            if get_agent_role(agent_slug) in (None, "unknown"):
+                # Unknown assignee — no agent to spawn; release for re-dispatch.
+                await self._release_claim_to_pending(str(task_id))
+                continue
+            logger.warning(
+                "Claimed/in_progress task has no running agent; respawning assignee",
+                task_id=task_id,
+                agent=agent_slug,
+                status=task.get("status"),
+            )
+            await self.spawn_agent(
+                agent_id=agent_slug,
+                task_id=str(task_id),
+                initial_prompt=await self._get_prompt_for_agent(agent_slug, task),
+                git_context=self._task_git_context(task),
+                spawned_by="_dispatch_claimed_without_agent",
+            )
+            break
+
+
+class QADispatchEngine(_Base):
+    """Waking QA: the assigned QA spawn, with the B35 queue order and review
+    depth directive."""
+
     async def _spawn_assigned_qa(self, task: dict[str, Any], assigned_to: str) -> bool:
         """If task.assigned_to is a QA slug, spawn/skip-if-running; else False.
 
@@ -1829,6 +1820,308 @@ class DispatchWorkEngine(_Base):
                 "and scope creep"
             )
         return f"\n\nREVIEW DEPTH DIRECTIVE (system-scored): {line}.\n"
+
+
+class DocDispatchEngine(_Base):
+    """Waking the documenter: auto-assign a doc task, or respawn its assignee."""
+
+    async def _dispatch_doc_work(self, client: httpx.AsyncClient) -> None:
+        """
+        Dispatch documentation + developer work during the parallel
+        awaiting_documentation phase.
+
+        `awaiting_documentation` requires BOTH docs_complete=True AND
+        pr_created=True to advance to awaiting_pm_review. Doc writes the
+        docs; original developer pushes and creates the PR. Whoever
+        finishes last triggers the state transition. Previously this
+        dispatcher only spawned the documenter — if the documenter
+        finished first, the task would sit indefinitely with pr_created=
+        False and nothing would spawn the dev to finish the other half.
+
+        Monitors: awaiting_documentation tasks
+        Spawns:
+            - documenter (be-doc, fe-doc, ux-doc) if docs_complete=False
+            - original_developer if pr_created=False (tracked in
+              quick_context as "original_developer:<uuid>")
+        """
+        # Fetch both `awaiting_documentation` and `claimed` because the
+        # doc's claim transitions status from awaiting_documentation →
+        # claimed. Without including `claimed` we'd miss tasks where doc
+        # already grabbed it but pr_created is still false (dev hasn't
+        # pushed/created PR yet). The `original_developer:` marker in
+        # quick_context identifies tasks that are actually in the parallel
+        # phase vs unrelated claimed tasks.
+        # Not team-scoped at fetch time, so it takes the same raised limit
+        # as `_dispatch_pm_work`.
+        tasks = await self._fetch_tasks(
+            client,
+            ["awaiting_documentation", "claimed"],
+            limit=_PM_DISPATCH_FETCH_LIMIT,
+        )
+        for task in tasks:
+            if self._is_task_handled_this_tick(task.get("id")):
+                continue
+            await self._doc_dispatch_one(client, task)
+
+    async def _auto_assign_doc(
+        self, client: httpx.AsyncClient, task: dict[str, Any], team: str
+    ) -> None:
+        """
+        Auto-select and spawn a documenter for an unassigned awaiting_documentation task
+        """
+        agent_id = self._select_agent_for_cell(team, "doc")
+        if not agent_id or self._is_agent_active(agent_id):
+            return
+
+        # Respawn circuit breaker — before claiming, so a wedged doc task
+        # doesn't churn claims while the gate is open.
+        if await self._pm_respawn_should_gate(agent_id, task):
+            return
+
+        async def _spawn() -> None:
+            await self.spawn_agent(
+                agent_id=agent_id,
+                task_id=task["id"],
+                initial_prompt=self._build_doc_prompt(task),
+                git_context=self._task_git_context(task),
+                spawned_by="_auto_assign_doc",
+            )
+
+        claimed = await self._claim_and_spawn_guarded(client, task, agent_id, _spawn)
+        if claimed is False:
+            logger.warning(
+                "Failed to claim awaiting_documentation task for doc",
+                task_id=task["id"],
+                agent_id=agent_id,
+            )
+
+    async def _doc_dispatch_one(
+        self,
+        client: httpx.AsyncClient,
+        task: dict[str, Any],
+    ) -> None:
+        """Process a single task for `_dispatch_doc_work`."""
+        team = task.get("team")
+        if team not in ["backend", "frontend", "ux_ui"]:
+            return
+
+        dev_uuid = (task.get("orchestration_markers") or {}).get("original_developer")
+        status = task.get("status")
+
+        # Only consider `claimed` tasks actually in the doc/PR parallel
+        # phase. See `_is_parallel_phase_claim` docstring for the why.
+        if status == "claimed" and not self._is_parallel_phase_claim(task, dev_uuid):
+            return
+
+        # Developer half: push + create PR
+        await self._respawn_dev_for_pr_half(task, dev_uuid)
+
+        # Documenter half: write docs
+        if task.get("docs_complete"):
+            return
+
+        if await self._respawn_doc_if_assigned(task):
+            return
+
+        # Auto-assign a documenter only when still in awaiting_documentation.
+        if status != "awaiting_documentation":
+            return
+
+        await self._auto_assign_doc(client, task, team)
+
+    async def _respawn_doc_if_assigned(self, task: dict[str, Any]) -> bool:
+        """If task is assigned to an inactive documenter, respawn them.
+
+        Returns True when the task is already assigned (whether or not a
+        respawn happened) so the caller can stop processing. Returns
+        False when the task is unassigned so the caller can auto-select
+        a documenter for it.
+        """
+        assigned_to = task.get("assigned_to")
+        if not assigned_to:
+            return False
+        assigned_slug = self._resolve_agent_slug(assigned_to)
+        if self._is_agent_active(assigned_slug):
+            return True
+        if assigned_slug and "doc" in assigned_slug:
+            # Respawn circuit breaker — the fe-doc 26-respawn loop ran on this
+            # exact path unguarded; the gate notifies the CEO once it trips.
+            if await self._pm_respawn_should_gate(assigned_slug, task):
+                return True
+            await self.spawn_agent(
+                agent_id=assigned_slug,
+                task_id=task["id"],
+                initial_prompt=self._build_doc_prompt(task),
+                git_context=self._task_git_context(task),
+                spawned_by="_respawn_doc_if_assigned",
+            )
+        return True
+
+
+class PRReviewDispatchEngine(_Base):
+    """Waking the PR reviewers: inbound external-PR review, the in-path PR
+    gate's reviewer (hold while the PR's CI runs, pick the reviewer, skip one
+    already on the task, keep ``assigned_to`` on the one spawned), and the
+    DevOps co-review of an infra diff."""
+
+    _LIVE_INSTANCE_STATES: ClassVar[frozenset[AgentState]] = frozenset(
+        {AgentState.STARTING, AgentState.ACTIVE, AgentState.WAITING_SHORT}
+    )
+
+    async def _fetch_gate_ci_state(self, slug: str, pr_number: int) -> str | None:
+        """Best-effort CI ``state`` lookup for the gate CI-pending check.
+
+        Reuses ``GitService.get_pr_ci_status`` - the exact signal ``pr_pass``
+        itself blocks on. Returns ``None`` on any lookup failure so the
+        caller fails open (never strands a task over a transient error).
+        """
+        from roboco.db import get_db_context
+        from roboco.services.git import GitService
+
+        try:
+            async with get_db_context() as db:
+                status = await GitService(db).get_pr_ci_status(slug, pr_number)
+        except Exception as exc:
+            logger.warning(
+                "gate CI status lookup failed",
+                project_slug=slug,
+                pr_number=pr_number,
+                error=str(exc),
+            )
+            return None
+        return status.get("state") if isinstance(status, dict) else None
+
+    async def _gate_task_ci_pending(self, task: dict[str, Any]) -> bool:
+        """True while the assembled PR's head-commit CI is still running or
+        not yet scheduled.
+
+        Without this, the dispatcher spawns a reviewer that immediately hits
+        ``pr_pass``'s own CI-pending block and exits, respawning every tick
+        until the respawn breaker trips and pages the CEO (live 2026-08: 7
+        rejected ``pr_pass`` calls in ~12 min on each of two tasks). The
+        lookup is cached per (slug, pr_number) for
+        ``_GATE_CI_STATUS_CACHE_TTL_SECONDS``.
+
+        Fails open (``False`` - spawn proceeds) on a missing project_slug/
+        pr_number, a lookup error, or any non-pending state (including
+        ``no_ci_configured``, ``error``, ``success``, ``failure``) - a
+        reviewer must still be spawned for a repo with no CI configured, or
+        to act on a genuinely-failing PR via ``pr_fail``. Only ``pending``
+        and ``pending_not_scheduled`` hold the spawn back.
+        """
+        slug = task.get("project_slug")
+        pr_number = task.get("pr_number")
+        if not slug or not pr_number:
+            return False
+        cache_key = (str(slug), int(pr_number))
+        now = time.monotonic()
+        cached = self._gate_ci_status_cache.get(cache_key)
+        ttl = self._GATE_CI_STATUS_CACHE_TTL_SECONDS
+        if cached is not None and now - cached[0] < ttl:
+            state = cached[1]
+        else:
+            state = await self._fetch_gate_ci_state(str(slug), int(pr_number))
+            self._gate_ci_status_cache[cache_key] = (now, state)
+        return state in ("pending", "pending_not_scheduled")
+
+    def _gate_task_reviewer(self, task: dict[str, Any]) -> str | None:
+        """Pick which reviewer to dispatch for one awaiting_pr_review task.
+
+        A task with a REAL live claim (``active_claimant_id`` set - some
+        reviewer ran ``claim_gate_review`` on it in an earlier tick) is
+        always re-targeted at that SAME reviewer, whether or not it is
+        currently free - never re-routed to a different one (e.g. the
+        overflow ``cell-pr-reviewer-2``) just because that other reviewer
+        happens to be free this tick. Observed live: fe-pr-reviewer claimed a
+        gate task, its container exited between ticks, and the dispatcher
+        kept spawning cell-pr-reviewer-2 onto the SAME task every tick since
+        it recomputed "which cell reviewer is free" from scratch each time -
+        each spawn's ``claim_gate_review`` was rejected outright
+        ("already claimed by another reviewer"), burning spawns until the
+        respawn breaker paged the CEO over a task that had already
+        advanced. Deliberately NOT keyed on ``claimed_by``:
+        ``_notify_pr_reviewer`` already sets ``claimed_by`` (alongside
+        ``assigned_to``) to the PRIMARY reviewer at gate entry via a plain
+        ``reassign``, before any real claim - pinning on that would read the
+        entry assignment as "already claimed" and skip the overflow fallback
+        even while the primary is busy, reinstating the serialization the
+        overflow reviewer exists to prevent. Falls back to the normal
+        team-based selection when there is no live claim yet, or the
+        claimant can't be resolved to a known slug (stale/foreign id).
+        """
+        claimant = task.get("active_claimant_id")
+        if claimant:
+            resolved = self._resolve_agent_slug(str(claimant))
+            if resolved != str(claimant):
+                return resolved
+        if self._gate_reviewer_already_on(task):
+            return None
+        team = task.get("team")
+        if team in ("backend", "frontend", "ux_ui"):
+            return self._select_agent_for_cell(team, "pr_reviewer")
+        return "pr-reviewer-1"
+
+    def _gate_reviewer_already_on(self, task: dict[str, Any]) -> bool:
+        """A reviewer's container is up on this gate task, not yet claimed.
+
+        ``claim_gate_review`` sets ``active_claimant_id`` only once the spawned
+        reviewer has booted, so for the first ticks after a spawn the task
+        looks unreviewed. The primary reviewer then reads as busy and the
+        overflow ``cell-pr-reviewer-2`` was sent onto the SAME task (live
+        2026-10-28: be-pr-reviewer at 06:34:21 and cell-pr-reviewer-2 at
+        06:34:35 on 300472d1; the loser's claim, notes and DMs were refused
+        for twelve minutes of respawns).
+        """
+        task_id = str(task.get("id"))
+        return any(
+            instance.current_task_id == task_id
+            and instance.state in self._LIVE_INSTANCE_STATES
+            and get_agent_role(slug) == "pr_reviewer"
+            for slug, instance in self._instances.items()
+        )
+
+    async def _sync_gate_reviewer_assignment(
+        self, task: dict[str, Any], reviewer: str
+    ) -> None:
+        """Keep ``assigned_to`` matching the reviewer actually being spawned.
+
+        ``TaskService.pr_reviewer_for`` (via ``submit_up``/``submit_root``'s
+        ``_notify_pr_reviewer``) already assigns the PRIMARY reviewer at
+        gate entry, so a mismatch here only means that reviewer is busy and
+        ``_select_agent_for_cell`` fell back to the overflow
+        ``cell-pr-reviewer-2``, the one case this dispatcher's own
+        selection can legitimately diverge from the entry assignment. Skips
+        entirely (no DB round trip) when the task is still unassigned or
+        already matches, so the common case costs nothing. Best-effort: a
+        failure leaves the stale assignee, which ``claim_gate_review``'s
+        role-only gate tolerates fine (the reviewer can still claim it).
+        """
+        current = task.get("assigned_to")
+        if not current or self._resolve_agent_slug(str(current)) == reviewer:
+            return
+        reviewer_uuid = AGENT_UUIDS.get(reviewer)
+        if reviewer_uuid is None:
+            return
+        from uuid import UUID
+
+        from roboco.db.base import get_db_context
+        from roboco.services.task import TaskService
+        from roboco.utils.converters import InvalidIdentifierError, require_uuid
+
+        try:
+            task_id = require_uuid(str(task["id"]))
+        except InvalidIdentifierError:
+            return
+        try:
+            async with get_db_context() as db:
+                await TaskService(db).reassign(task_id, UUID(reviewer_uuid))
+        except Exception as exc:
+            logger.warning(
+                "gate reviewer overflow reassign failed",
+                task_id=task.get("id"),
+                reviewer=reviewer,
+                error=str(exc),
+            )
 
     async def _dispatch_pr_review_work(self, client: httpx.AsyncClient) -> None:
         """Dispatch inbound external-PR review tasks to the PR reviewer.
@@ -2026,774 +2319,19 @@ class DispatchWorkEngine(_Base):
             )
             return False
 
-    async def _dispatch_doc_work(self, client: httpx.AsyncClient) -> None:
-        """
-        Dispatch documentation + developer work during the parallel
-        awaiting_documentation phase.
-
-        `awaiting_documentation` requires BOTH docs_complete=True AND
-        pr_created=True to advance to awaiting_pm_review. Doc writes the
-        docs; original developer pushes and creates the PR. Whoever
-        finishes last triggers the state transition. Previously this
-        dispatcher only spawned the documenter — if the documenter
-        finished first, the task would sit indefinitely with pr_created=
-        False and nothing would spawn the dev to finish the other half.
-
-        Monitors: awaiting_documentation tasks
-        Spawns:
-            - documenter (be-doc, fe-doc, ux-doc) if docs_complete=False
-            - original_developer if pr_created=False (tracked in
-              quick_context as "original_developer:<uuid>")
-        """
-        # Fetch both `awaiting_documentation` and `claimed` because the
-        # doc's claim transitions status from awaiting_documentation →
-        # claimed. Without including `claimed` we'd miss tasks where doc
-        # already grabbed it but pr_created is still false (dev hasn't
-        # pushed/created PR yet). The `original_developer:` marker in
-        # quick_context identifies tasks that are actually in the parallel
-        # phase vs unrelated claimed tasks.
-        # Not team-scoped at fetch time, so it takes the same raised limit
-        # as `_dispatch_pm_work`.
-        tasks = await self._fetch_tasks(
-            client,
-            ["awaiting_documentation", "claimed"],
-            limit=_PM_DISPATCH_FETCH_LIMIT,
-        )
-        for task in tasks:
-            if self._is_task_handled_this_tick(task.get("id")):
-                continue
-            await self._doc_dispatch_one(client, task)
-
-    async def _auto_assign_doc(
-        self, client: httpx.AsyncClient, task: dict[str, Any], team: str
-    ) -> None:
-        """
-        Auto-select and spawn a documenter for an unassigned awaiting_documentation task
-        """
-        agent_id = self._select_agent_for_cell(team, "doc")
-        if not agent_id or self._is_agent_active(agent_id):
-            return
-
-        # Respawn circuit breaker — before claiming, so a wedged doc task
-        # doesn't churn claims while the gate is open.
-        if await self._pm_respawn_should_gate(agent_id, task):
-            return
-
-        async def _spawn() -> None:
-            await self.spawn_agent(
-                agent_id=agent_id,
-                task_id=task["id"],
-                initial_prompt=self._build_doc_prompt(task),
-                git_context=self._task_git_context(task),
-                spawned_by="_auto_assign_doc",
-            )
-
-        claimed = await self._claim_and_spawn_guarded(client, task, agent_id, _spawn)
-        if claimed is False:
-            logger.warning(
-                "Failed to claim awaiting_documentation task for doc",
-                task_id=task["id"],
-                agent_id=agent_id,
-            )
-
-    async def _doc_dispatch_one(
-        self,
-        client: httpx.AsyncClient,
-        task: dict[str, Any],
-    ) -> None:
-        """Process a single task for `_dispatch_doc_work`."""
-        team = task.get("team")
-        if team not in ["backend", "frontend", "ux_ui"]:
-            return
-
-        dev_uuid = (task.get("orchestration_markers") or {}).get("original_developer")
-        status = task.get("status")
-
-        # Only consider `claimed` tasks actually in the doc/PR parallel
-        # phase. See `_is_parallel_phase_claim` docstring for the why.
-        if status == "claimed" and not self._is_parallel_phase_claim(task, dev_uuid):
-            return
-
-        # Developer half: push + create PR
-        await self._respawn_dev_for_pr_half(task, dev_uuid)
-
-        # Documenter half: write docs
-        if task.get("docs_complete"):
-            return
-
-        if await self._respawn_doc_if_assigned(task):
-            return
-
-        # Auto-assign a documenter only when still in awaiting_documentation.
-        if status != "awaiting_documentation":
-            return
-
-        await self._auto_assign_doc(client, task, team)
-
-    async def _respawn_doc_if_assigned(self, task: dict[str, Any]) -> bool:
-        """If task is assigned to an inactive documenter, respawn them.
-
-        Returns True when the task is already assigned (whether or not a
-        respawn happened) so the caller can stop processing. Returns
-        False when the task is unassigned so the caller can auto-select
-        a documenter for it.
-        """
-        assigned_to = task.get("assigned_to")
-        if not assigned_to:
-            return False
-        assigned_slug = self._resolve_agent_slug(assigned_to)
-        if self._is_agent_active(assigned_slug):
-            return True
-        if assigned_slug and "doc" in assigned_slug:
-            # Respawn circuit breaker — the fe-doc 26-respawn loop ran on this
-            # exact path unguarded; the gate notifies the CEO once it trips.
-            if await self._pm_respawn_should_gate(assigned_slug, task):
-                return True
-            await self.spawn_agent(
-                agent_id=assigned_slug,
-                task_id=task["id"],
-                initial_prompt=self._build_doc_prompt(task),
-                git_context=self._task_git_context(task),
-                spawned_by="_respawn_doc_if_assigned",
-            )
-        return True
-
-    async def _dispatch_pm_review_work(self, client: httpx.AsyncClient) -> None:
-        """
-        Dispatch PM review work to cell PMs or Main PM.
-
-        Monitors: awaiting_pm_review tasks
-        Spawns: be-pm, fe-pm, ux-pm, main-pm
-        """
-        tasks = await self._fetch_tasks(client, "awaiting_pm_review")
-
-        for task in tasks:
-            # Sequence-ordered merge: don't review/merge a leaf until its
-            # earlier same-team siblings have landed, so they merge into the
-            # shared cell branch in order instead of racing and wedging.
-            if await self._blocked_by_earlier_sibling(task):
-                continue
-
-            assigned_slug = await self._review_pm_slug(client, task)
-            if not assigned_slug:
-                logger.warning(
-                    "Could not resolve/assign an owning PM for awaiting_pm_review task",
-                    task_id=task["id"],
-                )
-                continue
-
-            # Human-only roles (CEO / prompter / secretary) are never
-            # containers — there is no reviewer agent to respawn. Leave
-            # the task for the human (the CEO approves via the panel).
-            # A stale/ex-human slug is also skipped: is_spawnable_agent_slug
-            # is False for it, so a renamed secretary slug can't slip past
-            # the layered guard to a doomed spawn (#49). Mirrors the
-            # spawn_agent human-role guard; a skip here keeps a mis-assigned
-            # human task from aborting this dispatcher's whole tick.
-            if not is_spawnable_agent_slug(assigned_slug):
-                continue
-            if self._is_agent_active(assigned_slug):
-                continue
-            # Loop guard: a review task that keeps re-surfacing without
-            # advancing (e.g. an unmergeable PR that re-blocks every cycle)
-            # must stop respawning the reviewer, else it burns tokens
-            # forever. The gate notifies the CEO once it trips.
-            if await self._pm_respawn_should_gate(assigned_slug, task):
-                continue
-            # Agent not running - spawn them to continue
-            await self.spawn_agent(
-                agent_id=assigned_slug,
-                task_id=task["id"],
-                initial_prompt=self._build_pm_review_prompt(task),
-                git_context=self._task_git_context(task),
-                spawned_by="_dispatch_pm_review_work",
-            )
-
-    async def _dispatch_marketing_work(self, client: httpx.AsyncClient) -> None:
-        """
-        Dispatch marketing work to head-marketing.
-
-        Monitors: pending tasks with team=marketing
-        Spawns: head-marketing
-        """
-        tasks = await self._fetch_tasks(client, "pending", team="marketing")
-
-        for task in tasks:
-            # Skip already claimed/assigned tasks
-            if task.get("assigned_to"):
-                continue
-
-            if self._is_agent_active("head-marketing"):
-                # Already running, they'll pick up on scan
-                continue
-
-            await self.spawn_agent(
-                agent_id="head-marketing",
-                task_id=task["id"],
-                initial_prompt=self._build_marketing_prompt(task),
-                git_context=self._task_git_context(task),
-                spawned_by="_dispatch_marketing_work",
-            )
-            break
-
-    async def _dispatch_blocker_work(self, client: httpx.AsyncClient) -> None:
-        """
-        Dispatch blocker resolution to the task's current unblock authority.
-
-        Monitors: blocked tasks
-        Spawns: the task's current PM/board assignee, else the cell PM
-        """
-        tasks = await self._fetch_tasks(client, "blocked")
-
-        for task in tasks:
-            # HITL-blocked tasks wait for a human; never spawn an agent on them.
-            if self._is_hitl_blocked(task):
-                continue
-
-            # A dependency-held blocked task can't be unblocked by any
-            # resolver until the dependency lands — spawn_agent's readiness
-            # gate would refuse anyway, and each refused attempt burned a
-            # respawn-breaker strike + a CEO escalation once tripped
-            # (2026-07-29). Skip quietly; this dispatcher re-checks every
-            # tick and proceeds once the dependency goes terminal.
-            if await self._check_dependencies_terminal(client, task):
-                continue
-
-            agent_id = self._blocker_resolver_slug(task)
-            if not agent_id:
-                continue
-
-            if self._is_agent_active(agent_id):
-                continue
-
-            # Loop guard: a blocked task whose unblock can never succeed (e.g.
-            # a cold-respawned PM that can't satisfy the unblock decision gate,
-            # or an unresolvable merge conflict) must stop respawning the
-            # resolver. The gate notifies the CEO once it trips so the wedged
-            # task surfaces instead of silently burning tokens.
-            if await self._pm_respawn_should_gate(agent_id, task):
-                continue
-
-            await self.spawn_agent(
-                agent_id=agent_id,
-                task_id=task["id"],
-                initial_prompt=self._build_pm_blocker_prompt(task),
-                git_context=self._task_git_context(task),
-                spawned_by="_dispatch_blocker_work",
-            )
-            break
-
-    async def _dispatch_claimed_without_agent(self, client: httpx.AsyncClient) -> None:
-        """(Re)spawn or release claimed/in_progress tasks that have no agent.
-
-        Net for the invisible-stuck case the other dispatchers miss: a task
-        held CLAIMED/IN_PROGRESS by an assignee with no running container. If
-        the assignee is a known spawnable agent, respawn it on the task; if not
-        (unknown slug — e.g. a stale UUID), release the claim to PENDING so the
-        normal routing reclaims it with a role match.
-
-        Throttle: spawns at most ONE container per tick (``break`` after the
-        first respawn), matching every sibling dispatcher. A restart leaves
-        many agentless claims at once; without the cap this single tick would
-        burst-spawn a container for every one of them. The release-to-pending
-        path spawns nothing, so it does not consume the per-tick spawn budget
-        and keeps draining stale claims.
-        """
-        tasks = await self._fetch_tasks(client, ["claimed", "in_progress"])
-        for task in tasks:
-            task_id = task.get("id")
-            if self._is_task_handled_this_tick(task_id):
-                continue
-            agent_slug = self._claimed_task_needs_agent(task)
-            if agent_slug is None:
-                continue
-            if get_agent_role(agent_slug) in (None, "unknown"):
-                # Unknown assignee — no agent to spawn; release for re-dispatch.
-                await self._release_claim_to_pending(str(task_id))
-                continue
-            logger.warning(
-                "Claimed/in_progress task has no running agent; respawning assignee",
-                task_id=task_id,
-                agent=agent_slug,
-                status=task.get("status"),
-            )
-            await self.spawn_agent(
-                agent_id=agent_slug,
-                task_id=str(task_id),
-                initial_prompt=await self._get_prompt_for_agent(agent_slug, task),
-                git_context=self._task_git_context(task),
-                spawned_by="_dispatch_claimed_without_agent",
-            )
-            break
-
-    async def _dispatch_escalation_work(self, client: httpx.AsyncClient) -> None:
-        """
-        Dispatch escalations to appropriate managers.
-
-        Monitors: escalation notifications (unacknowledged)
-        Spawns: be-pm, fe-pm, ux-pm, main-pm, product-owner, head-marketing
-        """
-        notifications = await self._fetch_notifications(client, "blocker_escalation")
-
-        for notif in notifications:
-            targets = notif.get("to_agents", [])
-
-            for agent_id in targets:
-                # Resolve UUID to slug - to_agents contains UUIDs from database
-                agent_slug = self._resolve_agent_slug(str(agent_id))
-
-                valid_targets = [
-                    "be-pm",
-                    "fe-pm",
-                    "ux-pm",
-                    "main-pm",
-                    "product-owner",
-                    "head-marketing",
-                ]
-                if agent_slug not in valid_targets:
-                    continue
-
-                if self._is_agent_active(agent_slug):
-                    continue
-
-                if await self._notification_spawn_cooled(agent_slug, notif.get("id")):
-                    continue
-                if not await self._notification_has_live_work(client, notif):
-                    continue
-                await self.spawn_agent(
-                    agent_id=agent_slug,
-                    initial_prompt=self._build_escalation_prompt(notif),
-                    spawned_by="_dispatch_escalation_work",
-                )
-                break
-
-    async def _dispatch_approval_work(self, client: httpx.AsyncClient) -> None:
-        """
-        Dispatch approval requests to approvers.
-
-        Monitors: approval notifications (unacknowledged)
-        Spawns: product-owner, head-marketing, main-pm
-        """
-        notifications = await self._fetch_notifications(client, "approval")
-
-        for notif in notifications:
-            targets = notif.get("to_agents", [])
-
-            for agent_id in targets:
-                # Resolve UUID to slug - to_agents contains UUIDs from database
-                agent_slug = self._resolve_agent_slug(str(agent_id))
-
-                if agent_slug not in ["product-owner", "head-marketing", "main-pm"]:
-                    continue
-
-                if self._is_agent_active(agent_slug):
-                    continue
-
-                if await self._notification_spawn_cooled(agent_slug, notif.get("id")):
-                    continue
-                if not await self._notification_has_live_work(client, notif):
-                    continue
-                await self.spawn_agent(
-                    agent_id=agent_slug,
-                    initial_prompt=self._build_approval_prompt(notif),
-                    spawned_by="_dispatch_approval_work",
-                )
-                break
-
-    async def _dispatch_audit_work(self, client: httpx.AsyncClient) -> None:
-        """
-        Dispatch audit work to the auditor.
-
-        Monitors: quality alert notifications + scheduled periodic sweeps
-        Spawns: auditor
-        """
-        # Alert path: dispatch the auditor ONCE per alert targeting it that the
-        # auditor has not observed yet. The auditor is read-only (no ack verb)
-        # and auditor_triage never acks, so under the old system-wide fetch
-        # (every not-fully-acked alert) a stale rework alert stayed pending
-        # forever and the per-alert cooldown only paced a rotation that
-        # respawned the auditor every ~3 min. Fetching the auditor's own
-        # not-yet-acked-by-me view and acking on dispatch makes each alert a
-        # one-shot, DB-persistent — the rotation cannot restart on a tick.
-        if not self._is_agent_active("auditor"):
-            alert = await self._next_unobserved_audit_alert(client)
-            if alert is not None:
-                alert_id = str(alert["id"])
-                if not await self._notification_spawn_cooled("auditor", alert_id):
-                    await self.spawn_agent(
-                        agent_id="auditor",
-                        initial_prompt=self._build_audit_prompt(
-                            {
-                                "subject": alert.get("subject", ""),
-                                "body": alert.get("body", ""),
-                            }
-                        ),
-                        spawned_by="_dispatch_audit_work",
-                    )
-                    await self._ack_alert_as_auditor(client, alert_id)
-                    self._last_audit_spawn_at = datetime.now(UTC)
-                    return
-
-        # Scheduled periodic audit sweep. Reuse the notification cooldown
-        # pattern with a sentinel key as a one-tick breaker so a single
-        # dispatcher tick cannot spawn the auditor twice.
-        if self._is_agent_active("auditor"):
-            return
-        if self._audit_spawn_cooled():
-            return
-        if not await self._has_recent_delivery_activity(client):
-            return
-        if await self._notification_spawn_cooled("auditor", "_scheduled_audit"):
-            return
-        await self.spawn_agent(
-            agent_id="auditor",
-            initial_prompt=self._build_audit_prompt(scheduled=True),
-            spawned_by="_dispatch_audit_work",
-        )
-        self._last_audit_spawn_at = datetime.now(UTC)
-
-    async def _dispatch_a2a_work(self, client: httpx.AsyncClient) -> None:
-        """
-        Dispatch A2A (Agent-to-Agent) requests to target agents.
-
-        Monitors: a2a_request notifications (unacknowledged)
-        Spawns: Any agent that is the target of an A2A request
-
-        This is a fallback mechanism - primary A2A routing happens via events.
-        If the event-based spawn fails, these notifications will be picked up here.
-        """
-        notifications = await self._fetch_notifications(client, "a2a_request")
-
-        for notif in notifications:
-            targets = notif.get("to_agents", [])
-
-            for agent_id in targets:
-                # Resolve UUID to slug - to_agents contains UUIDs from database
-                agent_slug = self._resolve_agent_slug(str(agent_id))
-
-                # Human-only roles (CEO / prompter / secretary) are never
-                # dispatched — the CEO is the human operator and intake/
-                # secretary are human-driven chats with their own launch
-                # paths. Spawning a container for one is a trust violation
-                # (the system acting as the human CEO). A stale/ex-human slug
-                # is skipped too (is_spawnable_agent_slug is False for it) so
-                # a renamed secretary slug can't slip past to a spawn (#49).
-                # The CEO being a notification target (board-review handoff,
-                # escalation, etc.) is expected; it is NOT a spawn signal.
-                # Skip — the notification stays for the human to read. #75:
-                # surface the skip for a human-only target (vs a silent stale
-                # slug) so an a2a expecting a human-side action (a CEO sign-off
-                # relay) is visible in the dispatch log, not silently dropped.
-                if is_human_only_role(role_for_slug_or_none(agent_slug)):
-                    logger.info(
-                        "a2a request targets a human-only role; left as a "
-                        "notification for the human (not spawned)",
-                        target_slug=agent_slug,
-                    )
-                    continue
-                if not is_spawnable_agent_slug(agent_slug):
-                    continue
-
-                if self._is_agent_active(agent_slug):
-                    # Agent is online - SDK handles A2A delivery directly
-                    # No action needed here, SDK server receives messages
-                    continue
-
-                # Agent is offline - spawn them with A2A context
-                if await self._notification_spawn_cooled(agent_slug, notif.get("id")):
-                    continue
-                await self.spawn_agent(
-                    agent_id=agent_slug,
-                    initial_prompt=self._build_a2a_prompt(notif),
-                    spawned_by="_dispatch_a2a_work",
-                )
-                break
-
-
-class DevDispatchEngine(_Base):
-    """Which owner to respawn for a dev task and when: the owner UUID by
-    status, the HITL skip, the existing-owner respawn, the role-to-task-type
-    match, and the assignee of an agentless claimed task."""
-
-    @staticmethod
-    def _resolve_dev_owner_uuid(task: dict[str, Any]) -> str | None:
-        """Pick the right owner UUID for dev dispatch based on status.
-
-        Always falls back to ``claimed_by`` when ``assigned_to`` is missing, so
-        a task left half-reaped (assigned_to nulled but still claimed) still
-        dispatches to its rightful owner instead of going dormant — the
-        orchestrator knows who to call even when one ownership field was cleared.
-        """
-        status = task.get("status")
-        if status in ("claimed", "blocked"):
-            return task.get("claimed_by") or task.get("assigned_to")
-        return task.get("assigned_to") or task.get("claimed_by")
-
-    @staticmethod
-    def _is_hitl_blocked(task: dict[str, Any]) -> bool:
-        """HITL-blocked tasks wait for human resolution; skip respawn."""
-        return (
-            task.get("status") == "blocked"
-            and task.get("blocker_resolver_type") == "human"
-        )
-
-    async def _handle_dev_existing_owner(
-        self, task: dict[str, Any], status: str, agent_slug: str
-    ) -> None:
-        """Respawn existing dev for needs_revision / in_progress / claimed."""
-        # A `blocked` task is waiting for its blocker to clear (PM / dependency);
-        # the owner has no legal move from `blocked`, so respawning it does
-        # nothing but churn. It is revived only when unblocked back to
-        # in_progress, or released to the pool (unclaim) for re-delegation.
-        if status == "blocked":
-            return
-        if status in (
-            "in_progress",
-            "claimed",
-        ) and not self._is_agent_active(agent_slug):
-            logger.info(
-                "Respawning agent for orphaned task",
-                task_id=task["id"],
-                agent=agent_slug,
-                status=status,
-            )
-        await self._respawn_dev_if_inactive(task, agent_slug)
-
-    @staticmethod
-    def _dev_dispatch_role_matches(task: dict[str, Any], agent_slug: str) -> bool:
-        """Return True if the assignee role matches the task's task_type.
-
-        Dev dispatcher only spawns developer-role agents. A doc/qa task
-        assigned to a dev (or vice versa) should be flagged, not silently
-        spawned. Returns True when the type is unknown or the assignee role
-        is unknown — the validation runs as a guard, not a strict gate, so
-        an unknown classification doesn't block work that would otherwise
-        proceed.
-        """
-        role = get_agent_role(agent_slug)
-        if role == "unknown":
-            return True
-        task_type = task.get("task_type")
-        if task_type == "documentation":
-            return role == "documenter"
-        # DevOps authors infra work, which is code-typed like a developer's
-        # task; a doc-typed assignment is as much a mismatch for it as for a
-        # dev. The dispatcher's flag gate decides whether devops is spawnable
-        # at all: this matcher only answers the type question.
-        if role == "devops":
-            return settings.devops_enabled
-        # `code` / `research` / `planning` / `administrative` / `design` all
-        # route through dev or PM; only the doc-task case is unambiguous.
-        return role == "developer"
-
-    def _claimed_task_needs_agent(self, task: dict[str, Any]) -> str | None:
-        """Return the assignee slug to (re)spawn for an agentless claimed task.
-
-        A task left CLAIMED/IN_PROGRESS with an assignee but no running
-        container (e.g. a reassignment that didn't spawn) is invisibly stuck —
-        only PENDING tasks get fresh dispatch, and the heartbeat reaper can't
-        see it because the claim seeded a fresh heartbeat. Returns the assignee
-        slug when the task has sat past the grace window with no active agent;
-        ``None`` when it is healthy, too fresh, or HITL-blocked.
-        """
-        if self._is_hitl_blocked(task):
-            return None
-        owner_uuid = task.get("assigned_to") or task.get("claimed_by")
-        if not owner_uuid:
-            return None
-        agent_slug = self._resolve_agent_slug(str(owner_uuid))
-        # Human-only roles (CEO / prompter / secretary) are never containers —
-        # there is no agent to respawn. Leave the task as-is for the human to
-        # act on through the panel; do NOT release it to pending (that would
-        # re-route a human-owned task to a PM). A stale slug (None role) is NOT
-        # skipped here — a stale-slug claim SHOULD be released to pending so a
-        # real agent can reclaim it (recovery, not spawning). See spawn_agent's
-        # human-role guard for the structural backstop.
-        if is_human_only_role(role_for_slug_or_none(agent_slug)):
-            return None
-        # The assignee is running, and on THIS task — healthy.
-        instance = self._instances.get(agent_slug)
-        if instance is not None and instance.state == AgentState.ACTIVE:
-            return None
-        # Grace window: a just-claimed task whose spawn is still in flight must
-        # not be churned. _time_in_state under-counts (any update bumps it),
-        # which biases toward "agent is working" — exactly the safe direction.
-        age = self._time_in_state(task)
-        grace = settings.claimed_no_agent_grace_seconds
-        if age is None or age.total_seconds() < grace:
-            return None
-        return agent_slug
-
-
-class PRReviewDispatchEngine(_Base):
-    """The in-path PR gate's reviewer: hold while the PR's CI runs, pick the
-    reviewer, skip one already on the task, and keep ``assigned_to`` on the
-    reviewer actually spawned."""
-
-    _LIVE_INSTANCE_STATES: ClassVar[frozenset[AgentState]] = frozenset(
-        {AgentState.STARTING, AgentState.ACTIVE, AgentState.WAITING_SHORT}
-    )
-
-    async def _fetch_gate_ci_state(self, slug: str, pr_number: int) -> str | None:
-        """Best-effort CI ``state`` lookup for the gate CI-pending check.
-
-        Reuses ``GitService.get_pr_ci_status`` - the exact signal ``pr_pass``
-        itself blocks on. Returns ``None`` on any lookup failure so the
-        caller fails open (never strands a task over a transient error).
-        """
-        from roboco.db import get_db_context
-        from roboco.services.git import GitService
-
-        try:
-            async with get_db_context() as db:
-                status = await GitService(db).get_pr_ci_status(slug, pr_number)
-        except Exception as exc:
-            logger.warning(
-                "gate CI status lookup failed",
-                project_slug=slug,
-                pr_number=pr_number,
-                error=str(exc),
-            )
-            return None
-        return status.get("state") if isinstance(status, dict) else None
-
-    async def _gate_task_ci_pending(self, task: dict[str, Any]) -> bool:
-        """True while the assembled PR's head-commit CI is still running or
-        not yet scheduled.
-
-        Without this, the dispatcher spawns a reviewer that immediately hits
-        ``pr_pass``'s own CI-pending block and exits, respawning every tick
-        until the respawn breaker trips and pages the CEO (live 2026-08: 7
-        rejected ``pr_pass`` calls in ~12 min on each of two tasks). The
-        lookup is cached per (slug, pr_number) for
-        ``_GATE_CI_STATUS_CACHE_TTL_SECONDS``.
-
-        Fails open (``False`` - spawn proceeds) on a missing project_slug/
-        pr_number, a lookup error, or any non-pending state (including
-        ``no_ci_configured``, ``error``, ``success``, ``failure``) - a
-        reviewer must still be spawned for a repo with no CI configured, or
-        to act on a genuinely-failing PR via ``pr_fail``. Only ``pending``
-        and ``pending_not_scheduled`` hold the spawn back.
-        """
-        slug = task.get("project_slug")
-        pr_number = task.get("pr_number")
-        if not slug or not pr_number:
-            return False
-        cache_key = (str(slug), int(pr_number))
-        now = time.monotonic()
-        cached = self._gate_ci_status_cache.get(cache_key)
-        ttl = self._GATE_CI_STATUS_CACHE_TTL_SECONDS
-        if cached is not None and now - cached[0] < ttl:
-            state = cached[1]
-        else:
-            state = await self._fetch_gate_ci_state(str(slug), int(pr_number))
-            self._gate_ci_status_cache[cache_key] = (now, state)
-        return state in ("pending", "pending_not_scheduled")
-
-    def _gate_task_reviewer(self, task: dict[str, Any]) -> str | None:
-        """Pick which reviewer to dispatch for one awaiting_pr_review task.
-
-        A task with a REAL live claim (``active_claimant_id`` set - some
-        reviewer ran ``claim_gate_review`` on it in an earlier tick) is
-        always re-targeted at that SAME reviewer, whether or not it is
-        currently free - never re-routed to a different one (e.g. the
-        overflow ``cell-pr-reviewer-2``) just because that other reviewer
-        happens to be free this tick. Observed live: fe-pr-reviewer claimed a
-        gate task, its container exited between ticks, and the dispatcher
-        kept spawning cell-pr-reviewer-2 onto the SAME task every tick since
-        it recomputed "which cell reviewer is free" from scratch each time -
-        each spawn's ``claim_gate_review`` was rejected outright
-        ("already claimed by another reviewer"), burning spawns until the
-        respawn breaker paged the CEO over a task that had already
-        advanced. Deliberately NOT keyed on ``claimed_by``:
-        ``_notify_pr_reviewer`` already sets ``claimed_by`` (alongside
-        ``assigned_to``) to the PRIMARY reviewer at gate entry via a plain
-        ``reassign``, before any real claim - pinning on that would read the
-        entry assignment as "already claimed" and skip the overflow fallback
-        even while the primary is busy, reinstating the serialization the
-        overflow reviewer exists to prevent. Falls back to the normal
-        team-based selection when there is no live claim yet, or the
-        claimant can't be resolved to a known slug (stale/foreign id).
-        """
-        claimant = task.get("active_claimant_id")
-        if claimant:
-            resolved = self._resolve_agent_slug(str(claimant))
-            if resolved != str(claimant):
-                return resolved
-        if self._gate_reviewer_already_on(task):
-            return None
-        team = task.get("team")
-        if team in ("backend", "frontend", "ux_ui"):
-            return self._select_agent_for_cell(team, "pr_reviewer")
-        return "pr-reviewer-1"
-
-    def _gate_reviewer_already_on(self, task: dict[str, Any]) -> bool:
-        """A reviewer's container is up on this gate task, not yet claimed.
-
-        ``claim_gate_review`` sets ``active_claimant_id`` only once the spawned
-        reviewer has booted, so for the first ticks after a spawn the task
-        looks unreviewed. The primary reviewer then reads as busy and the
-        overflow ``cell-pr-reviewer-2`` was sent onto the SAME task (live
-        2026-10-28: be-pr-reviewer at 06:34:21 and cell-pr-reviewer-2 at
-        06:34:35 on 300472d1; the loser's claim, notes and DMs were refused
-        for twelve minutes of respawns).
-        """
-        task_id = str(task.get("id"))
-        return any(
-            instance.current_task_id == task_id
-            and instance.state in self._LIVE_INSTANCE_STATES
-            and get_agent_role(slug) == "pr_reviewer"
-            for slug, instance in self._instances.items()
-        )
-
-    async def _sync_gate_reviewer_assignment(
-        self, task: dict[str, Any], reviewer: str
-    ) -> None:
-        """Keep ``assigned_to`` matching the reviewer actually being spawned.
-
-        ``TaskService.pr_reviewer_for`` (via ``submit_up``/``submit_root``'s
-        ``_notify_pr_reviewer``) already assigns the PRIMARY reviewer at
-        gate entry, so a mismatch here only means that reviewer is busy and
-        ``_select_agent_for_cell`` fell back to the overflow
-        ``cell-pr-reviewer-2``, the one case this dispatcher's own
-        selection can legitimately diverge from the entry assignment. Skips
-        entirely (no DB round trip) when the task is still unassigned or
-        already matches, so the common case costs nothing. Best-effort: a
-        failure leaves the stale assignee, which ``claim_gate_review``'s
-        role-only gate tolerates fine (the reviewer can still claim it).
-        """
-        current = task.get("assigned_to")
-        if not current or self._resolve_agent_slug(str(current)) == reviewer:
-            return
-        reviewer_uuid = AGENT_UUIDS.get(reviewer)
-        if reviewer_uuid is None:
-            return
-        from uuid import UUID
-
-        from roboco.db.base import get_db_context
-        from roboco.services.task import TaskService
-        from roboco.utils.converters import InvalidIdentifierError, require_uuid
-
-        try:
-            task_id = require_uuid(str(task["id"]))
-        except InvalidIdentifierError:
-            return
-        try:
-            async with get_db_context() as db:
-                await TaskService(db).reassign(task_id, UUID(reviewer_uuid))
-        except Exception as exc:
-            logger.warning(
-                "gate reviewer overflow reassign failed",
-                task_id=task.get("id"),
-                reviewer=reviewer,
-                error=str(exc),
-            )
-
 
 class AuditDispatchEngine(_Base):
-    """When to wake the Auditor: the scheduled sweep's cooldown and its
-    recent-delivery-activity check, and the newest unacknowledged alert,
-    acknowledged on dispatch."""
+    """Waking the Auditor: on a new alert (acknowledged on dispatch) or a
+    scheduled sweep (its cooldown and recent-delivery-activity check), and
+    once per completed root for vault curation."""
+
+    # Re-declared (not just inherited from _Base above): a fresh mypy run
+    # rooted at orchestrator.py alone infers `datetime` from the assignments
+    # in _dispatch_audit_work below and
+    # rejects the class-level `datetime | None`; the bare re-declaration on
+    # the concrete class pins it, as the sibling mixins do.
+    if TYPE_CHECKING:
+        _last_audit_spawn_at: datetime | None
 
     def _audit_spawn_cooled(self) -> bool:
         """True when a scheduled sweep should be blocked.
@@ -2901,3 +2439,267 @@ class AuditDispatchEngine(_Base):
             if ts is not None and ts >= cutoff:
                 return True
         return False
+
+    async def _dispatch_vault_curation_work(self, _client: httpx.AsyncClient) -> None:
+        """Obsidian-vault root-completion hook: spawn the Auditor to write a
+        just-completed root task-tree's narrative.
+
+        Gated on ``ROBOCO_OBSIDIAN_VAULT_ENABLED``; a no-op scan otherwise.
+        Owns ONLY this vault-curation trigger — distinct from
+        ``_dispatch_audit_work`` (scheduled sweeps + alert producers, owned by
+        a separate, queued fleet task). ``_client`` is accepted for
+        dispatcher-tuple shape parity but unused — this reads the DB
+        directly (see ``TaskService.list_completed_roots_pending_vault_curation``).
+        """
+        if not settings.obsidian_vault_enabled:
+            return
+        from roboco.db.base import get_db_context
+        from roboco.services.task import TaskService
+
+        async with get_db_context() as db:
+            candidates = await TaskService(
+                db
+            ).list_completed_roots_pending_vault_curation()
+            for task in candidates:
+                await self._maybe_spawn_vault_curation(str(task.id), task.title)
+
+    async def _maybe_spawn_vault_curation(self, task_id: str, title: str) -> None:
+        """One-shot Auditor spawn for one completed root task.
+
+        Mirrors ``_dispatch_board_reviewer``'s guard shape: an in-memory
+        one-shot tracker (reuses ``_board_dispatched``) for the same-process
+        race, plus a durable ``vault_curation_dispatched`` marker so a
+        restart can't re-spawn a root another process instance already
+        handled. Spawned WITHOUT a bound task_id (mirrors
+        ``_dispatch_audit_work``'s alert spawn) — the root task is
+        `completed`, so binding it would trip the readiness gate's
+        role-for-status check; the task id is named in the prompt instead,
+        and ``curate_vault`` takes it as an explicit argument.
+        """
+        auditor_slug = "auditor"
+        if self._is_agent_active(auditor_slug):
+            return
+        key = (auditor_slug, task_id)
+        if key in self._board_dispatched:
+            return
+        self._board_dispatched.add(key)
+        await self._mark_vault_curation_dispatched(task_id)
+        logger.info("Spawning Auditor for vault curation", task_id=task_id)
+        await self.spawn_agent(
+            agent_id=auditor_slug,
+            initial_prompt=self._build_vault_curation_prompt(task_id, title),
+            spawned_by="_maybe_spawn_vault_curation",
+        )
+
+    @staticmethod
+    async def _mark_vault_curation_dispatched(task_id: str) -> None:
+        """Persist the one-shot marker so a restart never re-spawns this
+        root. Best-effort: a failure here only risks a harmless duplicate
+        Auditor spawn (curate_vault's write is idempotent), never a crash."""
+        from uuid import UUID
+
+        from roboco.db.base import get_db_context
+        from roboco.foundation.policy.content import markers
+        from roboco.services.task import TaskService
+
+        try:
+            async with get_db_context() as db:
+                svc = TaskService(db)
+                task = await svc.get(UUID(task_id))
+                if task is not None:
+                    markers.mark_vault_curation_dispatched(task)
+                    await db.commit()
+        except Exception as exc:
+            logger.warning(
+                "Failed to persist vault_curation_dispatched marker",
+                task_id=task_id,
+                error=str(exc),
+            )
+
+    async def _dispatch_audit_work(self, client: httpx.AsyncClient) -> None:
+        """
+        Dispatch audit work to the auditor.
+
+        Monitors: quality alert notifications + scheduled periodic sweeps
+        Spawns: auditor
+        """
+        # Alert path: dispatch the auditor ONCE per alert targeting it that the
+        # auditor has not observed yet. The auditor is read-only (no ack verb)
+        # and auditor_triage never acks, so under the old system-wide fetch
+        # (every not-fully-acked alert) a stale rework alert stayed pending
+        # forever and the per-alert cooldown only paced a rotation that
+        # respawned the auditor every ~3 min. Fetching the auditor's own
+        # not-yet-acked-by-me view and acking on dispatch makes each alert a
+        # one-shot, DB-persistent — the rotation cannot restart on a tick.
+        if not self._is_agent_active("auditor"):
+            alert = await self._next_unobserved_audit_alert(client)
+            if alert is not None:
+                alert_id = str(alert["id"])
+                if not await self._notification_spawn_cooled("auditor", alert_id):
+                    await self.spawn_agent(
+                        agent_id="auditor",
+                        initial_prompt=self._build_audit_prompt(
+                            {
+                                "subject": alert.get("subject", ""),
+                                "body": alert.get("body", ""),
+                            }
+                        ),
+                        spawned_by="_dispatch_audit_work",
+                    )
+                    await self._ack_alert_as_auditor(client, alert_id)
+                    self._last_audit_spawn_at = datetime.now(UTC)
+                    return
+
+        # Scheduled periodic audit sweep. Reuse the notification cooldown
+        # pattern with a sentinel key as a one-tick breaker so a single
+        # dispatcher tick cannot spawn the auditor twice.
+        if self._is_agent_active("auditor"):
+            return
+        if self._audit_spawn_cooled():
+            return
+        if not await self._has_recent_delivery_activity(client):
+            return
+        if await self._notification_spawn_cooled("auditor", "_scheduled_audit"):
+            return
+        await self.spawn_agent(
+            agent_id="auditor",
+            initial_prompt=self._build_audit_prompt(scheduled=True),
+            spawned_by="_dispatch_audit_work",
+        )
+        self._last_audit_spawn_at = datetime.now(UTC)
+
+
+class NotificationDispatchEngine(_Base):
+    """Waking the recipient of an escalation, an approval request or an A2A
+    request."""
+
+    async def _dispatch_escalation_work(self, client: httpx.AsyncClient) -> None:
+        """
+        Dispatch escalations to appropriate managers.
+
+        Monitors: escalation notifications (unacknowledged)
+        Spawns: be-pm, fe-pm, ux-pm, main-pm, product-owner, head-marketing
+        """
+        notifications = await self._fetch_notifications(client, "blocker_escalation")
+
+        for notif in notifications:
+            targets = notif.get("to_agents", [])
+
+            for agent_id in targets:
+                # Resolve UUID to slug - to_agents contains UUIDs from database
+                agent_slug = self._resolve_agent_slug(str(agent_id))
+
+                valid_targets = [
+                    "be-pm",
+                    "fe-pm",
+                    "ux-pm",
+                    "main-pm",
+                    "product-owner",
+                    "head-marketing",
+                ]
+                if agent_slug not in valid_targets:
+                    continue
+
+                if self._is_agent_active(agent_slug):
+                    continue
+
+                if await self._notification_spawn_cooled(agent_slug, notif.get("id")):
+                    continue
+                if not await self._notification_has_live_work(client, notif):
+                    continue
+                await self.spawn_agent(
+                    agent_id=agent_slug,
+                    initial_prompt=self._build_escalation_prompt(notif),
+                    spawned_by="_dispatch_escalation_work",
+                )
+                break
+
+    async def _dispatch_approval_work(self, client: httpx.AsyncClient) -> None:
+        """
+        Dispatch approval requests to approvers.
+
+        Monitors: approval notifications (unacknowledged)
+        Spawns: product-owner, head-marketing, main-pm
+        """
+        notifications = await self._fetch_notifications(client, "approval")
+
+        for notif in notifications:
+            targets = notif.get("to_agents", [])
+
+            for agent_id in targets:
+                # Resolve UUID to slug - to_agents contains UUIDs from database
+                agent_slug = self._resolve_agent_slug(str(agent_id))
+
+                if agent_slug not in ["product-owner", "head-marketing", "main-pm"]:
+                    continue
+
+                if self._is_agent_active(agent_slug):
+                    continue
+
+                if await self._notification_spawn_cooled(agent_slug, notif.get("id")):
+                    continue
+                if not await self._notification_has_live_work(client, notif):
+                    continue
+                await self.spawn_agent(
+                    agent_id=agent_slug,
+                    initial_prompt=self._build_approval_prompt(notif),
+                    spawned_by="_dispatch_approval_work",
+                )
+                break
+
+    async def _dispatch_a2a_work(self, client: httpx.AsyncClient) -> None:
+        """
+        Dispatch A2A (Agent-to-Agent) requests to target agents.
+
+        Monitors: a2a_request notifications (unacknowledged)
+        Spawns: Any agent that is the target of an A2A request
+
+        This is a fallback mechanism - primary A2A routing happens via events.
+        If the event-based spawn fails, these notifications will be picked up here.
+        """
+        notifications = await self._fetch_notifications(client, "a2a_request")
+
+        for notif in notifications:
+            targets = notif.get("to_agents", [])
+
+            for agent_id in targets:
+                # Resolve UUID to slug - to_agents contains UUIDs from database
+                agent_slug = self._resolve_agent_slug(str(agent_id))
+
+                # Human-only roles (CEO / prompter / secretary) are never
+                # dispatched — the CEO is the human operator and intake/
+                # secretary are human-driven chats with their own launch
+                # paths. Spawning a container for one is a trust violation
+                # (the system acting as the human CEO). A stale/ex-human slug
+                # is skipped too (is_spawnable_agent_slug is False for it) so
+                # a renamed secretary slug can't slip past to a spawn (#49).
+                # The CEO being a notification target (board-review handoff,
+                # escalation, etc.) is expected; it is NOT a spawn signal.
+                # Skip — the notification stays for the human to read. #75:
+                # surface the skip for a human-only target (vs a silent stale
+                # slug) so an a2a expecting a human-side action (a CEO sign-off
+                # relay) is visible in the dispatch log, not silently dropped.
+                if is_human_only_role(role_for_slug_or_none(agent_slug)):
+                    logger.info(
+                        "a2a request targets a human-only role; left as a "
+                        "notification for the human (not spawned)",
+                        target_slug=agent_slug,
+                    )
+                    continue
+                if not is_spawnable_agent_slug(agent_slug):
+                    continue
+
+                if self._is_agent_active(agent_slug):
+                    # Agent is online - SDK handles A2A delivery directly
+                    # No action needed here, SDK server receives messages
+                    continue
+
+                # Agent is offline - spawn them with A2A context
+                if await self._notification_spawn_cooled(agent_slug, notif.get("id")):
+                    continue
+                await self.spawn_agent(
+                    agent_id=agent_slug,
+                    initial_prompt=self._build_a2a_prompt(notif),
+                    spawned_by="_dispatch_a2a_work",
+                )
+                break

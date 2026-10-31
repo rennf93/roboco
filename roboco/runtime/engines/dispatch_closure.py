@@ -1,8 +1,8 @@
 """Closing a parent whose children are done: the system-side submit that
-replaces a PM spawn, and the checks before a PM closure spawn.
+replaces a PM spawn, and the PM closure dispatch when it can't.
 
 Engine mixins composed into AgentOrchestrator; split out of dispatch_claim.py
-with every method body unchanged."""
+and dispatch_work.py with every method body unchanged."""
 
 from __future__ import annotations
 
@@ -20,6 +20,8 @@ from roboco.seeds.initial_data import AGENT_UUIDS
 
 if TYPE_CHECKING:
     import httpx
+
+    pass
 
 if TYPE_CHECKING:
     from roboco.runtime.engines._types import AgentOrchestratorSelf as _Base
@@ -280,9 +282,9 @@ class AutoSubmitEngine(_Base):
 
 
 class PMClosureEngine(_Base):
-    """Whether a parent needs its PM for closure: every descendant terminal,
-    not already promoted past the PM, not paused a moment ago, and which PM
-    owns closure for the team."""
+    """The PM closure dispatch: whether a parent needs its PM for closure
+    (every descendant terminal, not already promoted past the PM, not paused
+    a moment ago), which PM owns it, and the spawn."""
 
     @staticmethod
     def _all_descendants_terminal(descendants: list[dict[str, Any]]) -> bool:
@@ -339,3 +341,121 @@ class PMClosureEngine(_Base):
         if team in ("backend", "frontend", "ux_ui"):
             return self._TEAM_PM_MAP.get(team, "be-pm")
         return "main-pm"
+
+    async def _maybe_spawn_pm_closure(
+        self, client: httpx.AsyncClient, task: dict[str, Any]
+    ) -> None:
+        """If this parent task is ready for closure, spawn its PM."""
+        task_id = task.get("id")
+        if not task_id:
+            return
+
+        if self._is_recently_paused(task):
+            logger.debug(
+                "Skipping closure spawn for recently-paused parent",
+                task_id=task_id,
+                last_heartbeat_at=task.get("last_heartbeat_at"),
+            )
+            return
+
+        descendants = await self._fetch_all_descendants(client, task_id)
+        # A childless task in awaiting_pm_review IS the PM's review turn —
+        # its dev→qa→doc stages ran on the task itself. Without this, a leaf
+        # review stranded by a restart (the submit-time PM session gone) had
+        # no periodic pickup at all — proven live on the docs-sync leaf
+        # after the 0.25.0 redeploy.
+        is_leaf_review = not descendants and task.get("status") == "awaiting_pm_review"
+        if not is_leaf_review and (
+            not descendants or not self._all_descendants_terminal(descendants)
+        ):
+            return
+        if self._already_promoted_for_closure(task):
+            return
+
+        pm_id = self._closure_pm_for_team(task.get("team"))
+        if self._is_agent_active(pm_id):
+            return
+
+        logger.info(
+            "Parent task ready for closure",
+            task_id=task_id,
+            descendants_count=len(descendants),
+            pm_id=pm_id,
+        )
+
+        # The parent auto-paused when its PM idled (by design). Resume
+        # it before respawn so the PM lands actionable (in_progress) and can
+        # directly submit_up / complete / escalate — pre-gateway behaviour the
+        # gateway refactor dropped, which wedged a dogfood run (the model
+        # never issued resume() itself).
+        # A parent that is `blocked` at closure (all descendants
+        # terminal) is an errant/stale block — recover it symmetrically so
+        # the chain can't wedge forever waiting for a PM to manually unblock.
+        handled, auto_submit_reason = await self._closure_handled_without_pm(
+            client, task, task_id, pm_id
+        )
+        if handled:
+            return
+
+        pm_id = await self._closure_review_pm(client, task, pm_id)
+
+        # B42 pm_closure_confidence: pop the advisory line stashed by the
+        # auto-submit attempt (empty unless the pilot is ON and confident).
+        advisory_line = getattr(self, "_decisions_closure_advisories", {}).pop(
+            str(task_id), ""
+        )
+        prompt = self._build_pm_closure_prompt(
+            task,
+            descendants,
+            auto_submit_reason=auto_submit_reason,
+            advisory_line=advisory_line,
+        )
+        await self.spawn_agent(
+            agent_id=pm_id,
+            task_id=task_id,
+            initial_prompt=prompt,
+            git_context=self._task_git_context(task),
+            spawned_by="_maybe_spawn_pm_closure",
+        )
+
+    async def _closure_review_pm(
+        self, client: httpx.AsyncClient, task: dict[str, Any], default_pm: str
+    ) -> str:
+        """The PM to spawn for a closure parent already at awaiting_pm_review.
+
+        CLAIM_RULES has no claim() edge into this status, so pr_pass's/
+        mark_pr_created's own PM resolution, or a stale escalate/
+        unblock(restore=True) round trip, may have left assigned_to wrong
+        or unset — assign_review_pm corrects it. ``default_pm`` (the
+        caller's already-correct ``_closure_pm_for_team`` value) is kept on
+        ANY failure: ``_ensure_review_pm_assigned`` returns ``None`` on both
+        an unresolvable owner and a transient route/transport error, and
+        adopting a stale fallback there would spawn the wrong PM in exactly
+        the incident shape this fix targets (a task mis-assigned to main-pm
+        that should be be-pm). A no-op for any other status — ownership
+        there already came from the normal claim/delegate flow.
+        """
+        if task.get("status") != "awaiting_pm_review":
+            return default_pm
+        resolved = await self._ensure_review_pm_assigned(client, task)
+        return resolved or default_pm
+
+    async def _dispatch_pm_closure_work(self, client: httpx.AsyncClient) -> None:
+        """
+        Dispatch PM closure work - check parent tasks ready to close.
+
+        When all subtasks of a parent task are completed, spawn the PM
+        to review and close the parent task.
+
+        Monitors: tasks with completed subtasks but parent still open
+        Spawns: be-pm, fe-pm, ux-pm, main-pm (based on parent team)
+        """
+        # Find parent tasks that might have children ready for closure
+        # Include "paused" - PM pauses while waiting, respawned when subtasks done
+        # Include "awaiting_pm_review" - parent awaiting review when children done
+        parent_statuses = ["claimed", "in_progress", "paused", "awaiting_pm_review"]
+
+        for status in parent_statuses:
+            tasks = await self._fetch_tasks(client, status)
+            for task in tasks:
+                await self._maybe_spawn_pm_closure(client, task)

@@ -1,6 +1,7 @@
-"""The dispatcher loop and claiming: the reads each tick makes, whether a task
-may be claimed now and is ready to spawn on, the claim and spawn
-themselves, and the stuck-task and SLA checks the tick runs.
+"""The dispatcher loop and claiming: each tick's run of every work dispatcher
+and the reads they make, whether a task may be claimed now and is ready to
+spawn on, the claim and spawn themselves, and the stuck-task and SLA checks
+the tick runs.
 
 Engine mixins composed into AgentOrchestrator."""
 
@@ -11,6 +12,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
+import httpx
 from fastapi import status as http_status
 
 from roboco.agents_config import get_agent_role
@@ -24,6 +26,7 @@ from roboco.runtime.orchestrator import (
     _is_coordination_task,
     _is_held_ceo_source,
     _SlaBreach,
+    _system_api_headers,
     logger,
 )
 from roboco.seeds.initial_data import AGENT_UUIDS
@@ -31,7 +34,6 @@ from roboco.seeds.initial_data import AGENT_UUIDS
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
-    import httpx
 
 if TYPE_CHECKING:
     from roboco.runtime.engines._types import AgentOrchestratorSelf as _Base
@@ -40,8 +42,10 @@ else:
 
 
 class DispatcherLoopEngine(_Base):
-    """The dispatcher loop and its reads: tasks, notifications, one task's
-    fields, descendants and children, plus the handled-this-tick check."""
+    """The dispatcher loop and each tick's run of every work dispatcher
+    (`_dispatch_all_work`), the reads they make (tasks, notifications, one
+    task's fields, descendants and children), and the handled-this-tick
+    check."""
 
     def _is_task_handled_this_tick(self, task_id: str | None) -> bool:
         """True if a prior dispatcher already handled this task this tick."""
@@ -217,11 +221,126 @@ class DispatcherLoopEngine(_Base):
             logger.warning("Failed to fetch descendants", task_id=task_id, error=str(e))
         return []
 
+    async def _dispatch_all_work(self) -> None:
+        """Run all dispatchers to check for and assign work.
+
+        Each dispatcher is isolated: if one raises (e.g., a transient API
+        error), the rest still run in this tick instead of waiting for the
+        next one.
+
+        `_tick_handled_tasks` gives downstream dispatchers a way to
+        skip tasks that an earlier dispatcher already acted on this
+        tick. Order-dependent bugs (like the Fix-B scenario where
+        `_dispatch_qa_work` claimed for QA and the next dispatcher
+        re-spawned the dev on the same claimed row) are defanged by
+        early dispatchers marking the task handled.
+
+        The stale-claim reaper runs first, before any dispatcher tries to
+        spawn an agent for a task whose previous holder is dead. Without
+        this ordering, the spawn pass could race against a stale claim and
+        skip work the reaper would have freed in the same tick.
+
+        A ``dispatch``-scope maintenance pause drains every spawn-issuing
+        dispatcher here EXCEPT ``pm_work``, which always runs: it also
+        routes Board Program exploration dispatch (a separate,
+        independently-paused ``board_programs`` scope, see
+        ``_dispatch_board_program_exploration``), so it cannot be skipped
+        wholesale without incorrectly coupling the two scopes. ``pm_work``
+        itself skips its own non-board-program branches while paused (see
+        ``_dispatch_pm_work``).
+        """
+        self._tick_handled_tasks = set()
+
+        # Refresh the fleet uptime ledger first: the reaper and stuck-task
+        # checks below read _active_age, which needs a fresh ledger to
+        # discount a CEO-ordered pause instead of reading it as neglect.
+        # _refresh_uptime fails open internally; this only guards session
+        # acquisition itself.
+        try:
+            from roboco.db.base import get_session_factory
+
+            factory = get_session_factory()
+            async with factory() as db:
+                await self._refresh_uptime(db)
+        except Exception as e:
+            logger.error("Uptime ledger refresh failed; continuing tick", error=str(e))
+
+        # Free any tasks whose claim went stale before the spawn pass runs.
+        # Wrapped because a reaper failure must not block dispatch — the
+        # next tick will retry.
+        try:
+            await self._reap_stale_claims()
+        except Exception as e:
+            logger.error("Stale-claim reaper failed; continuing tick", error=str(e))
+
+        # Enforce the GROK cost ceiling (budget kill-switch parity). Wrapped so a
+        # failure never blocks dispatch; the next tick retries. Unrelated to the
+        # maintenance pause: a genuinely runaway-cost container is a real signal,
+        # not a "nothing is happening" false positive, so it is never suppressed
+        # by a pause; only NEW spawns are.
+        try:
+            await self._enforce_grok_cost_budget()
+        except Exception as e:
+            logger.error("Grok cost-budget sweep failed; continuing tick", error=str(e))
+
+        from roboco.services.maintenance_pause import PauseScope
+
+        dispatch_paused = await self._is_paused(PauseScope.DISPATCH)
+
+        dispatchers: list[tuple[str, Any]] = []
+        async with httpx.AsyncClient(
+            timeout=30.0, headers=_system_api_headers()
+        ) as client:
+            dispatchers = [("pm_work", self._dispatch_pm_work(client))]
+            if not dispatch_paused:
+                dispatchers += [
+                    ("pm_closure_work", self._dispatch_pm_closure_work(client)),
+                    (
+                        "revision_coordination",
+                        self._dispatch_revision_coordination_roots(client),
+                    ),
+                    ("dev_work", self._dispatch_dev_work(client)),
+                    ("qa_work", self._dispatch_qa_work(client)),
+                    # pr_gate_work runs BEFORE pr_review_work: both can spawn
+                    # the shared pr-reviewer-1 (root→master gate reviews vs.
+                    # inbound external/fork PR reviews), and the internal gate
+                    # blocks the delivery pipeline while an external PR can
+                    # wait a tick - see _dispatch_pr_gate_work's docstring.
+                    ("pr_gate_work", self._dispatch_pr_gate_work(client)),
+                    ("pr_review_work", self._dispatch_pr_review_work(client)),
+                    ("doc_work", self._dispatch_doc_work(client)),
+                    ("pm_review_work", self._dispatch_pm_review_work(client)),
+                    ("marketing_work", self._dispatch_marketing_work(client)),
+                    ("blocker_work", self._dispatch_blocker_work(client)),
+                    (
+                        "claimed_without_agent",
+                        self._dispatch_claimed_without_agent(client),
+                    ),
+                    ("escalation_work", self._dispatch_escalation_work(client)),
+                    ("approval_work", self._dispatch_approval_work(client)),
+                    ("a2a_work", self._dispatch_a2a_work(client)),
+                    ("audit_work", self._dispatch_audit_work(client)),
+                    (
+                        "vault_curation_work",
+                        self._dispatch_vault_curation_work(client),
+                    ),
+                    ("detect_stuck_tasks", self._detect_stuck_tasks(client)),
+                ]
+            for name, coro in dispatchers:
+                try:
+                    await coro
+                except Exception as e:
+                    logger.error(
+                        "Dispatcher raised; continuing with next dispatcher",
+                        dispatcher=name,
+                        error=str(e),
+                    )
+
 
 class DispatchClaimEngine(_Base):
     """Claim a task for an agent and spawn it: the claim-in-flight registry,
-    picking a free cell agent, the claim and review-PM assignment calls, and
-    the guarded claim-and-spawn."""
+    picking a free cell agent, the claim and review-PM assignment calls, the
+    guarded claim-and-spawn, and the prompt a routed spawn gets."""
 
     def _task_git_context(self, task: dict[str, Any]) -> SpawnGitContext | None:
         """Build SpawnGitContext from a task dict for workspace mounting.
@@ -477,6 +596,16 @@ class DispatchClaimEngine(_Base):
             )
 
         await self._claim_and_spawn_guarded(client, task, agent_id, _spawn)
+
+    async def _pm_spawn_prompt(
+        self, routing: str, agent_id: str, task: dict[str, Any]
+    ) -> str:
+        """Pick the correct prompt for a classified spawn."""
+        if routing == "dev":
+            return await self._build_dev_prompt(task)
+        if routing == "main_pm" or agent_id == "main-pm":
+            return self._build_main_pm_triage_prompt(task)
+        return self._build_pm_triage_prompt(task)
 
 
 class SpawnReadinessEngine(_Base):
