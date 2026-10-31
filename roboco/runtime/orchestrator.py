@@ -1412,7 +1412,18 @@ from roboco.runtime.engines.spawn_launch import (
     SpawnGitContextEngine,
 )
 from roboco.runtime.engines.strategy import StrategyEngine
-from roboco.runtime.engines.sweeps import SweepsEngine
+from roboco.runtime.engines.sweeps import (
+    AgentStopEngine,
+    BudgetWrapupEngine,
+    ExternalPRIntakeEngine,
+    IdleSessionReaperEngine,
+    MemberPerformanceEngine,
+    SandboxEngine,
+    SupersedeEngine,
+    SweeperLoopEngine,
+    TaskBudgetEngine,
+    UsageRollupEngine,
+)
 from roboco.runtime.engines.telegram_poll import TelegramPollEngine
 from roboco.runtime.engines.vault import VaultEngine
 from roboco.runtime.engines.video_render import VideoRenderEngine
@@ -1424,6 +1435,7 @@ class AgentOrchestrator(
     AgentBriefingEngine,
     AgentImageEngine,
     AgentSettingsEngine,
+    AgentStopEngine,
     AgentWaitingEngine,
     AgentWorkSignalEngine,
     AuditDispatchEngine,
@@ -1432,6 +1444,7 @@ class AgentOrchestrator(
     AutoSubmitEngine,
     BoardDispatchEngine,
     BoardProgramContextEngine,
+    BudgetWrapupEngine,
     CellReviewPromptsEngine,
     CiWatchEngine,
     ClaimBarrierEngine,
@@ -1449,10 +1462,13 @@ class AgentOrchestrator(
     DocDispatchEngine,
     EntireTrailsEngine,
     EnvSyncEngine,
+    ExternalPRIntakeEngine,
+    IdleSessionReaperEngine,
     InteractiveSessionsEngine,
     ManagementPromptsEngine,
     MarketingExplorationsEngine,
     MarketingProgramPromptsEngine,
+    MemberPerformanceEngine,
     NotificationDispatchEngine,
     NotificationPromptsEngine,
     NotificationSpawnGuardEngine,
@@ -1474,6 +1490,7 @@ class AgentOrchestrator(
     RespawnBreakerEngine,
     RespawnTripEngine,
     RoutingClassifierEngine,
+    SandboxEngine,
     SessionFinalizeEngine,
     SpawnAgentEngine,
     SpawnGitContextEngine,
@@ -1481,11 +1498,14 @@ class AgentOrchestrator(
     StaleClaimReaperEngine,
     StrategyEngine,
     StuckTaskEngine,
-    SweepsEngine,
+    SupersedeEngine,
+    SweeperLoopEngine,
     SystemPromptEngine,
+    TaskBudgetEngine,
     TelegramPollEngine,
     TranscriptNotesEngine,
     UsageFilesEngine,
+    UsageRollupEngine,
     UsageTokensEngine,
     VaultEngine,
     VideoRenderEngine,

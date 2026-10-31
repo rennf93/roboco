@@ -1,5 +1,7 @@
-"""Auto-extracted engine mixin -- see decomp/extract.py. Method bodies below are
-moved verbatim from AgentOrchestrator (family: rate_limit_probe)."""
+"""Rate limits: probing a parked provider, and resuming the agents waiting on
+it once the limit lifts.
+
+Engine mixin composed into AgentOrchestrator."""
 
 from __future__ import annotations
 
@@ -24,11 +26,7 @@ from roboco.runtime.orchestrator import (
 )
 
 if TYPE_CHECKING:
-    from roboco.models.runtime import (
-        AgentInstance,
-        WaitingRecord,
-    )
-
+    from roboco.models.runtime import AgentInstance, WaitingRecord
 
 if TYPE_CHECKING:
     from roboco.runtime.engines._types import AgentOrchestratorSelf as _Base
@@ -37,7 +35,10 @@ else:
 
 
 class RateLimitProbeEngine(_Base):
-    """Mixin holding the "rate_limit_probe" methods moved out of AgentOrchestrator."""
+    """Rate limits: the probe loop and each pass over parked providers, the
+    probe itself, resolving a wait by resuming its agent (with the parking
+    grades and the liveness confirmation), and the CEO alert for a
+    persistent limit."""
 
     async def _delete_waiting_record(self, agent_id: str) -> None:
         """Delete a persisted waiting record when its wait resolves."""
@@ -526,3 +527,66 @@ Start by:
                 provider=provider,
                 error=str(e),
             )
+
+    async def _sweep_rate_limit_probes(self) -> None:
+        """One probe pass: check every rate-limited provider.
+
+        For each provider whose estimated_lift_at has passed:
+        - Call ``_do_probe(provider)`` to test connectivity.
+        - **Success**: clear the tracker, resolve all parked agents, publish
+          ``RATE_LIMIT_LIFTED``.
+        - **Failure**: increment probe_failures; if the count reaches 10 and
+          we haven't already sent a CEO notification for this episode, send
+          one now.
+
+        F045: the loop is tracker-driven, but an ``activate()`` failure in the
+        in-verb ``i_am_blocked(rate_limited)`` path (or a Redis hiccup) can
+        leave agents parked in ``_waiting_records`` for a provider the tracker
+        never learned about — so the tracker-listed loop above never probes it
+        and the parked agents strand in WAITING_LONG forever. After probing the
+        tracker-listed set, scan the in-memory records for any
+        ``rate_limit_lifted`` provider the loop did NOT cover and probe it via
+        the time-expiry fallback (empty state → ``_too_early_to_probe`` returns
+        False → probe now) so ``_on_probe_success`` can resume them. The
+        fallback reads only local memory, so it works even when Redis is down.
+        """
+        from roboco.services.gateway.rate_limit_tracker import RateLimitStateTracker
+
+        try:
+            providers = await RateLimitStateTracker.list_rate_limited_providers()
+        except Exception as e:
+            logger.warning("Failed to list rate-limited providers", error=str(e))
+            providers = []
+
+        probed_providers: set[str] = set()
+        for provider, state in providers:
+            probed_providers.add(provider)
+            try:
+                await self._probe_one_provider(provider, state)
+            except Exception as e:
+                logger.error(
+                    "Unhandled error probing provider",
+                    provider=provider,
+                    error=str(e),
+                )
+
+        # Orphan fallback: resume agents parked for a provider the
+        # tracker-listed loop above did not cover (activate failed silently or
+        # Redis was down at park time). On probe success ``_on_probe_success``
+        # clears the tracker (self-healing) and resumes the parked agents.
+        orphan_providers: set[str] = set()
+        for record in self._waiting_records.values():
+            if record.waiting_for != "rate_limit_lifted":
+                continue
+            prov = record.context.get("provider")
+            if prov and prov not in probed_providers:
+                orphan_providers.add(prov)
+        for provider in orphan_providers:
+            try:
+                await self._probe_one_provider(provider, {})
+            except Exception as e:
+                logger.error(
+                    "Unhandled error probing orphaned rate-limited provider",
+                    provider=provider,
+                    error=str(e),
+                )

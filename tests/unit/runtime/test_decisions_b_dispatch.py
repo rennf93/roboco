@@ -35,7 +35,11 @@ from roboco.runtime.engines.dispatch_work import (
     QADispatchEngine,
 )
 from roboco.runtime.engines.spawn_exit import ContainerExitEngine
-from roboco.runtime.engines.sweeps import SweepsEngine
+from roboco.runtime.engines.sweeps import (
+    BudgetWrapupEngine,
+    ExternalPRIntakeEngine,
+    IdleSessionReaperEngine,
+)
 from roboco.services.decisions import pilots_dispatch
 from roboco.services.decisions.schemas import DecisionAnswer, DecisionResult
 
@@ -193,7 +197,7 @@ async def test_b14_engine_flags_marker_and_top_priority(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _flag_on(monkeypatch)
-    engine = _bare(SweepsEngine)
+    engine = _bare(ExternalPRIntakeEngine)
 
     async def fake_triage(session: object, **kwargs: object) -> tuple[int | None, bool]:
         return 1, True
@@ -226,7 +230,7 @@ async def test_b14_engine_internal_pr_not_flagged(
     org-internal PR keeps its structural classification (its own flag bit
     is logged but the marker and priority-3 stamp never fire)."""
     _flag_on(monkeypatch)
-    engine = _bare(SweepsEngine)
+    engine = _bare(ExternalPRIntakeEngine)
 
     async def fake_triage(session: object, **kwargs: object) -> tuple[int | None, bool]:
         return None, True
@@ -254,7 +258,7 @@ async def test_b14_engine_internal_pr_not_flagged(
 @pytest.mark.asyncio
 async def test_b14_engine_off_touches_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     _flag_on(monkeypatch, False)
-    engine = _bare(SweepsEngine)
+    engine = _bare(ExternalPRIntakeEngine)
     mock = AsyncMock()
     monkeypatch.setattr(pilots_dispatch, "external_pr_triage", mock)
     created = SimpleNamespace(
@@ -365,7 +369,7 @@ async def test_b25_engine_spares_only_confident_band(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _flag_on(monkeypatch)
-    engine = _bare(SweepsEngine)
+    engine = _bare(IdleSessionReaperEngine)
 
     due = [("a", "intake-1"), ("b", "intake-1"), ("c", "intake-1")]
 
@@ -402,7 +406,7 @@ async def test_b25_engine_failure_reaps_as_today(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _flag_on(monkeypatch)
-    engine = _bare(SweepsEngine)
+    engine = _bare(IdleSessionReaperEngine)
     due = [("a", "intake-1")]
 
     fake_registry = MagicMock()
@@ -657,7 +661,7 @@ async def test_b32_engine_abort_clean_stops_gracefully(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _flag_on(monkeypatch)
-    engine = _bare(SweepsEngine)
+    engine = _bare(BudgetWrapupEngine)
 
     async def fake_choice(
         session: object, **kwargs: object
@@ -685,7 +689,7 @@ async def test_b32_engine_abort_clean_stops_gracefully(
 @pytest.mark.asyncio
 async def test_b32_engine_off_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
     _flag_on(monkeypatch, False)
-    engine = _bare(SweepsEngine)
+    engine = _bare(BudgetWrapupEngine)
     mock = AsyncMock()
     monkeypatch.setattr(pilots_dispatch, "budget_wrapup_choice", mock)
     await engine._decisions_budget_wrapup_directive(
@@ -699,7 +703,7 @@ async def test_b32_engine_wrapup_fires_once_per_task(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _flag_on(monkeypatch)
-    engine = _bare(SweepsEngine)
+    engine = _bare(BudgetWrapupEngine)
 
     calls: list[dict[str, Any]] = []
 
@@ -735,7 +739,7 @@ async def test_b32_engine_wrapup_fires_once_per_task(
 
     monkeypatch.setattr("roboco.db.get_db_context", fake_db_ctx)
     monkeypatch.setattr(
-        SweepsEngine,
+        BudgetWrapupEngine,
         "_notify_budget_wrapup_directive",
         AsyncMock(return_value=None),
     )
