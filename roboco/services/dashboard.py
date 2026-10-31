@@ -6,7 +6,7 @@ Manages flags, reports, and aggregated metrics.
 """
 
 from datetime import UTC, datetime, timedelta
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 from uuid import UUID, uuid4
 
 from sqlalchemy import and_, func, select
@@ -25,6 +25,11 @@ from roboco.models.dashboard import (
 )
 from roboco.services.base import BaseService
 from roboco.services.metrics import MetricsService, get_metrics_service
+
+if TYPE_CHECKING:
+    from roboco.services._dashboard_service_types import DashboardServiceSelf as _Base
+else:
+    _Base = object
 
 # =============================================================================
 # STORAGE MANAGEMENT
@@ -54,33 +59,9 @@ def reset_storage() -> None:
 # =============================================================================
 
 
-class DashboardService(BaseService):
-    """
-    Service for dashboard business logic.
-
-    Manages:
-    - Auditor flags (create, list, resolve)
-    - Auditor reports (create, list, send)
-    - CEO overview aggregations
-    """
-
-    service_name: ClassVar[str] = "dashboard"
-
-    def __init__(self, db: AsyncSession) -> None:
-        super().__init__(db)
-        self._storage = get_storage()
-        self._metrics: MetricsService | None = None
-
-    @property
-    def metrics(self) -> MetricsService:
-        """Lazy-load metrics service."""
-        if self._metrics is None:
-            self._metrics = get_metrics_service(self.session)
-        return self._metrics
-
-    # =========================================================================
-    # FLAG MANAGEMENT
-    # =========================================================================
+class DashboardFlags(_Base):
+    """The auditor's flags: creating, listing, getting and resolving them, and the
+    unresolved count."""
 
     def create_flag(self, params: CreateFlagParams) -> FlagData:
         """Create a new auditor flag."""
@@ -137,9 +118,10 @@ class DashboardService(BaseService):
             if f.severity == severity and not f.resolved_at
         )
 
-    # =========================================================================
-    # REPORT MANAGEMENT
-    # =========================================================================
+
+class DashboardReports(_Base):
+    """The auditor's reports: creating, listing, getting and sending them, and when
+    the last one went out."""
 
     def create_report(
         self,
@@ -194,47 +176,10 @@ class DashboardService(BaseService):
             return None
         return max(r.sent_at for r in sent_reports if r.sent_at)
 
-    # =========================================================================
-    # AUDIT QUEUE
-    # =========================================================================
 
-    async def get_audit_queue(self, limit: int = 10) -> list[AuditQueueItem]:
-        """Build audit queue from tasks needing attention."""
-        queue: list[AuditQueueItem] = []
-
-        # Tasks blocked
-        blocked_result = await self.session.execute(
-            select(TaskTable).where(TaskTable.status == TaskStatus.BLOCKED)
-        )
-        for task in blocked_result.scalars().all():
-            queue.append(
-                AuditQueueItem(
-                    type="blocked_task",
-                    title=f"Blocked: {task.title}",
-                    task_id=str(task.id),
-                    team=task.team.value,
-                )
-            )
-
-        # Tasks awaiting QA
-        qa_result = await self.session.execute(
-            select(TaskTable).where(TaskTable.status == TaskStatus.AWAITING_QA)
-        )
-        for task in qa_result.scalars().all():
-            queue.append(
-                AuditQueueItem(
-                    type="qa_review",
-                    title=f"QA Review: {task.title}",
-                    task_id=str(task.id),
-                    team=task.team.value,
-                )
-            )
-
-        return queue[:limit]
-
-    # =========================================================================
-    # CEO OVERVIEW HELPERS
-    # =========================================================================
+class DashboardCEOOverview(_Base):
+    """The CEO overview: team health, key metrics, the auditor's alerts, the
+    portfolio, and roadmap progress."""
 
     async def get_team_health_list(self) -> list[TeamHealthData]:
         """Get health status for all teams."""
@@ -340,9 +285,10 @@ class DashboardService(BaseService):
             "high_priority_completed": completed_priority,
         }
 
-    # =========================================================================
-    # AUDITOR DASHBOARD METRICS
-    # =========================================================================
+
+class DashboardAuditorMetrics(_Base):
+    """The auditor dashboard: its metrics, the open findings, every agent's status,
+    and recent activity."""
 
     async def get_auditor_metrics(self) -> dict[str, Any]:
         """Get metrics for auditor dashboard."""
@@ -450,6 +396,91 @@ class DashboardService(BaseService):
             )
         feed.sort(key=lambda x: x["timestamp"], reverse=True)
         return {"period_hours": hours, "activity": feed[:limit]}
+
+
+class DashboardService(
+    BaseService,
+    DashboardAuditorMetrics,
+    DashboardCEOOverview,
+    DashboardFlags,
+    DashboardReports,
+):
+    """
+    Service for dashboard business logic.
+
+    Manages:
+    - Auditor flags (create, list, resolve)
+    - Auditor reports (create, list, send)
+    - CEO overview aggregations
+    """
+
+    service_name: ClassVar[str] = "dashboard"
+
+    def __init__(self, db: AsyncSession) -> None:
+        super().__init__(db)
+        self._storage = get_storage()
+        self._metrics: MetricsService | None = None
+
+    @property
+    def metrics(self) -> MetricsService:
+        """Lazy-load metrics service."""
+        if self._metrics is None:
+            self._metrics = get_metrics_service(self.session)
+        return self._metrics
+
+    # =========================================================================
+    # FLAG MANAGEMENT
+    # =========================================================================
+
+    # =========================================================================
+    # REPORT MANAGEMENT
+    # =========================================================================
+
+    # =========================================================================
+    # AUDIT QUEUE
+    # =========================================================================
+
+    async def get_audit_queue(self, limit: int = 10) -> list[AuditQueueItem]:
+        """Build audit queue from tasks needing attention."""
+        queue: list[AuditQueueItem] = []
+
+        # Tasks blocked
+        blocked_result = await self.session.execute(
+            select(TaskTable).where(TaskTable.status == TaskStatus.BLOCKED)
+        )
+        for task in blocked_result.scalars().all():
+            queue.append(
+                AuditQueueItem(
+                    type="blocked_task",
+                    title=f"Blocked: {task.title}",
+                    task_id=str(task.id),
+                    team=task.team.value,
+                )
+            )
+
+        # Tasks awaiting QA
+        qa_result = await self.session.execute(
+            select(TaskTable).where(TaskTable.status == TaskStatus.AWAITING_QA)
+        )
+        for task in qa_result.scalars().all():
+            queue.append(
+                AuditQueueItem(
+                    type="qa_review",
+                    title=f"QA Review: {task.title}",
+                    task_id=str(task.id),
+                    team=task.team.value,
+                )
+            )
+
+        return queue[:limit]
+
+    # =========================================================================
+    # CEO OVERVIEW HELPERS
+    # =========================================================================
+
+    # =========================================================================
+    # AUDITOR DASHBOARD METRICS
+    # =========================================================================
 
 
 # =============================================================================

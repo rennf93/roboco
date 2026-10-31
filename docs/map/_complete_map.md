@@ -8808,6 +8808,7 @@ The metrics & observability slice is the read-only measurement layer of RoboCo: 
 | `roboco/services/metrics.py` | `MetricsService` — velocity, blockers, team/agent metrics, health, cycle-time/bottleneck/rework/scorecard/spawn-waste observability | 2015 |
 | `roboco/services/_metrics_service_types.py` | `MetricsServiceSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `MetricsService` mixins reach through `self`, plus its instance attributes; `tests/unit/services/test_metrics_service_mixins.py` fails on a stray stub or a member defined twice | 72 |
 | `roboco/services/dashboard.py` | `DashboardService` — auditor flags/reports (in-memory singleton), CEO overview, audit queue, agent status, recent activity | 457 |
+| `roboco/services/_dashboard_service_types.py` | `DashboardServiceSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `DashboardService` mixins reach through `self`, plus its instance attributes; `tests/unit/services/test_dashboard_service_mixins.py` fails on a stray stub or a member defined twice | 59 |
 | `roboco/services/cockpit.py` | `CockpitService` — read-only CEO "is the business winning?" summary (goals+delivery+spend+signals), delivery block now carries the 3 charter-objective metrics (`median_lead_time_hours`, `first_pass_yield`, `escaped_defects`) | 104 |
 | `roboco/services/usage.py` | `UsageService` — token usage summary, time-series, by-agent/team/model, projection, cache efficiency, today summary, recent sessions | 595 |
 | `roboco/services/usage_events.py` | `UsageSnapshot` dataclass + `publish_usage_snapshot` — publishes USAGE_SNAPSHOT to the StreamEventBus | 52 |
@@ -8862,17 +8863,21 @@ The metrics & observability slice is the read-only measurement layer of RoboCo: 
 | `MetricsService._avg_cycle_hours` | method | metrics.py:1601 | Avg started→completed hours for completed tasks |
 | `_as_hours` | func | metrics.py:88 | Coerce SQL epoch aggregate to rounded float (avoids Decimal→JSON string crash) |
 | `ACTIVE_STATUSES` | const | metrics.py:104 | CLAIMED/IN_PROGRESS/VERIFYING/AWAITING_QA (BLOCKED excluded — note) |
-| `DashboardService` | class | dashboard.py:57 | Auditor flags/reports + CEO overview + agent/activity feeds |
-| `_DashboardStorageHolder` | class | dashboard.py:34 | Process-singleton in-memory flag/report store |
-| `get_storage` / `reset_storage` | func | dashboard.py:40/47 | Singleton accessor + test reset |
-| `DashboardService.create_flag/get_flags/resolve_flag` | methods | dashboard.py:85/100/122 | Auditor flag CRUD over in-memory store |
-| `DashboardService.create_report/send_report` | methods | dashboard.py:144/182 | Auditor report CRUD + send marking |
-| `DashboardService.get_audit_queue` | method | dashboard.py:201 | Blocked + awaiting-QA tasks as queue items |
-| `DashboardService.get_team_health_list` | method | dashboard.py:239 | Health for BACKEND/FRONTEND/UX_UI/BOARD |
-| `DashboardService.get_portfolio` | method | dashboard.py:284 | Merges project identities onto `MetricsService.get_portfolio_metrics`' per-project dict so EVERY project appears once (zeroed when inactive), sorts most-active-first — backs `GET /api/dashboard/portfolio` (see `docs/backend/api/dashboard-portfolio.md`). |
-| `DashboardService.get_key_metrics` | method | dashboard.py:259 | Velocity + doc coverage + blockers summary |
-| `DashboardService.get_all_agent_status` | method | dashboard.py:390 | Agent counts by status + per-agent snapshot |
-| `DashboardService.get_recent_activity` | method | dashboard.py:423 | Merged messages+task_updates feed, sorted desc |
+| `DashboardService` | class | dashboard.py:401 | Auditor flags/reports + CEO overview + agent/activity feeds |
+| `DashboardFlags` | class | dashboard.py:62 | Mixin of `DashboardService` (5 methods): The auditor's flags: creating, listing, getting and resolving them, and the unresolved count. |
+| `DashboardReports` | class | dashboard.py:122 | Mixin of `DashboardService` (5 methods): The auditor's reports: creating, listing, getting and sending them, and when the last one went out. |
+| `DashboardCEOOverview` | class | dashboard.py:180 | Mixin of `DashboardService` (5 methods): The CEO overview: team health, key metrics, the auditor's alerts, the portfolio, and roadmap progress. |
+| `DashboardAuditorMetrics` | class | dashboard.py:289 | Mixin of `DashboardService` (4 methods): The auditor dashboard: its metrics, the open findings, every agent's status, and recent activity. |
+| `_DashboardStorageHolder` | class | dashboard.py:39 | Process-singleton in-memory flag/report store |
+| `get_storage` / `reset_storage` | func | dashboard.py:45/52 | Singleton accessor + test reset |
+| `DashboardService.create_flag/get_flags/resolve_flag` | methods | dashboard.py:66/81/103 | Auditor flag CRUD over in-memory store |
+| `DashboardService.create_report/send_report` | methods | dashboard.py:126/164 | Auditor report CRUD + send marking |
+| `DashboardService.get_audit_queue` | method | dashboard.py:443 | Blocked + awaiting-QA tasks as queue items |
+| `DashboardService.get_team_health_list` | method | dashboard.py:184 | Health for BACKEND/FRONTEND/UX_UI/BOARD |
+| `DashboardService.get_portfolio` | method | dashboard.py:229 | Merges project identities onto `MetricsService.get_portfolio_metrics`' per-project dict so EVERY project appears once (zeroed when inactive), sorts most-active-first — backs `GET /api/dashboard/portfolio` (see `docs/backend/api/dashboard-portfolio.md`). |
+| `DashboardService.get_key_metrics` | method | dashboard.py:204 | Velocity + doc coverage + blockers summary |
+| `DashboardService.get_all_agent_status` | method | dashboard.py:336 | Agent counts by status + per-agent snapshot |
+| `DashboardService.get_recent_activity` | method | dashboard.py:369 | Merged messages+task_updates feed, sorted desc |
 | `CockpitService` | class | cockpit.py:39 | Read-only CEO summary + lightweight signals slice |
 | `CockpitService.summary` | method | cockpit.py:44 | goals+counts+delivery+spend+projection+pitches+signals, `basis="proxy"`. `delivery.first_pass_yield` is a pass-through of `MetricsService.get_org_scorecard().first_pass_yield` (no new computation); `delivery.escaped_defects` is `len(ReviewFindingsRepository.escaped_defects_since(30d cutoff))` — see the Gotchas entry below for the definition. `delivery.completed_30d`/`delivery.median_lead_time_hours` are a straight pass-through of `TaskService.get_delivery_stats_30d()` — see that method's own Gotchas entry for its population scope. |
 | `TaskService.get_delivery_stats_30d` | method | `services/task.py:1814` | Completed-count + median lead-time hours over the last 30 days, scoped to real delivery work — see the Gotchas entry below. Not itself part of this slice's files (lives in `services/task.py`), but is `CockpitService.summary`'s sole source for those two fields. |
@@ -9099,6 +9104,8 @@ No flags live *inside* this slice's files, but the slice's behavior is gated/par
 
 > **2026-10-31** (Planning trail #51, wave 3): `MetricsService` splits in place into 5 mixins in `metrics.py`, every method body byte-identical: `MetricsFlow` (8), `MetricsTaskDetail` (6), `MetricsScorecards` (12), `MetricsProgressSignals` (5), `MetricsPortfolio` (6). `MetricsService` keeps the velocity, blocker, team, agent and health metrics (9 methods), composes them, and is no longer a god class. Rows naming `MetricsService.<method>` still hold through inheritance. Each mixin's TYPE_CHECKING-only base is `MetricsServiceSelf` (`roboco/services/_metrics_service_types.py`).
 
+> **2026-10-31** (Planning trail #51, wave 3): `DashboardService` splits in place into 4 mixins in `dashboard.py`, every method body byte-identical: `DashboardFlags` (5), `DashboardReports` (5), `DashboardCEOOverview` (5), `DashboardAuditorMetrics` (4). `DashboardService` keeps `__init__`, the lazy `metrics` property and the audit queue, composes them, and is no longer a god class. Rows naming `DashboardService.<method>` still hold through inheritance. Each mixin's TYPE_CHECKING-only base is `DashboardServiceSelf` (`roboco/services/_dashboard_service_types.py`).
+
 ## Regression Risks
 
 The slice was unchanged relative to the 2026-06-29 baseline snapshot itself, but several post-snapshot additions (findings ledger, panel-perf-p3-p4, and now spawn-waste) have since landed — see "Changes Since Baseline" above. The risks below are mostly standing landmines (pre-existing) that a future change to upstream data could trip; severity reflects blast radius if triggered.
@@ -9110,7 +9117,7 @@ The slice was unchanged relative to the 2026-06-29 baseline snapshot itself, but
 | Unpriced Anthropic model silently $0 — partially mitigated | billing/pricing.py:169 | `CostResult.unpriced=True` is now returned by `calculate_cost_result` for a missing Anthropic model, but both the orchestrator (`runtime/engines/spawn_exit.py:1076`, `_resolve_finalize_cost`) and `grok_cli_usage.py` still call the `calculate_cost` thin-float wrapper — cost panels still show $0. Risk remains until callers switch to `calculate_cost_result`. | medium |
 | `get_summary` docstring/code mismatch on rollups | usage.py:83 | **RESOLVED (536bbb64 #66)**: docstring was corrected to accurately describe that `get_summary` reads raw `agent_spawn_sessions`, not `daily_usage_rollups`. | low |
 | Blocked-hours heuristic uses `updated_at`/`created_at` | metrics.py:176 | **RESOLVED (536bbb64 #67)**: `_blocked_since_map` now reads the `task.blocked` audit row as primary source; falls back to `updated_at/created_at` only when no audit row. | low |
-| `DashboardService` flag/report store (`_DashboardStorageHolder`) is in-memory singleton | dashboard.py:34 | Flags/reports vanish on orchestrator restart and are not replicated across instances; an operator relying on them as durable audit trail loses data. | medium |
+| `DashboardService` flag/report store (`_DashboardStorageHolder`) is in-memory singleton | dashboard.py:39 | Flags/reports vanish on orchestrator restart and are not replicated across instances; an operator relying on them as durable audit trail loses data. | medium |
 | `ACTIVE_STATUSES` excludes BLOCKED in team metrics | metrics.py:61 | `get_team_metrics.active_tasks` undercounts vs `get_health_status.active_tasks` for the same team — two panel cards can show different "active" numbers. | low |
 | Cache-efficiency hardcoded sonnet pricing | usage.py:401 | `cost_saved_by_cache_usd` is an aggregate approximation that diverges from real per-model savings; misleading if shown next to real cost figures. | low |
 | `MultiProjectCITelemetrySource` swallows per-project errors | telemetry/source.py:172 | A persistently failing project silently contributes no sample (correct "unknown" semantics) but is invisible beyond a warning log — could mask a config/token rot. | low |
