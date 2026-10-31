@@ -105,7 +105,8 @@ _OFFSET_KEY = "telegram_last_update_id"
 _CEO_UUID = UUID(AGENT_UUIDS["ceo"])
 
 _QUEUE_ITEM_CAP = 10
-_MESSAGE_CHAR_LIMIT = 4096  # Telegram's own sendMessage text cap
+# Telegram's own sendMessage text cap
+_MESSAGE_CHAR_LIMIT = 4096
 
 _VALID_KINDS = (
     "task",
@@ -143,7 +144,8 @@ _REJECT_MIN_CHARS = {
     "dogfood": 4,
 }
 _DEFAULT_REJECT_MIN_CHARS = (
-    4  # defense-in-depth fallback; every valid kind is listed above
+    # Defense-in-depth fallback; every valid kind is listed above
+    4
 )
 # Mirrors ceo_approve_task's own `_MIN_NOTES_CHARS` — the HTTP route's audit-
 # trail requirement for a CEO approval note.
@@ -251,10 +253,12 @@ def _safe_boundary(cut: str) -> str:
     mid-entity (``&am``) boundary — Telegram's HTML parser rejects either
     outright."""
     last_lt, last_gt = cut.rfind("<"), cut.rfind(">")
-    if last_lt > last_gt:  # an unclosed '<...' — back off before it
+    # An unclosed '<...' — back off before it
+    if last_lt > last_gt:
         cut = cut[:last_lt]
     last_amp, last_semi = cut.rfind("&"), cut.rfind(";")
-    if last_amp > last_semi:  # an unclosed '&...' entity — back off before it
+    # An unclosed '&...' entity — back off before it
+    if last_amp > last_semi:
         cut = cut[:last_amp]
     return cut
 
@@ -312,15 +316,19 @@ def parse_command(text: str) -> tuple[str, str]:
 class ParsedCallback:
     """One ``apv:<kind>:<id8>[:<extra>]`` / ``rej:...`` callback_data, parsed."""
 
-    action: str  # "apv" | "rej"
+    # "apv" | "rej"
+    action: str
     kind: str
     id8: str
     extra: str = ""
 
 
-_CALLBACK_DATA_MAX_BYTES = 64  # Telegram's own callback_data cap
-_CALLBACK_PARTS_NO_EXTRA = 3  # action:kind:id8
-_CALLBACK_PARTS_WITH_EXTRA = 4  # action:kind:id8:extra (roadmap/pest_control's item id)
+# Telegram's own callback_data cap
+_CALLBACK_DATA_MAX_BYTES = 64
+# action:kind:id8
+_CALLBACK_PARTS_NO_EXTRA = 3
+# action:kind:id8:extra (roadmap/pest_control's item id)
+_CALLBACK_PARTS_WITH_EXTRA = 4
 
 
 def build_callback(action: str, kind: str, id8: str, extra: str = "") -> str:
@@ -430,9 +438,12 @@ class _PendingAction:
     kind: str
     id8: str
     extra: str
-    action: str  # "approve" | "reject"
-    origin_message_id: int | None  # the buttoned message to clean up after
-    expires_at: float  # time.monotonic()-based
+    # "approve" | "reject"
+    action: str
+    # The buttoned message to clean up after
+    origin_message_id: int | None
+    # time.monotonic()-based
+    expires_at: float
 
 
 # Per-process, best-effort — mirrors XEngine's in-memory `_INFLIGHT_APPROVES`
