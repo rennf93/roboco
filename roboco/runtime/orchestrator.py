@@ -1387,7 +1387,12 @@ from roboco.runtime.engines.rate_limit_probe import (
     RateLimitProbeEngine,
     WaitResolutionEngine,
 )
-from roboco.runtime.engines.reconcile import ReconcileEngine
+from roboco.runtime.engines.reconcile import (
+    BoardProgramLoopEngine,
+    HealthLoopEngine,
+    StartupReconcileEngine,
+    StartupRestoreEngine,
+)
 from roboco.runtime.engines.release_manager import ReleaseManagerEngine
 from roboco.runtime.engines.spawn_config import (
     AgentBriefingEngine,
@@ -1447,6 +1452,7 @@ class AgentOrchestrator(
     AutoSubmitEngine,
     BoardDispatchEngine,
     BoardProgramContextEngine,
+    BoardProgramLoopEngine,
     BudgetWrapupEngine,
     CellReviewPromptsEngine,
     CiWatchEngine,
@@ -1466,6 +1472,7 @@ class AgentOrchestrator(
     EntireTrailsEngine,
     EnvSyncEngine,
     ExternalPRIntakeEngine,
+    HealthLoopEngine,
     IdleSessionReaperEngine,
     InteractiveSessionsEngine,
     ManagementPromptsEngine,
@@ -1488,7 +1495,6 @@ class AgentOrchestrator(
     QADispatchEngine,
     RateLimitProbeEngine,
     ReadinessGateEngine,
-    ReconcileEngine,
     ReleaseManagerEngine,
     RespawnBreakerEngine,
     RespawnTripEngine,
@@ -1499,6 +1505,8 @@ class AgentOrchestrator(
     SpawnGitContextEngine,
     SpawnReadinessEngine,
     StaleClaimReaperEngine,
+    StartupReconcileEngine,
+    StartupRestoreEngine,
     StrategyEngine,
     StuckTaskEngine,
     SupersedeEngine,
