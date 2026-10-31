@@ -912,7 +912,7 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | roboco/__init__.py | Package root: __version__ + re-exports settings, exceptions, logging helpers | 36 |
 | roboco/bootstrap.py | Async bootstrap: git-user drop self-test (every role but indexer; SystemExit(1) on failure), a warning when an api or dispatcher has the host Docker socket and no `DOCKER_HOST` (a compose file from before the Docker gate), DB init, Redis event bus, websocket bridge, orchestrator construction, uvicorn API server task, wait-for-ready poll, optional agent spawn, graceful shutdown | 259 |
 | roboco/cli.py | argparse CLI wrapper around bootstrap.main / db-only; the ENTRYPOINT invoked by `python -m roboco.cli` | 64 |
-| roboco/logging.py | structlog setup (dev ConsoleRenderer / prod JSONRenderer), secret-redaction processor, rotating file handler under /data/logs, LogContext context-manager | 261 |
+| roboco/logging.py | structlog setup (dev ConsoleRenderer / prod JSONRenderer), secret-redaction processor, rotating file handler under /data/logs, LogContext context-manager | 263 |
 | roboco/exceptions.py | Exception hierarchy (RobocoError base + NotFound/Validation/InvalidState/Permission/Auth/Task/TaskLifecycle/Agent/Notification/Service/Database/Git/MergeConflict/GitCommand/GitTimeout); includes TaskLifecycle transition hints and git-secret scrubbing | 432 |
 | docker/npm/agent-base/package.json | Exact version of the npm CLI agent-base installs globally (`@anthropic-ai/claude-code`); the Dockerfile reads it and runs `npm install -g <name>@<version>`, Dependabot bumps it weekly (`.github/dependabot.yml`). Nothing installs from this directory | 9 |
 | docker/npm/orchestrator/package.json | Exact version of the npm CLI the orchestrator image installs globally (`pnpm`); read by orchestrator.Dockerfile, bumped by Dependabot like the agent-base pins | 9 |
@@ -1016,10 +1016,10 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | _redact_secrets | function | roboco/logging.py:59 | Regex-replace GitHub PAT / bearer / embedded-URL-credential shapes with <REDACTED> |
 | redact_event_dict | function | roboco/logging.py:69 | structlog processor running last; redacts every value in the event dict |
 | setup_logging | function | roboco/logging.py:85 | Configure structlog (dev ConsoleRenderer / prod JSONRenderer), stdlib root logger, rotating file handler under /data/logs, quiet noisy libs |
-| _resolve_log_dir | function | roboco/logging.py:179 | Resolve log dir: ROBOCO_LOG_DIR > /data/logs > ${ROBOCO_DATA_DIR:-./data}/logs > None |
-| get_logger | function | roboco/logging.py:202 | Return a configured structlog BoundLogger |
-| LogContext | class | roboco/logging.py:220 | Context manager binding/unbinding contextvars for scoped log context |
-| log_operation | function | roboco/logging.py:241 | Build a structured-log context dict for an operation |
+| _resolve_log_dir | function | roboco/logging.py:181 | Resolve log dir: ROBOCO_LOG_DIR > /data/logs > ${ROBOCO_DATA_DIR:-./data}/logs > None |
+| get_logger | function | roboco/logging.py:204 | Return a configured structlog BoundLogger |
+| LogContext | class | roboco/logging.py:222 | Context manager binding/unbinding contextvars for scoped log context |
+| log_operation | function | roboco/logging.py:243 | Build a structured-log context dict for an operation |
 | RobocoError | class | roboco/exceptions.py:13 | Base exception with message/code/details and to_dict() for API responses |
 | NotFoundError | class | roboco/exceptions.py:50 | Resource not found (code NOT_FOUND) |
 | ValidationError | class | roboco/exceptions.py:77 | Input validation failure (code VALIDATION_ERROR) |

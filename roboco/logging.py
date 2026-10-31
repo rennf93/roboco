@@ -157,8 +157,10 @@ def setup_logging() -> None:
                 log_dir.chmod(0o700)
             file_handler = logging.handlers.RotatingFileHandler(
                 log_dir / "orchestrator.log",
-                maxBytes=50 * 1024 * 1024,  # 50 MB per file
-                backupCount=5,  # keep 5 rotations -> ~250 MB cap
+                # 50 MB per file
+                maxBytes=50 * 1024 * 1024,
+                # Keep 5 rotations -> ~250 MB cap
+                backupCount=5,
                 encoding="utf-8",
             )
             file_handler.setFormatter(logging.Formatter("%(message)s"))

@@ -496,8 +496,10 @@ async def test_init_db_fresh_db_runs_migrations() -> None:
     ):
         await init_db()
 
-    rm.assert_awaited_once()  # full chain from base -> schema + seeds
-    fake_conn.run_sync.assert_not_awaited()  # no bare create_all on the fresh path
+    # Full chain from base -> schema + seeds
+    rm.assert_awaited_once()
+    # No bare create_all on the fresh path
+    fake_conn.run_sync.assert_not_awaited()
     fake_engine.dispose.assert_awaited_once()
 
 
@@ -701,5 +703,6 @@ async def test_rebind_hands_the_dropped_engine_to_its_own_loop() -> None:
 async def test_close_db_when_no_engine_is_noop() -> None:
     _DbHolder.engine = None
     _DbHolder.session_factory = None
-    await close_db()  # Should not raise.
+    # Should not raise.
+    await close_db()
     assert _DbHolder.engine is None
