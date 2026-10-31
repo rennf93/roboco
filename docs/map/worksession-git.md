@@ -27,7 +27,7 @@ This slice is the git substrate every delivery agent works on. `GitService` runs
 | `roboco/templates/git/pr_internal.py` | Internal (subtask→parent) PR title/body builder | 140 |
 | `roboco/templates/git/pr_root.py` | Root (→master, CEO-level) PR title/body builder with task tree | 245 |
 | `roboco/services/forge/__init__.py` | Package re-exports (`ForgeRouter`, `GitProvider`, `GitHubProvider`, `GiteaProvider`, `GitLabProvider`, `RepoRef`, `provider_for`, `register_project_forge`) | 32 |
-| `roboco/services/forge/base.py` | Pure contract: `RepoRef` dataclass + the `GitProvider` ABC (~20 abstract methods every forge implements) | 252 |
+| `roboco/services/forge/base.py` | Pure contract: `RepoRef` dataclass, the six role ABCs (`ForgeRepository`, `ForgeBranches`, `ForgePullRequests`, `ForgeReviews`, `ForgeCI`, `ForgeReleases`) and `GitProvider`, their composition: the 24 abstract operations every forge implements | 288 |
 | `roboco/services/forge/github.py` | GitHub.com/GHE REST transport — the pre-existing inline `httpx` logic pulled out unchanged; owns the sole retry policy in the package (`list_ci_runs`) | 530 |
 | `roboco/services/forge/gitea.py` | Self-hosted Gitea REST transport, adapting the wire contract back into GitHub shapes | 535 |
 | `roboco/services/forge/gitlab.py` | GitLab REST v4 transport — heaviest adaptation (MR `iid`, diff reassembly, pipelines) | 679 |
@@ -162,7 +162,13 @@ This slice is the git substrate every delivery agent works on. `GitService` runs
 | `MAX_TASK_DEPTH` | const | templates/git/constants.py:45 | 4 (umbrella→root→cell→dev) |
 | `BRANCH_TYPES` / `COMMIT_TYPES` | consts | templates/git/constants.py:10/21 | Allowed prefixes |
 | `RepoRef` | dataclass | forge/base.py:30 | Provider-opaque repo identity (`owner`, `repo`, `host`); GitLab packs the full URL-encoded namespace path into `owner`, leaving `repo` empty |
-| `GitProvider` | ABC | forge/base.py:52 | The ~25-method transport contract every forge implements (PR CRUD, review flow, `merge_branch`, server-side commits — `create_branch_ref` / `update_branch_ref` / `create_commit_on_branch` — CI signal surface, repo/label/branch/release/provisioning) |
+| `GitProvider` | ABC | forge/base.py:272 | The 24-operation transport contract every forge implements, composed from the six role ABCs below (PR CRUD, review flow, `merge_branch`, server-side commits — `create_branch_ref` / `update_branch_ref` / `create_commit_on_branch` — CI signal surface, repo/label/branch/release/provisioning) |
+| `ForgeRepository` | ABC | forge/base.py:52 | Role interface of `GitProvider` (4 abstract): A repository on the forge: parsing a remote URL into its RepoRef, reading the repo, creating one under an org, and making sure a label exists. |
+| `ForgePullRequests` | ABC | forge/base.py:85 | Role interface of `GitProvider` (7 abstract): Pull requests: listing and reading them with their diff, opening and updating one, marking a draft ready for review, and merging. |
+| `ForgeReviews` | ABC | forge/base.py:146 | Role interface of `GitProvider` (4 abstract): Review traffic on a pull request: requesting reviewers, posting a review, commenting, and adding labels. |
+| `ForgeBranches` | ABC | forge/base.py:175 | Role interface of `GitProvider` (5 abstract): Branch refs: merging one branch into another, creating, moving and deleting a ref, and committing files onto a branch through the API. |
+| `ForgeCI` | ABC | forge/base.py:226 | Role interface of `GitProvider` (3 abstract): CI on the forge: a branch's workflow runs, a commit's check runs, and the repo's workflows. |
+| `ForgeReleases` | ABC | forge/base.py:254 | Role interface of `GitProvider` (1 abstract): Publishing a release. |
 | `GitService._forge` | property | git.py:6850 | A fresh `ForgeRouter()` per access (cheap, no I/O — built this way, not `__init__`-cached, so tests can `GitService.__new__` bypass the constructor) |
 | `ForgeRouter` | class | forge/router.py:37 | Implements `GitProvider` by picking a transport per call from `RepoRef.host` |
 | `ForgeRouter._provider_for_ref` | staticmethod | forge/router.py:41 | `None` host → `GitHubProvider()`; a registered `"gitea"`/`"gitlab"` host → that provider constructed with its remembered scheme; unregistered → `GitError` naming the fix |
@@ -423,6 +429,8 @@ Baseline: `fd10cc862c2020b3f639cdb686d427b0198a2441` (master tip before the metr
 > **2026-10-31** (Planning trail #51, wave 3, `GitService` part 3 of 3): the gateway backfill moves into seven mixins in `git.py`, bodies byte-identical: `GitQualityGate` (10), `GitAgentWorkspace` (6), `GitGatewayPRs` (8, with the nested `_MergeContext`, which `GitService._MergeContext` still names through inheritance), `GitRebase` (10), `GitBranchState` (6), `GitDiffs` (11) and `GitConventions` (6). `GitService` keeps 9 methods (`_run_git`, `_forge`, `_warn_if_slow`, the origin, relay, project, repo-ref and token resolution, `get_workspace`) and `_PORCELAIN_STATUS_WIDTH`, which its reader names as `GitService._PORCELAIN_STATUS_WIDTH`; it composes 20 mixins and is no longer a god class.
 
 > **2026-10-31** (Planning trail #51, wave 3): `WorkSessionService` splits in place into 3 mixins in `work_session.py`, every method body byte-identical: `WorkSessionQueries` (6), `WorkSessionCommits` (4), `WorkSessionPRs` (3). `WorkSessionService` keeps its CRUD and lifecycle (`create`, `get`, `get_or_raise`, `task_team_for_session`, `update`, `complete`, `abandon`, `close`), composes them, and is no longer a god class. Rows naming `WorkSessionService.<method>` still hold through inheritance. Each mixin's TYPE_CHECKING-only base is `WorkSessionServiceSelf` (`roboco/services/_work_session_types.py`).
+
+> **2026-11-01** (Planning trail #51, wave 4): `GitProvider` is segregated into six role interfaces in `forge/base.py`, each an ABC holding its abstract methods verbatim: `ForgeRepository` (4), `ForgePullRequests` (7), `ForgeReviews` (4), `ForgeBranches` (5), `ForgeCI` (3), `ForgeReleases` (1). `GitProvider` keeps its name and docstring as their composition, so every `GitProvider` annotation and `isinstance` check holds; its abstract surface is unchanged. `tests/unit/services/forge/test_git_provider_roles.py` fails on a method two roles declare, one declared on `GitProvider` itself, or an abstract surface that is no longer the roles' union.
 
 ## Regression Risks
 
