@@ -389,6 +389,10 @@ html, body {
   position: absolute;
   left: 0;
   top: 0;
+  /* The hand paints over the panel's own layers (cards, toast, outro), so a
+     click on the toast stays visible; a full-frame overlay with z-index 20
+     or more still covers it. */
+  z-index: 10;
   width: 34px;
   height: 34px;
   transform: translate(var(--pk-cursor-x0, 0px), var(--pk-cursor-y0, 0px));
