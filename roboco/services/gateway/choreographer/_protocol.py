@@ -44,6 +44,7 @@ if TYPE_CHECKING:
         _ReassignedCtx,
     )
     from roboco.services.gateway.choreographer._verb_runner import VerbRunner
+    from roboco.services.gateway.choreographer.qa import _QASpecGateInputs
     from roboco.services.gateway.envelope import Envelope
 
 
@@ -266,6 +267,50 @@ class PRReviewerSurface:
     """``PRReviewerMixin``'s methods that the other classes call."""
 
     async def _project_slug_for(self, t: Any) -> str | None:
+        raise NotImplementedError
+
+
+class QAReviewGatesSurface:
+    """``QAReviewGatesMixin``'s methods that the other classes call."""
+
+    @classmethod
+    def _merge_ac_verdicts_into_notes(
+        cls, notes: str, ac_verdicts: list[str] | None
+    ) -> str:
+        raise NotImplementedError
+
+    async def _qa_review_spec_gate(
+        self, inputs: _QASpecGateInputs
+    ) -> tuple[Envelope | None, Any, str]:
+        raise NotImplementedError
+
+    async def _qa_review_text_gate(
+        self,
+        *,
+        qa_agent_id: UUID,
+        task_id: UUID,
+        notes: str,
+        task: Any,
+        role_str: str,
+        verb: str,
+        soup_checks: tuple[tuple[str, Any, int], ...],
+    ) -> Envelope | None:
+        raise NotImplementedError
+
+    @staticmethod
+    def _store_qa_note(
+        task: Any,
+        notes: str,
+        ac_verdicts: list[str] | None,
+        *,
+        passed: bool,
+        findings: list[Any] | None = None,
+    ) -> None:
+        raise NotImplementedError
+
+    async def _verify_qa_owner(
+        self, qa_agent_id: UUID, task_id: UUID, verb: str
+    ) -> tuple[Envelope | None, Any]:
         raise NotImplementedError
 
 
@@ -523,6 +568,7 @@ class ChoreographerHelpers(
     PMWorkSurface,
     PRGatePassSurface,
     PRReviewerSurface,
+    QAReviewGatesSurface,
     QualityGuardsSurface,
     RejectionSurface,
     ResolvedFindingsSurface,

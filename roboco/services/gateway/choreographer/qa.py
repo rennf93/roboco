@@ -104,8 +104,9 @@ def _extract_original_developer(task: Any) -> str | None:
     return markers.get_original_developer(task)
 
 
-class QAMixin(_Base):
-    """QA-role verbs."""
+class QAClaimMixin(_Base):
+    """``claim_review``: claiming a task for QA with its evidence (the
+    conventions findings, the video context) and the reclaim warning."""
 
     def _review_spec_context(self, agent: Any, qa_agent_id: UUID, t: Any) -> Any:
         """The spec Context claim_review evaluates against: actor identity,
@@ -534,6 +535,12 @@ class QAMixin(_Base):
             evidence_gaps=evidence_gaps,
         )
 
+
+class QAReviewGatesMixin(_Base):
+    """The checks ``pass_review`` and ``fail_review`` share: the owner, spec
+    and review-text gates, the acceptance-criteria verdicts, and storing the
+    QA note."""
+
     async def _verify_qa_owner(
         self, qa_agent_id: UUID, task_id: UUID, verb: str
     ) -> tuple[Envelope | None, Any]:
@@ -789,6 +796,11 @@ class QAMixin(_Base):
             task_id=task_id,
             verb=verb,
         )
+
+
+class QAPassMixin(_Base):
+    """``pass_review``: the criteria-verified entries it validates and records,
+    its final gates, and the hand-off to the documenter."""
 
     @staticmethod
     def _parse_criterion_entry(entry: Any, idx: int) -> tuple[str, str] | Envelope:
@@ -1116,6 +1128,11 @@ class QAMixin(_Base):
             )
         return None
 
+
+class QAFailMixin(_Base):
+    """``fail_review``: validating and attaching its findings, notifying the
+    developer, and the success envelope."""
+
     @staticmethod
     def _validate_fail_review_findings(
         t: Any, issues: list[str] | None, findings: list[dict[str, Any]] | None
@@ -1376,3 +1393,8 @@ class QAMixin(_Base):
         if warnings:
             env.warning = " ".join(warnings)
         return env
+
+
+class QAMixin(QAClaimMixin, QAReviewGatesMixin, QAPassMixin, QAFailMixin):
+    """QA-role verbs: ``claim_review``, ``pass_review`` and ``fail_review``,
+    composed from the four mixins above."""
