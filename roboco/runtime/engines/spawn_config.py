@@ -286,7 +286,8 @@ class AgentSettingsEngine(_Base):
             "mcp__roboco-do__*",
             "mcp__roboco-optimal__*",
             "mcp__roboco-git-readonly__*",
-            "Read(*)",  # All agents can read any file
+            # All agents can read any file
+            "Read(*)",
         ]
 
         # Base denials for all agents - block native tools + sensitive reads.
@@ -1261,7 +1262,8 @@ class AgentBriefingEngine(_Base):
                 do_tools = list(get_role_config(role).do_tools)
             except KeyError:
                 return ""
-            if len(do_tools) < TOOL_SPOTLIGHT_MIN_VERBS:  # below the option band
+            # Below the option band
+            if len(do_tools) < TOOL_SPOTLIGHT_MIN_VERBS:
                 return ""
             verbs = await self._tool_spotlight_verbs(agent_id, task_id, do_tools)
             if not verbs:
