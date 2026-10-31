@@ -106,7 +106,8 @@ _BRAND_VOICE_NUDGE_KEY = "x_brand_voice_nudge_sent"
 # helper — this codebase duplicates this small pattern per service
 # (release_proposal.py, prompter.py, x_post_service.py all carry their own).
 _REDRAFT_LOCK_PREFIX = "roboco:x_redraft:"
-_REDRAFT_LOCK_TTL_SECONDS = 60  # the check+insert completes in ms; crash backstop
+# The check+insert completes in ms; crash backstop
+_REDRAFT_LOCK_TTL_SECONDS = 60
 _REDRAFT_RELEASE_SCRIPT = """
 if redis.call("get", KEYS[1]) == ARGV[1] then
     return redis.call("del", KEYS[1])
@@ -279,14 +280,16 @@ def changelog_highlights(entry: str, *, limit: int = 8) -> list[str]:
         return found
 
     parts = _SECTION_SPLIT_RE.split(entry)
-    if len(parts) == 1:  # no section headings — keep document order
+    # No section headings — keep document order
+    if len(parts) == 1:
         return leads(entry)[:limit]
     rank = {name: i for i, name in enumerate(_SECTION_ORDER)}
     sections = [
         (rank.get(parts[i].strip().lower(), len(rank)), leads(parts[i + 1]))
         for i in range(1, len(parts) - 1, 2)
     ]
-    sections.sort(key=lambda s: s[0])  # stable: unknown sections keep doc order
+    # Stable: unknown sections keep doc order
+    sections.sort(key=lambda s: s[0])
     ordered = leads(parts[0]) + [lead for _, chunk in sections for lead in chunk]
     return ordered[:limit]
 
@@ -816,7 +819,8 @@ class XFeatureSpotlight(_Base):
         if not await self._cancel_stale_exploration(task_svc):
             return None
         if len(await task_svc.list_open_x_posts()) >= settings.x_max_open_posts:
-            return None  # respect the shared held-draft cap
+            # Respect the shared held-draft cap
+            return None
         project = await self._roboco_project()
         if project is None or project.id is None:
             self.log.warning(
@@ -1012,15 +1016,19 @@ class XFeatureSpotlight(_Base):
         """
         open_explorations = await task_svc.list_open_feature_explorations()
         if not open_explorations:
-            return True  # nothing open; fall through to originate
-        stale = open_explorations[0]  # oldest-first
+            # Nothing open; fall through to originate
+            return True
+        # Oldest-first
+        stale = open_explorations[0]
         stale_age = datetime.now(UTC) - stale.created_at
         if stale_age < timedelta(
             seconds=2 * settings.x_feature_spotlight_interval_seconds
         ):
-            return False  # one open cycle at a time; not yet stale
+            # One open cycle at a time; not yet stale
+            return False
         if await self._has_live_hom_spawn(cast("UUID", stale.id)):
-            return False  # HoM still working it; respawn breaker tripped but alive
+            # HoM still working it; respawn breaker tripped but alive
+            return False
         # Stale + spawnless: the HoM spawn died without completing. Cancel and
         # re-arm so a dead exploration can't gate the engine silent forever.
         stale.status = TaskStatus.CANCELLED
@@ -1067,7 +1075,8 @@ class XFeatureSpotlight(_Base):
                 project_id=project_id,
                 status=TaskStatus.PENDING,
                 source=X_FEATURE_EXPLORATION_SOURCE,
-                confirmed_by_human=False,  # HELD; board-dispatched, not delivery
+                # HELD; board-dispatched, not delivery
+                confirmed_by_human=False,
             )
         )
         markers.set_x_seen_features(task, seen)
@@ -1143,7 +1152,8 @@ class XPostMaterialization(_Base):
             and markers.get_x_release_version(task) == version
             for task in open_posts
         ):
-            return None  # already drafted for this version
+            # Already drafted for this version
+            return None
         if len(open_posts) >= settings.x_max_open_posts:
             self.log.warning(
                 "x-engine: open-post cap reached; not drafting release post",
@@ -1239,7 +1249,8 @@ class XPostMaterialization(_Base):
                 project_id=project_id,
                 status=TaskStatus.PENDING,
                 source=source,
-                confirmed_by_human=False,  # HELD for the CEO; never dispatched
+                # HELD for the CEO; never dispatched
+                confirmed_by_human=False,
             )
         )
         markers.set_x_draft_body(task, body)
