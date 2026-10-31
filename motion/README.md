@@ -17,7 +17,7 @@ Compositions live under `compositions/<composition_id>/`. Each composition is on
    - Studio's canvas needs a GPU: in a headless browser without one it stays dark. There, serve the folder (`python3 -m http.server -d motion`) and open `http://localhost:8000/compositions/<id>/vertical.html`. That page loads the real fonts, kit and layout, but not the HyperFrames runtime, so its timing is not the render's (kit typing, clip windows): judge timing from `request_render` frames.
    - `pnpm lint` lints the whole project, `index.html` and every cut; `pnpm lint compositions/<id>/vertical.html` lints one cut.
    - `pnpm test` runs the smoke gate that CI runs.
-   - The HyperFrames CLI sends anonymous usage events to PostHog unless `HYPERFRAMES_NO_TELEMETRY=1` (or `DO_NOT_TRACK=1`) is set, and checks npm for its own updates on every run unless `HYPERFRAMES_NO_UPDATE_CHECK=1` is. The `preview` and `lint` scripts set both, and every agent image sets the telemetry one; set them yourself when you run `npx hyperframes` directly.
+   - The HyperFrames CLI sends anonymous usage events to PostHog unless `HYPERFRAMES_NO_TELEMETRY=1` (or `DO_NOT_TRACK=1`) is set, and checks npm for its own updates on every run unless `HYPERFRAMES_NO_UPDATE_CHECK=1` is. The `preview` and `lint` scripts set both, and so does every agent image; set them yourself when you run `npx hyperframes` directly.
 
 ## Captions
 

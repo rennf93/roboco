@@ -53,6 +53,18 @@ async def test_video_source_prompt_states_the_animation_clock_rule() -> None:
 
 
 @pytest.mark.asyncio
+async def test_video_source_prompt_previews_over_http_not_file_urls() -> None:
+    """The author's playwright MCP refuses file:// URLs, so the prompt has the
+    author serve motion/ over HTTP; it also keeps the one index.html at the
+    project root."""
+    prompt = await _orch()._build_dev_prompt(_task(source=VIDEO_SOURCE))
+    assert "python3 -m http.server 8000 -d motion" in prompt
+    assert "http://127.0.0.1:8000/compositions/<id>/vertical.html" in prompt
+    assert "file://.../vertical.html" not in prompt
+    assert "never add an index.html under compositions/" in prompt
+
+
+@pytest.mark.asyncio
 async def test_non_video_source_prompt_omits_request_render_instruction() -> None:
     prompt = await _orch()._build_dev_prompt(_task(source="code"))
     assert "request_render" not in prompt

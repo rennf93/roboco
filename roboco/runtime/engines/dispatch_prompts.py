@@ -591,8 +591,14 @@ data-start and a composition-time delay (they add: 2.6 + 2.6s = 5.2s).
 motion/compositions/animation-clock.test.js (pnpm test) enforces it.
 Read the vendored renderer doctrine in motion/skills/ (hyperframes-core,
 -keyframes, -creative) before authoring. You have browser tools (playwright
-MCP) on this task: open your composition HTML (file://.../vertical.html)
-and watch it live while iterating — do not build blind between renders.
+MCP) on this task, and they refuse file:// URLs: serve motion/ over HTTP in
+the background (python3 -m http.server 8000 -d motion) and open
+http://127.0.0.1:8000/compositions/<id>/vertical.html to watch it while
+iterating — do not build blind between renders. That page loads the real
+fonts, kit and layout but not the HyperFrames runtime, so judge layout and
+type there and timing only from request_render frames. motion/index.html is
+the project root: never add an index.html under compositions/
+(compositions/assets.test.js fails on one).
 
 Captions (x_caption / tiktok_caption, see motion/README.md "Captions"):
 - X: hook line naming the concrete capability, then 1-2 lines of specifics
