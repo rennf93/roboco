@@ -17,13 +17,8 @@ from roboco.api.schemas.research import FetchRequest, SearchRequest
 from roboco.api.utils import research as research_utils
 from roboco.models import AgentRole
 from roboco.models.permissions import AgentContext
-from roboco.services.research import (
-    FetchOutcome,
-    ResearchError,
-    ResearchUnsupportedError,
-    SearchHit,
-    SearchOutcome,
-)
+from roboco.services.research import FetchOutcome, SearchHit, SearchOutcome
+from roboco.services.research_errors import ResearchError, ResearchUnsupportedError
 from roboco.services.research_quota import QuotaStatus
 
 

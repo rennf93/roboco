@@ -9613,7 +9613,8 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `roboco/services/_kanban_service_types.py` | `KanbanServiceSelf`, a TYPE_CHECKING-only Protocol declaring the attributes the `KanbanService` mixin reads through `self` (no moved body calls across classes, so it has no `<Class>Surface` yet); `tests/unit/services/test_kanban_service_mixins.py` fails on a stray stub or a member defined twice | 28 |
 | `roboco/services/company_goals.py` | CRUD for the singleton company charter (north star + objectives + constraints + policy + brand_voice + company_name); `resolve_product_name` is the shared product-name fallback chain `XEngine`/`VideoEngine` both call | 110 |
 | `roboco/services/strategy_engine.py` | Dormant "engine 2": assesses company state vs goals; `idle`→roadmap and `stranded_blocked`→Coroner both trigger a Board Program before the CEO notification | 337 |
-| `roboco/services/research.py` | Pluggable web-search/fetch — provider adapters (Tavily/Brave/Exa/Null) + clamping service | 570 |
+| `roboco/services/research.py` | Pluggable web-search/fetch — provider adapters (SearXNG/Tavily/Brave/Exa/Null) + clamping service | 570 |
+| `roboco/services/research_errors.py` | Research failures that name who refused a call and why: one `ResearchError` subclass per party (provider, target site, RoboCo's URL guard), messages built from the response (status, page title or first readable text, never markup) and bot-check detection from documented challenge headers and titles | 260 |
 | `roboco/services/research_quota.py` | Per-agent UTC-daily Redis quota counter for research calls (fail-open) | 78 |
 | `roboco/services/pitch.py` | Board pitch CRUD + CEO approve → provision repos/Projects(+Product) + seed Main-PM task | 274 |
 | `roboco/services/github_provisioning.py` | The only service that CREATES repos for pitch provisioning — now provider-aware (GitHub/Gitea/GitLab, Phase 4 forge parity), despite the GitHub-flavored name (kept for backward compatibility) | 232 |
@@ -9693,14 +9694,18 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `StrategyEngine.assess` | method | strategy_engine.py:90 | Pure read; emits `idle` + `stranded_blocked` observations |
 | `StrategyEngine.run_cycle` | method | strategy_engine.py:130 | No-op unless flag on; assess + notify CEO (notify-only, never spends/builds) |
 | `StrategyObservation` | dataclass | strategy_engine.py:44 | Frozen (kind, summary, detail) |
-| `ResearchService` | class | research.py:435 | Provider-agnostic entry point; clamps result/char caps |
-| `SearchProvider` | ABC | research.py:88 | Adapter base: shared/owned httpx client, `_request_json`, abstract `search`, default-unsupported `fetch` |
-| `TavilyProvider` / `BraveProvider` / `ExaProvider` | class | research.py:170 / 220 / 250 | Concrete adapters (Brave has no `fetch`) |
-| `NullProvider` | class | research.py:374 | Graceful stub — empty results, `configured=False`, never raises |
-| `build_provider` | func | research.py:403 | Select adapter by name; NullProvider when no key or unknown name |
-| `get_research_service` | factory | research.py:489 | Build service from settings (provider + caps) |
+| `ResearchService` | class | research.py:450 | Provider-agnostic entry point; clamps result/char caps |
+| `SearchProvider` | ABC | research.py:89 | Adapter base: shared/owned httpx client, `_request_json`, abstract `search`, default-unsupported `fetch` |
+| `TavilyProvider` / `BraveProvider` / `ExaProvider` | class | research.py:179 / 229 / 259 | Concrete adapters (Brave has no `fetch`) |
+| `NullProvider` | class | research.py:389 | Graceful stub — empty results, `configured=False`, never raises |
+| `build_provider` | func | research.py:418 | Select adapter by name; NullProvider when no key or unknown name |
+| `get_research_service` | factory | research.py:504 | Build service from settings (provider + caps) |
 | `SearchHit` / `SearchOutcome` / `FetchOutcome` | dataclass | research.py:54 / 64 / 74 | Normalised result shapes |
-| `ResearchError` / `ResearchUnsupportedError` | exception | research.py:40 / 44 | Provider failure vs unsupported-op (route maps 502 vs 501) |
+| `ResearchError` / `ResearchUnsupportedError` | exception | research_errors.py:32 / 36 | Base of every research failure / the provider has no such operation (route maps 501) |
+| `ResearchProviderError` / `ResearchSiteError` / `ResearchUrlRefusedError` | exception | research_errors.py:45 / 49 / 53 | The party that failed the call: the research provider, the target site of a direct page fetch, or RoboCo's URL guard |
+| `site_status_error` / `site_unreachable_error` | func | research_errors.py:216 / 228 | A site's error status or bot-check page / no answer from the site, named by host, URL, status and readable reason |
+| `provider_status_error` / `provider_body_error` / `provider_unreachable_error` | func | research_errors.py:237 / 248 / 261 | The provider's error status / a body that is not a JSON object / no answer, named by provider and endpoint |
+| `carries_challenge_header` | func | research_errors.py:186 | True when a bot-mitigation layer marked the response as its challenge page (`cf-mitigated`, `x-amzn-waf-action`, `x-vercel-mitigated`) |
 | `ResearchQuotaTracker` | class | research_quota.py:34 | Per-agent/day Redis `INCR` counter, 24h expiry, fail-open |
 | `ResearchQuotaTracker.check_and_consume` | method | research_quota.py:51 | Atomic INCR-then-compare; over-limit still bumps counter |
 | `QuotaStatus` | dataclass | research_quota.py:24 | (allowed, used, limit, day) |
@@ -9920,10 +9925,13 @@ product-strategy-research-pitch
 │   ├── assess (idle + stranded_blocked observations)
 │   └── run_cycle (flag-gated, notify-only)
 ├── research.py
-│   ├── SearchProvider ABC + Tavily/Brave/Exa/Null adapters
+│   ├── SearchProvider ABC + SearXNG/Tavily/Brave/Exa/Null adapters
 │   ├── ResearchService (clamping entry point)
 │   ├── build_provider / get_research_service
-│   └── helpers (_as_float / _truncated_fetch)
+│   └── helpers (_as_float / _truncated_fetch / _assert_public_http_url)
+├── research_errors.py — ResearchError tree, one subclass per failing party
+│   ├── site_* / provider_* / url_refused_error message builders
+│   └── readable reason (_page_text) + bot-check detection
 ├── research_quota.py — ResearchQuotaTracker (Redis, fail-open)
 │   └── check_and_consume (INCR-then-compare)
 ├── pitch.py — PitchService

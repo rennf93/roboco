@@ -23,11 +23,8 @@ from roboco.security import (
     internal_ssrf_validator,
     prompt_injection_validator,
 )
-from roboco.services.research import (
-    ResearchError,
-    ResearchUnsupportedError,
-    get_research_service,
-)
+from roboco.services.research import get_research_service
+from roboco.services.research_errors import ResearchError, ResearchUnsupportedError
 
 router = APIRouter()
 

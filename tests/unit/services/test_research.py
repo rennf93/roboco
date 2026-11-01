@@ -18,15 +18,25 @@ from roboco.services.research import (
     ExaProvider,
     FetchOutcome,
     NullProvider,
-    ResearchError,
     ResearchService,
-    ResearchUnsupportedError,
     SearchOutcome,
     SearchProvider,
     SearXNGProvider,
     TavilyProvider,
     build_provider,
     get_research_service,
+)
+from roboco.services.research_errors import (
+    ResearchProviderError,
+    ResearchSiteError,
+    ResearchUnsupportedError,
+    ResearchUrlRefusedError,
+)
+from tests.unit.research_fakes import (
+    PLAIN_NOT_FOUND_HTML,
+    PUBLIC_IP,
+    VERCEL_CHECKPOINT_HTML,
+    fake_dns,
 )
 
 Handler = Callable[[httpx.Request], httpx.Response]
@@ -38,6 +48,9 @@ _TRUNC_CAP = 10
 _RESULTS_CAP = 5
 _REQ_RESULTS = 2
 _FETCH_CAP = 20
+_SEARXNG_BASE = "http://searxng.internal:8080"
+_PAGE_URL = f"https://{PUBLIC_IP}/page"
+_RFC1918_IP = "172.18.0.5"
 
 
 def _client(handler: Handler) -> httpx.AsyncClient:
@@ -267,36 +280,62 @@ async def test_searxng_fetch_truncates_to_cap() -> None:
 
 
 @pytest.mark.asyncio
-async def test_searxng_fetch_non_2xx_raises() -> None:
-    client = _client(lambda _r: httpx.Response(404, text="gone"))
-    provider = SearXNGProvider(
-        base_url="http://searxng.internal", timeout=5.0, client=client
-    )
-    with pytest.raises(ResearchError):
-        await provider.fetch("https://93.184.216.34/page", 100)
-    await client.aclose()
-
-
-@pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "url",
+    ("url", "why"),
     [
-        "http://127.0.0.1:8000/api",  # loopback
-        "http://169.254.169.254/latest/meta-data",  # cloud metadata
-        "http://roboco-postgres:5432/",  # internal name, unresolvable/RFC1918
-        "ftp://93.184.216.34/file",  # non-http scheme
+        pytest.param(
+            "http://127.0.0.1:8000/api",
+            "it resolves to a non-public address",
+            id="loopback",
+        ),
+        pytest.param(
+            "http://169.254.169.254/latest/meta-data",
+            "it resolves to a non-public address",
+            id="cloud-metadata",
+        ),
+        pytest.param(
+            "http://roboco-postgres:5432/",
+            "it resolves to a non-public address",
+            id="internal-name",
+        ),
+        pytest.param(
+            "http://no-such-host.invalid/",
+            "its host 'no-such-host.invalid' does not resolve (gaierror: ",
+            id="unresolvable",
+        ),
+        pytest.param("http:///path", "it has no hostname", id="no-hostname"),
+        pytest.param(
+            "ftp://93.184.216.34/file",
+            "only http(s) URLs are fetched",
+            id="non-http-scheme",
+        ),
     ],
 )
-async def test_searxng_fetch_refuses_non_public_urls(url: str) -> None:
-    provider = SearXNGProvider(
-        base_url="http://searxng.internal",
-        timeout=5.0,
-        client=_client(
-            lambda _r: httpx.Response(200, text="<html><body>x</body></html>")
-        ),
+async def test_searxng_fetch_refuses_non_public_urls(
+    url: str, why: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The guard refuses before any request leaves, and says it was RoboCo."""
+    fake_dns(
+        monkeypatch,
+        {
+            "127.0.0.1": "127.0.0.1",
+            "169.254.169.254": "169.254.169.254",
+            "roboco-postgres": _RFC1918_IP,
+        },
     )
-    with pytest.raises(ResearchError):
+    requests: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, text="<html><body>x</body></html>")
+
+    provider = SearXNGProvider(
+        base_url="http://searxng.internal", timeout=5.0, client=_client(handler)
+    )
+    with pytest.raises(ResearchUrlRefusedError) as exc:
         await provider.fetch(url, 100)
+    assert str(exc.value).startswith(f"RoboCo's URL guard refused {url!r}: {why}")
+    assert requests == []
 
 
 @pytest.mark.asyncio
@@ -310,41 +349,249 @@ async def test_searxng_configured_keys_off_base_url() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Error handling
+# SearXNG fetch: the target site is the party that refuses
+# --------------------------------------------------------------------------- #
+
+
+def _searxng(handler: Handler) -> SearXNGProvider:
+    return SearXNGProvider(base_url=_SEARXNG_BASE, timeout=5.0, client=_client(handler))
+
+
+@pytest.mark.asyncio
+async def test_searxng_fetch_vercel_checkpoint_names_site_title_and_bot_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The 2026-10-28 refusal: the site, not SearXNG, answered 403 with Vercel's
+    Security Checkpoint page, and the message says so in readable words."""
+    fake_dns(monkeypatch, {"app.example.com": PUBLIC_IP})
+    provider = _searxng(
+        lambda _r: httpx.Response(
+            403, text=VERCEL_CHECKPOINT_HTML, headers={"content-type": "text/html"}
+        )
+    )
+    with pytest.raises(ResearchSiteError) as exc:
+        await provider.fetch("https://app.example.com/pricing", 100)
+    assert str(exc.value) == (
+        "Site app.example.com answered HTTP 403 Forbidden to the page fetch of "
+        "https://app.example.com/pricing (page title: Vercel Security "
+        "Checkpoint). This is Vercel's bot-check (challenge) page: the site "
+        "blocks automated fetches, so get this information from another source."
+    )
+    assert "<" not in str(exc.value)
+    assert "searxng" not in str(exc.value).lower()
+
+
+@pytest.mark.asyncio
+async def test_searxng_fetch_plain_404_names_site_and_readable_text(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_dns(monkeypatch, {"docs.example.org": PUBLIC_IP})
+    provider = _searxng(lambda _r: httpx.Response(404, text=PLAIN_NOT_FOUND_HTML))
+    with pytest.raises(ResearchSiteError) as exc:
+        await provider.fetch("https://docs.example.org/missing", 100)
+    assert str(exc.value) == (
+        "Site docs.example.org answered HTTP 404 Not Found to the page fetch of "
+        "https://docs.example.org/missing (response text: Not Found The "
+        "requested URL was not found on this server.)."
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("header", "value", "status", "vendor"),
+    [
+        pytest.param("cf-mitigated", "challenge", 403, "Cloudflare", id="cloudflare"),
+        pytest.param("x-amzn-waf-action", "challenge", 202, "AWS WAF", id="aws-202"),
+        pytest.param("x-amzn-waf-action", "captcha", 405, "AWS WAF", id="aws-405"),
+        pytest.param("x-vercel-mitigated", "challenge", 429, "Vercel", id="vercel"),
+    ],
+)
+async def test_searxng_fetch_challenge_header_is_a_refusal_whatever_the_status(
+    header: str, value: str, status: int, vendor: str
+) -> None:
+    """A challenge page is a refusal even when its status is 2xx (AWS WAF's
+    challenge answers 202), and the header names the vendor."""
+    provider = _searxng(
+        lambda _r: httpx.Response(
+            status,
+            text="<html><body>Just a moment...</body></html>",
+            headers={header: value},
+        )
+    )
+    with pytest.raises(ResearchSiteError) as exc:
+        await provider.fetch(_PAGE_URL, 100)
+    assert f"answered HTTP {status} " in str(exc.value)
+    assert f"This is {vendor}'s bot-check (challenge) page" in str(exc.value)
+
+
+@pytest.mark.asyncio
+async def test_searxng_fetch_redirect_names_the_site_that_answered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_dns(monkeypatch, {"a.example.com": PUBLIC_IP})
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "a.example.com":
+            return httpx.Response(
+                302, headers={"location": "https://b.example.com/landing"}
+            )
+        return httpx.Response(403, text=PLAIN_NOT_FOUND_HTML)
+
+    with pytest.raises(ResearchSiteError) as exc:
+        await _searxng(handler).fetch("https://a.example.com/start", 100)
+    assert str(exc.value).startswith(
+        "Site b.example.com answered HTTP 403 Forbidden to the page fetch of "
+        "https://a.example.com/start after a redirect to "
+        "https://b.example.com/landing (response text: "
+    )
+
+
+@pytest.mark.asyncio
+async def test_searxng_fetch_unreachable_site_names_site_and_exception_kind(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_dns(monkeypatch, {"down.example.com": PUBLIC_IP})
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("[Errno 111] Connection refused")
+
+    with pytest.raises(ResearchSiteError) as exc:
+        await _searxng(handler).fetch("https://down.example.com/page", 100)
+    assert str(exc.value) == (
+        "No answer from site down.example.com to the page fetch of "
+        "https://down.example.com/page: ConnectError: [Errno 111] Connection "
+        "refused."
+    )
+    assert not isinstance(exc.value, ResearchProviderError)
+
+
+@pytest.mark.asyncio
+async def test_searxng_fetch_timeout_names_the_bare_exception_kind() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("")
+
+    with pytest.raises(ResearchSiteError) as exc:
+        await _searxng(handler).fetch(_PAGE_URL, 100)
+    assert str(exc.value) == (
+        f"No answer from site {PUBLIC_IP} to the page fetch of {_PAGE_URL}: "
+        "ReadTimeout."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Provider failures: the research provider is the party
 # --------------------------------------------------------------------------- #
 
 
 @pytest.mark.asyncio
-async def test_non_2xx_raises_research_error() -> None:
+async def test_searxng_search_500_names_the_provider() -> None:
+    provider = _searxng(
+        lambda _r: httpx.Response(
+            500,
+            text=(
+                "<html><head><title>500 Internal Server Error</title></head>"
+                "<body><h1>Internal Server Error</h1></body></html>"
+            ),
+        )
+    )
+    with pytest.raises(ResearchProviderError) as exc:
+        await provider.search("q", _RESULTS_CAP)
+    assert str(exc.value) == (
+        "Research provider searxng answered HTTP 500 Internal Server Error to "
+        f"GET {_SEARXNG_BASE}/search (page title: 500 Internal Server Error)."
+    )
+
+
+@pytest.mark.asyncio
+async def test_searxng_search_unreachable_names_the_provider() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("[Errno 111] Connection refused")
+
+    with pytest.raises(ResearchProviderError) as exc:
+        await _searxng(handler).search("q", _RESULTS_CAP)
+    assert str(exc.value) == (
+        f"No answer from research provider searxng to GET {_SEARXNG_BASE}/search: "
+        "ConnectError: [Errno 111] Connection refused."
+    )
+
+
+@pytest.mark.asyncio
+async def test_tavily_search_error_status_names_the_provider() -> None:
     client = _client(lambda _r: httpx.Response(500, text="boom"))
     provider = TavilyProvider(api_key="k", timeout=5.0, client=client)
-    with pytest.raises(ResearchError):
+    with pytest.raises(ResearchProviderError) as exc:
         await provider.search("q", _RESULTS_CAP)
+    assert str(exc.value) == (
+        "Research provider tavily answered HTTP 500 Internal Server Error to "
+        "POST https://api.tavily.com/search (response text: boom)."
+    )
     await client.aclose()
 
 
 @pytest.mark.asyncio
-async def test_network_error_raises_research_error() -> None:
+async def test_tavily_unreachable_names_the_provider() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("down")
 
     client = _client(handler)
     provider = TavilyProvider(api_key="k", timeout=5.0, client=client)
-    with pytest.raises(ResearchError):
+    with pytest.raises(ResearchProviderError) as exc:
         await provider.search("q", _RESULTS_CAP)
+    assert str(exc.value) == (
+        "No answer from research provider tavily to POST "
+        "https://api.tavily.com/search: ConnectError: down."
+    )
     await client.aclose()
 
 
 @pytest.mark.asyncio
-async def test_malformed_json_raises_research_error() -> None:
+async def test_tavily_non_json_body_names_the_provider() -> None:
     client = _client(
         lambda _r: httpx.Response(
             200, text="not json", headers={"content-type": "application/json"}
         )
     )
     provider = TavilyProvider(api_key="k", timeout=5.0, client=client)
-    with pytest.raises(ResearchError):
+    with pytest.raises(ResearchProviderError) as exc:
         await provider.search("q", _RESULTS_CAP)
+    assert str(exc.value) == (
+        "Research provider tavily answered POST https://api.tavily.com/search "
+        "with HTTP 200 OK but a body that is not a JSON object "
+        "(application/json; response text: not json)."
+    )
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_provider_json_array_body_names_the_provider() -> None:
+    """Valid JSON that is not an object is a provider failure, not a crash."""
+    client = _client(lambda _r: httpx.Response(200, json=["not", "an", "object"]))
+    provider = ExaProvider(api_key="k", timeout=5.0, client=client)
+    with pytest.raises(ResearchProviderError) as exc:
+        await provider.search("q", _RESULTS_CAP)
+    assert str(exc.value).startswith(
+        "Research provider exa answered POST https://api.exa.ai/search with "
+        "HTTP 200 OK but a body that is not a JSON object"
+    )
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_tavily_fetch_error_names_the_provider_not_the_site() -> None:
+    """Tavily downloads the page itself, so its own API is the party."""
+    client = _client(
+        lambda _r: httpx.Response(
+            401, json={"detail": {"error": "Unauthorized: missing or invalid API key."}}
+        )
+    )
+    provider = TavilyProvider(api_key="k", timeout=5.0, client=client)
+    with pytest.raises(ResearchProviderError) as exc:
+        await provider.fetch("https://app.example.com/pricing", 100)
+    assert str(exc.value) == (
+        "Research provider tavily answered HTTP 401 Unauthorized to POST "
+        "https://api.tavily.com/extract (response text: "
+        '{"detail":{"error":"Unauthorized: missing or invalid API key."}}).'
+    )
     await client.aclose()
 
 
