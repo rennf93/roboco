@@ -84,6 +84,12 @@ def origin_and_clone(
     clone = tmp_path / "workspaces" / "proj" / "backend" / "be-pm"
     clone.parent.mkdir(parents=True)
     subprocess.run(["git", "clone", "-q", str(origin), str(clone)], check=True)
+    # The identity WorkspaceService writes into every clone. Workspace git
+    # runs with HOME=/nonexistent, so without it the rebase's commits take
+    # whatever identity git derives from the host, and a CI runner it cannot
+    # derive one on fails the rebase, which the route reports as a conflict.
+    _git(clone, "config", "user.name", "be-pm")
+    _git(clone, "config", "user.email", "be-pm@roboco.tech")
     serve_origin_through_relay(monkeypatch, tmp_path, origin)
     return origin, clone
 
