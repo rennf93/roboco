@@ -47,7 +47,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 # Activate the exact version video-renderer/package.json pins
 # (packageManager: pnpm@12.16.1) rather than trusting corepack's bundled
-# default — a future node:22-bookworm-slim shipping a different pnpm would
+# default - a future node:22-bookworm-slim shipping a different pnpm would
 # silently change the build's package manager. pnpm 12's first run (the
 # install below) downloads its native binary (the glibc @pnpm/exe.linux-*
 # package for the build's architecture), checked against npm's signature.
@@ -67,8 +67,8 @@ ENV CI=true \
 # execute live per /render call — so there's no separate build output to discard
 # and no multi-stage split.
 # pnpm-workspace.yaml carries the `allowBuilds` approvals for esbuild and
-# puppeteer — without them pnpm 12 fails the install with
-# ERR_PNPM_IGNORED_BUILDS (exit 1), breaking the image build — and
+# puppeteer - without them pnpm 12 fails the install with
+# ERR_PNPM_IGNORED_BUILDS (exit 1), breaking the image build - and
 # `pmOnFail: ignore`, without which a frozen install rejects the lockfile for
 # not recording the pinned pnpm.
 # --chmod: the files keep the build folder's own modes otherwise, and the NAS

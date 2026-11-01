@@ -29,9 +29,9 @@ WORKDIR /app
 ENV CI=true
 
 # Copy package manifests first (for layer caching). pnpm-workspace.yaml
-# carries the `allowBuilds` map (sharp, unrs-resolver) — without it pnpm 12
+# carries the `allowBuilds` map (sharp, unrs-resolver) - without it pnpm 12
 # fails the install with ERR_PNPM_IGNORED_BUILDS (exit 1) on unrs-resolver's
-# postinstall — and `pmOnFail: ignore`, without which a frozen install rejects
+# postinstall - and `pmOnFail: ignore`, without which a frozen install rejects
 # the lockfile for not recording the pinned pnpm.
 COPY panel/package.json panel/pnpm-lock.yaml panel/pnpm-workspace.yaml ./
 
@@ -42,7 +42,7 @@ COPY panel/package.json panel/pnpm-lock.yaml panel/pnpm-workspace.yaml ./
 # alike): next build never saw a hoisted tree, and the second install took
 # 10 minutes on the NAS with pnpm 11 and 27 with pnpm 12. With the allowBuilds
 # approval in pnpm-workspace.yaml, unrs-resolver runs its postinstall, which
-# checks its platform-specific binary (sharp 0.35 has no install script) — no
+# checks its platform-specific binary (sharp 0.35 has no install script) - no
 # strictDepBuilds downgrade needed.
 RUN pnpm install --frozen-lockfile
 
