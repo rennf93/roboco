@@ -8137,17 +8137,19 @@ class TaskBlocking(_Base):
 
     @staticmethod
     def _hand_claim_lock_to_unblocked_owner(task: TaskTable, owner: Any) -> None:
-        """Give the claim lock back with the task: the resumed owner holds it.
+        """Give the claim lock back with the task: the restored owner holds it.
 
         An escalation moved the lock to its target together with the task
         (``apply_escalation``), so an unblock that hands the task back must
         hand the lock back too, or the owner's own notes and commits on its
         resumed task bounce off the content-write gate. A task returned to
         PENDING has no live claim; its owner takes the lock with a fresh
-        claim, exactly as on a first claim.
+        claim, exactly as on a first claim. Shared by the legacy ``unblock``
+        (IN_PROGRESS or a branchless PENDING) and the snapshot restore
+        (``_restore_block_ownership``, any pre-block status).
         """
-        resumed = task.status == TaskStatus.IN_PROGRESS
-        task.active_claimant_id = owner if resumed else None
+        unclaimed = task.status == TaskStatus.PENDING
+        task.active_claimant_id = None if unclaimed else owner
 
     async def unblock(
         self, task_id: UUID, agent_role: str | None = None
@@ -13025,8 +13027,10 @@ class TaskAdminOverride(_Base):
         diverted_restored_status, restored_owner).
 
         A branchless in_progress diverts to pending (the dispatcher refuses a
-        branchless in_progress task and loops). Re-owns from the snapshot and
-        clears the pre-block snapshot fields.
+        branchless in_progress task and loops). Re-owns from the snapshot,
+        handing the claim lock to the restored owner unless the task went
+        back to pending (``_hand_claim_lock_to_unblocked_owner``), and clears
+        the pre-block snapshot fields.
         """
         if restored_status == TaskStatus.IN_PROGRESS and not task.branch_name:
             restored_status = TaskStatus.PENDING
@@ -13040,9 +13044,7 @@ class TaskAdminOverride(_Base):
         if task.pre_block_assignee:
             task.assigned_to = cast("Any", task.pre_block_assignee)
             task.claimed_by = cast("Any", task.pre_block_assignee)
-            # The claimant lock must follow the re-owning — a stale claimant
-            # bounces every content write from the restored owner.
-            task.active_claimant_id = cast("Any", task.pre_block_assignee)
+            self._hand_claim_lock_to_unblocked_owner(task, task.pre_block_assignee)
         task.pre_block_state = None
         task.pre_block_assignee = None
         task.pre_block_metadata = None

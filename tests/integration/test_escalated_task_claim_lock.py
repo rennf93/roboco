@@ -273,3 +273,24 @@ async def test_legacy_unblock_to_pending_leaves_the_task_unclaimed(
     assert task.status == TaskStatus.PENDING
     assert task.assigned_to == cell["dev"].id
     assert task.active_claimant_id is None
+
+
+@pytest.mark.asyncio
+async def test_unblock_with_restore_to_pending_leaves_the_task_unclaimed(
+    cell: dict[str, Any],
+) -> None:
+    """A branchless task restores to PENDING, not in_progress (the dispatcher
+    refuses a branchless in_progress task), and waits for a fresh claim, as
+    the legacy unblock already does: the restored owner must claim it again
+    before it writes, and nobody holds a lock on a task nobody claimed."""
+    task = await _claimed_leaf(cell, branch=None)
+    await _escalate(cell, task, by=cell["dev"], to=cell["pm"])
+
+    await cell["svc"].unblock_with_restore(cell["pm"].id, task.id, restore=True)
+    by_dev = await _decision_note(cell, cell["dev"], task)
+
+    assert task.status == TaskStatus.PENDING
+    assert task.assigned_to == cell["dev"].id
+    assert task.active_claimant_id is None
+    assert by_dev.error == "not_authorized"
+    assert "i_will_work_on" in (by_dev.remediate or "")

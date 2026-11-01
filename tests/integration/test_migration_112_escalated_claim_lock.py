@@ -168,3 +168,17 @@ async def test_rows_that_are_not_stale_escalations_keep_their_lock(
     assert await _lock_after_upgrade(fleet, dependency_block) == dev.id
     assert await _lock_after_upgrade(fleet, split_owner) == dev.id
     assert await _lock_after_upgrade(fleet, working) == dev.id
+
+
+@pytest.mark.asyncio
+async def test_pending_rows_are_left_unclaimed(fleet: dict[str, Any]) -> None:
+    """unblock_with_restore sent a branchless task back to PENDING with the
+    pre-block owner's lock still set; a PENDING task holds no claim."""
+    dev = fleet["dev"]
+    restored = await _task(fleet, status=TaskStatus.PENDING, owner=dev, lock=dev)
+    fresh = await _task(fleet, status=TaskStatus.PENDING, owner=dev, lock=None)
+
+    await _upgrade(fleet["db"])
+
+    assert await _lock_after_upgrade(fleet, restored) is None
+    assert await _lock_after_upgrade(fleet, fresh) is None

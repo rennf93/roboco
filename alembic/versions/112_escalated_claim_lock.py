@@ -13,9 +13,14 @@ Only BLOCKED rows with one owner (``assigned_to = claimed_by``) that does
 not hold the lock change. A dependency block never reassigns, so its owner
 already holds the lock; a reassigned or released row is not BLOCKED.
 
+``unblock_with_restore`` also sent a branchless task back to PENDING with the
+pre-block owner's lock still set. Every other way into PENDING leaves the task
+unclaimed, and the code now does too, so PENDING rows drop their lock; the
+owner takes it back with its fresh claim.
+
 The downgrade does nothing: the replaced values were stale locks pointing at
-agents that no longer owned the task, and putting them back would only
-refuse the owner's writes again.
+agents that no longer owned the task, or claims nobody made, and putting them
+back would only refuse the owner's writes again.
 
 Revision ID: 112_escalated_claim_lock
 Revises: 111_ci_runs_reading_key
@@ -41,6 +46,14 @@ def upgrade() -> None:
           AND claimed_by IS NOT NULL
           AND assigned_to = claimed_by
           AND active_claimant_id IS DISTINCT FROM claimed_by
+        """
+    )
+    op.execute(
+        """
+        UPDATE tasks
+        SET active_claimant_id = NULL
+        WHERE status = 'pending'
+          AND active_claimant_id IS NOT NULL
         """
     )
 
