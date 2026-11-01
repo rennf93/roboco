@@ -34,6 +34,7 @@ from roboco.services.base import (
     UnauthorizedError,
     ValidationError,
 )
+from roboco.services.workspace_git import write_workspace_file
 
 
 @dataclass(frozen=True)
@@ -515,8 +516,11 @@ class DocsService(BaseService, DocsFiles, DocsRecords):
     async def _commit_doc_to_repo(
         self, agent_id: str, req: WriteDocInput, doc_type: str
     ) -> str:
-        """Write the doc into the project's workspace clone and commit it onto
-        the task branch, so it persists to the repository through the open PR.
+        """Write the doc into the task's worktree in the documenter's clone and
+        commit it onto the task branch, so it persists to the repository
+        through the open PR. The worktree is where ``GitService.commit``
+        stages (F123); the clone root holds another branch. The file is
+        written as the workspace git user, never as root.
 
         Best-effort: a failure (no task branch yet, workspace not cloned, a git
         hiccup) never fails the doc write, but the outcome is returned so the
@@ -545,14 +549,16 @@ class DocsService(BaseService, DocsFiles, DocsRecords):
                 return "skipped"
 
             git = get_git_service(self.session)
-            workspace = await git.get_workspace(project.slug, actor)
+            worktree = await git.ensure_task_worktree(project.slug, actor, task)
             subfolder = TYPE_SUBFOLDERS[doc_type]
             rel_path = (
                 f"docs/{subfolder}/{req.filename}"
                 if subfolder
                 else f"docs/{req.filename}"
             )
-            await self._write_file(workspace / rel_path, req.content)
+            await asyncio.to_thread(
+                write_workspace_file, worktree / rel_path, req.content
+            )
             await git.commit(
                 branch_name=task.branch_name,
                 message=f"docs: {req.title}",

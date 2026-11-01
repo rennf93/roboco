@@ -96,6 +96,9 @@ class GitCommitsSurface(Protocol):
     async def _ensure_worktree_for_commit(
         self, clone_root: Path, worktree: Path, branch: str | None
     ) -> None: ...
+    async def ensure_task_worktree(
+        self, project_slug: str, agent_id: UUID, task: Any
+    ) -> Path: ...
     async def _link_commit_to_task(
         self, task_uuid: UUID, commit_hash: str, message: str, agent_id: UUID
     ) -> None: ...

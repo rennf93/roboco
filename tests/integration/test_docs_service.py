@@ -476,7 +476,7 @@ async def test_commit_doc_to_repo_returns_failed_on_git_error(
     await svc.session.flush()
 
     fake_git = MagicMock()
-    fake_git.get_workspace = AsyncMock(side_effect=RuntimeError("git boom"))
+    fake_git.ensure_task_worktree = AsyncMock(side_effect=RuntimeError("git boom"))
     with patch("roboco.services.git.get_git_service", return_value=fake_git):
         status = await svc._commit_doc_to_repo(
             "be-doc",
@@ -506,11 +506,11 @@ async def test_commit_doc_to_repo_returns_committed_on_success(
     await svc.session.flush()
 
     fake_git = MagicMock()
-    fake_git.get_workspace = AsyncMock(return_value=tmp_path)
+    fake_git.ensure_task_worktree = AsyncMock(return_value=tmp_path)
     fake_git.commit = AsyncMock(return_value={"oid": "abc"})
     with (
         patch("roboco.services.git.get_git_service", return_value=fake_git),
-        patch.object(svc, "_write_file", AsyncMock(return_value=None)),
+        patch("roboco.services.docs.write_workspace_file") as write_file,
     ):
         status = await svc._commit_doc_to_repo(
             str(docs_setup["agent_id"]),
@@ -524,6 +524,7 @@ async def test_commit_doc_to_repo_returns_committed_on_success(
             "api",
         )
     assert status == "committed"
+    write_file.assert_called_once_with(tmp_path / "docs/api/example.md", "# Hello")
 
 
 # ---------------------------------------------------------------------------
@@ -1150,7 +1151,8 @@ async def test_commit_doc_to_repo_writes_into_workspace_and_commits(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A doc write also commits the file into the project repo on the task branch."""
+    """A doc write also commits the file into the project repo on the task
+    branch: written into the task's worktree, where the commit stages it."""
     svc = docs_setup["svc"]
     task_id = docs_setup["task_id"]
     agent_uuid = docs_setup["agent_id"]
@@ -1162,7 +1164,7 @@ async def test_commit_doc_to_repo_writes_into_workspace_and_commits(
     await db_session.flush()
 
     mock_git = MagicMock()
-    mock_git.get_workspace = AsyncMock(return_value=tmp_path)
+    mock_git.ensure_task_worktree = AsyncMock(return_value=tmp_path)
     mock_git.commit = AsyncMock(return_value={"sha": "deadbeef"})
     monkeypatch.setattr(
         "roboco.services.git.get_git_service", lambda _session: mock_git
@@ -1177,8 +1179,10 @@ async def test_commit_doc_to_repo_writes_into_workspace_and_commits(
     )
     await svc._commit_doc_to_repo(str(agent_uuid), req, "api")
 
-    # The doc landed in the workspace repo under docs/...
+    # The doc landed in the task's worktree under docs/...
     assert (tmp_path / "docs" / "api" / "guide.md").read_text() == "# API Guide\n"
+    worktree_args = mock_git.ensure_task_worktree.await_args.args
+    assert worktree_args[1:] == (agent_uuid, task)
     # ...and was committed onto the task branch.
     mock_git.commit.assert_awaited_once()
     kwargs = mock_git.commit.await_args.kwargs

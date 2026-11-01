@@ -924,6 +924,29 @@ class GitCommits(_Base):
         workspace_service = get_workspace_service(self.session)
         await workspace_service.ensure_worktree_for_resume(clone_root, worktree, branch)
 
+    async def ensure_task_worktree(
+        self, project_slug: str, agent_id: UUID, task: Any
+    ) -> Path:
+        """The task's per-task worktree in ``agent_id``'s clone, attached.
+
+        Under F123 a task's code lives only there: the clone root is parked on
+        whatever branch it last held, so anything that reads, writes or runs
+        a task's files (the pre-QA gate, a documenter's repo write) must use
+        this path. A pruned worktree is re-added from the task branch, as the
+        commit path does. A task without a branch has no worktree:
+        ``ValidationError`` (``NO_BRANCH``), never the clone root instead.
+        """
+        if not task.branch_name:
+            raise ValidationError(
+                f"NO_BRANCH: task {task.id} has no branch, so it has no worktree."
+            )
+        clone_root = await self.get_workspace(project_slug, agent_id)
+        worktree = self._worktree_for_task(clone_root, require_uuid(task.id))
+        await self._ensure_worktree_for_commit(
+            clone_root, worktree, str(task.branch_name)
+        )
+        return worktree
+
     async def _assert_on_task_branch(
         self, workspace: Path, task_branch: str | None
     ) -> None:
@@ -4580,13 +4603,15 @@ class GitQualityGate(_Base):
     async def run_pre_submit_quality_gate(
         self, actor_agent_id: UUID, task: Any
     ) -> GateResult:
-        """Run the project's fast quality gate in the developer's workspace.
+        """Run the project's fast quality gate on the task being submitted.
 
-        Resolves the task's project and the developer's workspace clone, then
-        runs the configured lint + typecheck commands there. Returns a skipped
-        pass when the project configures no fast-gate commands (so projects that
-        opt out are never blocked). Raises only on workspace-resolution failure;
-        the caller treats any such failure as fail-open.
+        Resolves the task's project and the task's worktree in the developer's
+        clone (``ensure_task_worktree``), then runs the configured lint +
+        typecheck commands there: the clone root holds some other branch's
+        code. Returns a skipped pass when the project configures no fast-gate
+        commands (so projects that opt out are never blocked). Raises only on
+        workspace-resolution failure; the caller treats any such failure as
+        fail-open.
         """
         project = await self._project_for_task(task)
         if project is None:
@@ -4594,8 +4619,8 @@ class GitQualityGate(_Base):
         commands = self._fast_gate_commands(project)
         if not commands:
             return GateResult(passed=True, skipped=True)
-        workspace = await self.get_workspace(project.slug, actor_agent_id)
-        return await run_quality_commands(workspace, commands)
+        worktree = await self.ensure_task_worktree(project.slug, actor_agent_id, task)
+        return await run_quality_commands(worktree, commands)
 
     @staticmethod
     def _codegen_command_for(project: Any) -> str | None:
