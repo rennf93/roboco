@@ -1009,7 +1009,9 @@ class WorkspaceProvisioning(_Base):
         clone root parked on a branch origin deleted (merged and pruned) used
         to refresh nothing at all, the default branch included, on every
         call. That case is handled by
-        `_refresh_default_after_vanished_branch`.
+        `_refresh_default_after_vanished_branch`. After a successful refresh
+        the clone root's checkout of the default branch follows origin
+        (`_fast_forward_default_checkout`).
 
         Served through the project's relay, so a private repo refreshes too
         (the token stays in the relay). Timeout uses
@@ -1033,6 +1035,9 @@ class WorkspaceProvisioning(_Base):
         refs = list(dict.fromkeys(ref for ref in (current, default) if ref != "HEAD"))
         result = await self._refresh_fetch(workspace, project_slug, refs)
         if result.returncode == 0:
+            await asyncio.to_thread(
+                self._fast_forward_default_checkout, workspace, default
+            )
             return
         if current != default and _names_missing_remote_ref(result.stderr, current):
             await self._refresh_default_after_vanished_branch(
@@ -1087,6 +1092,42 @@ class WorkspaceProvisioning(_Base):
             default_branch=default,
         )
         await asyncio.to_thread(self._park_clone_root_off_branch, workspace, vanished)
+        await asyncio.to_thread(self._fast_forward_default_checkout, workspace, default)
+
+    def _fast_forward_default_checkout(self, workspace: Path, default: str) -> None:
+        """Fast-forward the clone root's checkout of ``default`` to
+        ``origin/<default>`` after a refresh fetch.
+
+        The shared ``.venv`` is installed from the clone root's lockfile and
+        every worktree runs on it, so the clone root follows the default
+        branch instead of staying at the commit it was cloned at. Only when
+        it sits on ``default`` with no tracked change, and only
+        ``--ff-only``: another branch, a dirty tree, or local commits on the
+        default branch are never touched (git also refuses to overwrite an
+        untracked file). Best-effort: a refusal is logged.
+        """
+        current = self._worktree_git(
+            workspace, ["branch", "--show-current"], check=False
+        ).stdout.strip()
+        if current != default:
+            return
+        changed = self._worktree_git(
+            workspace, ["status", "--porcelain", "--untracked-files=no"], check=False
+        )
+        if changed.returncode != 0 or changed.stdout.strip():
+            return
+        merged = self._worktree_git(
+            workspace,
+            ["merge", "--ff-only", "--quiet", f"refs/remotes/origin/{default}"],
+            check=False,
+        )
+        if merged.returncode != 0:
+            logger.info(
+                "ensure_workspace: default branch not fast-forwarded",
+                workspace=str(workspace),
+                default_branch=default,
+                stderr=merged.stderr.strip()[:500],
+            )
 
     @staticmethod
     def _log_failed_refresh(

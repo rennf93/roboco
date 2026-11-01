@@ -21,6 +21,8 @@ On a Python workspace, `WorkspaceService` runs `uv sync --extra dev` (not plain 
 
 Because the clone is shared across a dev's tasks, a **fresh claim** git-resets the workspace to a clean tree (`git reset --hard`) before checking out the new task's branch - discarding abandoned uncommitted cruft from a finished task while preserving all commits and the gitignored `.venv`. A resume short-circuits before this, so committed work is never reset.
 
+The clone root itself follows the default branch: `ensure_workspace`'s refresh (at most once per 30 s per clone, process-wide) fetches the clone root's branch and the default branch, parks a clone root whose branch origin deleted on the default branch (`_refresh_default_after_vanished_branch`), and fast-forwards a clone root that sits on the default branch with no tracked change (`--ff-only`, never another branch or a dirty tree), so the shared `.venv` every worktree runs on is installed from the default branch's lockfile.
+
 Terminal completion and cancellation also force-delete the task's local branch ref and its `.previews/` video-render dir in the assignee's clone (alongside the existing worktree removal), skipping any branch that coincides with an environment-ladder rung; a PM/CEO can additionally sweep older backlog branches project-wide via `POST /git/branches/cleanup` or the Git page's "Clean Up Stale Branches" button.
 
 A task has at most **one active WorkSession**: re-claiming a task (pool release, reaper unclaim, escalation redirect) supersedes any prior agent's stale active session, enforced both at the service layer and by a DB partial-unique index (migration 047). Without it, duplicate active sessions made the one-row active lookup raise and crashed the claim/plan flow into a respawn loop.
