@@ -23,6 +23,9 @@ x-orchestrator-env: &orchestrator-env
   # Ollama (use container name)
   ROBOCO_LOCAL_LLM_BASE_URL: http://roboco-ollama:11434/v1
   ROBOCO_LOCAL_LLM_MODEL: glm-5.3-flash:cloud
+  # HOME of the background LLM client's Claude Haiku process; its .claude is
+  # the second login mount in x-orchestrator-volumes.
+  ROBOCO_BACKGROUND_LLM_CLAUDE_HOME: /home/claude-login
   ROBOCO_DEFAULT_EMBEDDING_MODEL: qwen3-embedding:0.6b
   ROBOCO_OLLAMA_BASE_URL: http://roboco-ollama:11434
   # Video renderer sidecar (use container name). The video engine
@@ -357,6 +360,11 @@ x-orchestrator-volumes: &orchestrator-volumes
   - docker-gate:/run/roboco-docker
   # Claude Code auth - mount your ~/.claude directory
   - ${CLAUDE_AUTH_DIR:-/home/renzof/.claude}:/root/.claude
+  # The same login again, at a neutral path, for the background LLM client's
+  # Claude Haiku process: it runs as the uid:gid that own the login (never
+  # root, so nothing it writes there is root-owned), and that uid cannot
+  # enter /root (0700). The client hands /home/claude-login to that uid.
+  - ${CLAUDE_AUTH_DIR:-/home/renzof/.claude}:/home/claude-login/.claude
   # SuperGrok auth — mount the host ~/.grok at the SAME host path the
   # orchestrator passes to each Grok agent's `-v`, so its auth.json exists()
   # check passes here AND the agent bind resolves on the host. One canonical
