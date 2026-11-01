@@ -162,6 +162,8 @@ async def test_note_without_task_id_skips_ownership_check() -> None:
     agent_id = uuid4()
     task_svc = AsyncMock()
     task_svc.get_active_task_for_agent.return_value = None
+    task_svc.list_tasks_claimed_by.return_value = []
+    task_svc.list_journal_context_tasks_for_agent.return_value = []
     journal_svc = AsyncMock()
     deps = _make_deps(task=task_svc, journal=journal_svc)
     ca = ContentActions(deps)
@@ -558,8 +560,10 @@ async def test_note_reaped_assignee_cannot_post_to_former_task() -> None:
     task_obj = MagicMock(
         id=task_id,
         status="in_progress",
-        assigned_to=agent_id,  # persists across the reap
-        active_claimant_id=None,  # cleared on release — the reaped window
+        # persists across the reap
+        assigned_to=agent_id,
+        # cleared on release — the reaped window
+        active_claimant_id=None,
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = task_obj
@@ -590,7 +594,8 @@ async def test_note_active_owner_can_still_post() -> None:
         id=task_id,
         status="in_progress",
         assigned_to=agent_id,
-        active_claimant_id=agent_id,  # active claim — the normal case
+        # active claim — the normal case
+        active_claimant_id=agent_id,
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = task_obj

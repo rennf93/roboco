@@ -27,9 +27,12 @@ from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 import structlog
 
+from roboco.agents_config import get_pm_for_team
 from roboco.config import settings
 from roboco.exceptions import GitError
+from roboco.foundation.identity import Role
 from roboco.foundation.policy import communications as _comms
+from roboco.foundation.policy import lifecycle as _lifecycle
 from roboco.foundation.policy.content import ContentValidationError, markers
 from roboco.foundation.policy.content.validators import reject_trivial
 from roboco.foundation.policy.journaling import Scope as _Scope
@@ -179,6 +182,20 @@ _COMMIT_ALLOWED_ROLES: frozenset[str] = frozenset({"developer", "documenter", "d
 # ContentActions._active_claim_violation). Extend only for roles with that
 # same documented shape.
 _CLAIMLESS_NOTE_ROLES: frozenset[str] = frozenset({"auditor"})
+# The lifecycle intents that take a task's claim. A write on an unclaimed task
+# is refused with whichever of these the caller's role may call on the task's
+# current status (lifecycle.valid_next_verbs), so the refusal says how to
+# claim instead of sending the assignee away from its own task.
+_CLAIM_INTENTS: frozenset[str] = frozenset(
+    {
+        "i_will_work_on",
+        "i_will_plan",
+        "claim_review",
+        "claim_doc_task",
+        "claim_gate_review",
+        "claim_pr_review",
+    }
+)
 _NOTIFY_ALLOWED_ROLES: frozenset[str] = frozenset(
     r.value for r in _comms.NOTIFY_SENDER_ROLES
 )
@@ -338,8 +355,8 @@ def _ownership_violation(task_id: UUID) -> Envelope:
         message=(f"you are not the assignee of {task_id}; cannot post content to it"),
         remediate=(
             "only the task's assignee may attach content (commit/note/"
-            "dm/evidence) to it. Use a different task_id or omit task_id "
-            "for off-task messages (dm only)."
+            "dm/evidence) to it. Pass the task_id of a task you hold; an "
+            "omitted task_id means the one task whose claim you hold."
         ),
         context_briefing={},
     )
@@ -361,17 +378,16 @@ def _preflight_criteria(t: Any) -> list[str]:
 
 
 def _not_active_claimant(task_id: UUID) -> Envelope:
-    """Envelope for a caller who holds no active claim on ``task_id``.
+    """Envelope for a caller whose task is claimed by another agent.
 
     The caller may still be the historical ``assigned_to`` (e.g. its claim
-    was reaped for going silent, or the task was handed to another agent),
-    but ``active_claimant_id`` no longer points at it. Writing would race the
-    real claimant, so the write is refused.
+    was reaped for going silent and another agent took the task), but
+    ``active_claimant_id`` points at someone else. Writing would race the
+    real claimant, so the write is refused and the caller is sent away.
     """
     return Envelope.not_authorized(
         message=(
-            f"you do not hold the active claim on {task_id}; "
-            "another agent owns it now or your claim was released"
+            f"you do not hold the active claim on {task_id}; another agent holds it now"
         ),
         remediate=(
             "call i_am_idle() and give_me_work() to pick up fresh work; "
@@ -379,6 +395,126 @@ def _not_active_claimant(task_id: UUID) -> Envelope:
         ),
         context_briefing={},
     )
+
+
+def _unclaimed_task_refusal(task: Any, role: str) -> Envelope:
+    """Envelope for a write on a task that nobody holds a claim on.
+
+    The caller is its assignee (a PM's fresh root, a developer's pre-assigned
+    leaf, a task bounced back to ``needs_revision``, a claim the reaper
+    released) and has not claimed it. Nobody else owns it, so instead of
+    sending the caller away the refusal names the claim verb its role can
+    use on the task's current status, which ``valid_next_verbs`` carries.
+    """
+    envelope = Envelope.not_authorized(
+        message=(
+            f"you do not hold an active claim on {task.id}: it is "
+            f"{task.status} and unclaimed, and content writes "
+            "(note / dm / notify / commit / progress) need the writer's claim"
+        ),
+        remediate="",
+        context_briefing={},
+    ).with_introspection(task=task, role=role)
+    claim_verbs = [v for v in envelope.valid_next_verbs or [] if v in _CLAIM_INTENTS]
+    envelope.remediate = _claim_first_remediation(task.id, claim_verbs)
+    return envelope
+
+
+# How many candidate tasks a task-less write's refusal spells out.
+_TASKLESS_CANDIDATES_SHOWN = 8
+
+
+def _role_can_claim(role: str) -> bool:
+    """True when the role's lifecycle lets it claim a task from some status.
+
+    The auditor, the board, the CEO and the human-driven roles have no claim
+    edge (``lifecycle.CLAIM_RULES``): they work their assigned tasks without
+    one.
+    """
+    try:
+        return bool(_lifecycle.CLAIM_RULES.get(Role(role)))
+    except ValueError:
+        return False
+
+
+def _candidate_listing(candidates: list[Any]) -> str:
+    """``<id> (<status>)`` for each candidate task, the first few of them."""
+    shown = ", ".join(
+        f"{t.id} ({t.status})" for t in candidates[:_TASKLESS_CANDIDATES_SHOWN]
+    )
+    hidden = len(candidates) - _TASKLESS_CANDIDATES_SHOWN
+    return f"{shown} and {hidden} more" if hidden > 0 else shown
+
+
+def _taskless_write_refusal(write: str, candidates: list[Any], reason: str) -> Envelope:
+    """Refuse a write that names no task_id when it could be about several.
+
+    Attaching it to the caller's newest task put messages on unrelated tasks
+    (live 2026-10-28: main-pm's dm about root be2145b0 went out on 7e74d7ce,
+    be-pm's about 6d4baecf on dd60608d), so the caller names the task.
+    """
+    listing = _candidate_listing(candidates)
+    envelope = Envelope.incomplete_input(
+        missing=["task_id"],
+        field_hints={
+            "task_id": f"the full id of the task this {write} is about: {listing}"
+        },
+        remediate=(
+            f"retry the {write} with task_id='<id>' naming the task it is "
+            f"about: {listing}; a task you have not claimed yet needs your "
+            "claim first, and that refusal names the claim verb"
+        ),
+    )
+    envelope.message = (
+        f"this {write} names no task_id and {reason}, so it is not attached "
+        f"to one by guess: {listing}"
+    )
+    return envelope
+
+
+def _claim_first_remediation(task_id: Any, claim_verbs: list[str]) -> str:
+    """Tell the assignee of an unclaimed task how to claim it before writing."""
+    if not claim_verbs:
+        return (
+            "you cannot claim it in its current status; act on it with a verb "
+            "from valid_next_verbs, or call give_me_work() for work you can claim"
+        )
+    calls = " or ".join(f"{verb}(task_id='{task_id}', ...)" for verb in claim_verbs)
+    return (
+        f"claim it first with {calls}, then retry this write; if the claim "
+        "is refused, follow that refusal's remediate"
+    )
+
+
+def _dm_to_its_assignee_remediation(task_id: Any, assignee_slug: str | None) -> str:
+    """Tell a cell PM that a dm about a task in its subtree goes to the
+    task's assignee and nobody else."""
+    if assignee_slug is None:
+        return (
+            f"a cell PM may dm about {task_id} only to its assignee, and "
+            f"{task_id} has none; dm on a task you hold instead"
+        )
+    return (
+        f"a cell PM may dm about {task_id} only to its assignee, while it sits "
+        f"under a task you are assigned: dm(recipient='{assignee_slug}', "
+        f"task_id='{task_id}', text=...)"
+    )
+
+
+def _dm_through_cell_pm_remediation(task_id: Any, cell_pm: str, team: str) -> str:
+    """Name the route for a PM writing about another cell's task: its PM."""
+    return (
+        f"dm {cell_pm}, the {team} cell's PM, about {task_id} instead, on a "
+        "task you hold (omit task_id when you hold exactly one); "
+        f"{cell_pm} may dm the task's assignee about it"
+    )
+
+
+def _team_value(team: Any) -> str | None:
+    """A task's or agent's team as its plain string value."""
+    if team is None:
+        return None
+    return str(getattr(team, "value", team))
 
 
 @dataclass(frozen=True)
@@ -513,8 +649,9 @@ class TaskAccessActions(_Base):
         """Gate Set D: refuse content posts on tasks the caller does not own.
 
         Only call this for *explicit* task_id (caller passed it themselves).
-        Auto-fill from get_journal_context_task_for_agent is implicitly
-        self-owned and does not need a re-check.
+        A write that names no task_id resolves through
+        ``_task_for_taskless_write``, which only picks a task the caller
+        holds the claim on (or a claim-less caller's one assigned task).
 
         Allows ``assigned_to=None`` (post-handoff transient state) so QA /
         documenter can still inspect tasks between reassignments. A board role
@@ -546,6 +683,97 @@ class TaskAccessActions(_Base):
                 agent_id, t, allow_unclaimed=allow_unclaimed
             )
         return None
+
+    async def _task_for_content_write(
+        self,
+        agent_id: UUID,
+        task_id: UUID | None,
+        write: str,
+        *,
+        allow_unclaimed: bool = False,
+        taskless_refusal: Envelope | None = None,
+    ) -> UUID | Envelope | None:
+        """The task a content write is about, or the refusal to return.
+
+        An explicit ``task_id`` passes the ownership and claim gate
+        (``_verify_explicit_task_ownership``); an omitted one resolves through
+        ``_task_for_taskless_write``. None means a legitimately task-less
+        write.
+        """
+        if task_id is None:
+            return await self._task_for_taskless_write(
+                agent_id, write, taskless_refusal=taskless_refusal
+            )
+        reject = await self._verify_explicit_task_ownership(
+            agent_id, task_id, allow_unclaimed=allow_unclaimed
+        )
+        return reject or task_id
+
+    async def _task_for_taskless_write(
+        self,
+        agent_id: UUID,
+        write: str,
+        *,
+        taskless_refusal: Envelope | None = None,
+    ) -> UUID | Envelope | None:
+        """The task a write that names no task_id belongs to.
+
+        Returns its id, the refusal Envelope, or None for a legitimately
+        task-less write. ``taskless_refusal`` is the refusal for a write that
+        must be about a task (dm, a handoff section); None marks a write that
+        may be task-less (a journal note, a notification), as the board's and
+        auditor's triage observations and board broadcasts are.
+
+        It never guesses between tasks: it used to take the caller's most
+        recently updated assigned task with no claim check, so a write the
+        explicit path refused landed on that task, or on an unrelated one.
+        """
+        if _role_can_claim(await self._caller_role(agent_id)):
+            return await self._held_task_for_taskless_write(
+                agent_id, write, taskless_refusal
+            )
+        return await self._assigned_task_for_taskless_write(
+            agent_id, write, taskless_refusal
+        )
+
+    async def _held_task_for_taskless_write(
+        self, agent_id: UUID, write: str, taskless_refusal: Envelope | None
+    ) -> UUID | Envelope | None:
+        """A claim-holding role's task-less write goes to the one task whose
+        claim it holds: the same task an explicit write would be admitted on.
+        Holding several, or holding none while assigned work, is refused with
+        the candidates; an agent with no task at all writes task-less."""
+        held = await self.task.list_tasks_claimed_by(agent_id)
+        if len(held) == 1:
+            return cast("UUID", held[0].id)
+        if held:
+            return _taskless_write_refusal(
+                write, held, f"you hold the claim on {len(held)} tasks"
+            )
+        assigned = await self.task.list_journal_context_tasks_for_agent(agent_id)
+        if assigned:
+            return _taskless_write_refusal(
+                write,
+                assigned,
+                f"you hold no claimed task and are assigned {len(assigned)}",
+            )
+        return taskless_refusal
+
+    async def _assigned_task_for_taskless_write(
+        self, agent_id: UUID, write: str, taskless_refusal: Envelope | None
+    ) -> UUID | Envelope | None:
+        """A claim-less role (auditor, board) works its assigned tasks without
+        a claim, so its task-less write goes to its one assigned task (the
+        auditor's board-program task, a9739b1c). With several, a write that
+        may be task-less stays task-less and any other is refused."""
+        assigned = await self.task.list_journal_context_tasks_for_agent(agent_id)
+        if len(assigned) == 1:
+            return cast("UUID", assigned[0].id)
+        if assigned and taskless_refusal is not None:
+            return _taskless_write_refusal(
+                write, assigned, f"you are assigned {len(assigned)} tasks"
+            )
+        return taskless_refusal
 
     async def _is_caller_dependency(self, agent_id: UUID, task: Any) -> bool:
         """True when ``task`` is a dependency of a task the caller is assigned to.
@@ -649,6 +877,93 @@ class TaskAccessActions(_Base):
                 return True
             parent_id = parent.parent_task_id
         return False
+
+
+class DmAccessActions(_Base):
+    """Which task a ``dm`` may be about: the content-write gate, plus a cell
+    PM writing to the assignee of a task in its own subtree, and the route a
+    PM's refused dm names."""
+
+    async def _task_for_dm(
+        self,
+        agent_id: UUID,
+        recipient: str,
+        task_id: UUID | None,
+        taskless_refusal: Envelope,
+    ) -> UUID | Envelope | None:
+        """The task a dm is about, or its refusal.
+
+        On top of every content write's gate (``_task_for_content_write``),
+        a cell PM may dm about a task in its own subtree to that task's
+        assignee in its own cell (``_cell_pm_may_dm_assignee``). A PM's dm
+        the gate still refuses for not being the assignee names the route
+        that works (``_dm_route_for_unowned_task``).
+        """
+        task = await self.task.get(task_id) if task_id is not None else None
+        if task is not None and await self._cell_pm_may_dm_assignee(
+            agent_id, recipient, task
+        ):
+            return cast("UUID", task.id)
+        resolved = await self._task_for_content_write(
+            agent_id, task_id, "dm", taskless_refusal=taskless_refusal
+        )
+        if isinstance(resolved, Envelope) and task is not None:
+            route = await self._dm_route_for_unowned_task(agent_id, task)
+            resolved.remediate = route or resolved.remediate
+        return resolved
+
+    async def _cell_pm_may_dm_assignee(
+        self, agent_id: UUID, recipient: str, task: Any
+    ) -> bool:
+        """True when a cell PM writes to the assignee of a task in its subtree.
+
+        The CEO's rule (2026-11-01): a cell PM may dm about any task in its
+        own subtree to that task's assignee in its own cell. Without it fe-pm
+        could not tell fe-dev-1 why it unblocked 86ed0eab, fe-dev-1's leaf
+        under fe-pm's cell task (refused four times on 2026-10-28). Main PM
+        to a cell developer stays refused (cross-cell), and so does any
+        other recipient: the A2A policy still runs on the send.
+        """
+        if task.assigned_to is None or task.assigned_to == agent_id:
+            return False
+        return (
+            await self.task.agent_slug(task.assigned_to) == recipient
+            and await self._caller_is_cell_pm_of(agent_id, task.assigned_to)
+            and await self._caller_owns_an_ancestor(agent_id, task)
+        )
+
+    async def _caller_is_cell_pm_of(self, agent_id: UUID, member_id: UUID) -> bool:
+        """True when the caller is the cell PM of ``member_id``'s cell."""
+        caller = await self.task.agent_for(agent_id)
+        member = await self.task.agent_for(member_id)
+        return (
+            caller is not None
+            and member is not None
+            and caller.role == Role.CELL_PM.value
+            and caller.team == member.team
+        )
+
+    async def _dm_route_for_unowned_task(self, agent_id: UUID, task: Any) -> str | None:
+        """The route a PM's dm about a task it is not assigned should take.
+
+        Its own cell's task goes to the task's assignee; another cell's goes
+        through that cell's PM. None for a caller that is not a PM, a task
+        the caller is assigned, or a task with no cell PM, which keep the
+        refusal's own remediation.
+        """
+        if task.assigned_to is None or task.assigned_to == agent_id:
+            return None
+        caller = await self.task.agent_for(agent_id)
+        team = _team_value(task.team)
+        cell_pm = get_pm_for_team(team) if team else None
+        if caller is None or cell_pm is None:
+            return None
+        if caller.role == Role.CELL_PM.value and caller.team == team:
+            assignee = await self.task.agent_slug(task.assigned_to)
+            return _dm_to_its_assignee_remediation(task.id, assignee)
+        if caller.role in (Role.CELL_PM.value, Role.MAIN_PM.value):
+            return _dm_through_cell_pm_remediation(task.id, cell_pm, team or "")
+        return None
 
 
 class TaskReadActions(_Base):
@@ -1255,18 +1570,15 @@ class NoteActions(_Base):
             )
         if rej := self._reject_structured_soup(scope, structured):
             return rej
-        if task_id is not None:
-            # allow_unclaimed: journal notes are append-only observability;
-            # a claim-less assignee (read-only roles like the auditor) must
-            # still be able to record them. See _active_claim_violation.
-            if reject := await self._verify_explicit_task_ownership(
-                agent_id, task_id, allow_unclaimed=True
-            ):
-                return reject
-        else:
-            t = await self.task.get_journal_context_task_for_agent(agent_id)
-            if t is not None:
-                task_id = t.id
+        # allow_unclaimed: journal notes are append-only observability; a
+        # claim-less assignee (read-only roles like the auditor) must still be
+        # able to record them. See _active_claim_violation.
+        resolved = await self._task_for_content_write(
+            agent_id, task_id, "note", allow_unclaimed=True
+        )
+        if isinstance(resolved, Envelope):
+            return resolved
+        task_id = resolved
         # Tolerate thin notes instead of rejecting them. List-typed
         # fields accept a lone scalar; missing decision/reflect narrative fields
         # are defaulted to a visible placeholder. The note is always recorded so
@@ -1322,23 +1634,23 @@ class NoteActions(_Base):
                 ),
                 context_briefing={},
             )
-        if task_id is not None:
-            # allow_unclaimed: same rationale as the journal-note path —
-            # section writes are append-only, and a claim-less assignee
-            # (auditor) must still record its section.
-            if reject := await self._verify_explicit_task_ownership(
-                agent_id, task_id, allow_unclaimed=True
-            ):
-                return reject
-        else:
-            t = await self.task.get_journal_context_task_for_agent(agent_id)
-            if t is None:
-                return Envelope.invalid_state(
-                    message="no task to attach the section note to",
-                    remediate="pass task_id='<the task whose section you write>'",
-                    context_briefing={},
-                )
-            task_id = t.id
+        # allow_unclaimed: same rationale as the journal-note path — section
+        # writes are append-only, and a claim-less assignee (auditor) must
+        # still record its section.
+        resolved = await self._task_for_content_write(
+            agent_id,
+            task_id,
+            "handoff note",
+            allow_unclaimed=True,
+            taskless_refusal=Envelope.invalid_state(
+                message="no task to attach the section note to",
+                remediate="pass task_id='<the task whose section you write>'",
+                context_briefing={},
+            ),
+        )
+        if isinstance(resolved, Envelope):
+            return resolved
+        task_id = resolved
         payload: dict[str, Any] = dict(structured) if structured else {"summary": text}
         try:
             await self.task.record_section_note(task_id, content_type, payload)
@@ -1489,7 +1801,12 @@ class MessagingActions(_Base):
         task_id: UUID | None = None,
         skill: str | None = None,
     ) -> Envelope:
-        """A2A direct message. Requires task_id (active or explicit)."""
+        """A2A direct message. Requires task_id (active or explicit).
+
+        The writer must be the task's assignee holding its claim, or a cell
+        PM writing to the assignee of a task in its own subtree
+        (``_task_for_dm``); the A2A policy then decides who may reach whom.
+        """
         if rej := self._reject_soup(text, field="message", min_chars=2):
             return rej
         # Spec §5.5: no-comms roles — defense-in-depth runtime guard. dm() is
@@ -1511,19 +1828,19 @@ class MessagingActions(_Base):
                 context_briefing={},
             )
 
-        if task_id is not None:
-            if reject := await self._verify_explicit_task_ownership(agent_id, task_id):
-                return reject
-        else:
-            t = await self.task.get_journal_context_task_for_agent(agent_id)
-            if t is not None:
-                task_id = t.id
-        if task_id is None:
-            return Envelope.invalid_state(
+        resolved = await self._task_for_dm(
+            agent_id,
+            recipient,
+            task_id,
+            Envelope.invalid_state(
                 message="dm requires a task_id (no active task and none provided)",
                 remediate="provide task_id explicitly or claim a task first",
                 context_briefing={},
-            )
+            ),
+        )
+        if isinstance(resolved, Envelope):
+            return resolved
+        task_id = resolved
         # Catch A2A access denials and return an Envelope. If the
         # error escapes here it's caught by FastAPI's middleware and
         # rendered as RobocoError.to_dict() — a dict-shaped 'error'
@@ -1604,13 +1921,10 @@ class MessagingActions(_Base):
                 ),
                 context_briefing={},
             )
-        if task_id is not None:
-            if reject := await self._verify_explicit_task_ownership(agent_id, task_id):
-                return reject
-        else:
-            t = await self.task.get_journal_context_task_for_agent(agent_id)
-            if t is not None:
-                task_id = t.id
+        resolved = await self._task_for_content_write(agent_id, task_id, "notification")
+        if isinstance(resolved, Envelope):
+            return resolved
+        task_id = resolved
         # A dependency block is a "wait silently" situation — never a CEO signal.
         # An agent must not page the CEO to relax or escalate a task that is
         # simply waiting on an unfinished upstream; that wait clears on its own.
@@ -4126,6 +4440,7 @@ class ContentActions(
     CommitActions,
     CoronerActions,
     DecisionLaneActions,
+    DmAccessActions,
     DogfoodActions,
     FeatureSpotlightActions,
     LibrarianActions,
@@ -4231,6 +4546,11 @@ class ContentActions(
         When no claimant exists there is no one to race. A REAPED assignee
         is NOT covered — it had a claim and lost it, and the reap doctrine
         says it must not keep posting; the caller's role decides.
+
+        The refusal tells the two cases apart: on a task nobody holds, the
+        caller is told which claim verb its role can use there
+        (``_unclaimed_task_refusal``); only a task another agent holds sends
+        it away (``_not_active_claimant``).
         """
         claimant = getattr(task, "active_claimant_id", None)
         if claimant == agent_id:
@@ -4244,6 +4564,8 @@ class ContentActions(
             return None
         if await self._board_may_co_review(agent_id, task):
             return None
+        if claimant is None:
+            return _unclaimed_task_refusal(task, await self._caller_role(agent_id))
         return _not_active_claimant(task.id)
 
     async def _caller_is_claimless_role(self, agent_id: UUID) -> bool:

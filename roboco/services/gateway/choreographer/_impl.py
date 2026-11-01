@@ -2116,13 +2116,54 @@ class ClaimPlanMixin(_Base):
             await self._ensure_pm_decision(
                 agent_id, task_id, self._planning_rationale(t)
             )
+        elif verb == "i_will_work_on":
+            await self._ensure_claim_note(
+                agent_id, task_id, self._planning_rationale(t)
+            )
         gap = await self._check_claim_journal_at_claim(verb, agent_id, task_id, t)
         return gap if gap is not None else envelope
 
+    async def _ensure_claim_note(
+        self, agent_id: UUID, task_id: UUID, assessment: str | None
+    ) -> None:
+        """Record the developer's claim plan as its at-claim journal note.
+
+        Write-then-gate, the developer's side of what ``i_will_plan`` does for
+        the PM's decision. Pre-gateway parity P1 asks for a journal:note on
+        every claim, the developer's first read of the task, and the plan it
+        just claimed with is that read. ``note`` refuses any write before the
+        claim exists, so the prompted note-then-claim order was refused
+        (dfeb2d8a, 86b799b8, 0f391d46 on 2026-10-28), and claim-first met a
+        tracing_gap that cost a second ``i_will_work_on`` (7 times that day).
+        A note the developer already has on the task is kept. Savepoint-
+        guarded and best-effort: a failed write leaves the gate to ask for
+        the note exactly as before.
+        """
+        text = (assessment or "").strip()
+        if not text:
+            return
+        try:
+            async with self.task.session.begin_nested():
+                if await self.journal.has_note_for_task(agent_id, task_id):
+                    return
+                await self.journal.write_entry(
+                    agent_id=agent_id,
+                    task_id=task_id,
+                    scope="note",
+                    title="Claim plan: initial read of the task",
+                    content=text,
+                )
+        except Exception as exc:
+            logger.warning(
+                "auto-record claim note failed",
+                error=str(exc),
+                task_id=str(task_id),
+            )
+
     @staticmethod
     def _planning_rationale(t: Any) -> str | None:
-        """The PM's planning rationale off the task's persisted plan: a rich
-        plan's ``approach``, else a plain plan's ``text``."""
+        """The claimant's rationale off the task's persisted plan (a PM's
+        decision, a developer's claim note): ``approach``, else ``text``."""
         plan = getattr(t, "plan", None)
         if not isinstance(plan, dict):
             return None
@@ -4996,8 +5037,9 @@ class TracingGatesMixin(_Base):
 
         The write-then-gate pattern (mirrors i_am_blocked → write_struggle):
         a PM verb that already carries a substantive rationale — complete /
-        submit_up / submit_root ``notes``, escalate ``reason``, or a
-        synthesized unblock context line — records it as the decision
+        submit_up / submit_root ``notes``, unblock / escalate / cancel_leaf
+        ``reason``, the delegated subtask's title and description, or the
+        request_changes findings — records it as the decision
         *before* the journal:decision tracing gate runs. A loaded or weak
         model that forgot the separate note(scope='decision') call then no
         longer stalls in a tracing_gap → respawn loop; the gate still runs
@@ -5069,8 +5111,9 @@ class TracingGatesMixin(_Base):
     ) -> Envelope | None:
         """Standard PM-verb tracing gate driven by VERB_REQUIREMENTS.
 
-        Used by ``unblock``, ``escalate_up``, ``escalate_to_ceo``, and
-        ``delegate`` — each declares only ``JOURNAL_DECISION`` in the
+        Used by ``unblock``, ``escalate_up``, ``escalate_to_ceo``,
+        ``cancel_leaf``, ``request_changes`` and ``delegate`` — each declares
+        only ``JOURNAL_DECISION`` in the
         foundation table. Verbs requiring more (``complete``,
         ``submit_up``) use the verb-specific helpers below which thread
         the additional state (reflect, notes, subtasks) into GateContext.

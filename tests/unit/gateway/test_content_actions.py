@@ -19,7 +19,8 @@ def _make_deps(**overrides: AsyncMock) -> ContentActionsDeps:
     else:
         task = AsyncMock()
         task.get_active_task_for_agent.return_value = None
-        task.get_journal_context_task_for_agent.return_value = None
+        task.list_tasks_claimed_by.return_value = []
+        task.list_journal_context_tasks_for_agent.return_value = []
         # commit() checks caller role server-side; default-created mocks
         # need a default developer role so existing tests pass through.
         # Caller-supplied mocks must set agent_for themselves.
@@ -303,7 +304,8 @@ async def test_commit_allows_documenter_role() -> None:
 
     env = await ca.commit(agent_id=agent_id, message="docs: add migration notes")
 
-    assert env.error is None  # not rejected on role grounds
+    # not rejected on role grounds
+    assert env.error is None
 
 
 @pytest.mark.asyncio
@@ -530,7 +532,8 @@ async def test_note_auto_fills_task_id_from_active_task() -> None:
     task_obj = MagicMock(id=task_id, status="in_progress")
     task_svc = AsyncMock()
     task_svc.get_active_task_for_agent.return_value = task_obj
-    task_svc.get_journal_context_task_for_agent.return_value = task_obj
+    task_svc.list_tasks_claimed_by.return_value = [task_obj]
+    task_svc.list_journal_context_tasks_for_agent.return_value = [task_obj]
     journal_svc = AsyncMock()
 
     deps = _make_deps(task=task_svc, journal=journal_svc)
@@ -595,7 +598,8 @@ async def test_dm_with_active_task_succeeds() -> None:
     task_obj = MagicMock(id=task_id, status="in_progress")
     task_svc = AsyncMock()
     task_svc.get_active_task_for_agent.return_value = task_obj
-    task_svc.get_journal_context_task_for_agent.return_value = task_obj
+    task_svc.list_tasks_claimed_by.return_value = [task_obj]
+    task_svc.list_journal_context_tasks_for_agent.return_value = [task_obj]
     a2a_svc = AsyncMock()
 
     deps = _make_deps(task=task_svc, a2a=a2a_svc)
@@ -719,7 +723,8 @@ async def test_notify_explicit_task_not_found_rejected() -> None:
     """Lines 365-366: explicit task_id with task missing → not_found."""
     task_svc = AsyncMock()
     task_svc.agent_for.return_value = MagicMock(role="cell_pm")
-    task_svc.get.return_value = None  # task lookup fails
+    # task lookup fails
+    task_svc.get.return_value = None
     deps = _make_deps(task=task_svc)
     ca = ContentActions(deps)
     agent_id = uuid4()
@@ -759,7 +764,8 @@ async def test_decision_thin_note_records_without_rejection() -> None:
     """A bare decision (no structured fields) is recorded, not rejected."""
     task = AsyncMock()
     task.get_active_task_for_agent.return_value = None
-    task.get_journal_context_task_for_agent.return_value = None
+    task.list_tasks_claimed_by.return_value = []
+    task.list_journal_context_tasks_for_agent.return_value = []
     task.agent_for.return_value = MagicMock(role="cell_pm")
     journal_svc = AsyncMock()
     deps = _make_deps(task=task, journal=journal_svc)
@@ -781,7 +787,8 @@ async def test_reflect_thin_note_records_without_rejection() -> None:
     """A bare reflect (no structured fields) is recorded, not rejected."""
     task = AsyncMock()
     task.get_active_task_for_agent.return_value = None
-    task.get_journal_context_task_for_agent.return_value = None
+    task.list_tasks_claimed_by.return_value = []
+    task.list_journal_context_tasks_for_agent.return_value = []
     task.agent_for.return_value = MagicMock(role="developer")
     journal_svc = AsyncMock()
     deps = _make_deps(task=task, journal=journal_svc)
@@ -964,7 +971,8 @@ async def test_pr_update_placeholder_body_rejected() -> None:
 async def test_pr_update_substantive_body_passes_soup_guard() -> None:
     """A real body clears the soup guard and proceeds to the (missing) PR check."""
     task = AsyncMock()
-    task.get.return_value = None  # not_found short-circuits after the soup guard
+    # not_found short-circuits after the soup guard
+    task.get.return_value = None
     deps = _make_deps(task=task)
     ca = ContentActions(deps)
 
@@ -1122,7 +1130,8 @@ async def test_evidence_accepts_short_task_id_prefix() -> None:
 
     assert body["error"] is None
     assert body["task_id"] == str(task_id)
-    assert task_svc.session.execute.await_count >= 1  # resolver lookup ran
+    # resolver lookup ran
+    assert task_svc.session.execute.await_count >= 1
 
 
 @pytest.mark.asyncio

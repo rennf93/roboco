@@ -887,7 +887,9 @@ def declare_coverage(task_id: str, criteria: StrList) -> dict[str, Any]:
 
 
 def complete(task_id: str, notes: str) -> dict[str, Any]:
-    """PM: complete a task. Cell PM auto-merges PR; Main PM opens PR + escalates."""
+    """PM: complete a task. Cell PM auto-merges PR; Main PM opens PR + escalates.
+
+    `notes` is recorded as your decision (no separate note needed)."""
     return _post(_role_path("complete"), {"task_id": task_id, "notes": notes})
 
 
@@ -902,7 +904,8 @@ def request_changes(
     i_am_blocked/escalate, which have no revision routing. findings: the
     structured revision-findings ledger entry (same shape as fail_review /
     pr_fail). issues (plain strings) is still accepted this release but
-    deprecated. At least one of the two is required.
+    deprecated. At least one of the two is required. The findings are
+    recorded as your decision (no separate note needed).
     """
     return _post(
         _role_path("request_changes"),
@@ -911,7 +914,9 @@ def request_changes(
 
 
 def escalate_up(task_id: str, reason: str) -> dict[str, Any]:
-    """PM/Doc/Dev: escalate to your role's escalation target."""
+    """PM/Doc/Dev: escalate to your role's escalation target.
+
+    `reason` is recorded as your decision (no separate note needed)."""
     return _post(_role_path("escalate_up"), {"task_id": task_id, "reason": reason})
 
 
@@ -921,7 +926,9 @@ def escalate_up(task_id: str, reason: str) -> dict[str, Any]:
 
 
 def escalate_to_ceo(task_id: str, reason: str) -> dict[str, Any]:
-    """Board / Main PM: escalate a strategic task to CEO for final approval."""
+    """Board / Main PM: escalate a strategic task to CEO for final approval.
+
+    `reason` is recorded as your decision (no separate note needed)."""
     return _post(_role_path("escalate_to_ceo"), {"task_id": task_id, "reason": reason})
 
 
@@ -1002,6 +1009,9 @@ def delegate(
 ) -> dict[str, Any]:
     """PM: create a subtask of parent_task_id.
 
+    The subtask's title and description are recorded as your decision (no
+    separate note needed).
+
     Args:
         parent_task_id: UUID of the parent task.
         title: Short imperative title.
@@ -1059,6 +1069,8 @@ def submit_up(
 ) -> dict[str, Any]:
     """Cell PM: bubble a finished cell-scope task up to the Main PM.
 
+    `notes` is recorded as your decision (no separate note needed).
+
     resolved_findings: required when the root has open pr_gate/pm/ceo-origin
     revision-ledger findings (from a prior pr_fail/request_changes/ceo_reject)
     — one entry per finding you addressed: {finding_id, commit?, note?}. Same
@@ -1080,6 +1092,8 @@ def submit_root(
     resolved_findings: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Main PM: open the root→master PR and enter the in-path PR-review gate.
+
+    `notes` is recorded as your decision (no separate note needed).
 
     resolved_findings: same shape as ``submit_up``'s — required when the root
     has open pr_gate/pm/ceo-origin revision-ledger findings.

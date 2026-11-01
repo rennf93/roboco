@@ -2770,6 +2770,10 @@ class PMReviewMixin(_Base):
         if rejection is not None:
             return rejection
         _role, spec_ctx = spec_gate
+        if refused := await self._record_request_changes_decision(
+            pm_agent_id, task_id, t, role_str, notes
+        ):
+            return refused
         summary = await self._attach_request_changes_findings(
             t, agent, role_str, validated
         )
@@ -2798,12 +2802,57 @@ class PMReviewMixin(_Base):
             next=spec_module._INTENT_VERBS["request_changes"].next_hint(t),
             context_briefing=briefing,
         ).with_introspection(task=t, role=role_str)
-        hint = findings_lib.findings_count_hint(validated)
-        if warning:
-            env.warning = f"{warning} {hint}" if hint else warning
-        elif hint:
-            env.warning = hint
+        env.warning = self._request_changes_warning(warning, validated)
         return env
+
+    @staticmethod
+    def _request_changes_warning(
+        notify_warning: str | None, validated: list[Any]
+    ) -> str | None:
+        """The success envelope's warning: a failed owner notification
+        and the findings-count hint, whichever of the two exist."""
+        hint = findings_lib.findings_count_hint(validated)
+        parts = [part for part in (notify_warning, hint) if part]
+        return " ".join(parts) or None
+
+    async def _record_request_changes_decision(
+        self,
+        pm_agent_id: UUID,
+        task_id: UUID,
+        t: Any,
+        role_str: str,
+        findings_summary: str,
+    ) -> Envelope | None:
+        """Record the review's findings as the PM's decision, then gate on it.
+
+        Write-then-gate, as complete / unblock / escalate_up do with their
+        own rationale: the findings ARE the PM's reason for rejecting the
+        review, so no separate ``note(scope='decision')`` is needed. That
+        note could not land on a gate-passed task anyway: ``pr_pass`` hands
+        it to the PM without a claim and ``awaiting_pm_review`` has no claim
+        edge, so the content gate refuses it. Runs before the findings
+        ledger insert and the transition, so a refusal leaves nothing behind.
+        """
+        pm_decision_outcome = await self._ensure_pm_decision(
+            pm_agent_id,
+            task_id,
+            f"Requesting changes at merge review:\n{findings_summary}",
+        )
+        env = await self._check_pm_decision_required(
+            "request_changes",
+            pm_agent_id,
+            task_id,
+            t,
+            pm_decision_outcome=pm_decision_outcome,
+        )
+        if env is None:
+            return None
+        return await self._emit_rejection(
+            env.with_introspection(task=t, role=role_str),
+            agent_id=pm_agent_id,
+            task_id=task_id,
+            verb="request_changes",
+        )
 
     async def _notify_request_changes_owner(
         self, pm_agent_id: UUID, task_id: UUID, t: Any, summary: str
