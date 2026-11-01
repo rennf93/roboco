@@ -61,6 +61,8 @@ from roboco.api.utils.git import (
     _compute_file_range,
     _parse_branch_line,
     _resolve_project_slug,
+    _task_rebase_response,
+    _task_to_rebase,
     _translate_error,
 )
 from roboco.config import settings
@@ -680,14 +682,20 @@ async def rebase_branch(
     db: DbSession,
     agent: CurrentAgentContext,
 ) -> GitRebaseResponse:
-    """Rebase the current branch onto target_branch.
+    """Rebase a task's branch (``task_id``), else the clone's current branch,
+    onto target_branch.
 
     Role-gated: only CEO and PM roles (cell_pm, main_pm) may rebase branches.
     Developers, QA, documenters, and other roles are rejected with 403.
 
-    If task_id is provided and the caller is not CEO, the task's assigned_to
-    is checked: if the task is not assigned to the calling agent, 403 is
-    returned (or 404 if the task does not exist).
+    With a task_id (404 if the task does not exist; 403 unless it is
+    assigned to the caller or the caller is CEO) the task's branch is
+    rebased in its worktree in the caller's clone through the gateway's
+    sync path (``GitService.rebase_task_onto`` -> ``sync_task_branch``:
+    fetch, rebase, ``--force-with-lease`` push); ``status`` carries the
+    outcome and a divergence is refused with 400. Under F123 the clone
+    root never holds the task's branch. Without one, the caller's clone
+    root's current branch is rebased locally, as before.
 
     On conflict: aborts the rebase and returns conflict=True with the
     list of conflicted files.  On success: returns conflict=False.
@@ -701,28 +709,17 @@ async def rebase_branch(
                 "this endpoint."
             ),
         )
-    # Task ownership check: if a task_id is supplied and the caller is not CEO,
-    # ensure the task is assigned to the calling agent.
-    if data.task_id is not None and agent.role != AgentRole.CEO:
-        task_service = get_task_service(db)
-        task = await task_service.get(data.task_id)
-        if task is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Task not found: {data.task_id}",
-            )
-        if task.assigned_to != agent.agent_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=(
-                    "REBASE_OWNERSHIP_RESTRICTED: This task is not assigned to "
-                    "you. Only the task's assigned agent or CEO may rebase it."
-                ),
-            )
+    # A task the caller may rebase: assigned to it, unless the caller is CEO.
+    task = await _task_to_rebase(get_task_service(db), agent, data.task_id)
     project_slug = await _resolve_project_slug(data.project_slug, db)
     git_service = get_git_service(db)
 
     try:
+        if task is not None:
+            outcome = await git_service.rebase_task_onto(
+                task, data.target_branch, actor_agent_id=agent.agent_id
+            )
+            return _task_rebase_response(project_slug, outcome)
         workspace = await git_service.get_workspace(project_slug, agent.agent_id)
         conflict, conflicted_files = await git_service.rebase(
             workspace, data.target_branch, project_slug

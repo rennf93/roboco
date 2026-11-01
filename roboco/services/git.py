@@ -5863,6 +5863,29 @@ class GitRebase(_Base):
             base_branch=base_branch,
         )
 
+    async def rebase_task_onto(
+        self, task: Any, target_branch: str, *, actor_agent_id: UUID
+    ) -> dict[str, Any]:
+        """``/api/git/rebase`` for a task: its branch rebased onto
+        ``target_branch`` in its worktree in the actor's clone, through the
+        gateway's sync path (``sync_task_branch``: fetch, rebase,
+        ``--force-with-lease`` push). A protected target (master/main or a
+        project-declared protected branch) is refused, as the route's
+        clone-root rebase refuses it."""
+        project = await self._project_for_task(task)
+        protected = frozenset({"master", "main"}) | await self._protected_branches_for(
+            project.slug if project else None
+        )
+        if target_branch in protected:
+            raise ValidationError(
+                f"REBASE_FORBIDDEN: Cannot rebase onto '{target_branch}'. "
+                "Rebasing onto 'master', 'main', or a project-declared "
+                "protected branch is not allowed in automation."
+            )
+        return await self.sync_task_branch(
+            task, base_branch=target_branch, actor_agent_id=actor_agent_id
+        )
+
     async def sync_task_branch(
         self,
         task: Any,

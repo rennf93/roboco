@@ -346,6 +346,13 @@ class GitRebaseResponse(BaseModel):
     project_slug: str
     conflict: bool = False
     conflicted_files: list[str] = []
+    status: str | None = Field(
+        default=None,
+        description=(
+            "With a task_id: the outcome of the task branch's sync "
+            "(rebased, superseded, conflicts); null for a clone-root rebase."
+        ),
+    )
 
 
 # =============================================================================
