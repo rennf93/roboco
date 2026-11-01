@@ -1,9 +1,8 @@
-# Each value must be true or false: pnpm 11 fails `pnpm install` (and so
-# `pnpm test`) on any other value. esbuild is the only package left with an
-# install script, and `pnpm test`, `pnpm lint` and `pnpm preview` do not need
-# it: esbuild loads its prebuilt platform package. (hyperframes 0.8 dropped
-# onnxruntime-node, @google/genai and protobufjs; sharp 0.35 has no install
-# script.)
+# Each value must be true or false: pnpm 12 fails `pnpm install` on any other
+# value. esbuild is the only package left with an install script, and
+# `pnpm test`, `pnpm lint` and `pnpm preview` do not need it: esbuild loads its
+# prebuilt platform package. (hyperframes 0.8 dropped onnxruntime-node,
+# @google/genai and protobufjs; sharp 0.35 has no install script.)
 allowBuilds:
   esbuild: false
 # hyperframes is pinned to the 0.8.216 the video-renderer renders with. pnpm

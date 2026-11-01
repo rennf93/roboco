@@ -46,15 +46,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
   && rm -rf /var/lib/apt/lists/*
 
 # Activate the exact version video-renderer/package.json pins
-# (packageManager: pnpm@11.10.0) rather than trusting corepack's bundled
-# default — a future node:22-alpine shipping a different pnpm would silently
-# change the build's package manager.
-RUN corepack enable pnpm && corepack prepare pnpm@11.10.0 --activate
+# (packageManager: pnpm@12.16.1) rather than trusting corepack's bundled
+# default — a future node:22-bookworm-slim shipping a different pnpm would
+# silently change the build's package manager. pnpm 12's first run (the
+# install below) downloads its native binary (the glibc @pnpm/exe.linux-*
+# package for the build's architecture), checked against npm's signature.
+RUN corepack enable pnpm && corepack prepare pnpm@12.16.1 --activate
 
 WORKDIR /app
 
-# pnpm 11 prompts for confirmation on modules-purge unless told this is CI
-# (same gotcha as docker/panel.Dockerfile).
+# CI=true: pnpm's CI mode, as in docker/panel.Dockerfile.
 # PUPPETEER_CACHE_DIR: the server runs as `node` (below), and
 # @hyperframes/engine looks for chrome-headless-shell only under the running
 # user's ~/.cache/puppeteer, so puppeteer's postinstall downloads it there.
@@ -65,9 +66,10 @@ ENV CI=true \
 # dependency here runs at request time — createRenderJob()/executeRenderJob()
 # execute live per /render call — so there's no separate build output to discard
 # and no multi-stage split.
-# pnpm-workspace.yaml carries the `allowBuilds: esbuild: true` approval —
-# without it pnpm 11 hard-errors with [ERR_PNPM_IGNORED_BUILDS] (exit 1)
-# because esbuild's postinstall is unapproved, breaking the image build.
+# pnpm-workspace.yaml carries the `allowBuilds` approvals for esbuild and
+# puppeteer — without them pnpm 12 fails the install with
+# ERR_PNPM_IGNORED_BUILDS (exit 1), breaking the image build. pnpm-lock.yaml
+# records the pinned pnpm, which a frozen install requires.
 # --chmod: the files keep the build folder's own modes otherwise, and the NAS
 # deploy copy is owner-only (0600), unreadable to this image's non-root user.
 COPY --chmod=0644 video-renderer/package.json video-renderer/pnpm-lock.yaml video-renderer/pnpm-workspace.yaml ./

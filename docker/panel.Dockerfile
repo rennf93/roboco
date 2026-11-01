@@ -7,11 +7,15 @@
 # Base stage
 # =============================================================================
 FROM node:22-alpine AS base
-# Activate the exact version panel/package.json pins (packageManager: pnpm@11.10.0)
+# Activate the exact version panel/package.json pins (packageManager: pnpm@12.16.1)
 # rather than trusting corepack's bundled default — a future node:22-alpine that
 # ships a different pnpm would silently change the build's package manager.
-# prepare --activate pins the shim to 11.10.0 so corepack and packageManager agree.
-RUN corepack enable pnpm && corepack prepare pnpm@11.10.0 --activate
+# prepare --activate pins the shim to 12.16.1 so corepack and packageManager agree.
+# pnpm 12's npm package is a launcher: its first run (the install below)
+# downloads the native binary (the musl @pnpm/exe.linux-* package for the
+# build's architecture), checked against npm's signature, so only the builder
+# stage carries it.
+RUN corepack enable pnpm && corepack prepare pnpm@12.16.1 --activate
 
 # =============================================================================
 # Build stage
@@ -19,19 +23,23 @@ RUN corepack enable pnpm && corepack prepare pnpm@11.10.0 --activate
 FROM base AS builder
 WORKDIR /app
 
-# pnpm 11 prompts for confirmation on modules-purge unless told this is CI.
+# CI=true runs pnpm in CI mode, where `pnpm install` defaults to a frozen
+# lockfile. pnpm 11 also needed it to clear a stale node_modules without a TTY
+# (ERR_PNPM_ABORTED_REMOVE_MODULES_DIR_NO_TTY); pnpm 12 clears it without asking.
 ENV CI=true
 
 # Copy package manifests first (for layer caching). pnpm-workspace.yaml
-# carries the `allowBuilds` map (sharp, unrs-resolver) — without it pnpm 11
-# hard-errors with [ERR_PNPM_IGNORED_BUILDS] (exit 1) on sharp's postinstall.
+# carries the `allowBuilds` map (sharp, unrs-resolver) — without it pnpm 12
+# fails the install with ERR_PNPM_IGNORED_BUILDS (exit 1) on unrs-resolver's
+# postinstall. pnpm-lock.yaml records the pinned pnpm, which a frozen install
+# requires.
 COPY panel/package.json panel/pnpm-lock.yaml panel/pnpm-workspace.yaml ./
 
 # Install dependencies with shamefully-hoist to flatten node_modules
 # (prevents symlink issues with styled-jsx and other peer deps). With the
-# allowBuilds approval in pnpm-workspace.yaml, sharp and unrs-resolver run
-# their postinstall scripts and install their platform-specific binaries —
-# no strictDepBuilds downgrade needed.
+# allowBuilds approval in pnpm-workspace.yaml, unrs-resolver runs its
+# postinstall, which checks its platform-specific binary (sharp 0.35 has no
+# install script) — no strictDepBuilds downgrade needed.
 RUN pnpm install \
     --frozen-lockfile \
     --shamefully-hoist
