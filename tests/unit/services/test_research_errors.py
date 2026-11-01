@@ -1,4 +1,4 @@
-"""roboco.services.research_errors — the readable reason a refusal carries.
+"""roboco.services.research_errors - the readable reason a refusal carries.
 
 The adapter tests in test_research.py pin each party's whole message; these pin
 how a response body becomes a short readable reason: never markup, the first

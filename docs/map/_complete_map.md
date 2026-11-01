@@ -9613,7 +9613,7 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `roboco/services/_kanban_service_types.py` | `KanbanServiceSelf`, a TYPE_CHECKING-only Protocol declaring the attributes the `KanbanService` mixin reads through `self` (no moved body calls across classes, so it has no `<Class>Surface` yet); `tests/unit/services/test_kanban_service_mixins.py` fails on a stray stub or a member defined twice | 28 |
 | `roboco/services/company_goals.py` | CRUD for the singleton company charter (north star + objectives + constraints + policy + brand_voice + company_name); `resolve_product_name` is the shared product-name fallback chain `XEngine`/`VideoEngine` both call | 110 |
 | `roboco/services/strategy_engine.py` | Dormant "engine 2": assesses company state vs goals; `idle`→roadmap and `stranded_blocked`→Coroner both trigger a Board Program before the CEO notification | 337 |
-| `roboco/services/research.py` | Pluggable web-search/fetch — provider adapters (SearXNG/Tavily/Brave/Exa/Null) + clamping service | 570 |
+| `roboco/services/research.py` | Pluggable web-search/fetch - provider adapters (SearXNG/Tavily/Brave/Exa/Null) + clamping service | 570 |
 | `roboco/services/research_errors.py` | Research failures that name who refused a call and why: one `ResearchError` subclass per party (provider, target site, RoboCo's URL guard), messages built from the response (status, page title or first readable text, never markup) and bot-check detection from documented challenge headers and titles | 292 |
 | `roboco/services/research_quota.py` | Per-agent UTC-daily Redis quota counter for research calls (fail-open) | 78 |
 | `roboco/services/pitch.py` | Board pitch CRUD + CEO approve → provision repos/Projects(+Product) + seed Main-PM task | 274 |
@@ -9697,7 +9697,7 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `ResearchService` | class | research.py:483 | Provider-agnostic entry point; clamps result/char caps |
 | `SearchProvider` | ABC | research.py:90 | Adapter base: shared/owned httpx client, `_request_json`, abstract `search`, default-unsupported `fetch` |
 | `TavilyProvider` / `BraveProvider` / `ExaProvider` | class | research.py:180 / 230 / 260 | Concrete adapters (Brave has no `fetch`) |
-| `NullProvider` | class | research.py:422 | Graceful stub — empty results, `configured=False`, never raises |
+| `NullProvider` | class | research.py:422 | Graceful stub - empty results, `configured=False`, never raises |
 | `build_provider` | func | research.py:451 | Select adapter by name; NullProvider when no key or unknown name |
 | `get_research_service` | factory | research.py:537 | Build service from settings (provider + caps) |
 | `SearchHit` / `SearchOutcome` / `FetchOutcome` | dataclass | research.py:56 / 66 / 76 | Normalised result shapes |
@@ -9930,7 +9930,7 @@ product-strategy-research-pitch
 │   ├── ResearchService (clamping entry point)
 │   ├── build_provider / get_research_service
 │   └── helpers (_as_float / _truncated_fetch / _assert_public_http_url)
-├── research_errors.py — ResearchError tree, one subclass per failing party
+├── research_errors.py - ResearchError tree, one subclass per failing party
 │   ├── site_* / provider_* / url_refused_error message builders
 │   └── readable reason (_page_text) + bot-check detection
 ├── research_quota.py — ResearchQuotaTracker (Redis, fail-open)
@@ -10094,7 +10094,7 @@ product-strategy-research-pitch
 
 ## Drift from CLAUDE.md
 
-- **Research provider set vs CLAUDE.md.** CLAUDE.md's "Technology Stack" / feature-flags section lists web research under `ROBOCO_RESEARCH_ENABLED` only; it does not enumerate the provider adapters (`searxng`/`tavily`/`brave`/`exa`/`null`) or the per-agent daily quota (`ROBOCO_RESEARCH_DAILY_QUOTA_PER_AGENT`, default 50). Code: config.py:873/920, research.py:411. Not a contradiction — an omission in the doc.
+- **Research provider set vs CLAUDE.md.** CLAUDE.md's "Technology Stack" / feature-flags section lists web research under `ROBOCO_RESEARCH_ENABLED` only; it does not enumerate the provider adapters (`searxng`/`tavily`/`brave`/`exa`/`null`) or the per-agent daily quota (`ROBOCO_RESEARCH_DAILY_QUOTA_PER_AGENT`, default 50). Code: config.py:873/920, research.py:411. Not a contradiction - an omission in the doc.
 - **CLAUDE.md says the strategy engine "never spends, builds, or auto-approves" and is default-OFF.** Code matches exactly (`strategy_engine_enabled` default `False`, config.py:348; `run_cycle` notify-only, strategy_engine.py:92-106). No drift.
 - **CLAUDE.md says pitch provisioning is gated by `ROBOCO_PROVISIONING_*`.** Code matches (`provisioning_enabled` + `_token` + `_org` + `_repo_private` + `_timeout_seconds`, config.py:309-336; `GitHubProvisioningService.enabled` requires all three, github_provisioning.py:64). No drift.
 - **CLAUDE.md does not mention `ProductService.project_for` as the per-cell routing keystone**, though it does describe product cell-routing as a feature. Code: product.py:87, called from the gateway delegate path. Doc omission, not contradiction.

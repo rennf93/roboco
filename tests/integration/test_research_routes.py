@@ -253,7 +253,7 @@ async def test_fetch_vercel_checkpoint_answers_424_naming_the_site(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """The 2026-10-28 refusal, end to end: a 424 that names the site, the URL,
-    the 403, the page title and the bot check — not a SearXNG "provider error"."""
+    the 403, the page title and the bot check - not a SearXNG "provider error"."""
     fake_dns(monkeypatch, {"app.example.com": PUBLIC_IP})
     client = _app_over_searxng(
         monkeypatch, lambda _r: httpx.Response(403, text=VERCEL_CHECKPOINT_HTML)
