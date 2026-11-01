@@ -24,6 +24,7 @@ from roboco.foundation.policy.content import markers as _markers
 from roboco.runtime.orchestrator import (
     _PARENT_BRANCH_WAIT,
     _PM_DISPATCH_FETCH_LIMIT,
+    AgentReadinessError,
     AgentState,
     _agent_api_headers,
     _dispatch_board_program_exploration,
@@ -54,6 +55,53 @@ _SINGLE_ACTIVE_TASK_ROLES = frozenset({"developer", "devops"})
 _QA_PRIORITY_NEUTRAL = 1
 _QA_DEPTH_FORENSIC = 3
 _QA_QUEUE_MIN_TO_RANK = 2
+
+
+async def _dispatch_pending_task_to_pm(
+    orch: Any, client: httpx.AsyncClient, task: dict[str, Any], dispatch_paused: bool
+) -> None:
+    """Triage one pending task for ``_dispatch_pm_work``: an assigned task to
+    its Board Program, board role or PM, an unassigned one through routing.
+
+    ``spawn_agent`` refuses a task that is not ready by auto-blocking it and
+    raising ``AgentReadinessError``, whose contract is that callers log and
+    move on; the caller does that per task, so one refusal no longer ends the
+    tick for every pending task after it. Module-level (not a method), like
+    ``_dispatch_board_program_exploration``: the pm_work tests drive
+    ``_dispatch_pm_work`` on a stub that mocks only the handlers below.
+    """
+    if orch._is_task_handled_this_tick(task.get("id")):
+        return
+    # CEO-HELD / externally-owned sources are never PM delivery work
+    # (external-PR review, release proposals, X posts/replies, and a
+    # not-yet-confirmed self-heal fix task) — see _is_held_ceo_source.
+    if _is_held_ceo_source(task):
+        return
+    # A supersede umbrella whose branch cut is still in progress
+    # (background task or pending reconciliation). Main PM must not
+    # be routed until the branch is ready.
+    if _is_branch_pending(task):
+        return
+    assigned_to = task.get("assigned_to")
+    if assigned_to:
+        # Every registered Board Program (roadmap / x_feature /
+        # pest_control / periscope / coroner / sentinel / spackle /
+        # scales / mirror / megaphone / librarian / war_room /
+        # barfly / dogfood) is solo-authored and bypasses the
+        # two-reviewer board-review gate — routed via the module-level dict
+        # dispatch table so this chain stays flat as new programs
+        # register (xenon budget). Falls through to the generic
+        # board/PM-assigned handlers only for a non-program task.
+        if await _dispatch_board_program_exploration(orch, task) or dispatch_paused:
+            return
+        if orch._resolve_agent_slug(assigned_to) in orch._BOARD_AGENTS:
+            await orch._handle_board_assigned_task(task, assigned_to)
+        else:
+            await orch._handle_pm_assigned_task(task, assigned_to)
+        return
+    if dispatch_paused:
+        return
+    await orch._route_unassigned_pm_task(client, task)
 
 
 class PMDispatchEngine(_Base):
@@ -118,40 +166,14 @@ class PMDispatchEngine(_Base):
         dispatch_paused = await self._is_paused(PauseScope.DISPATCH)
 
         for task in tasks:
-            if self._is_task_handled_this_tick(task.get("id")):
-                continue
-            # CEO-HELD / externally-owned sources are never PM delivery work
-            # (external-PR review, release proposals, X posts/replies, and a
-            # not-yet-confirmed self-heal fix task) — see _is_held_ceo_source.
-            if _is_held_ceo_source(task):
-                continue
-            # A supersede umbrella whose branch cut is still in progress
-            # (background task or pending reconciliation). Main PM must not
-            # be routed until the branch is ready.
-            if _is_branch_pending(task):
-                continue
-            assigned_to = task.get("assigned_to")
-            if assigned_to:
-                # Every registered Board Program (roadmap / x_feature /
-                # pest_control / periscope / coroner / sentinel / spackle /
-                # scales / mirror / megaphone / librarian / war_room /
-                # barfly / dogfood) is solo-authored and bypasses the
-                # two-reviewer board-review gate — routed via the module-level dict
-                # dispatch table so this chain stays flat as new programs
-                # register (xenon budget). Falls through to the generic
-                # board/PM-assigned handlers only for a non-program task.
-                if not await _dispatch_board_program_exploration(self, task):
-                    if dispatch_paused:
-                        continue
-                    if self._resolve_agent_slug(assigned_to) in self._BOARD_AGENTS:
-                        await self._handle_board_assigned_task(task, assigned_to)
-                    else:
-                        await self._handle_pm_assigned_task(task, assigned_to)
-                continue
-
-            if dispatch_paused:
-                continue
-            await self._route_unassigned_pm_task(client, task)
+            try:
+                await _dispatch_pending_task_to_pm(self, client, task, dispatch_paused)
+            except AgentReadinessError as exc:
+                logger.info(
+                    "PM triage: spawn refused, task not ready; next pending task",
+                    task_id=task.get("id"),
+                    reason=str(exc),
+                )
 
     async def _dispatch_revision_coordination_roots(
         self, client: httpx.AsyncClient
