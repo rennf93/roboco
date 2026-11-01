@@ -6201,9 +6201,9 @@ The FastAPI application shell, request pipeline, and real-time WebSocket fan-out
 | `RequestLoggingMiddleware` | class | middleware.py:167 | Log request/response + `X-Response-Time-Ms` header |
 | `get_status_code`/`roboco_exception_handler`/`service_exception_handler`/`rate_limit_exception_handler`/`generic_exception_handler`/`http_exception_handler`/`request_validation_handler` | funcs | middleware.py:143-441 | Exception → structured JSONResponse chain |
 | `_SERVICE_ERROR_STATUS` | const | middleware.py:277 | Maps service exception types → HTTP status |
-| `_uuid_field_remediation` | func | middleware.py:429 | Actionable hint when an agent sends an 8-char task prefix as UUID |
-| `_SECRET_FIELD_NAMES`/`_scrub_secrets` | const/func | middleware.py:458/475 | Redact credential fields from 422 log bodies |
-| `setup_middleware` | func | middleware.py:538 | Register exception handlers + middleware in order |
+| `_uuid_field_remediation` | func | middleware.py:432 | Actionable hint when an agent sends an 8-char task prefix as UUID |
+| `_SECRET_FIELD_NAMES`/`_scrub_secrets` | const/func | middleware.py:461/478 | Redact credential fields from 422 log bodies |
+| `setup_middleware` | func | middleware.py:541 | Register exception handlers + middleware in order |
 | `DOCS_PERMISSIONS` | const | middleware_docs.py:55 | Path-prefix → read/write role matrix |
 | `check_docs_access`/`require_docs_access`/`get_allowed_docs_paths` | funcs | middleware_docs.py:222/265/303 | Docs path permission checks |
 | `_fast_path_access_decision` | func | middleware_docs.py:203 | CEO/auditor/main_pm short-circuit |
@@ -6422,7 +6422,7 @@ Logic-touching changes in that commit, scoped to this slice:
 | `get_orchestrator_or_none` + `clear_orchestrator` added | deps.py:96-119 | New accessor for shutdown + test teardown; `get_orchestrator` still 503s. |
 | `require_panel_token` HTTP dep added (CEO HMAC for live-chat bridges) | deps.py:300-350 | New gate; mirrors WS `_require_panel_token`. Browser EventSource can't set headers, so token-only. |
 | `CEO_AGENT_ID` import added to deps.py | deps.py:18 | Required by `require_panel_token` + reused by WS gate. |
-| `_SECRET_FIELD_NAMES` + `_scrub_secrets` added; 422 log scrubs credential fields | middleware.py:458-490, 512 | Plaintext GitHub PAT / provider API key / bearer tokens no longer dumped to structlog on a 422. Response body unchanged. |
+| `_SECRET_FIELD_NAMES` + `_scrub_secrets` added; 422 log scrubs credential fields | middleware.py:461-493, 515 | Plaintext GitHub PAT / provider API key / bearer tokens no longer dumped to structlog on a 422. Response body unchanged. |
 | WS panel-token gate (`_require_panel_token`) added to channel/agent/session/notifications streams | websocket.py:91, 348/413 | `/ws/*` now CEO-HMAC-gated in prod; dev allows missing token but rejects forged. **`/ws/system` was NOT gated** (inconsistency; gated since `536bbb64`). The channel and session streams were later removed by the comms teardown, so the current lines are the agents and notifications streams. |
 | Per-connection bounded send queue + sender task (`_ClientConnection`, `_register_sender`, `_run_sender`, `_enqueue_or_send`, `_send_with_timeout`) | websocket.py:75-193, 247-284 | Replaced `asyncio.gather(*[conn.send_text(data)])` with non-blocking enqueue. One slow client can no longer back-pressure the fan-out; full queue drops+warns. `_run_sender` reaps dead sockets on hard send error. |
 | `IDLE_TIMEOUT_SECONDS` (90s) `asyncio.wait_for` on `receive_text` | websocket.py:65, 380/432/476 | Half-open sockets from dead containers no longer block the receive loop forever; `TimeoutError` → `finally disconnect`. |
@@ -6474,7 +6474,7 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | roboco/api/routes/project.py | Project CRUD + workspace/sync/access + conventions. |
 | roboco/api/routes/product.py | Product CRUD. |
 | roboco/api/routes/optimal.py | RAG: kb/search, rag/query, mentor/ask, learnings, decisions, review. |
-| roboco/api/routes/research.py | Web search/fetch. |
+| roboco/api/routes/research.py | Web search/fetch. A failure answers with the status of the party that failed it, through `research_error_to_http` in `api/utils/research.py`: 501 unsupported operation, 400 RoboCo's URL guard, 424 the target site, 502 the research provider. |
 | roboco/api/routes/orchestrator.py | CEO-gated spawn/stop/resolve-wait/mark-waiting + status. |
 | roboco/api/routes/a2a.py | Agent-to-agent inbox/conversations/tasks + SSE streams. |
 | roboco/api/routes/prompter_live.py | Live Intake chat (start/stream/messages/confirm/confirm-batch). |
@@ -6584,8 +6584,8 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | `_build_manual_spawn_prompt` | fn | utils/orchestrator.py:102 (re-imported into routes/orchestrator.py) | Builds the initial prompt for a CEO-triggered manual (panel) spawn — points the agent at the task id/title/status and trusts the gateway envelope's `next`/`remediate` for the actual claim verb. |
 | `_resolve_manual_spawn_prompt` | fn | utils/orchestrator.py:126 (re-imported into routes/orchestrator.py) | Best-effort task-aware prompt for a manual panel spawn; falls back to the raw `ceo_message` unchanged on any lookup failure (bad `task_id`, DB hiccup, missing task) so enrichment never blocks a CEO-requested spawn. |
 | `setup_middleware` | fn | api/middleware.py | Register exception handlers (422 scrub, HTTP, RobocoError, generic). |
-| `request_validation_handler` | fn | api/middleware.py:493 | Log 422 body (secrets scrubbed) + uuid remediate hint. |
-| `_scrub_secrets` | fn | api/middleware.py:475 | Deep-redact known secret fields from logged 422 bodies. |
+| `request_validation_handler` | fn | api/middleware.py:496 | Log 422 body (secrets scrubbed) + uuid remediate hint. |
+| `_scrub_secrets` | fn | api/middleware.py:478 | Deep-redact known secret fields from logged 422 bodies. |
 | `StrList` | type | schemas/v1/flow.py:21 | `list[str]` with `coerce_str_list` BeforeValidator (XML-nested LLM lists). |
 | `Choreographer` | svc | services/gateway/choreographer/__init__.py:59 | Composes service intents behind every flow verb: the role mixins (developer, PM, QA, PR reviewer, PR gate, board, doc, and the ones every role shares) over `BaseChoreographer` in `choreographer/_impl.py`. |
 | `ContentActions` | svc | services/gateway/content_actions.py:4437 | Composes do-verb content actions (commit/note/dm/...). |

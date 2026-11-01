@@ -6,7 +6,7 @@ into an agent container, and agents never egress (the provider's API does).
 A per-agent UTC-daily quota is enforced in Redis (fails open).
 """
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter
 
 from roboco.api.deps import CurrentAgentContext
 from roboco.api.schemas.research import (
@@ -18,13 +18,16 @@ from roboco.api.schemas.research import (
 )
 from roboco.api.utils.research import enforce_quota as _enforce_quota
 from roboco.api.utils.research import require_research_role as _require_research_role
+from roboco.api.utils.research import (
+    research_error_to_http as _research_error_to_http,
+)
 from roboco.security import (
     guard_deco,
     internal_ssrf_validator,
     prompt_injection_validator,
 )
 from roboco.services.research import get_research_service
-from roboco.services.research_errors import ResearchError, ResearchUnsupportedError
+from roboco.services.research_errors import ResearchError
 
 router = APIRouter()
 
@@ -44,15 +47,8 @@ async def research_search(
     service = get_research_service()
     try:
         outcome = await service.search(data.query, data.max_results)
-    except ResearchUnsupportedError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)
-        ) from exc
     except ResearchError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"research provider error: {exc}",
-        ) from exc
+        raise _research_error_to_http(exc) from exc
     finally:
         await service.close()
     return SearchResponse(
@@ -82,15 +78,8 @@ async def research_fetch(
     service = get_research_service()
     try:
         outcome = await service.fetch(data.url, data.max_chars)
-    except ResearchUnsupportedError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED, detail=str(exc)
-        ) from exc
     except ResearchError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"research provider error: {exc}",
-        ) from exc
+        raise _research_error_to_http(exc) from exc
     finally:
         await service.close()
     return FetchResponse(

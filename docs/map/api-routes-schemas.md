@@ -23,7 +23,7 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | roboco/api/routes/project.py | Project CRUD + workspace/sync/access + conventions. |
 | roboco/api/routes/product.py | Product CRUD. |
 | roboco/api/routes/optimal.py | RAG: kb/search, rag/query, mentor/ask, learnings, decisions, review. |
-| roboco/api/routes/research.py | Web search/fetch. |
+| roboco/api/routes/research.py | Web search/fetch. A failure answers with the status of the party that failed it, through `research_error_to_http` in `api/utils/research.py`: 501 unsupported operation, 400 RoboCo's URL guard, 424 the target site, 502 the research provider. |
 | roboco/api/routes/orchestrator.py | CEO-gated spawn/stop/resolve-wait/mark-waiting + status. |
 | roboco/api/routes/a2a.py | Agent-to-agent inbox/conversations/tasks + SSE streams. |
 | roboco/api/routes/prompter_live.py | Live Intake chat (start/stream/messages/confirm/confirm-batch). |
@@ -133,8 +133,8 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | `_build_manual_spawn_prompt` | fn | utils/orchestrator.py:102 (re-imported into routes/orchestrator.py) | Builds the initial prompt for a CEO-triggered manual (panel) spawn — points the agent at the task id/title/status and trusts the gateway envelope's `next`/`remediate` for the actual claim verb. |
 | `_resolve_manual_spawn_prompt` | fn | utils/orchestrator.py:126 (re-imported into routes/orchestrator.py) | Best-effort task-aware prompt for a manual panel spawn; falls back to the raw `ceo_message` unchanged on any lookup failure (bad `task_id`, DB hiccup, missing task) so enrichment never blocks a CEO-requested spawn. |
 | `setup_middleware` | fn | api/middleware.py | Register exception handlers (422 scrub, HTTP, RobocoError, generic). |
-| `request_validation_handler` | fn | api/middleware.py:493 | Log 422 body (secrets scrubbed) + uuid remediate hint. |
-| `_scrub_secrets` | fn | api/middleware.py:475 | Deep-redact known secret fields from logged 422 bodies. |
+| `request_validation_handler` | fn | api/middleware.py:496 | Log 422 body (secrets scrubbed) + uuid remediate hint. |
+| `_scrub_secrets` | fn | api/middleware.py:478 | Deep-redact known secret fields from logged 422 bodies. |
 | `StrList` | type | schemas/v1/flow.py:21 | `list[str]` with `coerce_str_list` BeforeValidator (XML-nested LLM lists). |
 | `Choreographer` | svc | services/gateway/choreographer/__init__.py:59 | Composes service intents behind every flow verb: the role mixins (developer, PM, QA, PR reviewer, PR gate, board, doc, and the ones every role shares) over `BaseChoreographer` in `choreographer/_impl.py`. |
 | `ContentActions` | svc | services/gateway/content_actions.py:4437 | Composes do-verb content actions (commit/note/dm/...). |
