@@ -45,10 +45,14 @@ class ReviewCategory(Enum):
 class ReviewSeverity(Enum):
     """Severity of review comments."""
 
-    BLOCKER = "blocker"  # Must fix before merge
-    MAJOR = "major"  # Should fix
-    MINOR = "minor"  # Nice to fix
-    SUGGESTION = "suggestion"  # Optional improvement
+    # Must fix before merge
+    BLOCKER = "blocker"
+    # Should fix
+    MAJOR = "major"
+    # Nice to fix
+    MINOR = "minor"
+    # Optional improvement
+    SUGGESTION = "suggestion"
 
 
 @dataclass
@@ -75,7 +79,8 @@ class ReviewSummary:
     major_count: int = 0
     minor_count: int = 0
     suggestions_count: int = 0
-    overall_score: float = 100.0  # 0-100, deducted for issues
+    # 0-100, deducted for issues
+    overall_score: float = 100.0
     approved: bool = True
     relevant_standards: list[SearchResult] = field(default_factory=list)
     past_reviews: list[SearchResult] = field(default_factory=list)
@@ -95,7 +100,8 @@ class ReviewerChecks(_Base):
         return cast(
             "list[SearchResult]",
             await self._optimal_service.search_errors(
-                query=code[:500],  # Use first 500 chars as query
+                # Use first 500 chars as query
+                query=code[:500],
                 top_k=5,
             ),
         )
@@ -501,7 +507,8 @@ class ReviewerService(ReviewerChecks):
         """Apply relevant comments from past reviews."""
         comments: list[ReviewComment] = []
 
-        for review in past_reviews[:3]:  # Limit to top 3 matches
+        # Limit to top 3 matches
+        for review in past_reviews[:3]:
             if review.score > self.PAST_REVIEW_THRESHOLD:
                 comments.append(
                     ReviewComment(
