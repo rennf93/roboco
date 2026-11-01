@@ -950,7 +950,7 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | docker/agent-grok-prompter.Dockerfile | Grok intake — FROM grok, ENTRYPOINT python -m roboco.agent_sdk.grok_intake_main, EXPOSE 9000 | 22 |
 | docker/agent-grok-secretary.Dockerfile | Grok secretary — FROM grok, ENTRYPOINT python -m roboco.agent_sdk.grok_secretary_main, EXPOSE 9000 | 22 |
 | docker/agent-kimi.Dockerfile | Kimi (Moonshot) runtime — base + official kimi-code CLI install (NO version pin, latest-at-build, resolved version stamped to /etc/kimi-cli-version), ENTRYPOINT kimi-cli-agent-entrypoint.sh | 71 |
-| docker/panel.Dockerfile | Multi-stage Next.js build (node:22-alpine, pnpm, shamefully-hoist), non-root nextjs:nodejs runtime (USER 1001:1001) serving server.js on :3000, HEALTHCHECK GET /login (the one prerendered page proxy.ts never sends to the backend) | 86 |
+| docker/panel.Dockerfile | Multi-stage Next.js build (node:22-alpine, pnpm), non-root nextjs:nodejs runtime (USER 1001:1001) serving server.js on :3000, HEALTHCHECK GET /login (the one prerendered page proxy.ts never sends to the backend) | 96 |
 | deploy/nginx.conf | nginx default.conf template (moved from `docker/` with the NAS blue-green deploy): the colour-suffixed upstreams come from the `front/active-upstreams.conf` include and resolve per request through Docker's DNS; /health /ready /api/ /ws/ -> the active orchestrator (with X-Agent-Token header), /api/orchestrator/ and /api/{secretary,prompter}/live/ -> the active dispatcher, a deny-list for scanner paths, everything else -> the active panel | 151 |
 | docker/scripts/entrypoints/backup-entrypoint.sh | `backup` sidecar's own loop (not a Claude hook): `pg_dump -Fc` on start + every `BACKUP_INTERVAL_SECONDS` (default 24h), `.tmp`-suffix-then-rename, prune to newest `BACKUP_KEEP` (default 14) by mtime; runs on the data-only network; env-gated off-disk mirror step (`ROBOCO_BACKUP_MIRROR_DIR`) after every successful dump | 80 |
 | docker/scripts/entrypoints/playwright-mcp-entrypoint.sh | Wrapper entrypoint for `@playwright/mcp`: points it at the image's own baked `chromium-headless-shell` instead of letting the MCP package download a second browser | 37 |
@@ -10581,7 +10581,7 @@ panel/ (Next.js 16, package roboco-panel v0.14.0)
 - **@dnd-kit/core + sortable + utilities** for kanban drag
 - **recharts 3** for usage charts; **react-markdown 10** + remark-gfm for markdown render
 - **sonner** toasts; **next-themes** dark mode; **date-fns**; **lucide-react** icons
-- **Vitest 5** + jsdom + @testing-library (jest-dom 7) for tests; **ESLint 10** with `eslint-config-next` (same version as `next`) and **TypeScript 5** for lint and types; **pnpm 11.10** package manager
+- **Vitest 5** + jsdom + @testing-library (jest-dom 7) for tests; **ESLint 10** with `eslint-config-next` (same version as `next`) and **TypeScript 5** for lint and types; **pnpm 12.16** package manager
 
 ## Entry Points
 - **nginx :3000** single external entry; routes `/api/*`+`/ws/*`→orchestrator:8000, else→panel:3000

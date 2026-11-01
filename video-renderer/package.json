@@ -2,7 +2,7 @@
   "name": "video-renderer",
   "version": "1.0.0",
   "private": true,
-  "packageManager": "pnpm@11.10.0",
+  "packageManager": "pnpm@12.16.1",
   "description": "Sidecar HTTP service: untars a motion/ composition source, renders one MP4 cut with HyperFrames, and streams the bytes back. Credential-free, git-free — reads only what it's POSTed.",
   "type": "module",
   "engines": {

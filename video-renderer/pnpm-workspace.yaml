@@ -20,3 +20,11 @@ overrides:
   # drops that tree, and the Chrome Headless Shell puppeteer downloads becomes
   # the one puppeteer-core drives (156 instead of 153).
   puppeteer: ^25.16.0
+# pmOnFail: ignore keeps pnpm-lock.yaml one YAML document. Without it pnpm 12
+# writes a packageManagerDependencies document at the top of the lockfile, and
+# GitHub's dependency graph reads only the first document
+# (dependabot-core#15904, open), which would silence and close the Dependabot
+# alerts on this lockfile. pnpm then no longer switches to the packageManager
+# pin itself; corepack still enforces it in Motion CI and
+# docker/video-renderer.Dockerfile.
+pmOnFail: ignore

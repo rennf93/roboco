@@ -75,7 +75,7 @@ This bump included updates to:
 
 ### Troubleshooting
 
-- **If `pnpm install` fails:** Check that you have write permissions in `panel/` and that `pnpm -v` prints the version `packageManager` pins in `package.json` (`pnpm@11.10.0`).
+- **If `pnpm install` fails:** Check that you have write permissions in `panel/` and that `pnpm -v` prints the version `packageManager` pins in `package.json` (`pnpm@12.16.1`).
 - **If lint/typecheck/test fail after the bump:** Read the error messages carefully. They may point to:
   - Removed or deprecated ESLint rules (consult the Next.js changelog for your target version)
   - Type incompatibilities (update any TypeScript-related types)
