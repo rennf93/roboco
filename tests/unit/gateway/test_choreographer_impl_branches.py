@@ -247,7 +247,8 @@ async def test_i_will_work_on_start_returns_none_invalid_state() -> None:
     )
     task_svc.claim.return_value = claimed_task
     task_svc.set_plan.return_value = claimed_task
-    task_svc.start.return_value = None  # start fails
+    # start fails
+    task_svc.start.return_value = None
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
     env = await c.i_will_work_on(
@@ -458,9 +459,10 @@ async def test_i_will_plan_cell_pm_on_code_typed_parent_succeeds() -> None:
         id=task_id,
         title="Backend slice: Git workflow smoke test",
         team="backend",
-        parent_task_id=uuid4(),  # subtask of the main_pm root
-        task_type="code",  # ← the trigger; pre-fix this rejected with
-        #                    "Cell Pm cannot claim code tasks"
+        # subtask of the main_pm root
+        parent_task_id=uuid4(),
+        # The trigger: pre-fix this rejected with "Cell Pm cannot claim code tasks".
+        task_type="code",
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = task
@@ -522,7 +524,8 @@ async def test_i_will_plan_pending_claim_fails() -> None:
     task_svc.list_in_progress_for_agent.return_value = []
     task_svc.list_paused_for_agent.return_value = []
     task_svc.get_subtasks.return_value = []
-    task_svc.claim.return_value = None  # claim fails
+    # claim fails
+    task_svc.claim.return_value = None
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
     env = await c.i_will_plan(
@@ -723,7 +726,8 @@ async def test_submit_up_submit_pm_review_fails() -> None:
     task_svc.get.return_value = task
     task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
     task_svc.all_subtasks_terminal.return_value = True
-    task_svc.submit_pm_review.return_value = None  # service returns None
+    # service returns None
+    task_svc.submit_pm_review.return_value = None
     journal = AsyncMock()
     journal.has_decision_for_task.return_value = True
     journal.latest_decision_at.return_value = datetime.now(UTC)
@@ -1563,7 +1567,8 @@ async def test_notify_qa_survives_mid_flush_failure_inside_savepoint() -> None:
     assert warning is not None
     assert str(qa_id) in warning
     assert "RuntimeError" in warning
-    a2a_svc.send.assert_not_awaited()  # reassign's flush blew up first
+    # reassign's flush blew up first
+    a2a_svc.send.assert_not_awaited()
     task_svc.session.refresh.assert_awaited_once_with(t)
     # No PendingRollbackError on reuse — this is exactly what the bare
     # try/except (pre-fix) failed to guarantee.

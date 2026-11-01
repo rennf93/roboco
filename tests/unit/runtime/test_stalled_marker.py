@@ -192,6 +192,7 @@ async def test_retrip_after_cooldown_is_one_shot_not_double_counted() -> None:
                 break
         assert gated, "a still-wedged task must re-trip after the threshold"
 
-    fresh_trip_call_count = 2  # first trip + one re-trip after cooldown self-heal
+    # first trip + one re-trip after cooldown self-heal
+    fresh_trip_call_count = 2
     assert task_service.mark_stalled.await_count == fresh_trip_call_count
     assert notifier.send_stuck_agent_notification.await_count == fresh_trip_call_count

@@ -494,9 +494,11 @@ async def test_dispatch_claimed_without_agent_releases_unknown_without_spending_
 
     await orch._dispatch_claimed_without_agent(client=MagicMock())
 
-    expected_releases = 2  # both ghost claims released
+    # both ghost claims released
+    expected_releases = 2
     assert release.await_count == expected_releases
-    spawn.assert_awaited_once()  # then one known assignee respawned
+    # then one known assignee respawned
+    spawn.assert_awaited_once()
 
 
 @pytest.mark.asyncio

@@ -23,11 +23,14 @@ import pytest
 from roboco.runtime.orchestrator import AgentOrchestrator
 from sqlalchemy.dialects import postgresql
 
-_SEEDED_COUNT = 3  # a persisted strike count, one below the trip threshold
+# a persisted strike count, one below the trip threshold
+_SEEDED_COUNT = 3
 _STRIKE_COUNT = 2
 _MIN_PERSISTS = 2
-_TRIP_COUNT = 4  # count > _PM_RESPAWN_MAX_UNPRODUCTIVE (3) fires the gate
-_REVISIT_RESETS_PERSISTED = 2  # a persisted revisit-reset count
+# count > _PM_RESPAWN_MAX_UNPRODUCTIVE (3) fires the gate
+_TRIP_COUNT = 4
+# a persisted revisit-reset count
+_REVISIT_RESETS_PERSISTED = 2
 
 
 def _new_orchestrator() -> AgentOrchestrator:
@@ -108,7 +111,8 @@ def test_partition_drops_terminal_and_missing_rows() -> None:
     rows = [_row(done), _row(cancelled), _row(gone)]
     restored, stale = AgentOrchestrator._partition_respawn_rows(
         rows,
-        {done: "completed", cancelled: "cancelled"},  # gone absent entirely
+        # gone absent entirely
+        {done: "completed", cancelled: "cancelled"},
     )
     assert restored == {}
     assert {(s, t) for s, t in stale} == {
@@ -190,7 +194,8 @@ async def test_loader_skips_terminal_rows_and_deletes_them() -> None:
         restored = await orch.restore_respawn_tracker()
     assert restored == 0
     assert orch._pm_respawn_tracker == {}
-    db.commit.assert_awaited()  # stale row deleted + committed
+    # stale row deleted + committed
+    db.commit.assert_awaited()
 
 
 @pytest.mark.asyncio
@@ -264,7 +269,8 @@ async def test_notified_flip_schedules_persist_with_notified_true() -> None:
             return_value=AsyncMock(),
         ),
     ):
-        for _ in range(4):  # 4th trips the gate + flips notified
+        # 4th trips the gate + flips notified
+        for _ in range(4):
             await _attempt_spawn(orch, "be-pm", task)
     assert any(c[2].get("notified") for c in captured), (
         "the notified flip must schedule a persist with notified=True"
@@ -377,7 +383,8 @@ async def test_restored_counter_trips_at_persisted_threshold_not_from_one() -> N
         ),
     ):
         gated = await _attempt_spawn(orch, "be-pm", task)
-    assert gated is True  # fires on the next spawn, not re-counted from 1
+    # fires on the next spawn, not re-counted from 1
+    assert gated is True
     assert orch._pm_respawn_tracker[("be-pm", task_id)]["count"] == _TRIP_COUNT
 
 
@@ -418,7 +425,8 @@ async def test_restore_status_mismatch_does_not_reburn_threshold() -> None:
         ),
     ):
         gated = await _attempt_spawn(orch, "be-pm", task)
-    assert gated is True  # count 3 -> 4 trips; NOT reset to 1 by the mismatch
+    # count 3 -> 4 trips; NOT reset to 1 by the mismatch
+    assert gated is True
     assert orch._pm_respawn_tracker[("be-pm", str(task_id))]["count"] == _TRIP_COUNT
 
 

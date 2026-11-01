@@ -42,9 +42,12 @@ class BudgetPolicy:
     # real task's footprint. Warn scales with it.
     tool_call_warn_at: int = 100
     tool_call_halt_at: int = 300
-    loop_threshold: int = 3  # same tool+args repeats to trigger
-    loop_window: int = 10  # rolling-window size
-    loop_action: Literal["warn", "halt"] = "halt"  # NEW: was effectively "warn"
+    # same tool+args repeats to trigger
+    loop_threshold: int = 3
+    # rolling-window size
+    loop_window: int = 10
+    # Halts by default; it was effectively "warn" before.
+    loop_action: Literal["warn", "halt"] = "halt"
     pm_respawn_max_unproductive: int = 3
     # A same-status respawn that emitted a tracing_gap is normally treated as a
     # rule-following retry and resets the unproductive counter. That reset is
@@ -72,7 +75,8 @@ class BudgetPolicy:
     # longer than the cooldown self-heals. The same window bounds a restored
     # counter's age: a row last struck longer ago than this is not restored.
     pm_respawn_trip_cooldown_seconds: int = 300
-    verb_retry_max_per_minute: int = 3  # default cap for verbs not in VERB_RETRY_LIMITS
+    # default cap for verbs not in VERB_RETRY_LIMITS
+    verb_retry_max_per_minute: int = 3
 
 
 DEFAULT_BUDGET: BudgetPolicy = BudgetPolicy()
@@ -133,8 +137,9 @@ UNLIMITED_RETRY_VERBS: frozenset[str] = frozenset(
         "resume",
         "claim_review",
         "claim_doc_task",
+        # Claim verbs: the agent may retry on transient lock contention.
         "i_will_work_on",
-        "i_will_plan",  # claim verbs — agent may retry on transient lock contention
+        "i_will_plan",
     }
 )
 

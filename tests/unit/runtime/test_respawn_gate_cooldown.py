@@ -24,7 +24,8 @@ from uuid import uuid4
 import pytest
 from roboco.runtime.orchestrator import AgentOrchestrator
 
-_WEDGED_COUNT = 63  # a counter driven far past the trip threshold by a storm
+# a counter driven far past the trip threshold by a storm
+_WEDGED_COUNT = 63
 
 
 def _new_orchestrator() -> AgentOrchestrator:
