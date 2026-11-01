@@ -11,7 +11,11 @@ import asyncio
 import socket
 from typing import TYPE_CHECKING, Any
 
+import httpx
+
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     import pytest
 
 # A globally routable address every named test host resolves to, so the guard
@@ -50,3 +54,42 @@ def fake_dns(monkeypatch: pytest.MonkeyPatch, answers: dict[str, str]) -> None:
         return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (answers[host], 0))]
 
     monkeypatch.setattr(asyncio.get_running_loop(), "getaddrinfo", getaddrinfo)
+
+
+# A page trafilatura extracts "Hello readable world." from.
+READABLE_PAGE_HTML = (
+    "<html><head><title>t</title></head><body>"
+    "<nav>menu menu</nav><article><h1>Head</h1>"
+    "<p>Hello readable world.</p></article></body></html>"
+)
+
+# One canned answer: (status, headers, body).
+Page = tuple[int, dict[str, str], str]
+
+
+def redirect(location: str, status: int = 302) -> Page:
+    """A redirect answer pointing at ``location``."""
+    return (status, {"location": location}, "")
+
+
+def page(body: str, status: int = 200) -> Page:
+    """An HTML answer."""
+    return (status, {"content-type": "text/html"}, body)
+
+
+def site_routes(
+    pages: dict[str, Page], requested: list[str]
+) -> Callable[[httpx.Request], httpx.Response]:
+    """A MockTransport handler answering each URL from ``pages``.
+
+    Every requested URL is appended to ``requested``, so a test can assert
+    which hops were (and were not) requested. A URL missing from ``pages``
+    answers 404.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested.append(str(request.url))
+        status, headers, body = pages.get(str(request.url), (404, {}, "not here"))
+        return httpx.Response(status, headers=headers, text=body)
+
+    return handler

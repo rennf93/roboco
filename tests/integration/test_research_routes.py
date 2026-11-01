@@ -43,14 +43,19 @@ from roboco.services.research_quota import QuotaStatus
 from tests.unit.research_fakes import (
     PLAIN_NOT_FOUND_HTML,
     PUBLIC_IP,
+    READABLE_PAGE_HTML,
     VERCEL_CHECKPOINT_HTML,
     fake_dns,
+    page,
+    redirect,
+    site_routes,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 _SEARXNG_BASE = "http://searxng.internal:8080"
+_START = "https://a.example.com/start"
 
 
 def _agent(role: AgentRole) -> AgentContext:
@@ -349,3 +354,86 @@ async def test_fetch_url_guard_refusal_answers_400_naming_roboco(
             "URLs are fetched."
         ),
     }
+
+
+@pytest.mark.asyncio
+async def test_fetch_redirect_to_a_non_public_address_answers_400_naming_the_redirect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The guard checks every redirect hop: the internal hop is never requested."""
+    fake_dns(
+        monkeypatch,
+        {"a.example.com": PUBLIC_IP, "169.254.169.254": "169.254.169.254"},
+    )
+    target = "http://169.254.169.254/latest/meta-data/"
+    requested: list[str] = []
+    client = _app_over_searxng(
+        monkeypatch, site_routes({_START: redirect(target)}, requested)
+    )
+    response = await _post(client, "fetch", {"url": _START})
+    assert response.status_code == HTTPStatus.BAD_REQUEST
+    assert response.json()["error"] == {
+        "code": "INVALID_INPUT",
+        "message": (
+            f"RoboCo's URL guard refused the redirect from {_START} to "
+            f"{target!r}: it resolves to a non-public address."
+        ),
+    }
+    assert requested == [_START]
+
+
+@pytest.mark.asyncio
+async def test_fetch_redirect_to_a_public_page_answers_200_with_the_final_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_dns(monkeypatch, {"a.example.com": PUBLIC_IP, "b.example.com": PUBLIC_IP})
+    landing = "https://b.example.com/landing"
+    requested: list[str] = []
+    client = _app_over_searxng(
+        monkeypatch,
+        site_routes(
+            {_START: redirect(landing), landing: page(READABLE_PAGE_HTML)}, requested
+        ),
+    )
+    response = await _post(client, "fetch", {"url": _START})
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()["url"] == landing
+    assert "Hello readable world." in response.json()["content"]
+
+
+@pytest.mark.asyncio
+async def test_fetch_relative_redirect_answers_200_with_the_resolved_url(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_dns(monkeypatch, {"a.example.com": PUBLIC_IP})
+    resolved = "https://a.example.com/landing"
+    requested: list[str] = []
+    client = _app_over_searxng(
+        monkeypatch,
+        site_routes(
+            {_START: redirect("/landing"), resolved: page(READABLE_PAGE_HTML)},
+            requested,
+        ),
+    )
+    response = await _post(client, "fetch", {"url": _START})
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()["url"] == resolved
+
+
+@pytest.mark.asyncio
+async def test_fetch_redirect_loop_answers_424_saying_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_dns(monkeypatch, {"a.example.com": PUBLIC_IP})
+    loop = "https://a.example.com/loop"
+    requested: list[str] = []
+    client = _app_over_searxng(
+        monkeypatch,
+        site_routes({_START: redirect(loop), loop: redirect(_START)}, requested),
+    )
+    response = await _post(client, "fetch", {"url": _START})
+    assert response.status_code == HTTPStatus.FAILED_DEPENDENCY
+    assert response.json()["error"]["code"] == "DEPENDENCY_FAILED"
+    assert response.json()["error"]["message"].startswith(
+        f"Site a.example.com redirected the page fetch of {_START} more than 5 times"
+    )

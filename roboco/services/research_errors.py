@@ -22,11 +22,9 @@ from __future__ import annotations
 from contextlib import suppress
 from dataclasses import dataclass
 from html.parser import HTMLParser
-from typing import TYPE_CHECKING, override
-from urllib.parse import urlparse
+from typing import override
 
-if TYPE_CHECKING:
-    import httpx
+import httpx
 
 
 class ResearchError(Exception):
@@ -206,11 +204,11 @@ def _bot_check_sentence(vendor: str | None) -> str:
     )
 
 
-def _redirect_note(response: httpx.Response) -> str:
-    """Where the fetch ended up when the site redirected it, or nothing."""
-    if not response.history:
+def _redirect_note(url: str, hop: httpx.URL) -> str:
+    """Where the fetch had got to when the site redirected it, or nothing."""
+    if hop == httpx.URL(url):
         return ""
-    return f" after a redirect to {response.url}"
+    return f" after a redirect to {hop}"
 
 
 def site_status_error(url: str, response: httpx.Response) -> ResearchSiteError:
@@ -218,19 +216,32 @@ def site_status_error(url: str, response: httpx.Response) -> ResearchSiteError:
     page = _page_text(response.text)
     message = (
         f"Site {response.url.host} answered {_status_line(response)} to the page "
-        f"fetch of {url}{_redirect_note(response)} "
+        f"fetch of {url}{_redirect_note(url, response.url)} "
         f"({_readable_reason(response.text, page)})."
         f"{_bot_check_sentence(_challenge_vendor(response, page))}"
     )
     return ResearchSiteError(message)
 
 
-def site_unreachable_error(url: str, exc: Exception) -> ResearchSiteError:
-    """The site never answered a page fetch (connection, TLS, timeout, redirects)."""
-    host = urlparse(url).hostname or url
+def site_unreachable_error(
+    url: str, hop: httpx.URL, exc: Exception
+) -> ResearchSiteError:
+    """The site never answered a hop of a page fetch (connection, TLS, timeout)."""
     return ResearchSiteError(
-        f"No answer from site {host} to the page fetch of {url}: "
-        f"{_exception_kind(exc)}."
+        f"No answer from site {hop.host} to the page fetch of {url}"
+        f"{_redirect_note(url, hop)}: {_exception_kind(exc)}."
+    )
+
+
+def site_redirect_limit_error(
+    url: str, response: httpx.Response, target: httpx.URL, limit: int
+) -> ResearchSiteError:
+    """The site was still redirecting a page fetch after the most RoboCo follows."""
+    return ResearchSiteError(
+        f"Site {response.url.host} redirected the page fetch of {url} more than "
+        f"{limit} times: the last hop, {response.url}, answered "
+        f"{_status_line(response)} to {target}. RoboCo follows at most {limit} "
+        "redirects, so the redirects loop or run too long to follow."
     )
 
 
@@ -268,6 +279,13 @@ def provider_unreachable_error(
     )
 
 
-def url_refused_error(url: str, why: str) -> ResearchUrlRefusedError:
-    """RoboCo's URL guard refused ``url`` before any request left the server."""
-    return ResearchUrlRefusedError(f"RoboCo's URL guard refused {url!r}: {why}.")
+def url_refused_error(
+    url: str, why: str, redirected_from: str | None = None
+) -> ResearchUrlRefusedError:
+    """RoboCo's URL guard refused ``url``, or a redirect to it, before requesting it."""
+    if redirected_from is None:
+        return ResearchUrlRefusedError(f"RoboCo's URL guard refused {url!r}: {why}.")
+    return ResearchUrlRefusedError(
+        f"RoboCo's URL guard refused the redirect from {redirected_from} to "
+        f"{url!r}: {why}."
+    )

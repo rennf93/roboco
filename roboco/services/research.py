@@ -45,6 +45,7 @@ from roboco.services.research_errors import (
     provider_body_error,
     provider_status_error,
     provider_unreachable_error,
+    site_redirect_limit_error,
     site_status_error,
     site_unreachable_error,
     url_refused_error,
@@ -302,6 +303,14 @@ class ExaProvider(SearchProvider):
         return _truncated_fetch(url, content, max_chars, self.name)
 
 
+# The most redirects a page fetch follows. RFC 9110 section 15.4 notes that an
+# earlier HTTP specification recommended at most five and warns content
+# developers that some clients still enforce that limit, so a page meant to be
+# reached keeps its chain within it. Every hop costs a guard DNS lookup and a
+# request with its own timeout, which a longer chain would multiply.
+_MAX_PAGE_REDIRECTS = 5
+
+
 class SearXNGProvider(SearchProvider):
     """SearXNG: self-hosted metasearch aggregator, no API key.
 
@@ -362,28 +371,52 @@ class SearXNGProvider(SearchProvider):
         )
 
     async def fetch(self, url: str, max_chars: int) -> FetchOutcome:
-        await _assert_public_http_url(url)
+        """Download the page itself and extract its readable text.
+
+        The outcome's URL is the page the redirects, if any, ended on.
+        """
         response = await self._get_page(url)
         extracted = await asyncio.to_thread(_extract_readable_text, response.text)
-        return _truncated_fetch(url, extracted or "", max_chars, self.name)
+        return _truncated_fetch(
+            str(response.url), extracted or "", max_chars, self.name
+        )
 
     async def _get_page(self, url: str) -> httpx.Response:
-        """GET the target page itself; a refusal or no answer names the site.
+        """GET the target page one redirect hop at a time, guarding every hop.
 
-        The site, not SearXNG, is the party here: SearXNG only searches. A
-        response a bot-mitigation layer marked as its challenge page is a
-        refusal even with a 2xx status (AWS WAF challenges answer 202).
+        httpx's own redirect following would request each hop before anything
+        could check it, so every hop's URL passes RoboCo's URL guard here
+        first, and at most ``_MAX_PAGE_REDIRECTS`` are followed. httpx still
+        builds each hop's request (``next_request``), so 301/302/303/307/308,
+        relative ``Location`` headers and cookies behave as its own redirect
+        following would. The site, not SearXNG, is the party here: SearXNG
+        only searches.
         """
+        await _assert_public_http_url(url)
+        client = await self._http()
+        first = client.build_request("GET", url, timeout=self._timeout)
+        response = await self._send_page_hop(url, first)
+        redirects = 0
+        while (hop := response.next_request) is not None:
+            if redirects == _MAX_PAGE_REDIRECTS:
+                raise site_redirect_limit_error(
+                    url, response, hop.url, _MAX_PAGE_REDIRECTS
+                )
+            await _assert_public_http_url(
+                str(hop.url), redirected_from=str(response.url)
+            )
+            response = await self._send_page_hop(url, hop)
+            redirects += 1
+        _raise_unless_page(url, response)
+        return response
+
+    async def _send_page_hop(self, url: str, hop: httpx.Request) -> httpx.Response:
+        """Send one hop of the fetch of ``url`` without following its redirect."""
         client = await self._http()
         try:
-            response = await client.get(
-                url, timeout=self._timeout, follow_redirects=True
-            )
+            return await client.send(hop, follow_redirects=False)
         except httpx.HTTPError as exc:
-            raise site_unreachable_error(url, exc) from exc
-        if not response.is_success or carries_challenge_header(response):
-            raise site_status_error(url, response)
-        return response
+            raise site_unreachable_error(url, hop.url, exc) from exc
 
 
 class NullProvider(SearchProvider):
@@ -545,31 +578,43 @@ def _extract_readable_text(html: str) -> str | None:
         return None
 
 
-async def _assert_public_http_url(url: str) -> None:
+async def _assert_public_http_url(url: str, redirected_from: str | None = None) -> None:
     """Refuse URLs that are not plain http(s) pointing at a public host.
 
     ``web_fetch`` fetches agent-supplied URLs from the orchestrator process,
     which is multi-homed and can reach the DB, Redis, and every internal
     service. An agent-supplied URL must never become a probe of that network,
     so the hostname must resolve to a globally-routable address (covers
-    loopback, RFC1918, link-local incl. cloud metadata, and ULA).
+    loopback, RFC1918, link-local incl. cloud metadata, and ULA). The fetch
+    runs it on every redirect hop too, passing the URL that redirected there.
     """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
-        raise url_refused_error(url, "only http(s) URLs are fetched")
+        raise url_refused_error(url, "only http(s) URLs are fetched", redirected_from)
     host = parsed.hostname
     if not host:
-        raise url_refused_error(url, "it has no hostname")
+        raise url_refused_error(url, "it has no hostname", redirected_from)
     loop = asyncio.get_running_loop()
     try:
         infos = await loop.getaddrinfo(host, None)
     except socket.gaierror as exc:
         why = f"its host {host!r} does not resolve ({type(exc).__name__}: {exc})"
-        raise url_refused_error(url, why) from exc
+        raise url_refused_error(url, why, redirected_from) from exc
     for info in infos:
         ip = ipaddress.ip_address(info[4][0])
         if not ip.is_global:
-            raise url_refused_error(url, "it resolves to a non-public address")
+            why = "it resolves to a non-public address"
+            raise url_refused_error(url, why, redirected_from)
+
+
+def _raise_unless_page(url: str, response: httpx.Response) -> None:
+    """Refuse a final response that is an error status or a bot-check page.
+
+    A response a bot-mitigation layer marked as its challenge page is a
+    refusal even with a 2xx status (AWS WAF challenges answer 202).
+    """
+    if not response.is_success or carries_challenge_header(response):
+        raise site_status_error(url, response)
 
 
 def _truncated_fetch(

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from itertools import pairwise
 
 import httpx
 import pytest
@@ -35,8 +36,12 @@ from roboco.services.research_errors import (
 from tests.unit.research_fakes import (
     PLAIN_NOT_FOUND_HTML,
     PUBLIC_IP,
+    READABLE_PAGE_HTML,
     VERCEL_CHECKPOINT_HTML,
     fake_dns,
+    page,
+    redirect,
+    site_routes,
 )
 
 Handler = Callable[[httpx.Request], httpx.Response]
@@ -51,6 +56,7 @@ _FETCH_CAP = 20
 _SEARXNG_BASE = "http://searxng.internal:8080"
 _PAGE_URL = f"https://{PUBLIC_IP}/page"
 _RFC1918_IP = "172.18.0.5"
+_REDIRECT_CAP = 5
 
 
 def _client(handler: Handler) -> httpx.AsyncClient:
@@ -428,7 +434,7 @@ async def test_searxng_fetch_challenge_header_is_a_refusal_whatever_the_status(
 async def test_searxng_fetch_redirect_names_the_site_that_answered(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    fake_dns(monkeypatch, {"a.example.com": PUBLIC_IP})
+    fake_dns(monkeypatch, {"a.example.com": PUBLIC_IP, "b.example.com": PUBLIC_IP})
 
     def handler(request: httpx.Request) -> httpx.Response:
         if request.url.host == "a.example.com":
@@ -475,6 +481,144 @@ async def test_searxng_fetch_timeout_names_the_bare_exception_kind() -> None:
     assert str(exc.value) == (
         f"No answer from site {PUBLIC_IP} to the page fetch of {_PAGE_URL}: "
         "ReadTimeout."
+    )
+
+
+# --------------------------------------------------------------------------- #
+# SearXNG fetch: redirects are followed hop by hop, the guard checks each hop
+# --------------------------------------------------------------------------- #
+
+_START = "https://a.example.com/start"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("target", "why"),
+    [
+        pytest.param(
+            "http://169.254.169.254/latest/meta-data/",
+            "it resolves to a non-public address",
+            id="cloud-metadata",
+        ),
+        pytest.param(
+            "http://localhost:8000/api",
+            "it resolves to a non-public address",
+            id="loopback-name",
+        ),
+        pytest.param(
+            f"ftp://{PUBLIC_IP}/file", "only http(s) URLs are fetched", id="ftp"
+        ),
+    ],
+)
+async def test_searxng_fetch_refuses_a_redirect_the_guard_refuses(
+    target: str, why: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The refused hop is never requested, and the message names the redirect."""
+    fake_dns(
+        monkeypatch,
+        {
+            "a.example.com": PUBLIC_IP,
+            "169.254.169.254": "169.254.169.254",
+            "localhost": "127.0.0.1",
+        },
+    )
+    requested: list[str] = []
+    handler = site_routes({_START: redirect(target)}, requested)
+    with pytest.raises(ResearchUrlRefusedError) as exc:
+        await _searxng(handler).fetch(_START, 100)
+    assert str(exc.value) == (
+        f"RoboCo's URL guard refused the redirect from {_START} to {target!r}: {why}."
+    )
+    assert requested == [_START]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+async def test_searxng_fetch_follows_a_redirect_to_a_public_page(
+    status: int, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every redirect status a GET follows lands on the page, and the outcome
+    reports the URL the content came from."""
+    fake_dns(monkeypatch, {"a.example.com": PUBLIC_IP, "b.example.com": PUBLIC_IP})
+    landing = "https://b.example.com/landing"
+    requested: list[str] = []
+    handler = site_routes(
+        {_START: redirect(landing, status), landing: page(READABLE_PAGE_HTML)},
+        requested,
+    )
+    out = await _searxng(handler).fetch(_START, 1000)
+    assert out.url == landing
+    assert "Hello readable world." in out.content
+    assert requested == [_START, landing]
+
+
+@pytest.mark.asyncio
+async def test_searxng_fetch_resolves_a_relative_redirect_against_the_hop(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_dns(monkeypatch, {"a.example.com": PUBLIC_IP})
+    start = "https://a.example.com/docs/start"
+    resolved = "https://a.example.com/docs/intro"
+    requested: list[str] = []
+    handler = site_routes(
+        {start: redirect("intro"), resolved: page(READABLE_PAGE_HTML)}, requested
+    )
+    out = await _searxng(handler).fetch(start, 1000)
+    assert out.url == resolved
+    assert requested == [start, resolved]
+
+
+@pytest.mark.asyncio
+async def test_searxng_fetch_follows_up_to_the_redirect_cap(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Five redirects are followed; the page at the end of them is fetched."""
+    fake_dns(monkeypatch, {"a.example.com": PUBLIC_IP})
+    hops = [f"https://a.example.com/{n}" for n in range(_REDIRECT_CAP + 1)]
+    pages = {hop: redirect(nxt) for hop, nxt in pairwise(hops)}
+    pages[hops[-1]] = page(READABLE_PAGE_HTML)
+    requested: list[str] = []
+    out = await _searxng(site_routes(pages, requested)).fetch(hops[0], 1000)
+    assert out.url == hops[-1]
+    assert requested == hops
+
+
+@pytest.mark.asyncio
+async def test_searxng_fetch_redirect_loop_is_a_site_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_dns(monkeypatch, {"a.example.com": PUBLIC_IP})
+    loop = "https://a.example.com/loop"
+    requested: list[str] = []
+    handler = site_routes({_START: redirect(loop), loop: redirect(_START)}, requested)
+    with pytest.raises(ResearchSiteError) as exc:
+        await _searxng(handler).fetch(_START, 100)
+    assert str(exc.value) == (
+        f"Site a.example.com redirected the page fetch of {_START} more than "
+        f"{_REDIRECT_CAP} times: the last hop, {loop}, answered HTTP 302 Found "
+        f"to {_START}. RoboCo follows at most {_REDIRECT_CAP} redirects, so the "
+        "redirects loop or run too long to follow."
+    )
+    assert len(requested) == _REDIRECT_CAP + 1
+
+
+@pytest.mark.asyncio
+async def test_searxng_fetch_unreachable_redirect_hop_names_that_site(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    fake_dns(monkeypatch, {"a.example.com": PUBLIC_IP, "b.example.com": PUBLIC_IP})
+    landing = "https://b.example.com/landing"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.host == "b.example.com":
+            raise httpx.ConnectError("[Errno 111] Connection refused")
+        return httpx.Response(302, headers={"location": landing})
+
+    with pytest.raises(ResearchSiteError) as exc:
+        await _searxng(handler).fetch(_START, 100)
+    assert str(exc.value) == (
+        f"No answer from site b.example.com to the page fetch of {_START} after "
+        f"a redirect to {landing}: ConnectError: [Errno 111] Connection refused."
     )
 
 
