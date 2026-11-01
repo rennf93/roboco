@@ -10,7 +10,7 @@ The support layer of the agent gateway: pure/cheap components the Choreographer 
 | roboco/services/gateway/claim_guards.py | Pre-mutation claim-time predicates: already_active, paused, unmet-dependency; first non-None short-circuits claim. | 215 |
 | roboco/services/gateway/claimant_lock.py | Pure single-claimant acquire decision + heartbeat staleness test; caller owns DB writes. | 48 |
 | roboco/services/gateway/commit_validator.py | Commit-message subject gate: length, banned single-words, conventional-commits soft hint. | 175 |
-| roboco/services/gateway/content_actions.py | ContentActions: the do-tools' content verbs, composed from mixins. Here: the core class (service deps, heartbeat, active-claim and soup guards, caller role) and the families `TaskAccessActions`, `TaskReadActions`, `CommitActions`, `NoteActions`, `MessagingActions`, `DecisionLaneActions`, `SandboxActions`, `SandboxTestsActions`, `RenderActions`, `VideoProposalActions` and the X-post programs (`BarflyActions`, `FeatureSpotlightActions`, `MegaphoneActions`, `WarRoomActions`); the proposal and report mixins come from `content_actions_proposals.py` and `content_actions_reports.py`. | 4349 |
+| roboco/services/gateway/content_actions.py | ContentActions: the do-tools' content verbs, composed from mixins. Here: the core class (service deps, heartbeat, active-claim and soup guards, caller role) and the families `TaskAccessActions`, `TaskReadActions`, `CommitActions`, `NoteActions`, `MessagingActions`, `DecisionLaneActions`, `SandboxActions`, `SandboxTestsActions`, `RenderActions`, `VideoProposalActions` and the X-post programs (`BarflyActions`, `FeatureSpotlightActions`, `MegaphoneActions`, `WarRoomActions`); the proposal and report mixins come from `content_actions_proposals.py` and `content_actions_reports.py`. | 4406 |
 | roboco/services/gateway/content_actions_proposals.py | Board Program proposals that become tasks, as ContentActions mixins: `BoardProposalActions` (the proposal trace, `nothing_to_propose`), `PitchActions`, `RoadmapActions`, `PestControlActions`, `ScalesActions`, `SpackleActions`, `MirrorActions`, `DogfoodActions`, with their role sets, field tables and item normalizers. | 1983 |
 | roboco/services/gateway/content_actions_reports.py | Filed reports and playbook curation, as ContentActions mixins: `PeriscopeActions` (market brief), `SentinelActions` (quality report), `CoronerActions` (postmortem), `LibrarianActions` (playbook drafts), `PlaybookActions` (draft/approve/reject/archive playbooks, the vault narrative), with their role sets, caps and normalizers. | 1610 |
 | roboco/services/gateway/_content_actions_types.py | `ContentActionsSelf`, a TYPE_CHECKING-only Protocol composed of one `<Name>Surface` per class the ContentActions mixins reach into (`ContentSurface` for ContentActions' own helpers and service properties), so mypy checks each mixin against the composed class. | 112 |
@@ -48,44 +48,44 @@ The support layer of the agent gateway: pure/cheap components the Choreographer 
 | try_acquire | function | roboco/services/gateway/claimant_lock.py:35 | Decide whether agent may acquire/refresh claim on task (pure; caller persists). |
 | validate_commit_message | function | roboco/services/gateway/commit_validator.py:61 | Validate commit subject: empty/length/banned-word/conventional-shape soft hint. |
 | ValidationResult | dataclass | roboco/services/gateway/commit_validator.py:49 | ok/reason/hint/remediate outcome of commit message validation. |
-| ContentActionsDeps | dataclass | roboco/services/gateway/content_actions.py:384 | Bundled service deps: task/git/a2a/journal/workspace/notifications + notification_delivery + evidence_repo. |
-| ContentActions | class | roboco/services/gateway/content_actions.py:4145 | Smart-wrapped do-tools; validates input, auto-injects task_id, calls service, returns Envelope. |
-| ContentActions.commit | method | roboco/services/gateway/content_actions.py:923 | Validate msg, RBAC (developer/documenter only), active-task + active-claimant gates, git commit, add progress, heartbeat. |
-| ContentActions.note | method | roboco/services/gateway/content_actions.py:1158 | Route scope=handoff to section write; else journal note with soup-guard + structured normalize + ownership. |
-| ContentActions._write_journal_note | method | roboco/services/gateway/content_actions.py:1257 | Validate+persist journal entry for note/decision/reflect/learning/struggle; tolerant of thin notes. |
-| ContentActions._record_section_handoff | method | roboco/services/gateway/content_actions.py:1315 | Write role-specific note SECTION (dev_notes/quick_context/etc.) via record_section_note + journal trail. |
+| ContentActionsDeps | dataclass | roboco/services/gateway/content_actions.py:434 | Bundled service deps: task/git/a2a/journal/workspace/notifications + notification_delivery + evidence_repo. |
+| ContentActions | class | roboco/services/gateway/content_actions.py:4195 | Smart-wrapped do-tools; validates input, auto-injects task_id, calls service, returns Envelope. |
+| ContentActions.commit | method | roboco/services/gateway/content_actions.py:973 | Validate msg, RBAC (developer/documenter only), active-task + active-claimant gates, git commit, add progress, heartbeat. |
+| ContentActions.note | method | roboco/services/gateway/content_actions.py:1208 | Route scope=handoff to section write; else journal note with soup-guard + structured normalize + ownership. |
+| ContentActions._write_journal_note | method | roboco/services/gateway/content_actions.py:1307 | Validate+persist journal entry for note/decision/reflect/learning/struggle; tolerant of thin notes. |
+| ContentActions._record_section_handoff | method | roboco/services/gateway/content_actions.py:1365 | Write role-specific note SECTION (dev_notes/quick_context/etc.) via record_section_note + journal trail. |
 | ContentActions.draft_playbook | method | roboco/services/gateway/content_actions_reports.py:1387 | Delivery roles draft a curated playbook; ConflictError -> invalid_state. |
 | ContentActions.approve_playbook | method | roboco/services/gateway/content_actions_reports.py:1436 | Auditor approves draft -> approved + indexed. |
 | ContentActions.reject_playbook | method | roboco/services/gateway/content_actions_reports.py:1442 | Auditor rejects playbook -> archived with reason. |
 | ContentActions.archive_playbook | method | roboco/services/gateway/content_actions_reports.py:1453 | Auditor archives an approved playbook -> retired. |
 | ContentActions._curate_playbook | method | roboco/services/gateway/content_actions_reports.py:1461 | Shared Auditor-only curation; commit status BEFORE RAG index/unindex; ConflictError->invalid_state. |
 | ContentActions.pitch | method | roboco/services/gateway/content_actions_proposals.py:482 | Board (PO/Head Marketing) proposes a product; validates cells, ConflictError/ValidationError->invalid_state. |
-| ContentActions.propose_feature_spotlight | method | roboco/services/gateway/content_actions.py:3650 | Head-of-Marketing-only (`_FEATURE_SPOTLIGHT_ROLES`); validates feature_slug/title/body, checks `XEngine.is_feature_seen`, calls `XEngine.materialize_feature_spotlight` (creates a held X-post draft + completes the caller's exploration task). |
-| ContentActions.dm | method | roboco/services/gateway/content_actions.py:1505 | A2A direct message; requires task_id; no-comms RBAC; A2AAccessDenied->not_authorized. |
-| ContentActions.notify | method | roboco/services/gateway/content_actions.py:1578 | Formal ack-required notification (PMs/Board only); rejects bad priority, no-comms sender, disallowed recipient. |
-| ContentActions._reject_disallowed_recipient | method | roboco/services/gateway/content_actions.py:1658 | Reject notify to prompter/secretary (no ack path) then defer to CEO-dependency-notify check. |
-| ContentActions._reject_ceo_dependency_notify | method | roboco/services/gateway/content_actions.py:1696 | Reject CEO notify about an open dependency block (noise). |
-| ContentActions._dependency_block_reason | method | roboco/services/gateway/content_actions.py:1722 | Return reason string if task_id waiting on unfinished deps, else None. |
-| ContentActions.evidence | method | roboco/services/gateway/content_actions.py:680 | Inspect task PR diff/commits/files; allowed for assignee/unassigned/board-co-review/dependency; builds EvidencePayload. |
-| ContentActions._is_caller_dependency | method | roboco/services/gateway/content_actions.py:549 | True when task is a dependency of a task the caller is assigned to (read-only evidence exemption). |
-| ContentActions.progress | method | roboco/services/gateway/content_actions.py:1429 | Append progress update; plan_step marks checklist; ownership+active-claim+active-status gate. |
-| ContentActions.notify_list | method | roboco/services/gateway/content_actions.py:1741 | Read agent notification inbox via NotificationDeliveryService. |
-| ContentActions.notify_get | method | roboco/services/gateway/content_actions.py:1783 | Read one notification + mark read. |
-| ContentActions.notify_ack | method | roboco/services/gateway/content_actions.py:1822 | Acknowledge a notification; non-recipient -> not_authorized. |
-| ContentActions.read_messages | method | roboco/services/gateway/content_actions.py:1856 | Mark all caller's unread A2A DMs as read (clears i_am_idle soft-block). |
-| ContentActions.read_a2a | method | roboco/services/gateway/content_actions.py:1873 | Return caller's unread incoming A2A message bodies (content, not just the counter), then clear them; excludes the caller's own sends. |
-| ContentActions.pr_update | method | roboco/services/gateway/content_actions.py:1064 | Update existing PR title/body/reviewers; authorized for assignee/main_pm/cell_pm on team. |
-| ContentActions._pr_update_is_authorized | staticmethod | roboco/services/gateway/content_actions.py:1046 | True iff caller is assignee, main_pm, or cell_pm on matching team. |
-| ContentActions._active_claim_violation | method | roboco/services/gateway/content_actions.py:4234 | Refuse write when caller is not active_claimant (board co-reviewer exempt). |
-| ContentActions._verify_explicit_task_ownership | method | roboco/services/gateway/content_actions.py:505 | Gate Set D: refuse content posts on tasks caller doesn't own; stale assigned_to falls through to active-claim check. |
-| ContentActions._board_may_co_review | method | roboco/services/gateway/content_actions.py:492 | True iff board role posting to a board/coordination task. |
-| ContentActions._touch_heartbeat | method | roboco/services/gateway/content_actions.py:4220 | Best-effort heartbeat refresh on content-write success (suppress exceptions). |
-| ContentActions._reject_soup | staticmethod | roboco/services/gateway/content_actions.py:4284 | Universal anti-soup guard; returns invalid_state Envelope (never raw 422, would trip circuit breaker). |
-| ContentActions._reject_structured_soup | classmethod | roboco/services/gateway/content_actions.py:4305 | Soup-guard scope's narrative sub-fields when agent filled them; omitted fields keep placeholder. |
+| ContentActions.propose_feature_spotlight | method | roboco/services/gateway/content_actions.py:3700 | Head-of-Marketing-only (`_FEATURE_SPOTLIGHT_ROLES`); validates feature_slug/title/body, checks `XEngine.is_feature_seen`, calls `XEngine.materialize_feature_spotlight` (creates a held X-post draft + completes the caller's exploration task). |
+| ContentActions.dm | method | roboco/services/gateway/content_actions.py:1555 | A2A direct message; requires task_id; no-comms RBAC; A2AAccessDenied->not_authorized. |
+| ContentActions.notify | method | roboco/services/gateway/content_actions.py:1628 | Formal ack-required notification (PMs/Board only); rejects bad priority, no-comms sender, disallowed recipient. |
+| ContentActions._reject_disallowed_recipient | method | roboco/services/gateway/content_actions.py:1708 | Reject notify to prompter/secretary (no ack path) then defer to CEO-dependency-notify check. |
+| ContentActions._reject_ceo_dependency_notify | method | roboco/services/gateway/content_actions.py:1746 | Reject CEO notify about an open dependency block (noise). |
+| ContentActions._dependency_block_reason | method | roboco/services/gateway/content_actions.py:1772 | Return reason string if task_id waiting on unfinished deps, else None. |
+| ContentActions.evidence | method | roboco/services/gateway/content_actions.py:730 | Inspect task PR diff/commits/files; allowed for assignee/unassigned/board-co-review/dependency; builds EvidencePayload. |
+| ContentActions._is_caller_dependency | method | roboco/services/gateway/content_actions.py:599 | True when task is a dependency of a task the caller is assigned to (read-only evidence exemption). |
+| ContentActions.progress | method | roboco/services/gateway/content_actions.py:1479 | Append progress update; plan_step marks checklist; ownership+active-claim+active-status gate. |
+| ContentActions.notify_list | method | roboco/services/gateway/content_actions.py:1791 | Read agent notification inbox via NotificationDeliveryService. |
+| ContentActions.notify_get | method | roboco/services/gateway/content_actions.py:1833 | Read one notification + mark read. |
+| ContentActions.notify_ack | method | roboco/services/gateway/content_actions.py:1872 | Acknowledge a notification; non-recipient -> not_authorized. |
+| ContentActions.read_messages | method | roboco/services/gateway/content_actions.py:1906 | Mark all caller's unread A2A DMs as read (clears i_am_idle soft-block). |
+| ContentActions.read_a2a | method | roboco/services/gateway/content_actions.py:1923 | Return caller's unread incoming A2A message bodies (content, not just the counter), then clear them; excludes the caller's own sends. |
+| ContentActions.pr_update | method | roboco/services/gateway/content_actions.py:1114 | Update existing PR title/body/reviewers; authorized for assignee/main_pm/cell_pm on team. |
+| ContentActions._pr_update_is_authorized | staticmethod | roboco/services/gateway/content_actions.py:1096 | True iff caller is assignee, main_pm, or cell_pm on matching team. |
+| ContentActions._active_claim_violation | method | roboco/services/gateway/content_actions.py:4284 | Refuse write when caller is not active_claimant (board co-reviewer exempt). An unclaimed task gets `_unclaimed_task_refusal` (names the caller's claim intent from `valid_next_verbs` ∩ `_CLAIM_INTENTS`); a task another agent holds gets `_not_active_claimant` (i_am_idle / give_me_work). |
+| ContentActions._verify_explicit_task_ownership | method | roboco/services/gateway/content_actions.py:555 | Gate Set D: refuse content posts on tasks caller doesn't own; stale assigned_to falls through to active-claim check. |
+| ContentActions._board_may_co_review | method | roboco/services/gateway/content_actions.py:542 | True iff board role posting to a board/coordination task. |
+| ContentActions._touch_heartbeat | method | roboco/services/gateway/content_actions.py:4270 | Best-effort heartbeat refresh on content-write success (suppress exceptions). |
+| ContentActions._reject_soup | staticmethod | roboco/services/gateway/content_actions.py:4341 | Universal anti-soup guard; returns invalid_state Envelope (never raw 422, would trip circuit breaker). |
+| ContentActions._reject_structured_soup | classmethod | roboco/services/gateway/content_actions.py:4362 | Soup-guard scope's narrative sub-fields when agent filled them; omitted fields keep placeholder. |
 | _merge_resumption_fields | function | roboco/services/gateway/content_actions.py:97 | Fold top-level done/next/where_to_look into handoff section without overwriting supplied keys (fixes minimax section={} meltdown). |
-| _normalize_structured | function | roboco/services/gateway/content_actions.py:311 | Tolerant copy of structured for decision/reflect: scalar->list wrap, missing narrative fields default to placeholder. |
-| _render_journal_content | function | roboco/services/gateway/content_actions.py:253 | Build journal entry body with markdown sections for decision/reflect scopes. |
-| _strip_task_prefix | function | roboco/services/gateway/content_actions.py:4328 | Strip any [task-id] prefix the agent supplied; gateway re-adds canonical. |
+| _normalize_structured | function | roboco/services/gateway/content_actions.py:325 | Tolerant copy of structured for decision/reflect: scalar->list wrap, missing narrative fields default to placeholder. |
+| _render_journal_content | function | roboco/services/gateway/content_actions.py:267 | Build journal entry body with markdown sections for decision/reflect scopes. |
+| _strip_task_prefix | function | roboco/services/gateway/content_actions.py:4385 | Strip any [task-id] prefix the agent supplied; gateway re-adds canonical. |
 | EvidencePayload | dataclass | roboco/services/gateway/evidence_builder.py:38 | Task-scoped evidence: pr/commits/files/dev_summary/journal/acceptance/convention_findings. |
 | BriefingInputs | dataclass | roboco/services/gateway/evidence_builder.py:97 | Agent-scoped briefing inputs (a2a/mentions/notifications/gaps/activity/blockers/handoff/goals). |
 | build_evidence_for_task | function | roboco/services/gateway/evidence_builder.py:179 | Compose EvidencePayload from Task model + supplemental data. |
@@ -222,7 +222,7 @@ gateway-support
     ValidationResult
     validate_commit_message
   content_actions.py
-    helpers: _merge_resumption_fields, _render_journal_content, _normalize_structured, _strip_task_prefix, _reject_soup, _ownership_violation, _not_active_claimant, _coerce_pitch_cells
+    helpers: _merge_resumption_fields, _render_journal_content, _normalize_structured, _strip_task_prefix, _reject_soup, _ownership_violation, _not_active_claimant, _unclaimed_task_refusal, _claim_first_remediation, _coerce_pitch_cells
     role frozensets: _COMMIT_ALLOWED_ROLES, _NOTIFY_ALLOWED_ROLES, _NO_COMMS_ROLES, _PITCH_ROLES, _DRAFT/_CURATE_PLAYBOOK_ROLES, _FEATURE_SPOTLIGHT_ROLES
     ContentActionsDeps
     ContentActions

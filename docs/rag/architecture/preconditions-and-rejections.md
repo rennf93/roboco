@@ -58,6 +58,13 @@ The `missing[]` array tells the agent exactly what artifact is missing, so they 
 
 There is no `missing[]` array — the agent is simply not allowed, and the remediate message tells them what to do instead (usually "find your own work" or "have a different role perform this").
 
+**Content writes need the writer's claim.** `note` / `dm` / `notify` / `commit` / `progress` with a `task_id` you are assigned to also require that you hold its claim (`active_claimant_id`). The refusal says which of two cases you are in:
+
+- *Nobody has claimed it* (`"you do not hold an active claim on X: it is pending and unclaimed ..."`): it is still yours. The envelope carries `current_state` and `valid_next_verbs`, and `remediate` names the claim verb your role can call on that status, e.g. `i_will_plan(task_id='X', ...)` for a PM's fresh root or bounced task, `i_will_work_on(task_id='X', ...)` for a developer's leaf. Claim, then write.
+- *Another agent holds it* (`"... another agent holds it now"`): it is no longer yours; `remediate` sends you to `i_am_idle()` / `give_me_work()`.
+
+A task escalated to you is yours with its claim until you unblock it, so writes on it are accepted.
+
 ## How `rejection_kind` works
 
 When a Precondition is defined, it includes a `rejection_kind` field that determines which error flavor it returns:

@@ -178,6 +178,20 @@ _COMMIT_ALLOWED_ROLES: frozenset[str] = frozenset({"developer", "documenter", "d
 # ContentActions._active_claim_violation). Extend only for roles with that
 # same documented shape.
 _CLAIMLESS_NOTE_ROLES: frozenset[str] = frozenset({"auditor"})
+# The lifecycle intents that take a task's claim. A write on an unclaimed task
+# is refused with whichever of these the caller's role may call on the task's
+# current status (lifecycle.valid_next_verbs), so the refusal says how to
+# claim instead of sending the assignee away from its own task.
+_CLAIM_INTENTS: frozenset[str] = frozenset(
+    {
+        "i_will_work_on",
+        "i_will_plan",
+        "claim_review",
+        "claim_doc_task",
+        "claim_gate_review",
+        "claim_pr_review",
+    }
+)
 _NOTIFY_ALLOWED_ROLES: frozenset[str] = frozenset(
     r.value for r in _comms.NOTIFY_SENDER_ROLES
 )
@@ -360,23 +374,59 @@ def _preflight_criteria(t: Any) -> list[str]:
 
 
 def _not_active_claimant(task_id: UUID) -> Envelope:
-    """Envelope for a caller who holds no active claim on ``task_id``.
+    """Envelope for a caller whose task is claimed by another agent.
 
     The caller may still be the historical ``assigned_to`` (e.g. its claim
-    was reaped for going silent, or the task was handed to another agent),
-    but ``active_claimant_id`` no longer points at it. Writing would race the
-    real claimant, so the write is refused.
+    was reaped for going silent and another agent took the task), but
+    ``active_claimant_id`` points at someone else. Writing would race the
+    real claimant, so the write is refused and the caller is sent away.
     """
     return Envelope.not_authorized(
         message=(
-            f"you do not hold the active claim on {task_id}; "
-            "another agent owns it now or your claim was released"
+            f"you do not hold the active claim on {task_id}; another agent holds it now"
         ),
         remediate=(
             "call i_am_idle() and give_me_work() to pick up fresh work; "
             "if you believe this is your task, re-claim it before writing"
         ),
         context_briefing={},
+    )
+
+
+def _unclaimed_task_refusal(task: Any, role: str) -> Envelope:
+    """Envelope for a write on a task that nobody holds a claim on.
+
+    The caller is its assignee (a PM's fresh root, a developer's pre-assigned
+    leaf, a task bounced back to ``needs_revision``, a claim the reaper
+    released) and has not claimed it. Nobody else owns it, so instead of
+    sending the caller away the refusal names the claim verb its role can
+    use on the task's current status, which ``valid_next_verbs`` carries.
+    """
+    envelope = Envelope.not_authorized(
+        message=(
+            f"you do not hold an active claim on {task.id}: it is "
+            f"{task.status} and unclaimed, and content writes "
+            "(note / dm / notify / commit / progress) need the writer's claim"
+        ),
+        remediate="",
+        context_briefing={},
+    ).with_introspection(task=task, role=role)
+    claim_verbs = [v for v in envelope.valid_next_verbs or [] if v in _CLAIM_INTENTS]
+    envelope.remediate = _claim_first_remediation(task.id, claim_verbs)
+    return envelope
+
+
+def _claim_first_remediation(task_id: Any, claim_verbs: list[str]) -> str:
+    """Tell the assignee of an unclaimed task how to claim it before writing."""
+    if not claim_verbs:
+        return (
+            "you cannot claim it in its current status; act on it with a verb "
+            "from valid_next_verbs, or call give_me_work() for work you can claim"
+        )
+    calls = " or ".join(f"{verb}(task_id='{task_id}', ...)" for verb in claim_verbs)
+    return (
+        f"claim it first with {calls}, then retry this write; if the claim "
+        "is refused, follow that refusal's remediate"
     )
 
 
@@ -4253,6 +4303,11 @@ class ContentActions(
         When no claimant exists there is no one to race. A REAPED assignee
         is NOT covered — it had a claim and lost it, and the reap doctrine
         says it must not keep posting; the caller's role decides.
+
+        The refusal tells the two cases apart: on a task nobody holds, the
+        caller is told which claim verb its role can use there
+        (``_unclaimed_task_refusal``); only a task another agent holds sends
+        it away (``_not_active_claimant``).
         """
         claimant = getattr(task, "active_claimant_id", None)
         if claimant == agent_id:
@@ -4266,6 +4321,8 @@ class ContentActions(
             return None
         if await self._board_may_co_review(agent_id, task):
             return None
+        if claimant is None:
+            return _unclaimed_task_refusal(task, await self._caller_role(agent_id))
         return _not_active_claimant(task.id)
 
     async def _caller_is_claimless_role(self, agent_id: UUID) -> bool:
