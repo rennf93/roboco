@@ -934,6 +934,9 @@ def build_security_config() -> SecurityConfig:
         # outage with no way in but ROBOCO_GUARD_EMERGENCY plus a restart. Open
         # here means a redis blip degrades rate-limit and ban state to allow,
         # while the WAF, IP lists and every stateless check keep enforcing.
+        # The IP lists only keep enforcing because of the ban-lookup patch
+        # (`_is_ip_banned_fail_open`): guard-core alone skips the whole
+        # ip_security check, allowlist included, when the ban store is down.
         redis_fail_open=True,
         # Baseline throttling; per-endpoint overrides tighten sensitive routes.
         rate_limit=120,
@@ -1128,6 +1131,42 @@ async def _ban_ip_mesh_safe(
 
 
 setattr(IPBanManager, "ban_ip", _ban_ip_mesh_safe)
+
+# Ban-lookup redis fail-open. ``IpSecurityCheck.check`` reads the ban store
+# FIRST (``_check_banned_ip`` -> ``IPBanManager.is_ip_banned``, local cache then
+# redis), and a GuardRedisError there makes ``SecurityCheckPipeline.
+# _handle_check_error`` skip the WHOLE check under redis_fail_open
+# (guard_core/core/checks/pipeline.py). That skips far more than the ban
+# lookup: the stateless allowlist decision and the ``is_whitelisted`` /
+# ``is_exempt`` stamps live in the same check. 2026-10-28 05:35-05:36, while
+# the guard's Redis client hit "Too many connections": "Skipping check
+# ip_security" 192 times, and in exactly those minutes the CEO's tailnet panel
+# (whitelisted bridge IP 172.23.0.1) was rate-limited 48 times by the
+# in-memory fallback and WAF-scanned 7 times, while every non-member IP was
+# admitted. guard-core's own WebSocket gate already reads the ban store this
+# way (guard/websocket.py ``_guarded_redis_call(..., default=False)``): an
+# unreadable ban store means "not banned", and the allowlist still decides.
+# Bans this process already knows (its local cache) still apply. Same
+# upstream note as the behavioral patches above.
+_orig_is_ip_banned = IPBanManager.is_ip_banned
+
+
+async def _is_ip_banned_fail_open(self: IPBanManager, ip: str) -> bool:
+    try:
+        return await _orig_is_ip_banned(self, ip)
+    except GuardRedisError as exc:
+        if not getattr(self.config, "redis_fail_open", False):
+            raise
+        logger.warning(
+            "ban lookup skipped: redis unavailable, treating the IP as not "
+            "banned (redis_fail_open=True); the IP allowlist still applies",
+            ip=ip,
+            error=str(exc),
+        )
+        return False
+
+
+setattr(IPBanManager, "is_ip_banned", _is_ip_banned_fail_open)
 
 
 def apply_guard(app: FastAPI) -> None:

@@ -20,7 +20,7 @@ The FastAPI application shell, request pipeline, and real-time WebSocket fan-out
 | `roboco/api/utils/errors.py` | HTTPException factories + `handle_service_error` + `service_error_handler` decorator | ~214 |
 | `roboco/api/utils/resources.py` | `get_or_404`, `get_by_field_or_404`, `require_ownership`/`require_recipient`/`require_membership` | ~180 |
 | `roboco/api/__init__.py` | Deliberately does NOT re-export `app` (circular-import guard, documented) | ~14 |
-| `roboco/security.py` | fastapi-guard 8.0.0 / guard-core 4.0.0 HTTP security layer: `SecurityMiddleware` + `guard_deco` (`SecurityDecorator`) singleton, gated by `ROBOCO_GUARD_ENABLED` (default off); wired into `create_app` via `apply_guard`/`guarded_lifespan` | ~1142 |
+| `roboco/security.py` | fastapi-guard 8.0.0 / guard-core 4.0.0 HTTP security layer: `SecurityMiddleware` + `guard_deco` (`SecurityDecorator`) singleton, gated by `ROBOCO_GUARD_ENABLED` (default off); wired into `create_app` via `apply_guard`/`guarded_lifespan` | ~1208 |
 
 ## Key Symbols
 
@@ -78,12 +78,13 @@ The FastAPI application shell, request pipeline, and real-time WebSocket fan-out
 | `handle_service_error`/`service_error_handler` | func/deco | utils/errors.py:150/191 | ServiceError → HTTPException translation |
 | `get_or_404`/`get_by_field_or_404` | funcs | utils/resources.py:17/59 | Generic get-or-404 helpers |
 | `require_ownership`/`require_recipient`/`require_membership` | funcs | utils/resources.py:96/130/156 | Authorization checks |
-| `apply_guard` | func | security.py:1133 | Mounts `SecurityMiddleware` on `app` + sets `app.state.guard_decorator`; no-op unless `settings.guard_enabled` |
-| `guarded_lifespan` | func | security.py:1161 | Wraps `lifespan` with guard's `make_lifespan` (redis/geo/agent init) when armed; passthrough when off |
+| `apply_guard` | func | security.py:1172 | Mounts `SecurityMiddleware` on `app` + sets `app.state.guard_decorator`; no-op unless `settings.guard_enabled` |
+| `guarded_lifespan` | func | security.py:1200 | Wraps `lifespan` with guard's `make_lifespan` (redis/geo/agent init) when armed; passthrough when off |
 | `build_security_config` | func | security.py:905 | Assembles the global `SecurityConfig` from settings: passive_mode, fail_secure, enforce_https, WAF calibration fields |
-| `security_config` / `guard_deco` | module singletons | security.py:374-375 | Built once at import (pure, no I/O); `guard_deco` is the `SecurityDecorator` route files decorate with `@guard_deco.<verb>` |
+| `security_config` / `guard_deco` | module singletons | security.py:996-997 | Built once at import (pure, no I/O); `guard_deco` is the `SecurityDecorator` route files decorate with `@guard_deco.<verb>` |
 | `prompt_injection_validator`/`secret_exfil_validator`/`internal_ssrf_validator` | async funcs | security.py:235/257/268 | Custom `@guard_deco.custom_validation` content checks the signature WAF can't cover; each returns a generic 400 (no rule detail leaked) |
 | `_guard_whitelist` / `_INTERNAL_NETWORKS` | func / const | security.py | WAF/IP-ban/rate-limit exemption for the internal agent mesh: loopback + docker's default bridge pool (`172.16.0.0/12`) ONLY — deliberately excludes `10.0.0.0/8`/`192.168.0.0/16` (those would also exempt a real LAN client hitting nginx, not just the docker mesh, since a genuine LAN browser's real IP survives the one XFF hop under `trusted_proxy_depth=1`) |
+| `_is_ip_banned_fail_open` | func | security.py:1154 | Wraps `IPBanManager.is_ip_banned`: with `redis_fail_open`, an unreadable ban store reads "not banned" instead of raising, so guard-core no longer skips the whole `ip_security` check (allowlist and `is_whitelisted` stamp included) during a Redis outage (2026-10-28 05:35: tailnet panel rate-limited 48x, non-members admitted) |
 | `resolve_forwarded_client_ip` | func | security.py:759 | Peels loopback/operator-named (`guard_trusted_chain_peers`) hops from the right of XFF; the remaining candidate is honored ONLY if at least one hop peeled AND the candidate is in the tailnet CGNAT range (`100.64.0.0/10`) — every other shape (direct LAN, an unnamed 172.x relay even carrying a forged prefix, all-hops, malformed) abstains to the guard's own depth-1 resolution |
 | `ClientIpResolutionMiddleware` | class | security.py:801 | Pure ASGI, mounted OUTSIDE `SecurityMiddleware` (added after it, so it runs first): stamps `request.state.client_ip` (guard_core's supported override seam) with `resolve_forwarded_client_ip`'s verdict; only honors XFF when the CONNECTING peer itself is trusted to present it (`_CONNECTING_PEER_NETWORKS`, broader than and independent of the hop-peel set) |
 | `_warn_unconfigured_tailnet_gateway_once` | func | security.py:733 | Logs once per distinct gateway IP (never the full XFF) when a host-proxied tailnet chain is detected behind a real docker bridge gateway but no `guard_trusted_chain_peers` is configured — the one regression left genuinely silent otherwise (traffic resolves to a whitelisted bridge IP, WAF stays inert, zero signal) |
