@@ -385,7 +385,7 @@ External:
 | `settings.git_command_timeout_seconds` | config.py:2329 | Default `_run_git` timeout |
 | `settings.git_commit_timeout_seconds` | config.py:2380 | Staging/commit large changeset timeout |
 | `settings.git_network_timeout_seconds` | config.py:2402 | fetch/pull/push/ls-remote timeout |
-| `settings.git_diff_timeout_seconds` | config.py:2413 | `GET /api/git/diff`'s outer "diff" stage bound (default 60s) around the paired `git diff` + `git diff --stat` calls — on top of, not instead of, `git_command_timeout_seconds` bounding each call individually |
+| `settings.git_diff_timeout_seconds` | config.py:2413 | `GET /api/git/diff`'s outer "diff" stage bound (default 60s) around the paired `git diff` + `git diff --stat` calls, layered on top of (not instead of) `git_command_timeout_seconds` bounding each call individually |
 | `settings.workspaces_root` | config.py:2093 | Workspace path root (token derivation) |
 | `settings.workspace_auto_clone` | config.py:2097 | `get_workspace` auto-clone branch |
 | `settings.public_base_url` | config.py:2522 | Commit/PR template link base (`+ /api`) |

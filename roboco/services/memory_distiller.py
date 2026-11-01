@@ -1,4 +1,4 @@
-"""MemoryDistiller — distill a high-signal completion lesson via the background LLM.
+"""MemoryDistiller: distill a high-signal completion lesson via the background LLM.
 
 Replaces the noisy raw-notes / duration / commit-count capture with one curated
 lesson in a fixed Problem -> Approach -> Gotcha shape (<=120 words). Runs on the

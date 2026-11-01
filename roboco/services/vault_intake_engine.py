@@ -21,7 +21,7 @@ the held-artifact pattern:
   screened (``foundation.policy.injection_guard.screen_external_text``, the
   same guard x_engine applies to mention text) before it reaches the prompt
   or the fallback extraction, so neither the model nor the eventual
-  board/CEO-facing draft carries raw unscreened text — the board + CEO
+  board/CEO-facing draft carries raw unscreened text. The board + CEO
   gates downstream remain the containment for anything the screen doesn't
   catch.
 * **Dedup ledger.** ``vault_seen_notes`` keys on (vault-relative path,

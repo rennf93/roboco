@@ -835,7 +835,7 @@ async def _drive_task_to_terminal(
 
 
 # ---------------------------------------------------------------------------
-# Background-LLM judge — the same client MemoryDistiller uses
+# Background-LLM judge: the same client MemoryDistiller uses
 # ---------------------------------------------------------------------------
 
 _JUDGE_TIMEOUT_SECONDS = 60.0
@@ -962,7 +962,7 @@ class BenchJudge:
     """Scores a fixture's final diff+notes against its expectation, via the
     SAME background LLM client ``MemoryDistiller`` uses. It runs inside the
     bench environment, so the routing mode it follows is the throwaway
-    database's. Best-effort: any failure yields ``score=None`` — a bench run
+    database's. Best-effort: any failure yields ``score=None``, so a bench run
     still produces its deterministic metrics with no model answering."""
 
     async def score(
@@ -1321,7 +1321,7 @@ def _print_table(cohort: CohortResult) -> None:
         f"total_cost=${cohort.total_cost_usd:.4f}  "
         f"mean_judge*={mean_judge if mean_judge is not None else '-'}"
     )
-    print("*judge score/mean_judge* are LLM-judged, non-deterministic — not a metric")
+    print("*judge score/mean_judge* are LLM-judged, non-deterministic, not a metric")
     caught, seeded = cohort.catch_rate_stats
     if seeded:
         print(

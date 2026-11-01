@@ -237,7 +237,7 @@ org-memory-playbooks
 - ROBOCO_ORG_MEMORY_ENABLED (default off) — gates the whole loop: distill-vs-legacy capture, index_approved/unindex_playbook no-op when off, _institutional_memory returns [] when off
 - ROBOCO_ORG_MEMORY_TOP_K (default 3, 1..10) — max institutional-memory items injected into a briefing
 - ROBOCO_ORG_MEMORY_MIN_SCORE (default 0.6, 0..1) — cosine-similarity floor; below it nothing is injected
-- ROBOCO_LOCAL_LLM_MODEL (default glm-5.3-flash:cloud) + ROBOCO_LOCAL_LLM_BASE_URL — the Ollama side of the background LLM client the distiller and RAG synthesis call (Claude Haiku answers in Anthropic mode and when Ollama cannot)
+- ROBOCO_LOCAL_LLM_MODEL (default glm-5.3-flash:cloud) + ROBOCO_LOCAL_LLM_BASE_URL: the Ollama side of the background LLM client the distiller and RAG synthesis call (Claude Haiku answers in Anthropic mode and when Ollama cannot)
 - ROBOCO_DEFAULT_EMBEDDING_MODEL (default qwen3-embedding:0.6b) + ROBOCO_EMBEDDING_DIMENSIONS — embedder for LEARNINGS/PLAYBOOKS chunks
 - ROBOCO_RAG_CHUNK_STRATEGY / ROBOCO_RAG_CHUNK_SIZE / ROBOCO_RAG_CHUNK_OVERLAP / ROBOCO_RAG_PERSIST_DIR / ROBOCO_RAG_STORE_URL — chunking + store DSN
 - ROBOCO_DATABASE_* (VectorStore.store_url derived) — required; missing store_url raises at plugin initialize()

@@ -634,7 +634,7 @@ services:
           status=$$(echo "$$line" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
           [ -n "$$status" ] && echo "  $$status"
         done || echo "  (pull failed — relying on the cached model)"
-        echo "=== Pulling background LLM model (glm-5.3-flash:cloud) — best-effort ==="
+        echo "=== Pulling background LLM model (glm-5.3-flash:cloud), best-effort ==="
         curl -sN http://ollama:11434/api/pull -d '{"name":"glm-5.3-flash:cloud"}' | while read -r line; do
           status=$$(echo "$$line" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
           [ -n "$$status" ] && echo "  $$status"

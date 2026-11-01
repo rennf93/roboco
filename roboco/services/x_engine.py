@@ -127,7 +127,7 @@ class _RedraftLockUnavailable(Exception):
 
 # Ported from agents/prompts/identities/head-marketing.md's VOICE GUIDE (the
 # reasoning-backed voice HoM's own spawns already carry) plus a slop-ban list
-# adapted from agents/prompts/teams/ux_ui.md's "AI tells to avoid" — the
+# adapted from agents/prompts/teams/ux_ui.md's "AI tells to avoid". The
 # background-LLM release/reply drafts previously ran on one throwaway sentence with
 # neither. ``{product_name}`` is filled in by ``_hom_voice`` so the shared
 # style examples never hardcode a literal brand name. The IMPACT BAR section
@@ -1423,7 +1423,7 @@ class XRedrafts(_Base):
         version for x_post, mention ref for x_reply, feature ref for
         x_feature) and asks the background LLM to revise the rejected body with
         the CEO's reason folded in as guidance. Falls back gracefully: a
-        background-LLM failure or empty draft originates NOTHING — a degraded
+        background-LLM failure or empty draft originates NOTHING, since a degraded
         copy is worse than none (see ``_draft_revision_body``).
 
         Deduped like ``VideoEngine.open_video_task``'s occasion scoping: a
@@ -1439,7 +1439,7 @@ class XRedrafts(_Base):
         the redraft rather than risking a duplicate (the CEO can re-reject).
 
         Best-effort: never raises. Any failure (unresolvable project,
-        background-LLM error) logs a warning and returns None — the caller's
+        background-LLM error) logs a warning and returns None, because the caller's
         reject must succeed regardless of this seam.
         """
         try:
