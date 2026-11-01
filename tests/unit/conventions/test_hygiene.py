@@ -188,3 +188,37 @@ def test_ts_block_and_nocheck_directives_flag_suppression() -> None:
     ):
         findings = check_hygiene("a.ts", src, "typescript", _STD)
         assert _rules(findings, "no_lint_suppressions"), src
+
+
+def test_trailing_coverage_pragma_is_not_inline() -> None:
+    src = b"if x:  # pragma: no cover\n    pass\n"
+    assert check_hygiene("a.py", src, "python", _STD) == []
+
+
+def test_trailing_fmt_skip_is_not_inline() -> None:
+    src = b"X = (1, 2)  # fmt: skip\n"
+    assert check_hygiene("a.py", src, "python", _STD) == []
+
+
+def test_trailing_suppression_is_judged_only_as_a_suppression() -> None:
+    findings = check_hygiene("a.py", b"import os  # noqa: F401\n", "python", _STD)
+    assert _rules(findings, "no_inline_comments") == []
+    assert _rules(findings, "no_lint_suppressions")
+
+
+def test_sanctioned_suppression_leaves_no_finding() -> None:
+    src = b"from x import Y  # noqa: TC003\n"
+    assert check_hygiene("a.py", src, "python", _STD) == []
+
+
+def test_prose_before_a_directive_is_still_inline() -> None:
+    src = b"x = 1  # see below; pragma: no cover\n"
+    findings = check_hygiene("a.py", src, "python", _STD)
+    assert _rules(findings, "no_inline_comments")
+
+
+def test_ts_eslint_disable_line_is_not_inline() -> None:
+    src = b"foo();  // eslint-disable-line no-console\n"
+    findings = check_hygiene("a.ts", src, "typescript", _STD)
+    assert _rules(findings, "no_inline_comments") == []
+    assert _rules(findings, "no_lint_suppressions")

@@ -49,6 +49,19 @@ _SUPPRESSION_DIRECTIVES: dict[str, tuple[re.Pattern[str], ...]] = {
     "typescript": (_TS_DIRECTIVE,),
     "tsx": (_TS_DIRECTIVE,),
 }
+# A tool reads these on the very line they trail, so they cannot move above it:
+# coverage's ``pragma: no cover`` / ``no branch``, the formatter's ``fmt: skip``,
+# isort's ``isort: skip``, and the suppressions no_lint_suppressions judges on
+# its own (noqa, type: ignore, nosec; ESLint's ``eslint-disable-line``). A
+# comment that starts with one is a directive, not narration.
+_POSITION_BOUND_DIRECTIVES: dict[str, re.Pattern[str]] = {
+    "python": re.compile(
+        r"^#\s*(?:pragma:\s*no\s+(?:cover|branch)\b|fmt:\s*skip\b|isort:\s*skip\b"
+        r"|(?i:noqa)\b|type:\s*ignore\b|nosec\b)"
+    ),
+    "typescript": re.compile(r"^//\s*eslint-disable-line\b"),
+    "tsx": re.compile(r"^//\s*eslint-disable-line\b"),
+}
 _HYGIENE_TEXT: dict[str, tuple[str, str]] = {
     "no_inline_comments": (
         "inline comment trailing code — keep narration out of the code",
@@ -82,9 +95,9 @@ def _comment_findings(
 ) -> list[Finding]:
     row, col = comment.start_point
     out: list[Finding] = []
-    if _is_inline(lines, row, col):
-        out.append(_finding(rel_path, row + 1, "no_inline_comments", standard))
     text = comment.text.decode(errors="replace") if comment.text else ""
+    if _is_inline(lines, row, col) and not _is_position_bound(text, language):
+        out.append(_finding(rel_path, row + 1, "no_inline_comments", standard))
     directives = [
         match
         for pattern in _SUPPRESSION_DIRECTIVES.get(language, ())
@@ -108,6 +121,11 @@ def _suppression_allowed(directives: list[re.Match[str]]) -> bool:
             return False
         codes += [c.strip() for c in re.split(r"[,\s]+", group) if c.strip()]
     return bool(codes) and all(c in _ALLOWED_SUPPRESSION_CODES for c in codes)
+
+
+def _is_position_bound(text: str, language: str) -> bool:
+    pattern = _POSITION_BOUND_DIRECTIVES.get(language)
+    return pattern is not None and pattern.match(text) is not None
 
 
 def _is_inline(lines: list[bytes], row: int, col: int) -> bool:

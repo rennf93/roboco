@@ -20,7 +20,7 @@ The per-project architectural-conventions standard for RoboCo: a service layer (
 | `roboco/conventions/placement.py` | `check_placement` — map a file to its module, flag forbidden kinds (`no_<kind>s_in_<leaf>`); `is_non_source_path` maps a test/docs file (`tests/`, `__tests__/`, `*.test.*`, `*.spec.*`, ...) to no module | 97 |
 | `roboco/conventions/classify_python.py` | Python top-level definition classifier → `model`/`route`/`helper`/`other` | 101 |
 | `roboco/conventions/classify_ts.py` | TypeScript/TSX top-level definition classifier → `model`/`route`/`component`/`other` | 159 |
-| `roboco/conventions/hygiene.py` | `check_hygiene` — inline-comment + lint/type-suppression findings; sanctioned-code allowlist | 139 |
+| `roboco/conventions/hygiene.py` | `check_hygiene` — inline-comment + lint/type-suppression findings; sanctioned-code allowlist; a trailing comment that starts with a position-bound tool directive (`pragma: no cover`, `fmt: skip`, `isort: skip`, the suppressions, ESLint's `eslint-disable-line`) is not an inline comment | 165 |
 | `roboco/conventions/modularity.py` | `check_modularity` — cohesion (1 concern/file), thin routes, thin components, god class; ambiguous DB method names (`add`/`add_all`/`merge`/`query`/`stream`) count only on a session-handle receiver, and only axios's request methods count as fetching | 386 |
 | `roboco/conventions/custom.py` | `check_custom` — project regex rules scoped by language with tsx→typescript dialect relation; `unrecognized_rule_languages` surfaces typo language tags | 85 |
 | `roboco/conventions/scan.py` | `derive_from_scan` — infer modules/languages/rules from a repo (drops candidate modules under `NON_SOURCE_SEGMENTS`); `render_yaml`; CLAUDE.md token lifting | 321 |
@@ -68,8 +68,9 @@ The per-project architectural-conventions standard for RoboCo: a service layer (
 | `_module_for` | fn | `conventions/placement.py:62` | Most-specific module whose path is a directory prefix; `None` for a non-source (test/docs) file |
 | `classify_definitions` (py) | fn | `conventions/classify_python.py:32` | Top-level Python defs → `(name, line, kind)` |
 | `classify_definitions` (ts) | fn | `conventions/classify_ts.py:36` | Top-level TS/TSX defs → `(name, line, kind)` |
-| `check_hygiene` | fn | `conventions/hygiene.py:64` | Inline-comment + suppression findings |
-| `_suppression_allowed` | fn | `conventions/hygiene.py:98` | True iff only sanctioned codes (TC001/2/3, prop-decorator) |
+| `check_hygiene` | fn | `conventions/hygiene.py:77` | Inline-comment + suppression findings |
+| `_suppression_allowed` | fn | `conventions/hygiene.py:111` | True iff only sanctioned codes (TC001/2/3, prop-decorator) |
+| `_is_position_bound` | fn | `conventions/hygiene.py:126` | True when a comment starts with a directive its tool reads on the line it trails, so `no_inline_comments` skips it |
 | `check_modularity` | fn | `conventions/modularity.py:97` | Cohesion + thin routes + thin components + god class |
 | `_check_cohesion` | fn | `conventions/modularity.py:123` | >1 core kind in a file → `modular_cohesion` finding |
 | `_body_hits_db` | fn | `conventions/modularity.py:259` | Route body calls execute/scalars/select/... (thin_routes); `registry.stream(...)` / `service.query(...)` are not DB hits, `db.stream(...)` / `db.query(...)` are |
@@ -266,6 +267,8 @@ No other logic-touching commits in the range.
 > **2026-10-31** (Planning trail #51, wave 3): `DocsService` splits in place into 2 mixins in `docs.py`, every method body byte-identical: `DocsFiles` (5), `DocsRecords` (4). `DocsService` keeps the doc flow itself: writing (deduplicated against RAG, then committed into the project's clone, with new and updated docs), reading, listing and deleting, composes them, and is no longer a god class. Rows naming `DocsService.<method>` still hold through inheritance. Each mixin's TYPE_CHECKING-only base is `DocsServiceSelf` (`roboco/services/_docs_service_types.py`).
 
 > **2026-11-01** (Planning trail #51, last step): with no class over 15 methods left, RoboCo's `.roboco/conventions.yml` promotes `god_class` from warn to block (the shipped default in `scan.py` stays warn for other projects). The CLI gains `--fail-on block` (exit 1 on any block-level finding), and CI's `ci` job gains a step that runs it on each pull request's changed `.py`/`.ts`/`.tsx` files, so a person's PR is held to the block-level rules too, not only an armed agent's `i_am_done` / `pr_pass`.
+
+> **2026-11-01**: `no_inline_comments` no longer flags a trailing comment that starts with a position-bound tool directive (coverage's `pragma: no cover` / `no branch`, `fmt: skip`, `isort: skip`, the suppressions `no_lint_suppressions` judges, ESLint's `eslint-disable-line`): the tool reads it on that line, so it cannot be lifted above the code. 24 of the repo's 2,439 warnings were such directives (21 coverage pragmas, two `fmt: skip`, the waived `nosec`). A comment with prose before the directive is still flagged.
 > - `conventions/custom.py` (+14 lines): added `_KNOWN_LANGUAGES` frozenset and `unrecognized_rule_languages()` — surfaces typo language tags on custom rules.
 > - `conventions/runner.py` (+28 lines): imported `Finding` directly (not TYPE_CHECKING); added `_LANGUAGE_SCOPE_RULE`/`_LANGUAGE_SCOPE_FILE` constants and `_language_scope_findings()` helper; `run()` now prepends language-scope warn findings before per-file dispatch.
 > - `conventions/modularity.py` (+2 lines): added `"stream"` and `"stream_scalars"` to `_DB_METHODS` (SA 2.0 streaming gap, #35).
