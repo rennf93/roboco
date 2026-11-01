@@ -20,7 +20,7 @@ The FastAPI application shell, request pipeline, and real-time WebSocket fan-out
 | `roboco/api/utils/errors.py` | HTTPException factories + `handle_service_error` + `service_error_handler` decorator | ~214 |
 | `roboco/api/utils/resources.py` | `get_or_404`, `get_by_field_or_404`, `require_ownership`/`require_recipient`/`require_membership` | ~180 |
 | `roboco/api/__init__.py` | Deliberately does NOT re-export `app` (circular-import guard, documented) | ~14 |
-| `roboco/security.py` | fastapi-guard 8.0.0 / guard-core 4.0.0 HTTP security layer: `SecurityMiddleware` + `guard_deco` (`SecurityDecorator`) singleton, gated by `ROBOCO_GUARD_ENABLED` (default off); wired into `create_app` via `apply_guard`/`guarded_lifespan` | ~1208 |
+| `roboco/security.py` | fastapi-guard 8.1.2 / guard-core 4.4.0 HTTP security layer: `SecurityMiddleware` + `guard_deco` (`SecurityDecorator`) singleton, gated by `ROBOCO_GUARD_ENABLED` (default off); wired into `create_app` via `apply_guard`/`guarded_lifespan` | ~1208 |
 
 ## Key Symbols
 

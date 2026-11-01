@@ -1217,7 +1217,7 @@ deployment-tooling
 - ROBOCO_OVERLOAD_BREAK_ENABLED
 - ROBOCO_GATEWAY_HEALTH_ENABLED / ROBOCO_GATEWAY_HEALTH_GRACE_SECONDS
 - ROBOCO_CONVENTIONS_ENABLED
-- ROBOCO_GUARD_ENABLED / _PASSIVE_MODE / _FAIL_SECURE / _TELEMETRY_ENABLED / _AGENT_API_KEY / _PROJECT_ID / _EMERGENCY / _EMERGENCY_WHITELIST / _TRUSTED_CHAIN_PEERS / _SCAN_RESPONSE_BODY (fastapi-guard HTTP security layer, `roboco/security.py`, fastapi-guard 8.0.0 / guard-core 4.0.0)
+- ROBOCO_GUARD_ENABLED / _PASSIVE_MODE / _FAIL_SECURE / _TELEMETRY_ENABLED / _AGENT_API_KEY / _PROJECT_ID / _EMERGENCY / _EMERGENCY_WHITELIST / _TRUSTED_CHAIN_PEERS / _SCAN_RESPONSE_BODY (fastapi-guard HTTP security layer, `roboco/security.py`, fastapi-guard 8.1.2 / guard-core 4.4.0)
 - ROBOCO_RESEARCH_ENABLED / ROBOCO_RESEARCH_PROVIDER / ROBOCO_RESEARCH_API_KEY / ROBOCO_RESEARCH_*_QUOTA
 - ROBOCO_PROVISIONING_ENABLED / ROBOCO_PROVISIONING_TOKEN / ROBOCO_PROVISIONING_ORG / ROBOCO_GITHUB_API_BASE_URL
 - ROBOCO_STRATEGY_ENGINE_ENABLED / _INTERVAL_SECONDS / _STRANDED_BLOCKED_MINUTES
@@ -6148,7 +6148,7 @@ The FastAPI application shell, request pipeline, and real-time WebSocket fan-out
 | `roboco/api/utils/errors.py` | HTTPException factories + `handle_service_error` + `service_error_handler` decorator | ~214 |
 | `roboco/api/utils/resources.py` | `get_or_404`, `get_by_field_or_404`, `require_ownership`/`require_recipient`/`require_membership` | ~180 |
 | `roboco/api/__init__.py` | Deliberately does NOT re-export `app` (circular-import guard, documented) | ~14 |
-| `roboco/security.py` | fastapi-guard 8.0.0 / guard-core 4.0.0 HTTP security layer: `SecurityMiddleware` + `guard_deco` (`SecurityDecorator`) singleton, gated by `ROBOCO_GUARD_ENABLED` (default off); wired into `create_app` via `apply_guard`/`guarded_lifespan` | ~1208 |
+| `roboco/security.py` | fastapi-guard 8.1.2 / guard-core 4.4.0 HTTP security layer: `SecurityMiddleware` + `guard_deco` (`SecurityDecorator`) singleton, gated by `ROBOCO_GUARD_ENABLED` (default off); wired into `create_app` via `apply_guard`/`guarded_lifespan` | ~1208 |
 
 ## Key Symbols
 

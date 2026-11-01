@@ -1163,7 +1163,7 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
-    # HTTP security hardening (fastapi-guard 8.0.0 / guard-core 4.0.1), DEFAULT OFF
+    # HTTP security hardening (fastapi-guard 8.1.2 / guard-core 4.4.0), DEFAULT OFF
     # ==========================================================================
     # A fastapi-guard SecurityMiddleware + per-route decorator layer (IP/rate/geo
     # controls, WAF signature detection, security headers, honeypots, and custom
