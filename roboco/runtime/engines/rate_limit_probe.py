@@ -39,6 +39,10 @@ class RateLimitProbeEngine(_Base):
     free liveness probe per provider, lifting the limit on success, and the
     CEO alert once failures reach the threshold."""
 
+    # =========================================================================
+    # RATE-LIMIT PROBE LOOP
+    # =========================================================================
+
     async def _rate_limit_probe_loop(self) -> None:
         """Background loop: probe rate-limited providers every ~30 seconds.
 

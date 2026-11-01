@@ -9,7 +9,7 @@ and implements specialized chunking, metadata handling, and search strategies.
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 
@@ -28,6 +28,13 @@ from roboco.services.optimal_brain.text_chunker import (
     TextChunker,
 )
 from roboco.services.optimal_brain.vector_store import VectorStore
+
+if TYPE_CHECKING:
+    from roboco.services.optimal_brain.indexes._base_index_plugin_types import (
+        BaseIndexPluginSelf as _Base,
+    )
+else:
+    _Base = object
 
 logger = structlog.get_logger()
 
@@ -129,221 +136,10 @@ class IngestResult:
     error: str | None = None
 
 
-class BaseIndexPlugin(ABC):
-    """
-    Abstract base class for index plugins.
-
-    Each plugin handles a specific content type and implements:
-    - Specialized metadata extraction
-    - Custom chunking strategies (optional)
-    - Content-specific search filtering
-
-    Subclasses MUST implement:
-    - index_type property
-    - prepare_metadata() method
-    - build_source_uri() method
-
-    Subclasses CAN override:
-    - chunk() for custom chunking
-    - search() for custom search behavior
-    - validate_content() for content validation
-    """
-
-    # When True (default), re-ingesting a source first deletes that source's
-    # existing chunks so a reindex *replaces* rather than appends — preventing
-    # unbounded duplicate-chunk growth on startup/periodic/manual reindex.
-    # Plugins whose multiple records share one source URI (conversations) set
-    # this False to preserve append semantics.
-    replace_on_reingest: bool = True
-
-    def __init__(self, config: IndexConfig | None = None) -> None:
-        """Initialize the plugin with optional config override."""
-        self._config = config
-        self._store: VectorStore | None = None
-        self._chunker: TextChunker | None = None
-        self._embedder: Any = None
-        self._initialized = False
-
-    @property
-    @abstractmethod
-    def index_type(self) -> IndexType:
-        """The index type this plugin handles."""
-        ...
-
-    @abstractmethod
-    def prepare_metadata(self, content: str, **kwargs: Any) -> dict[str, Any]:
-        """
-        Prepare metadata for a document.
-
-        Args:
-            content: The document content
-            **kwargs: Additional context-specific arguments
-
-        Returns:
-            Metadata dict to be stored with chunks
-        """
-        ...
-
-    @abstractmethod
-    def build_source_uri(self, doc_id: str | None = None, **kwargs: Any) -> str | None:
-        """
-        Build a source URI for the document.
-
-        Args:
-            doc_id: Optional document ID
-            **kwargs: Additional context for URI building
-
-        Returns:
-            A source URI string (e.g., "roboco://errors/err-001"), or None if the
-            required ID is missing — callers must skip indexing when None is returned.
-        """
-        ...
-
-    @property
-    def config(self) -> IndexConfig:
-        """Get the index configuration."""
-        if self._config is None:
-            self._config = IndexConfig.from_settings(self.index_type)
-        return self._config
-
-    def _extract_from_think_tags(self, text: str) -> str:
-        """Extract answer from LLM response, handling think tags."""
-        # First try: get content outside think tags
-        outside = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-        outside = re.sub(r"</think>", "", outside).strip()
-        if outside:
-            return outside
-
-        # If empty, extract content FROM inside think tags
-        inside_match = re.search(r"<think>(.*?)</think>", text, flags=re.DOTALL)
-        if inside_match:
-            return inside_match.group(1).strip()
-
-        return text.strip()
-
-    async def _validate_embedding_dimensions(self, embedder: Any) -> None:
-        """
-        Validate that embedder produces expected dimensions.
-
-        Catches dimension mismatches early (e.g., wrong model configured)
-        instead of failing silently during vector search.
-        """
-        import asyncio
-
-        expected_dim = settings.embedding_dimensions
-
-        try:
-            # Use async method if available
-            if hasattr(embedder, "aembed_query"):
-                test_embedding = await embedder.aembed_query("dimension test")
-            else:
-                test_embedding = await asyncio.to_thread(
-                    embedder.embed_query, "dimension test"
-                )
-
-            actual_dim = len(test_embedding)
-
-            if actual_dim != expected_dim:
-                raise RuntimeError(
-                    f"Embedding dimension mismatch for {self.index_type.value}: "
-                    f"model produces {actual_dim} dimensions, "
-                    f"but settings.embedding_dimensions={expected_dim}. "
-                    f"Update ROBOCO_EMBEDDING_DIMENSIONS or use correct model."
-                )
-
-            logger.debug(
-                "Embedding dimension validated",
-                index_type=self.index_type.value,
-                dimensions=actual_dim,
-            )
-        except RuntimeError:
-            raise
-        except Exception as e:
-            logger.warning(
-                "Could not validate embedding dimensions",
-                index_type=self.index_type.value,
-                error=str(e),
-            )
-
-    async def initialize(self) -> None:
-        """Initialize the index backend (store, chunker, embedder)."""
-        if self._initialized:
-            return
-
-        logger.info(
-            f"Initializing {self.index_type.value} index plugin",
-            persist_dir=self.config.persist_dir,
-        )
-
-        # Get shared embedder FIRST (one-time load for all plugins)
-        from roboco.services.optimal_brain.shared_embedder import get_shared_embedder
-
-        shared_embedder = await get_shared_embedder(
-            model=self.config.embedding_model,
-        )
-
-        # Validate embedding dimensions match configuration
-        await self._validate_embedding_dimensions(shared_embedder)
-
-        self._embedder = shared_embedder
-
-        # Create the character-based chunker (no external tokenizers)
-        self._chunker = TextChunker(
-            chunk_size=self.config.chunk_size,
-            chunk_overlap=self.config.chunk_overlap,
-        )
-
-        # Create and initialise the vector store
-        if not self.config.store_url:
-            raise RuntimeError(
-                f"store_url is required for {self.index_type.value} VectorStore. "
-                "Set ROBOCO_DATABASE_* environment variables."
-            )
-
-        self._store = VectorStore(
-            dsn=self.config.store_url,
-            table_name=f"chunks_{self.index_type.value}",
-            vector_dimension=settings.embedding_dimensions,
-        )
-        await self._store.initialize()
-
-        self._initialized = True
-        logger.info(f"{self.index_type.value} index plugin initialized")
-
-    async def close(self) -> None:
-        """Cleanup resources."""
-        if self._store is not None:
-            await self._store.close()
-        self._store = None
-        self._chunker = None
-        self._embedder = None
-        self._initialized = False
-        logger.info(f"{self.index_type.value} index plugin closed")
-
-    # ------------------------------------------------------------------
-    # Internal accessors (raise if not initialised)
-    # ------------------------------------------------------------------
-
-    @property
-    def _require_store(self) -> VectorStore:
-        if not self._initialized or self._store is None:
-            msg = f"{self.index_type.value} index not initialized."
-            raise RuntimeError(msg)
-        return self._store
-
-    @property
-    def _require_chunker(self) -> TextChunker:
-        if not self._initialized or self._chunker is None:
-            msg = f"{self.index_type.value} index not initialized."
-            raise RuntimeError(msg)
-        return self._chunker
-
-    @property
-    def _require_embedder(self) -> Any:
-        if not self._initialized or self._embedder is None:
-            msg = f"{self.index_type.value} index not initialized."
-            raise RuntimeError(msg)
-        return self._embedder
+class IndexPluginIngestion(_Base):
+    """Getting documents in: validating content, ingesting one (chunk, filter,
+    embed, store), and batch ingestion with its preparation, chunk filtering and
+    per-document failure results."""
 
     def validate_content(
         self,
@@ -542,7 +338,8 @@ class BaseIndexPlugin(ABC):
     @staticmethod
     def _filter_good_chunks(raw_chunks: list[Any], doc: Document) -> list[Any]:
         """Drop tiny / formatting-only chunks and merge doc metadata in."""
-        MIN_CHUNK_LENGTH = 200  # Minimum meaningful content
+        # Minimum meaningful content
+        MIN_CHUNK_LENGTH = 200
         good_chunks: list[Any] = []
         for chunk in raw_chunks:
             text = chunk.text.strip()
@@ -673,6 +470,12 @@ class BaseIndexPlugin(ABC):
             self._mark_batch_failed(results, docs_to_process, str(e))
 
         return results
+
+
+class IndexPluginSearch(_Base):
+    """Searching the index: preprocessing and embedding the query, hybrid citation
+    fetches, metadata filtering into results, and search with or without a
+    precomputed embedding."""
 
     def _preprocess_query(self, query: str) -> str:
         """
@@ -898,15 +701,25 @@ class BaseIndexPlugin(ABC):
             query_embedding, query, top_k=top_k, filters=filters
         )
 
-    def _fallback_answer(self, _search_results: list[SearchResult]) -> str:
-        """
-        Return empty to let OptimalService continue searching other indexes.
 
-        Previously this returned a formatted string of search results, but that
-        caused query() to early-return and skip remaining indexes. Now we return
-        empty and let the service-level aggregation handle fallback synthesis.
-        """
-        return ""
+class IndexPluginAnswers(_Base):
+    """RAG answers: asking a question over the index's search results, and the retried
+    LLM synthesis with think tags stripped."""
+
+    def _extract_from_think_tags(self, text: str) -> str:
+        """Extract answer from LLM response, handling think tags."""
+        # First try: get content outside think tags
+        outside = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+        outside = re.sub(r"</think>", "", outside).strip()
+        if outside:
+            return outside
+
+        # If empty, extract content FROM inside think tags
+        inside_match = re.search(r"<think>(.*?)</think>", text, flags=re.DOTALL)
+        if inside_match:
+            return inside_match.group(1).strip()
+
+        return text.strip()
 
     async def ask(
         self,
@@ -1065,6 +878,11 @@ class BaseIndexPlugin(ABC):
 
         raise RateLimitError(provider="ollama", retry_after=last_rl_retry_after)
 
+
+class IndexPluginDocuments(_Base):
+    """The documents the index holds: counting its chunks, clearing it, and listing
+    them."""
+
     async def count(self) -> int:
         """Get the number of chunks in the index."""
         try:
@@ -1090,6 +908,11 @@ class BaseIndexPlugin(ABC):
         except Exception as e:
             logger.warning(f"Failed to list documents in {self.index_type.value}: {e}")
             return []
+
+
+class IndexPluginSources(_Base):
+    """File sources: expanding a source into paths, ingesting each file, and
+    recording each indexed file in the database."""
 
     async def add_sources(self, sources: list[str]) -> int:
         """
@@ -1186,3 +1009,215 @@ class BaseIndexPlugin(ABC):
                 set_={"title": title, "preview": preview},
             )
         )
+
+
+class BaseIndexPlugin(
+    ABC,
+    IndexPluginAnswers,
+    IndexPluginDocuments,
+    IndexPluginIngestion,
+    IndexPluginSearch,
+    IndexPluginSources,
+):
+    """
+    Abstract base class for index plugins.
+
+    Each plugin handles a specific content type and implements:
+    - Specialized metadata extraction
+    - Custom chunking strategies (optional)
+    - Content-specific search filtering
+
+    Subclasses MUST implement:
+    - index_type property
+    - prepare_metadata() method
+    - build_source_uri() method
+
+    Subclasses CAN override:
+    - search() for custom search behavior
+    - validate_content() for content validation
+
+    Chunking is TextChunker's, sized by the index's IndexConfig (chunk_size,
+    chunk_overlap); a plugin that chunks its own way runs its own ingest path,
+    as CodeIndexPlugin does for source files.
+    """
+
+    # When True (default), re-ingesting a source first deletes that source's
+    # existing chunks so a reindex *replaces* rather than appends — preventing
+    # unbounded duplicate-chunk growth on startup/periodic/manual reindex.
+    # Plugins whose multiple records share one source URI (conversations) set
+    # this False to preserve append semantics.
+    replace_on_reingest: bool = True
+
+    def __init__(self, config: IndexConfig | None = None) -> None:
+        """Initialize the plugin with optional config override."""
+        self._config = config
+        self._store: VectorStore | None = None
+        self._chunker: TextChunker | None = None
+        self._embedder: Any = None
+        self._initialized = False
+
+    @property
+    @abstractmethod
+    def index_type(self) -> IndexType:
+        """The index type this plugin handles."""
+        ...
+
+    @abstractmethod
+    def prepare_metadata(self, content: str, **kwargs: Any) -> dict[str, Any]:
+        """
+        Prepare metadata for a document.
+
+        Args:
+            content: The document content
+            **kwargs: Additional context-specific arguments
+
+        Returns:
+            Metadata dict to be stored with chunks
+        """
+        ...
+
+    @abstractmethod
+    def build_source_uri(self, doc_id: str | None = None, **kwargs: Any) -> str | None:
+        """
+        Build a source URI for the document.
+
+        Args:
+            doc_id: Optional document ID
+            **kwargs: Additional context for URI building
+
+        Returns:
+            A source URI string (e.g., "roboco://errors/err-001"), or None if the
+            required ID is missing — callers must skip indexing when None is returned.
+        """
+        ...
+
+    @property
+    def config(self) -> IndexConfig:
+        """Get the index configuration."""
+        if self._config is None:
+            self._config = IndexConfig.from_settings(self.index_type)
+        return self._config
+
+    async def _validate_embedding_dimensions(self, embedder: Any) -> None:
+        """
+        Validate that embedder produces expected dimensions.
+
+        Catches dimension mismatches early (e.g., wrong model configured)
+        instead of failing silently during vector search.
+        """
+        import asyncio
+
+        expected_dim = settings.embedding_dimensions
+
+        try:
+            # Use async method if available
+            if hasattr(embedder, "aembed_query"):
+                test_embedding = await embedder.aembed_query("dimension test")
+            else:
+                test_embedding = await asyncio.to_thread(
+                    embedder.embed_query, "dimension test"
+                )
+
+            actual_dim = len(test_embedding)
+
+            if actual_dim != expected_dim:
+                raise RuntimeError(
+                    f"Embedding dimension mismatch for {self.index_type.value}: "
+                    f"model produces {actual_dim} dimensions, "
+                    f"but settings.embedding_dimensions={expected_dim}. "
+                    f"Update ROBOCO_EMBEDDING_DIMENSIONS or use correct model."
+                )
+
+            logger.debug(
+                "Embedding dimension validated",
+                index_type=self.index_type.value,
+                dimensions=actual_dim,
+            )
+        except RuntimeError:
+            raise
+        except Exception as e:
+            logger.warning(
+                "Could not validate embedding dimensions",
+                index_type=self.index_type.value,
+                error=str(e),
+            )
+
+    async def initialize(self) -> None:
+        """Initialize the index backend (store, chunker, embedder)."""
+        if self._initialized:
+            return
+
+        logger.info(
+            f"Initializing {self.index_type.value} index plugin",
+            persist_dir=self.config.persist_dir,
+        )
+
+        # Get shared embedder FIRST (one-time load for all plugins)
+        from roboco.services.optimal_brain.shared_embedder import get_shared_embedder
+
+        shared_embedder = await get_shared_embedder(
+            model=self.config.embedding_model,
+        )
+
+        # Validate embedding dimensions match configuration
+        await self._validate_embedding_dimensions(shared_embedder)
+
+        self._embedder = shared_embedder
+
+        # Create the character-based chunker (no external tokenizers)
+        self._chunker = TextChunker(
+            chunk_size=self.config.chunk_size,
+            chunk_overlap=self.config.chunk_overlap,
+        )
+
+        # Create and initialise the vector store
+        if not self.config.store_url:
+            raise RuntimeError(
+                f"store_url is required for {self.index_type.value} VectorStore. "
+                "Set ROBOCO_DATABASE_* environment variables."
+            )
+
+        self._store = VectorStore(
+            dsn=self.config.store_url,
+            table_name=f"chunks_{self.index_type.value}",
+            vector_dimension=settings.embedding_dimensions,
+        )
+        await self._store.initialize()
+
+        self._initialized = True
+        logger.info(f"{self.index_type.value} index plugin initialized")
+
+    async def close(self) -> None:
+        """Cleanup resources."""
+        if self._store is not None:
+            await self._store.close()
+        self._store = None
+        self._chunker = None
+        self._embedder = None
+        self._initialized = False
+        logger.info(f"{self.index_type.value} index plugin closed")
+
+    # ------------------------------------------------------------------
+    # Internal accessors (raise if not initialised)
+    # ------------------------------------------------------------------
+
+    @property
+    def _require_store(self) -> VectorStore:
+        if not self._initialized or self._store is None:
+            msg = f"{self.index_type.value} index not initialized."
+            raise RuntimeError(msg)
+        return self._store
+
+    @property
+    def _require_chunker(self) -> TextChunker:
+        if not self._initialized or self._chunker is None:
+            msg = f"{self.index_type.value} index not initialized."
+            raise RuntimeError(msg)
+        return self._chunker
+
+    @property
+    def _require_embedder(self) -> Any:
+        if not self._initialized or self._embedder is None:
+            msg = f"{self.index_type.value} index not initialized."
+            raise RuntimeError(msg)
+        return self._embedder

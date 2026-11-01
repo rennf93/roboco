@@ -8,7 +8,7 @@ Tracks velocity, blockers, completion rates, and agent performance.
 import statistics
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
-from typing import Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID
 
 from sqlalchemy import String, and_, bindparam, func, literal, select, text
@@ -58,6 +58,11 @@ from roboco.services.repositories.review_findings import (
 )
 from roboco.services.task import HUMAN_AUTHORED_SOURCES
 from roboco.utils.converters import to_python_uuid
+
+if TYPE_CHECKING:
+    from roboco.services._metrics_service_types import MetricsServiceSelf as _Base
+else:
+    _Base = object
 
 # Named audit events attributing a needs_revision bounce to its rejector —
 # qa/pr_gate (developer-facing) plus the PM/CEO merge-review rejects.
@@ -182,7 +187,8 @@ async def _portfolio_spend_by_project(session: AsyncSession) -> dict[UUID, float
     burn: dict[UUID, float] = {}
     for row in result.all():
         if row.project_id is None:
-            continue  # filtered server-side; narrows for mypy
+            # Filtered server-side; narrows for mypy
+            continue
         cost = row.estimated_cost_usd
         if cost is None and row.ended_at is None:
             cost = calculate_cost(
@@ -197,414 +203,9 @@ async def _portfolio_spend_by_project(session: AsyncSession) -> dict[UUID, float
     return burn
 
 
-class MetricsService(BaseService):
-    """
-    Service for collecting and aggregating metrics.
-
-    Provides:
-    - Velocity metrics (completion rate, throughput)
-    - Blocker tracking
-    - Team and agent performance
-    """
-
-    service_name: ClassVar[str] = "metrics"
-
-    # =========================================================================
-    # VELOCITY METRICS
-    # =========================================================================
-
-    async def get_velocity(
-        self,
-        days: int = 7,
-        team: Team | None = None,
-    ) -> VelocityMetrics:
-        """Get velocity metrics for a time period."""
-        since = datetime.now(UTC) - timedelta(days=days)
-
-        # Tasks completed in period
-        completed_query = select(func.count(TaskTable.id)).where(
-            and_(
-                TaskTable.completed_at >= since,
-                TaskTable.status == TaskStatus.COMPLETED,
-            )
-        )
-        if team:
-            completed_query = completed_query.where(TaskTable.team == team)
-
-        completed_result = await self.session.execute(completed_query)
-        tasks_completed = completed_result.scalar() or 0
-
-        # Tasks created in period
-        created_query = select(func.count(TaskTable.id)).where(
-            TaskTable.created_at >= since
-        )
-        if team:
-            created_query = created_query.where(TaskTable.team == team)
-
-        created_result = await self.session.execute(created_query)
-        tasks_created = created_result.scalar() or 0
-
-        # Average completion time
-        avg_query = select(
-            func.avg(
-                func.extract(
-                    "epoch",
-                    TaskTable.completed_at - TaskTable.started_at,
-                )
-                / 3600  # Convert to hours
-            )
-        ).where(
-            and_(
-                TaskTable.completed_at >= since,
-                TaskTable.started_at.isnot(None),
-                TaskTable.status == TaskStatus.COMPLETED,
-            )
-        )
-        if team:
-            avg_query = avg_query.where(TaskTable.team == team)
-
-        avg_result = await self.session.execute(avg_query)
-        avg_hours = avg_result.scalar()
-
-        completion_rate = _calculate_completion_rate(tasks_completed, tasks_created)
-
-        return VelocityMetrics(
-            period=_format_period(days),
-            tasks_completed=tasks_completed,
-            tasks_created=tasks_created,
-            avg_completion_hours=_as_hours(avg_hours),
-            completion_rate=round(completion_rate, 2),
-        )
-
-    # =========================================================================
-    # BLOCKER METRICS
-    # =========================================================================
-
-    async def _blocked_since_map(
-        self, blocked_tasks: Sequence[TaskTable]
-    ) -> dict[str, datetime]:
-        """Per-task ``blocked since`` timestamp from the ``task.blocked`` audit row.
-
-        The real blockage start is the audit transition (#67), indexed on
-        (target_id, event_type, timestamp); the old ``updated_at`` heuristic
-        over-counted when a blocked task was later touched for a non-blocking
-        reason. Returns ``{str(task_id): blocked_at}``; callers fall back to
-        ``updated_at or created_at`` for tasks with no audit row.
-        """
-        blocked_ids = [t.id for t in blocked_tasks]
-        if not blocked_ids:
-            return {}
-        audit_result = await self.session.execute(
-            select(
-                AuditLogTable.target_id,
-                func.max(AuditLogTable.timestamp).label("ts"),
-            )
-            .where(
-                AuditLogTable.event_type == "task.blocked",
-                AuditLogTable.target_type == "task",
-                AuditLogTable.target_id.in_(blocked_ids),
-            )
-            .group_by(AuditLogTable.target_id)
-        )
-        return {
-            str(row.target_id): row.ts
-            for row in audit_result.all()
-            if row.ts is not None
-        }
-
-    async def get_blocker_metrics(self) -> BlockerMetrics:
-        """Get metrics about blocked tasks."""
-        # Count active blockers
-        count_result = await self.session.execute(
-            select(func.count(TaskTable.id)).where(
-                TaskTable.status == TaskStatus.BLOCKED
-            )
-        )
-        active_blockers = count_result.scalar() or 0
-
-        # Get blocked tasks for analysis
-        blocked_result = await self.session.execute(
-            select(TaskTable).where(TaskTable.status == TaskStatus.BLOCKED)
-        )
-        blocked_tasks = blocked_result.scalars().all()
-
-        # ``blocked since`` from the ``task.blocked`` audit row, falling back to
-        # ``updated_at or created_at`` when no audit row exists (#67).
-        blocked_at = await self._blocked_since_map(blocked_tasks)
-
-        # Calculate average blocked time
-        now = datetime.now(UTC)
-        blocked_hours = []
-        longest_task_id = None
-        longest_hours = 0.0
-
-        for task in blocked_tasks:
-            blocked_since = (
-                blocked_at.get(str(task.id)) or task.updated_at or task.created_at
-            )
-            hours = (now - blocked_since).total_seconds() / 3600
-            blocked_hours.append(hours)
-
-            if hours > longest_hours:
-                longest_hours = hours
-                longest_task_id = task.id
-
-        avg_blocked = _calculate_avg_blocked_hours(blocked_hours)
-
-        # Count blockers by team
-        team_result = await self.session.execute(
-            select(TaskTable.team, func.count(TaskTable.id))
-            .where(TaskTable.status == TaskStatus.BLOCKED)
-            .group_by(TaskTable.team)
-        )
-        blockers_by_team = {row[0].value: row[1] for row in team_result.all()}
-
-        return BlockerMetrics(
-            active_blockers=active_blockers,
-            avg_blocked_hours=_as_hours(avg_blocked),
-            longest_blocked_task_id=to_python_uuid(longest_task_id),
-            longest_blocked_hours=_as_hours(longest_hours),
-            blockers_by_team=blockers_by_team,
-        )
-
-    # =========================================================================
-    # TEAM METRICS
-    # =========================================================================
-
-    async def get_team_metrics(self, team: Team) -> TeamMetrics:
-        """Get metrics for a specific team."""
-        week_ago = datetime.now(UTC) - timedelta(days=7)
-
-        # Active tasks
-        active_result = await self.session.execute(
-            select(func.count(TaskTable.id)).where(
-                and_(
-                    TaskTable.team == team,
-                    TaskTable.status.in_(ACTIVE_STATUSES),
-                )
-            )
-        )
-        active_tasks = active_result.scalar() or 0
-
-        # Completed this week
-        completed_result = await self.session.execute(
-            select(func.count(TaskTable.id)).where(
-                and_(
-                    TaskTable.team == team,
-                    TaskTable.completed_at >= week_ago,
-                    TaskTable.status == TaskStatus.COMPLETED,
-                )
-            )
-        )
-        completed_tasks_week = completed_result.scalar() or 0
-
-        # Blocked tasks
-        blocked_result = await self.session.execute(
-            select(func.count(TaskTable.id)).where(
-                and_(
-                    TaskTable.team == team,
-                    TaskTable.status == TaskStatus.BLOCKED,
-                )
-            )
-        )
-        blocked_tasks = blocked_result.scalar() or 0
-
-        # Average completion time
-        avg_result = await self.session.execute(
-            select(
-                func.avg(
-                    func.extract(
-                        "epoch",
-                        TaskTable.completed_at - TaskTable.started_at,
-                    )
-                    / 3600
-                )
-            ).where(
-                and_(
-                    TaskTable.team == team,
-                    TaskTable.completed_at >= week_ago,
-                    TaskTable.started_at.isnot(None),
-                    TaskTable.status == TaskStatus.COMPLETED,
-                )
-            )
-        )
-        avg_hours = avg_result.scalar()
-
-        # Documentation coverage (tasks with QA pass that have docs)
-        # Simplified: ratio of completed tasks with dev_notes
-        total_result = await self.session.execute(
-            select(func.count(TaskTable.id)).where(
-                and_(
-                    TaskTable.team == team,
-                    TaskTable.status == TaskStatus.COMPLETED,
-                )
-            )
-        )
-        total_completed = total_result.scalar() or 0
-
-        with_docs_result = await self.session.execute(
-            select(func.count(TaskTable.id)).where(
-                and_(
-                    TaskTable.team == team,
-                    TaskTable.status == TaskStatus.COMPLETED,
-                    TaskTable.dev_notes.isnot(None),
-                )
-            )
-        )
-        with_docs = with_docs_result.scalar() or 0
-
-        doc_coverage = with_docs / total_completed if total_completed > 0 else 0.0
-
-        return TeamMetrics(
-            team=team,
-            active_tasks=active_tasks,
-            completed_tasks_week=completed_tasks_week,
-            blocked_tasks=blocked_tasks,
-            avg_completion_hours=_as_hours(avg_hours),
-            documentation_coverage=round(doc_coverage, 2),
-        )
-
-    async def get_all_team_metrics(self) -> list[TeamMetrics]:
-        """Get metrics for all teams."""
-        metrics = []
-        for team in [Team.BACKEND, Team.FRONTEND, Team.UX_UI]:
-            metrics.append(await self.get_team_metrics(team))
-        return metrics
-
-    # =========================================================================
-    # AGENT METRICS
-    # =========================================================================
-
-    async def get_agent_metrics(self, agent_id: UUID) -> AgentMetrics | None:
-        """Get metrics for a specific agent."""
-        # Get agent
-        agent_result = await self.session.execute(
-            select(AgentTable).where(AgentTable.id == agent_id)
-        )
-        agent = agent_result.scalar_one_or_none()
-        if not agent:
-            return None
-
-        week_ago = datetime.now(UTC) - timedelta(days=7)
-
-        # Tasks completed this week
-        completed_result = await self.session.execute(
-            select(func.count(TaskTable.id)).where(
-                and_(
-                    TaskTable.assigned_to == agent_id,
-                    TaskTable.completed_at >= week_ago,
-                    TaskTable.status == TaskStatus.COMPLETED,
-                )
-            )
-        )
-        tasks_completed = completed_result.scalar() or 0
-
-        # Average completion time
-        avg_result = await self.session.execute(
-            select(
-                func.avg(
-                    func.extract(
-                        "epoch",
-                        TaskTable.completed_at - TaskTable.started_at,
-                    )
-                    / 3600
-                )
-            ).where(
-                and_(
-                    TaskTable.assigned_to == agent_id,
-                    TaskTable.completed_at >= week_ago,
-                    TaskTable.started_at.isnot(None),
-                    TaskTable.status == TaskStatus.COMPLETED,
-                )
-            )
-        )
-        avg_hours = avg_result.scalar()
-
-        return AgentMetrics(
-            agent_id=agent_id,
-            agent_name=agent.name,
-            tasks_completed_week=tasks_completed,
-            current_task_id=to_python_uuid(agent.current_task_id),
-            avg_completion_hours=_as_hours(avg_hours),
-        )
-
-    # =========================================================================
-    # HEALTH STATUS
-    # =========================================================================
-
-    def _determine_health_status(
-        self,
-        blocked_ratio: float,
-        active_count: int,
-        completed_count: int,
-    ) -> str:
-        """Determine health status from metrics."""
-        if blocked_ratio > CRITICAL_BLOCKED_RATIO:
-            return "critical"
-        if blocked_ratio > SLOW_BLOCKED_RATIO:
-            return "slow"
-        if active_count > STALE_TASK_THRESHOLD and completed_count == 0:
-            return "slow"
-        return "ok"
-
-    async def _get_task_count(
-        self,
-        status_filter: list[TaskStatus] | TaskStatus,
-        team: Team | None,
-        since: datetime | None = None,
-    ) -> int:
-        """Get count of tasks matching criteria."""
-        conditions: list[Any] = []
-        if isinstance(status_filter, list):
-            conditions.append(TaskTable.status.in_(status_filter))
-        else:
-            conditions.append(TaskTable.status == status_filter)
-        if team:
-            conditions.append(TaskTable.team == team)
-        if since:
-            conditions.append(TaskTable.completed_at >= since)
-
-        query = select(func.count(TaskTable.id)).where(and_(*conditions))
-        result = await self.session.execute(query)
-        return result.scalar() or 0
-
-    async def get_health_status(self, team: Team | None = None) -> dict[str, Any]:
-        """
-        Get health status for a team or the whole organization.
-
-        Returns status: ok, slow, or critical based on:
-        - Blocked task ratio
-        - Completion rate
-        - Average task age
-        """
-        week_ago = datetime.now(UTC) - timedelta(days=7)
-        active_statuses = [
-            TaskStatus.CLAIMED,
-            TaskStatus.IN_PROGRESS,
-            TaskStatus.VERIFYING,
-            TaskStatus.AWAITING_QA,
-            TaskStatus.BLOCKED,
-        ]
-
-        active_count = await self._get_task_count(active_statuses, team)
-        blocked_count = await self._get_task_count(TaskStatus.BLOCKED, team)
-        completed_count = await self._get_task_count(
-            TaskStatus.COMPLETED, team, since=week_ago
-        )
-
-        blocked_ratio = blocked_count / active_count if active_count > 0 else 0
-        status_str = self._determine_health_status(
-            blocked_ratio, active_count, completed_count
-        )
-
-        return {
-            "status": status_str,
-            "team": team.value if team else "all",
-            "active_tasks": active_count,
-            "blocked_tasks": blocked_count,
-            "blocked_ratio": round(blocked_ratio, 2),
-            "completed_this_week": completed_count,
-        }
+class MetricsFlow(_Base):
+    """How work flows: cycle time by stage, the bottleneck distribution, rework by
+    agent and its cost, and verb latency."""
 
     # =========================================================================
     # OBSERVABILITY (cycle-time / bottleneck / rework / scorecard)
@@ -838,6 +439,61 @@ class MetricsService(BaseService):
         ).scalar() or 0.0
         return float(cost)
 
+    async def get_rework_metrics(
+        self, team: Team | None = None, days: int = 30
+    ) -> ReworkReport:
+        """Rework rate (bounced/completed) overall, by team, and by agent + cost."""
+        since = datetime.now(UTC) - timedelta(days=days)
+        completed, reworked = await self._completed_reworked_counts(since, team)
+        by_team = []
+        for t in [Team.BACKEND, Team.FRONTEND, Team.UX_UI]:
+            c, r = await self._completed_reworked_counts(since, t)
+            by_team.append(TeamReworkRate(team=t.value, rate=(r / c if c else 0.0)))
+        by_agent = await self._rework_by_agent(since)
+        cost = await self._rework_cost(since, team)
+        return ReworkReport(
+            rate=(reworked / completed if completed else 0.0),
+            total_completed=completed,
+            total_reworked=reworked,
+            by_team=by_team,
+            by_agent=by_agent,
+            rework_cost_usd=cost,
+        )
+
+    async def get_verb_latency_stats(self, hours: int = 24) -> list[VerbLatencyStats]:
+        """p50/p95 HTTP duration per gateway verb over the last ``hours`` window."""
+        since = datetime.now(UTC) - timedelta(hours=hours)
+        sql = text(
+            """
+            SELECT
+                verb,
+                PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY duration_ms)::float
+                    AS p50_ms,
+                PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_ms)::float
+                    AS p95_ms,
+                COUNT(*) AS n
+            FROM verb_latency_samples
+            WHERE created_at >= :since
+            GROUP BY verb
+            ORDER BY p95_ms DESC
+            """
+        )
+        rows = (await self.session.execute(sql, {"since": since})).all()
+        return [
+            VerbLatencyStats(
+                verb=r.verb,
+                p50_ms=float(r.p50_ms or 0.0),
+                p95_ms=float(r.p95_ms or 0.0),
+                sample_count=int(r.n),
+            )
+            for r in rows
+        ]
+
+
+class MetricsTaskDetail(_Base):
+    """One task's metrics: its spawn rollup, stage windows, fail counts, reviewer
+    chain, and token cost."""
+
     async def _spawn_rollup_for_task(
         self, task_id: UUID, close_at: datetime
     ) -> dict[str, Any]:
@@ -1026,6 +682,38 @@ class MetricsService(BaseService):
             findings_total=len(findings),
             reviewer_chain=reviewer_chain,
         )
+
+    async def _tokens_cost_for(
+        self, *, agent_slug: str | None, team: Team | None, since: datetime
+    ) -> tuple[int, float]:
+        """Sum (tokens, cost) from spawn sessions for an agent or a team."""
+        tok = (
+            AgentSpawnSessionTable.tokens_input
+            + AgentSpawnSessionTable.tokens_output
+            + AgentSpawnSessionTable.tokens_cache_read
+            + AgentSpawnSessionTable.tokens_cache_write
+        )
+        conds: list[Any] = [AgentSpawnSessionTable.started_at >= since]
+        if agent_slug is not None:
+            conds.append(AgentSpawnSessionTable.agent_slug == agent_slug)
+        if team is not None:
+            conds.append(AgentSpawnSessionTable.team == team.value)
+        row = (
+            await self.session.execute(
+                select(
+                    func.coalesce(func.sum(tok), 0),
+                    func.coalesce(
+                        func.sum(AgentSpawnSessionTable.estimated_cost_usd), 0.0
+                    ),
+                ).where(and_(*conds))
+            )
+        ).first()
+        return (int(row[0]) if row else 0, float(row[1]) if row else 0.0)
+
+
+class MetricsScorecards(_Base):
+    """Scorecards: the CEO's latency and god-mode count, each member's scorecard
+    from the rollups and the live in-flight overlay, and the organization's."""
 
     async def _ceo_latency(
         self, since: datetime, from_status: str, to_statuses: Sequence[str]
@@ -1482,26 +1170,110 @@ class MetricsService(BaseService):
             revisions_received=int(sums["revisions_received"]),
         )
 
-    async def get_rework_metrics(
-        self, team: Team | None = None, days: int = 30
-    ) -> ReworkReport:
-        """Rework rate (bounced/completed) overall, by team, and by agent + cost."""
-        since = datetime.now(UTC) - timedelta(days=days)
-        completed, reworked = await self._completed_reworked_counts(since, team)
-        by_team = []
-        for t in [Team.BACKEND, Team.FRONTEND, Team.UX_UI]:
-            c, r = await self._completed_reworked_counts(since, t)
-            by_team.append(TeamReworkRate(team=t.value, rate=(r / c if c else 0.0)))
-        by_agent = await self._rework_by_agent(since)
-        cost = await self._rework_cost(since, team)
-        return ReworkReport(
-            rate=(reworked / completed if completed else 0.0),
-            total_completed=completed,
-            total_reworked=reworked,
-            by_team=by_team,
-            by_agent=by_agent,
-            rework_cost_usd=cost,
+
+class MetricsProgressSignals(_Base):
+    """When a task last showed progress: its signal times merged from audit
+    advances, journal entries and JSON columns."""
+
+    async def _task_progress_signal_times(
+        self, task_ids: set[str]
+    ) -> dict[str, list[datetime]]:
+        """Per-task_id timestamps of any forward-progress signal.
+
+        Merges four sources into one ``task_id -> [timestamp, ...]`` map:
+        audit_log status-advance events, commits, progress_updates, and
+        journal entries. A session is zero-progress iff none of its own
+        task's timestamps falls within the session's window.
+        """
+        out: dict[str, list[datetime]] = {tid: [] for tid in task_ids}
+        uuid_ids = [UUID(tid) for tid in task_ids]
+        await self._merge_audit_advance_times(out, uuid_ids)
+        await self._merge_journal_entry_times(out, uuid_ids)
+        await self._merge_json_column_times(out, uuid_ids)
+        return out
+
+    async def _merge_audit_advance_times(
+        self, out: dict[str, list[datetime]], uuid_ids: list[UUID]
+    ) -> None:
+        """Merge in audit_log status-ADVANCE timestamps only.
+
+        Mirrors ``get_cycle_time_by_stage``'s ``event_type = 'task.' ||
+        to_status`` narrowing: a genuine transition event's type is always
+        ``task.<to_status>``, so this excludes every named non-transition
+        ``task.*`` event (``task.qa_fail``, ``task.request_changes``,
+        ``task.scales_rebalance``, ``task.coverage_declared``, ...) whose
+        ``event_type`` never equals its own ``details.to_status`` — without
+        this, those events falsely counted as forward progress.
+        """
+        rows = await self.session.execute(
+            select(AuditLogTable.target_id, AuditLogTable.timestamp).where(
+                AuditLogTable.target_id.in_(uuid_ids),
+                AuditLogTable.event_type.like("task.%"),
+                AuditLogTable.event_type
+                == literal("task.") + AuditLogTable.details["to_status"].astext,
+            )
         )
+        for target_id, ts in rows:
+            out[str(target_id)].append(ts)
+
+    async def _merge_journal_entry_times(
+        self, out: dict[str, list[datetime]], uuid_ids: list[UUID]
+    ) -> None:
+        """Merge in journal_entries timestamps."""
+        rows = await self.session.execute(
+            select(JournalEntryTable.task_id, JournalEntryTable.timestamp).where(
+                JournalEntryTable.task_id.in_(uuid_ids)
+            )
+        )
+        for task_id, ts in rows:
+            out[str(task_id)].append(ts)
+
+    async def _merge_json_column_times(
+        self, out: dict[str, list[datetime]], uuid_ids: list[UUID]
+    ) -> None:
+        """Merge in commit + progress_update JSON timestamps."""
+        rows = await self.session.execute(
+            select(TaskTable.id, TaskTable.commits, TaskTable.progress_updates).where(
+                TaskTable.id.in_(uuid_ids)
+            )
+        )
+        for task_id, commits, progress_updates in rows:
+            out[str(task_id)].extend(
+                self._json_entry_timestamps(commits, progress_updates)
+            )
+
+    @staticmethod
+    def _json_entry_timestamps(
+        commits: list[dict[str, Any]] | None,
+        progress_updates: list[dict[str, Any]] | None,
+    ) -> list[datetime]:
+        """Parse each entry's ISO ``timestamp`` string, skipping malformed ones.
+
+        A malformed string 500s ``fromisoformat`` (``ValueError``) and a
+        non-string ``timestamp`` value 500s it too (``TypeError``) — both are
+        skipped rather than propagating. A parsed-but-naive datetime is
+        normalised to UTC so it never crashes the tz-aware
+        ``started_at <= t <= ended_at`` window comparison in
+        ``get_spawn_waste_metrics``.
+        """
+        times: list[datetime] = []
+        for entry in (*(commits or []), *(progress_updates or [])):
+            ts = entry.get("timestamp") if isinstance(entry, dict) else None
+            if not ts:
+                continue
+            try:
+                parsed = datetime.fromisoformat(ts)
+            except (ValueError, TypeError):
+                continue
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=UTC)
+            times.append(parsed)
+        return times
+
+
+class MetricsPortfolio(_Base):
+    """Portfolio-wide views: portfolio, spawn-waste and provenance metrics, and an
+    owner's scorecard of completions and cycle hours."""
 
     async def get_portfolio_metrics(self, days: int = 30) -> dict[UUID, dict[str, Any]]:
         """Per-project aggregation for the CEO's cross-fleet portfolio view.
@@ -1752,128 +1524,6 @@ class MetricsService(BaseService):
             total=total, human_authored=human, agent_authored=total - human
         )
 
-    async def _task_progress_signal_times(
-        self, task_ids: set[str]
-    ) -> dict[str, list[datetime]]:
-        """Per-task_id timestamps of any forward-progress signal.
-
-        Merges four sources into one ``task_id -> [timestamp, ...]`` map:
-        audit_log status-advance events, commits, progress_updates, and
-        journal entries. A session is zero-progress iff none of its own
-        task's timestamps falls within the session's window.
-        """
-        out: dict[str, list[datetime]] = {tid: [] for tid in task_ids}
-        uuid_ids = [UUID(tid) for tid in task_ids]
-        await self._merge_audit_advance_times(out, uuid_ids)
-        await self._merge_journal_entry_times(out, uuid_ids)
-        await self._merge_json_column_times(out, uuid_ids)
-        return out
-
-    async def _merge_audit_advance_times(
-        self, out: dict[str, list[datetime]], uuid_ids: list[UUID]
-    ) -> None:
-        """Merge in audit_log status-ADVANCE timestamps only.
-
-        Mirrors ``get_cycle_time_by_stage``'s ``event_type = 'task.' ||
-        to_status`` narrowing: a genuine transition event's type is always
-        ``task.<to_status>``, so this excludes every named non-transition
-        ``task.*`` event (``task.qa_fail``, ``task.request_changes``,
-        ``task.scales_rebalance``, ``task.coverage_declared``, ...) whose
-        ``event_type`` never equals its own ``details.to_status`` — without
-        this, those events falsely counted as forward progress.
-        """
-        rows = await self.session.execute(
-            select(AuditLogTable.target_id, AuditLogTable.timestamp).where(
-                AuditLogTable.target_id.in_(uuid_ids),
-                AuditLogTable.event_type.like("task.%"),
-                AuditLogTable.event_type
-                == literal("task.") + AuditLogTable.details["to_status"].astext,
-            )
-        )
-        for target_id, ts in rows:
-            out[str(target_id)].append(ts)
-
-    async def _merge_journal_entry_times(
-        self, out: dict[str, list[datetime]], uuid_ids: list[UUID]
-    ) -> None:
-        """Merge in journal_entries timestamps."""
-        rows = await self.session.execute(
-            select(JournalEntryTable.task_id, JournalEntryTable.timestamp).where(
-                JournalEntryTable.task_id.in_(uuid_ids)
-            )
-        )
-        for task_id, ts in rows:
-            out[str(task_id)].append(ts)
-
-    async def _merge_json_column_times(
-        self, out: dict[str, list[datetime]], uuid_ids: list[UUID]
-    ) -> None:
-        """Merge in commit + progress_update JSON timestamps."""
-        rows = await self.session.execute(
-            select(TaskTable.id, TaskTable.commits, TaskTable.progress_updates).where(
-                TaskTable.id.in_(uuid_ids)
-            )
-        )
-        for task_id, commits, progress_updates in rows:
-            out[str(task_id)].extend(
-                self._json_entry_timestamps(commits, progress_updates)
-            )
-
-    @staticmethod
-    def _json_entry_timestamps(
-        commits: list[dict[str, Any]] | None,
-        progress_updates: list[dict[str, Any]] | None,
-    ) -> list[datetime]:
-        """Parse each entry's ISO ``timestamp`` string, skipping malformed ones.
-
-        A malformed string 500s ``fromisoformat`` (``ValueError``) and a
-        non-string ``timestamp`` value 500s it too (``TypeError``) — both are
-        skipped rather than propagating. A parsed-but-naive datetime is
-        normalised to UTC so it never crashes the tz-aware
-        ``started_at <= t <= ended_at`` window comparison in
-        ``get_spawn_waste_metrics``.
-        """
-        times: list[datetime] = []
-        for entry in (*(commits or []), *(progress_updates or [])):
-            ts = entry.get("timestamp") if isinstance(entry, dict) else None
-            if not ts:
-                continue
-            try:
-                parsed = datetime.fromisoformat(ts)
-            except (ValueError, TypeError):
-                continue
-            if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=UTC)
-            times.append(parsed)
-        return times
-
-    async def _tokens_cost_for(
-        self, *, agent_slug: str | None, team: Team | None, since: datetime
-    ) -> tuple[int, float]:
-        """Sum (tokens, cost) from spawn sessions for an agent or a team."""
-        tok = (
-            AgentSpawnSessionTable.tokens_input
-            + AgentSpawnSessionTable.tokens_output
-            + AgentSpawnSessionTable.tokens_cache_read
-            + AgentSpawnSessionTable.tokens_cache_write
-        )
-        conds: list[Any] = [AgentSpawnSessionTable.started_at >= since]
-        if agent_slug is not None:
-            conds.append(AgentSpawnSessionTable.agent_slug == agent_slug)
-        if team is not None:
-            conds.append(AgentSpawnSessionTable.team == team.value)
-        row = (
-            await self.session.execute(
-                select(
-                    func.coalesce(func.sum(tok), 0),
-                    func.coalesce(
-                        func.sum(AgentSpawnSessionTable.estimated_cost_usd), 0.0
-                    ),
-                ).where(and_(*conds))
-            )
-        ).first()
-        return (int(row[0]) if row else 0, float(row[1]) if row else 0.0)
-
     async def get_scorecard(
         self,
         agent_id: UUID | None = None,
@@ -1975,34 +1625,423 @@ class MetricsService(BaseService):
         ).scalar()
         return _as_hours(avg_hours)
 
-    async def get_verb_latency_stats(self, hours: int = 24) -> list[VerbLatencyStats]:
-        """p50/p95 HTTP duration per gateway verb over the last ``hours`` window."""
-        since = datetime.now(UTC) - timedelta(hours=hours)
-        sql = text(
-            """
-            SELECT
-                verb,
-                PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY duration_ms)::float
-                    AS p50_ms,
-                PERCENTILE_CONT(0.95) WITHIN GROUP (ORDER BY duration_ms)::float
-                    AS p95_ms,
-                COUNT(*) AS n
-            FROM verb_latency_samples
-            WHERE created_at >= :since
-            GROUP BY verb
-            ORDER BY p95_ms DESC
-            """
-        )
-        rows = (await self.session.execute(sql, {"since": since})).all()
-        return [
-            VerbLatencyStats(
-                verb=r.verb,
-                p50_ms=float(r.p50_ms or 0.0),
-                p95_ms=float(r.p95_ms or 0.0),
-                sample_count=int(r.n),
+
+class MetricsService(
+    BaseService,
+    MetricsFlow,
+    MetricsPortfolio,
+    MetricsProgressSignals,
+    MetricsScorecards,
+    MetricsTaskDetail,
+):
+    """
+    Service for collecting and aggregating metrics.
+
+    Provides:
+    - Velocity metrics (completion rate, throughput)
+    - Blocker tracking
+    - Team and agent performance
+    """
+
+    service_name: ClassVar[str] = "metrics"
+
+    # =========================================================================
+    # VELOCITY METRICS
+    # =========================================================================
+
+    async def get_velocity(
+        self,
+        days: int = 7,
+        team: Team | None = None,
+    ) -> VelocityMetrics:
+        """Get velocity metrics for a time period."""
+        since = datetime.now(UTC) - timedelta(days=days)
+
+        # Tasks completed in period
+        completed_query = select(func.count(TaskTable.id)).where(
+            and_(
+                TaskTable.completed_at >= since,
+                TaskTable.status == TaskStatus.COMPLETED,
             )
-            for r in rows
+        )
+        if team:
+            completed_query = completed_query.where(TaskTable.team == team)
+
+        completed_result = await self.session.execute(completed_query)
+        tasks_completed = completed_result.scalar() or 0
+
+        # Tasks created in period
+        created_query = select(func.count(TaskTable.id)).where(
+            TaskTable.created_at >= since
+        )
+        if team:
+            created_query = created_query.where(TaskTable.team == team)
+
+        created_result = await self.session.execute(created_query)
+        tasks_created = created_result.scalar() or 0
+
+        # Average completion time
+        avg_query = select(
+            func.avg(
+                func.extract(
+                    "epoch",
+                    TaskTable.completed_at - TaskTable.started_at,
+                )
+                # Convert to hours
+                / 3600
+            )
+        ).where(
+            and_(
+                TaskTable.completed_at >= since,
+                TaskTable.started_at.isnot(None),
+                TaskTable.status == TaskStatus.COMPLETED,
+            )
+        )
+        if team:
+            avg_query = avg_query.where(TaskTable.team == team)
+
+        avg_result = await self.session.execute(avg_query)
+        avg_hours = avg_result.scalar()
+
+        completion_rate = _calculate_completion_rate(tasks_completed, tasks_created)
+
+        return VelocityMetrics(
+            period=_format_period(days),
+            tasks_completed=tasks_completed,
+            tasks_created=tasks_created,
+            avg_completion_hours=_as_hours(avg_hours),
+            completion_rate=round(completion_rate, 2),
+        )
+
+    # =========================================================================
+    # BLOCKER METRICS
+    # =========================================================================
+
+    async def _blocked_since_map(
+        self, blocked_tasks: Sequence[TaskTable]
+    ) -> dict[str, datetime]:
+        """Per-task ``blocked since`` timestamp from the ``task.blocked`` audit row.
+
+        The real blockage start is the audit transition (#67), indexed on
+        (target_id, event_type, timestamp); the old ``updated_at`` heuristic
+        over-counted when a blocked task was later touched for a non-blocking
+        reason. Returns ``{str(task_id): blocked_at}``; callers fall back to
+        ``updated_at or created_at`` for tasks with no audit row.
+        """
+        blocked_ids = [t.id for t in blocked_tasks]
+        if not blocked_ids:
+            return {}
+        audit_result = await self.session.execute(
+            select(
+                AuditLogTable.target_id,
+                func.max(AuditLogTable.timestamp).label("ts"),
+            )
+            .where(
+                AuditLogTable.event_type == "task.blocked",
+                AuditLogTable.target_type == "task",
+                AuditLogTable.target_id.in_(blocked_ids),
+            )
+            .group_by(AuditLogTable.target_id)
+        )
+        return {
+            str(row.target_id): row.ts
+            for row in audit_result.all()
+            if row.ts is not None
+        }
+
+    async def get_blocker_metrics(self) -> BlockerMetrics:
+        """Get metrics about blocked tasks."""
+        # Count active blockers
+        count_result = await self.session.execute(
+            select(func.count(TaskTable.id)).where(
+                TaskTable.status == TaskStatus.BLOCKED
+            )
+        )
+        active_blockers = count_result.scalar() or 0
+
+        # Get blocked tasks for analysis
+        blocked_result = await self.session.execute(
+            select(TaskTable).where(TaskTable.status == TaskStatus.BLOCKED)
+        )
+        blocked_tasks = blocked_result.scalars().all()
+
+        # ``blocked since`` from the ``task.blocked`` audit row, falling back to
+        # ``updated_at or created_at`` when no audit row exists (#67).
+        blocked_at = await self._blocked_since_map(blocked_tasks)
+
+        # Calculate average blocked time
+        now = datetime.now(UTC)
+        blocked_hours = []
+        longest_task_id = None
+        longest_hours = 0.0
+
+        for task in blocked_tasks:
+            blocked_since = (
+                blocked_at.get(str(task.id)) or task.updated_at or task.created_at
+            )
+            hours = (now - blocked_since).total_seconds() / 3600
+            blocked_hours.append(hours)
+
+            if hours > longest_hours:
+                longest_hours = hours
+                longest_task_id = task.id
+
+        avg_blocked = _calculate_avg_blocked_hours(blocked_hours)
+
+        # Count blockers by team
+        team_result = await self.session.execute(
+            select(TaskTable.team, func.count(TaskTable.id))
+            .where(TaskTable.status == TaskStatus.BLOCKED)
+            .group_by(TaskTable.team)
+        )
+        blockers_by_team = {row[0].value: row[1] for row in team_result.all()}
+
+        return BlockerMetrics(
+            active_blockers=active_blockers,
+            avg_blocked_hours=_as_hours(avg_blocked),
+            longest_blocked_task_id=to_python_uuid(longest_task_id),
+            longest_blocked_hours=_as_hours(longest_hours),
+            blockers_by_team=blockers_by_team,
+        )
+
+    # =========================================================================
+    # TEAM METRICS
+    # =========================================================================
+
+    async def get_team_metrics(self, team: Team) -> TeamMetrics:
+        """Get metrics for a specific team."""
+        week_ago = datetime.now(UTC) - timedelta(days=7)
+
+        # Active tasks
+        active_result = await self.session.execute(
+            select(func.count(TaskTable.id)).where(
+                and_(
+                    TaskTable.team == team,
+                    TaskTable.status.in_(ACTIVE_STATUSES),
+                )
+            )
+        )
+        active_tasks = active_result.scalar() or 0
+
+        # Completed this week
+        completed_result = await self.session.execute(
+            select(func.count(TaskTable.id)).where(
+                and_(
+                    TaskTable.team == team,
+                    TaskTable.completed_at >= week_ago,
+                    TaskTable.status == TaskStatus.COMPLETED,
+                )
+            )
+        )
+        completed_tasks_week = completed_result.scalar() or 0
+
+        # Blocked tasks
+        blocked_result = await self.session.execute(
+            select(func.count(TaskTable.id)).where(
+                and_(
+                    TaskTable.team == team,
+                    TaskTable.status == TaskStatus.BLOCKED,
+                )
+            )
+        )
+        blocked_tasks = blocked_result.scalar() or 0
+
+        # Average completion time
+        avg_result = await self.session.execute(
+            select(
+                func.avg(
+                    func.extract(
+                        "epoch",
+                        TaskTable.completed_at - TaskTable.started_at,
+                    )
+                    / 3600
+                )
+            ).where(
+                and_(
+                    TaskTable.team == team,
+                    TaskTable.completed_at >= week_ago,
+                    TaskTable.started_at.isnot(None),
+                    TaskTable.status == TaskStatus.COMPLETED,
+                )
+            )
+        )
+        avg_hours = avg_result.scalar()
+
+        # Documentation coverage (tasks with QA pass that have docs)
+        # Simplified: ratio of completed tasks with dev_notes
+        total_result = await self.session.execute(
+            select(func.count(TaskTable.id)).where(
+                and_(
+                    TaskTable.team == team,
+                    TaskTable.status == TaskStatus.COMPLETED,
+                )
+            )
+        )
+        total_completed = total_result.scalar() or 0
+
+        with_docs_result = await self.session.execute(
+            select(func.count(TaskTable.id)).where(
+                and_(
+                    TaskTable.team == team,
+                    TaskTable.status == TaskStatus.COMPLETED,
+                    TaskTable.dev_notes.isnot(None),
+                )
+            )
+        )
+        with_docs = with_docs_result.scalar() or 0
+
+        doc_coverage = with_docs / total_completed if total_completed > 0 else 0.0
+
+        return TeamMetrics(
+            team=team,
+            active_tasks=active_tasks,
+            completed_tasks_week=completed_tasks_week,
+            blocked_tasks=blocked_tasks,
+            avg_completion_hours=_as_hours(avg_hours),
+            documentation_coverage=round(doc_coverage, 2),
+        )
+
+    async def get_all_team_metrics(self) -> list[TeamMetrics]:
+        """Get metrics for all teams."""
+        metrics = []
+        for team in [Team.BACKEND, Team.FRONTEND, Team.UX_UI]:
+            metrics.append(await self.get_team_metrics(team))
+        return metrics
+
+    # =========================================================================
+    # AGENT METRICS
+    # =========================================================================
+
+    async def get_agent_metrics(self, agent_id: UUID) -> AgentMetrics | None:
+        """Get metrics for a specific agent."""
+        # Get agent
+        agent_result = await self.session.execute(
+            select(AgentTable).where(AgentTable.id == agent_id)
+        )
+        agent = agent_result.scalar_one_or_none()
+        if not agent:
+            return None
+
+        week_ago = datetime.now(UTC) - timedelta(days=7)
+
+        # Tasks completed this week
+        completed_result = await self.session.execute(
+            select(func.count(TaskTable.id)).where(
+                and_(
+                    TaskTable.assigned_to == agent_id,
+                    TaskTable.completed_at >= week_ago,
+                    TaskTable.status == TaskStatus.COMPLETED,
+                )
+            )
+        )
+        tasks_completed = completed_result.scalar() or 0
+
+        # Average completion time
+        avg_result = await self.session.execute(
+            select(
+                func.avg(
+                    func.extract(
+                        "epoch",
+                        TaskTable.completed_at - TaskTable.started_at,
+                    )
+                    / 3600
+                )
+            ).where(
+                and_(
+                    TaskTable.assigned_to == agent_id,
+                    TaskTable.completed_at >= week_ago,
+                    TaskTable.started_at.isnot(None),
+                    TaskTable.status == TaskStatus.COMPLETED,
+                )
+            )
+        )
+        avg_hours = avg_result.scalar()
+
+        return AgentMetrics(
+            agent_id=agent_id,
+            agent_name=agent.name,
+            tasks_completed_week=tasks_completed,
+            current_task_id=to_python_uuid(agent.current_task_id),
+            avg_completion_hours=_as_hours(avg_hours),
+        )
+
+    # =========================================================================
+    # HEALTH STATUS
+    # =========================================================================
+
+    def _determine_health_status(
+        self,
+        blocked_ratio: float,
+        active_count: int,
+        completed_count: int,
+    ) -> str:
+        """Determine health status from metrics."""
+        if blocked_ratio > CRITICAL_BLOCKED_RATIO:
+            return "critical"
+        if blocked_ratio > SLOW_BLOCKED_RATIO:
+            return "slow"
+        if active_count > STALE_TASK_THRESHOLD and completed_count == 0:
+            return "slow"
+        return "ok"
+
+    async def _get_task_count(
+        self,
+        status_filter: list[TaskStatus] | TaskStatus,
+        team: Team | None,
+        since: datetime | None = None,
+    ) -> int:
+        """Get count of tasks matching criteria."""
+        conditions: list[Any] = []
+        if isinstance(status_filter, list):
+            conditions.append(TaskTable.status.in_(status_filter))
+        else:
+            conditions.append(TaskTable.status == status_filter)
+        if team:
+            conditions.append(TaskTable.team == team)
+        if since:
+            conditions.append(TaskTable.completed_at >= since)
+
+        query = select(func.count(TaskTable.id)).where(and_(*conditions))
+        result = await self.session.execute(query)
+        return result.scalar() or 0
+
+    async def get_health_status(self, team: Team | None = None) -> dict[str, Any]:
+        """
+        Get health status for a team or the whole organization.
+
+        Returns status: ok, slow, or critical based on:
+        - Blocked task ratio
+        - Completion rate
+        - Average task age
+        """
+        week_ago = datetime.now(UTC) - timedelta(days=7)
+        active_statuses = [
+            TaskStatus.CLAIMED,
+            TaskStatus.IN_PROGRESS,
+            TaskStatus.VERIFYING,
+            TaskStatus.AWAITING_QA,
+            TaskStatus.BLOCKED,
         ]
+
+        active_count = await self._get_task_count(active_statuses, team)
+        blocked_count = await self._get_task_count(TaskStatus.BLOCKED, team)
+        completed_count = await self._get_task_count(
+            TaskStatus.COMPLETED, team, since=week_ago
+        )
+
+        blocked_ratio = blocked_count / active_count if active_count > 0 else 0
+        status_str = self._determine_health_status(
+            blocked_ratio, active_count, completed_count
+        )
+
+        return {
+            "status": status_str,
+            "team": team.value if team else "all",
+            "active_tasks": active_count,
+            "blocked_tasks": blocked_count,
+            "blocked_ratio": round(blocked_ratio, 2),
+            "completed_this_week": completed_count,
+        }
 
 
 # =============================================================================

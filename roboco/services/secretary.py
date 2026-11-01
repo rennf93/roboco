@@ -43,6 +43,11 @@ if TYPE_CHECKING:
     from roboco.db.tables import TaskTable
     from roboco.services.task import TaskService
 
+if TYPE_CHECKING:
+    from roboco.services._secretary_service_types import SecretaryServiceSelf as _Base
+else:
+    _Base = object
+
 # Sentinel distinguishing "assigned_to not present in the edit payload" from
 # an explicit ``None`` (unassign) — a plain ``None`` default would conflate
 # the two and silently skip a deliberate unassign.
@@ -64,7 +69,198 @@ _REQUIRED_PAYLOAD: dict[DirectiveKind, tuple[str, ...]] = {
 }
 
 
-class SecretaryService(BaseService):
+class SecretaryTaskActions(_Base):
+    """What a confirmed directive does to a task: controlling it, editing its
+    fields, reassigning it with the assignee resolved, and telling the CEO a
+    directive waits."""
+
+    # Content fields the Secretary may edit on CEO confirmation — the FULL
+    # surface (Secretary FULL task access). Status is never set here — it has
+    # its own audited path (the "start"/"cancel"/"override" actions below);
+    # git fields (branch/PR) are never editable — they follow the git
+    # workflow. ``assigned_to`` rides the edit too but is handled separately
+    # (see ``_edit_task``) since it needs claim-aware reassignment, not a
+    # plain field set.
+    _EDITABLE_TASK_FIELDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "title",
+            "description",
+            "acceptance_criteria",
+            "priority",
+            "team",
+            "estimated_complexity",
+            "nature",
+            "assigned_to",
+        }
+    )
+
+    # Enum-typed content fields need coercion from the raw JSON string before
+    # they reach TaskService.update() (a generic setattr passthrough with no
+    # type coercion of its own).
+    _ENUM_TASK_FIELDS: ClassVar[dict[str, Any]] = {
+        "team": Team,
+        "estimated_complexity": Complexity,
+        "nature": TaskNature,
+    }
+
+    _ASSIGNMENT_FIELD = "assigned_to"
+
+    async def _control_task(self, payload: dict[str, Any]) -> str:
+        task_svc = get_task_service(self.session)
+        task_id = require_uuid(payload["task_id"])
+        action = str(payload["action"])
+        notes = str(payload.get("notes", "via Secretary on CEO command"))
+        if action == "edit":
+            return await self._edit_task(task_svc, task_id, payload)
+        if action == "start":
+            await task_svc.approve_and_start(task_id, notes)
+            return "task started"
+        if action == "cancel":
+            await task_svc.admin_set_status(
+                task_id, TaskStatus.CANCELLED, actor_id=_CEO_ID, actor_role="ceo"
+            )
+            return "task cancelled"
+        if action == "override":
+            new_status = TaskStatus(str(payload["status"]))
+            await task_svc.admin_set_status(
+                task_id, new_status, actor_id=_CEO_ID, actor_role="ceo"
+            )
+            return f"task set to {new_status.value}"
+        raise ValidationError(f"unknown task action: {action!r}")
+
+    async def _edit_task(
+        self, task_svc: TaskService, task_id: UUID, payload: dict[str, Any]
+    ) -> str:
+        """Apply the Secretary's edit — content fields + optional reassign.
+
+        ``assigned_to`` is popped out and routed through claim-aware
+        reassignment (``_reassign_task``) rather than a plain field set;
+        every other allowlisted field goes through ``TaskService.update``
+        after enum coercion.
+        """
+        fields = dict(payload.get("fields") or {})
+        illegal = set(fields) - self._EDITABLE_TASK_FIELDS
+        if not fields or illegal:
+            raise ValidationError(
+                "edit accepts only "
+                f"{sorted(self._EDITABLE_TASK_FIELDS)}; got "
+                f"{sorted(fields) or 'nothing'}"
+            )
+        reassign_to = fields.pop(self._ASSIGNMENT_FIELD, _UNSET)
+        for field, enum_cls in self._ENUM_TASK_FIELDS.items():
+            if field in fields:
+                fields[field] = enum_cls(str(fields[field]))
+
+        results: list[str] = []
+        if fields:
+            await task_svc.update(task_id, **fields)
+            results.append(f"fields updated: {', '.join(sorted(fields))}")
+        if reassign_to is not _UNSET:
+            new_assignee = await self._resolve_assignee(reassign_to)
+            await self._reassign_task(task_svc, task_id, new_assignee)
+            results.append(
+                f"reassigned to {reassign_to}"
+                if new_assignee is not None
+                else "unassigned"
+            )
+        return "; ".join(results)
+
+    async def _reassign_task(
+        self, task_svc: TaskService, task_id: UUID, new_assignee: UUID | None
+    ) -> None:
+        """Route reassignment through the task service's claim-aware paths.
+
+        An active claim (``claimed``/``in_progress``) reseeds the heartbeat
+        via ``reassign_active_claim`` so the new assignee isn't immediately
+        stale to the reaper; everything else (review-state handoffs, or an
+        explicit unassign) goes through the general ``reassign`` — never a
+        naive ``setattr`` on ``assigned_to``.
+        """
+        if new_assignee is not None:
+            task = await task_svc.get(task_id)
+            if task is not None and task.status in (
+                TaskStatus.CLAIMED,
+                TaskStatus.IN_PROGRESS,
+            ):
+                reassigned = await task_svc.reassign_active_claim(task_id, new_assignee)
+                if reassigned is not None:
+                    return
+        await task_svc.reassign(task_id, new_assignee)
+
+    async def _resolve_assignee(self, raw: Any) -> UUID | None:
+        """Resolve an edit's ``assigned_to`` value to an agent UUID.
+
+        Accepts ``None`` (explicit unassign), a UUID string, or an agent
+        slug (e.g. ``"be-dev-1"``) - the same slug convention the REST
+        PATCH path resolves for the CEO's chat, which refers to agents by
+        name. On a slug/UUID MISS the B18 secretary_nl pilot gets one
+        chance to resolve the natural language to a slug: it can only
+        FILL a match the string resolver could not find, never override
+        one.
+        """
+        if raw is None:
+            return None
+        candidate = str(raw)
+        try:
+            return require_uuid(candidate)
+        except InvalidIdentifierError:
+            pass
+        agent_row = await get_agent_by_slug(self.session, candidate)
+        if agent_row is None:
+            resolved = await self._decisions_assignee_slug(candidate)
+            if resolved is None:
+                raise ValidationError(f"no agent with slug or UUID {candidate!r}")
+            agent_row = await get_agent_by_slug(self.session, resolved)
+            if agent_row is None:
+                raise ValidationError(f"no agent with slug or UUID {candidate!r}")
+        return require_uuid(agent_row.id)
+
+    async def _decisions_assignee_slug(self, utterance: str) -> str | None:
+        """B18 secretary_nl (assignee half): natural language -> agent
+        slug, consulted only where the exact slug/UUID match failed."""
+        from roboco.config import settings
+        from roboco.services.decisions import pilots_content
+
+        if not settings.decisions_enabled:
+            return None
+        try:
+            slugs = await self._agent_slugs()
+        except Exception as exc:
+            self_log = getattr(self, "log", None)
+            if self_log is not None:
+                self_log.warning("secretary: agent roster read failed", error=str(exc))
+            return None
+        if not slugs:
+            return None
+        try:
+            return await pilots_content.secretary_assignee(
+                self.session, utterance=utterance, candidate_slugs=slugs
+            )
+        except Exception:
+            return None
+
+    async def _agent_slugs(self) -> list[str]:
+        from roboco.db.tables import AgentTable
+
+        result = await self.session.execute(
+            select(AgentTable.slug).where(AgentTable.slug.isnot(None))
+        )
+        return [str(s) for s in result.scalars().all()]
+
+    async def _notify_ceo_pending(self, row: SecretaryDirectiveTable) -> None:
+        from roboco.services.notification import NotificationService
+
+        await NotificationService().send_ack_notification(
+            from_agent="secretary-1",
+            to_agent="ceo",
+            body=(
+                f"[secretary] A {row.kind} directive needs your confirmation "
+                "before it runs. Review it in the Secretary surface."
+            ),
+        )
+
+
+class SecretaryService(BaseService, SecretaryTaskActions):
     """Read company state + execute/queue the CEO's directives."""
 
     service_name = "secretary"
@@ -318,191 +514,6 @@ class SecretaryService(BaseService):
             )
             return "pitch approved and provisioned"
         return await self._control_task(payload)
-
-    # Content fields the Secretary may edit on CEO confirmation — the FULL
-    # surface (Secretary FULL task access). Status is never set here — it has
-    # its own audited path (the "start"/"cancel"/"override" actions below);
-    # git fields (branch/PR) are never editable — they follow the git
-    # workflow. ``assigned_to`` rides the edit too but is handled separately
-    # (see ``_edit_task``) since it needs claim-aware reassignment, not a
-    # plain field set.
-    _EDITABLE_TASK_FIELDS: ClassVar[frozenset[str]] = frozenset(
-        {
-            "title",
-            "description",
-            "acceptance_criteria",
-            "priority",
-            "team",
-            "estimated_complexity",
-            "nature",
-            "assigned_to",
-        }
-    )
-
-    # Enum-typed content fields need coercion from the raw JSON string before
-    # they reach TaskService.update() (a generic setattr passthrough with no
-    # type coercion of its own).
-    _ENUM_TASK_FIELDS: ClassVar[dict[str, Any]] = {
-        "team": Team,
-        "estimated_complexity": Complexity,
-        "nature": TaskNature,
-    }
-
-    _ASSIGNMENT_FIELD = "assigned_to"
-
-    async def _control_task(self, payload: dict[str, Any]) -> str:
-        task_svc = get_task_service(self.session)
-        task_id = require_uuid(payload["task_id"])
-        action = str(payload["action"])
-        notes = str(payload.get("notes", "via Secretary on CEO command"))
-        if action == "edit":
-            return await self._edit_task(task_svc, task_id, payload)
-        if action == "start":
-            await task_svc.approve_and_start(task_id, notes)
-            return "task started"
-        if action == "cancel":
-            await task_svc.admin_set_status(
-                task_id, TaskStatus.CANCELLED, actor_id=_CEO_ID, actor_role="ceo"
-            )
-            return "task cancelled"
-        if action == "override":
-            new_status = TaskStatus(str(payload["status"]))
-            await task_svc.admin_set_status(
-                task_id, new_status, actor_id=_CEO_ID, actor_role="ceo"
-            )
-            return f"task set to {new_status.value}"
-        raise ValidationError(f"unknown task action: {action!r}")
-
-    async def _edit_task(
-        self, task_svc: TaskService, task_id: UUID, payload: dict[str, Any]
-    ) -> str:
-        """Apply the Secretary's edit — content fields + optional reassign.
-
-        ``assigned_to`` is popped out and routed through claim-aware
-        reassignment (``_reassign_task``) rather than a plain field set;
-        every other allowlisted field goes through ``TaskService.update``
-        after enum coercion.
-        """
-        fields = dict(payload.get("fields") or {})
-        illegal = set(fields) - self._EDITABLE_TASK_FIELDS
-        if not fields or illegal:
-            raise ValidationError(
-                "edit accepts only "
-                f"{sorted(self._EDITABLE_TASK_FIELDS)}; got "
-                f"{sorted(fields) or 'nothing'}"
-            )
-        reassign_to = fields.pop(self._ASSIGNMENT_FIELD, _UNSET)
-        for field, enum_cls in self._ENUM_TASK_FIELDS.items():
-            if field in fields:
-                fields[field] = enum_cls(str(fields[field]))
-
-        results: list[str] = []
-        if fields:
-            await task_svc.update(task_id, **fields)
-            results.append(f"fields updated: {', '.join(sorted(fields))}")
-        if reassign_to is not _UNSET:
-            new_assignee = await self._resolve_assignee(reassign_to)
-            await self._reassign_task(task_svc, task_id, new_assignee)
-            results.append(
-                f"reassigned to {reassign_to}"
-                if new_assignee is not None
-                else "unassigned"
-            )
-        return "; ".join(results)
-
-    async def _reassign_task(
-        self, task_svc: TaskService, task_id: UUID, new_assignee: UUID | None
-    ) -> None:
-        """Route reassignment through the task service's claim-aware paths.
-
-        An active claim (``claimed``/``in_progress``) reseeds the heartbeat
-        via ``reassign_active_claim`` so the new assignee isn't immediately
-        stale to the reaper; everything else (review-state handoffs, or an
-        explicit unassign) goes through the general ``reassign`` — never a
-        naive ``setattr`` on ``assigned_to``.
-        """
-        if new_assignee is not None:
-            task = await task_svc.get(task_id)
-            if task is not None and task.status in (
-                TaskStatus.CLAIMED,
-                TaskStatus.IN_PROGRESS,
-            ):
-                reassigned = await task_svc.reassign_active_claim(task_id, new_assignee)
-                if reassigned is not None:
-                    return
-        await task_svc.reassign(task_id, new_assignee)
-
-    async def _resolve_assignee(self, raw: Any) -> UUID | None:
-        """Resolve an edit's ``assigned_to`` value to an agent UUID.
-
-        Accepts ``None`` (explicit unassign), a UUID string, or an agent
-        slug (e.g. ``"be-dev-1"``) - the same slug convention the REST
-        PATCH path resolves for the CEO's chat, which refers to agents by
-        name. On a slug/UUID MISS the B18 secretary_nl pilot gets one
-        chance to resolve the natural language to a slug: it can only
-        FILL a match the string resolver could not find, never override
-        one.
-        """
-        if raw is None:
-            return None
-        candidate = str(raw)
-        try:
-            return require_uuid(candidate)
-        except InvalidIdentifierError:
-            pass
-        agent_row = await get_agent_by_slug(self.session, candidate)
-        if agent_row is None:
-            resolved = await self._decisions_assignee_slug(candidate)
-            if resolved is None:
-                raise ValidationError(f"no agent with slug or UUID {candidate!r}")
-            agent_row = await get_agent_by_slug(self.session, resolved)
-            if agent_row is None:
-                raise ValidationError(f"no agent with slug or UUID {candidate!r}")
-        return require_uuid(agent_row.id)
-
-    async def _decisions_assignee_slug(self, utterance: str) -> str | None:
-        """B18 secretary_nl (assignee half): natural language -> agent
-        slug, consulted only where the exact slug/UUID match failed."""
-        from roboco.config import settings
-        from roboco.services.decisions import pilots_content
-
-        if not settings.decisions_enabled:
-            return None
-        try:
-            slugs = await self._agent_slugs()
-        except Exception as exc:
-            self_log = getattr(self, "log", None)
-            if self_log is not None:
-                self_log.warning("secretary: agent roster read failed", error=str(exc))
-            return None
-        if not slugs:
-            return None
-        try:
-            return await pilots_content.secretary_assignee(
-                self.session, utterance=utterance, candidate_slugs=slugs
-            )
-        except Exception:
-            return None
-
-    async def _agent_slugs(self) -> list[str]:
-        from roboco.db.tables import AgentTable
-
-        result = await self.session.execute(
-            select(AgentTable.slug).where(AgentTable.slug.isnot(None))
-        )
-        return [str(s) for s in result.scalars().all()]
-
-    async def _notify_ceo_pending(self, row: SecretaryDirectiveTable) -> None:
-        from roboco.services.notification import NotificationService
-
-        await NotificationService().send_ack_notification(
-            from_agent="secretary-1",
-            to_agent="ceo",
-            body=(
-                f"[secretary] A {row.kind} directive needs your confirmation "
-                "before it runs. Review it in the Secretary surface."
-            ),
-        )
 
 
 def get_secretary_service(session: AsyncSession) -> SecretaryService:

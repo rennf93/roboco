@@ -101,6 +101,11 @@ rules:
   # hooks, so nothing is flagged; promoting this to block is a separate decision.
   thin_components:
     level: warn
+  # Promoted to block on 2026-11-01 (Planning trail #51): waves 1-4 split
+  # every class over 15 methods by responsibility, so no file carries one.
+  # A new one now fails CI's conventions step and an armed i_am_done / pr_pass.
+  god_class:
+    level: block
   # Everything else inherits the derived BLOCK level — no models/helpers in
   # routes, no routes in services, no models/routes in panel components, no
   # inline lint/type suppressions (no_lint_suppressions, block since 2026-10:

@@ -53,6 +53,7 @@ import subprocess
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 ROOT = Path(__file__).resolve().parent.parent
 MAP_DIR = Path("docs/map")
@@ -356,7 +357,8 @@ class Definition:
     first_line: int
     line: int
     last_line: int
-    block: bool = False  # a def or class, not an assignment
+    # A def or class, not an assignment
+    block: bool = False
 
 
 def _definition_from_node(
@@ -650,105 +652,49 @@ def _list_files(root: Path) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class MapCheck:
-    """Checks one map file's tables against the tree."""
+if TYPE_CHECKING:
+    from typing import Protocol
 
-    tree: Tree
-    doc: str
-    lines: list[str]
-    findings: list[Finding] = field(default_factory=list)
-    scope: frozenset[str] = frozenset()
-    mapped: set[str] = field(default_factory=set)
+    # MapCheck is composed from the mixins below, whose methods were moved
+    # verbatim out of the one class. mypy checks each mixin against its own
+    # bases only, so each takes this TYPE_CHECKING-only base: what MapCheck
+    # and MapSymbolChecks offer the other classes, with each method's own
+    # signature. tests/unit/scripts/test_map_check_mixins.py fails on a stub
+    # its class does not define.
+    class MapCheckSurface(Protocol):
+        """``MapCheck``'s members that other classes reach."""
 
-    def run(self) -> list[Finding]:
-        rows = parse_table_rows(self.lines)
-        self.scope = self._slice_scope(rows)
-        for row in rows:
-            self._check_row(row)
-        if self.doc.endswith("/" + MIGRATIONS_SLICE):
-            self._check_migrations(rows)
-        return self.findings
+        def _fix(self, row: Row, span: tuple[int, int], text: str) -> Fix: ...
+        def _location_cells(self, row: Row) -> list[tuple[str, Cell]]: ...
+        def _report(
+            self, row: Row, kind: str, message: str, fixes: tuple[Fix, ...] = ...
+        ) -> None: ...
 
-    def _report(
-        self, row: Row, kind: str, message: str, fixes: tuple[Fix, ...] = ()
-    ) -> None:
-        self.findings.append(Finding(self.doc, row.line_index, kind, message, fixes))
+        doc: str
+        findings: list[Finding]
+        lines: list[str]
+        tree: Tree
 
-    def _fix(self, row: Row, span: tuple[int, int], text: str) -> Fix:
-        return Fix(self.doc, row.line_index, span[0], span[1], text)
+    class MapSymbolChecksSurface(Protocol):
+        """``MapSymbolChecks``'s members that other classes reach."""
 
-    def _slice_scope(self, rows: list[Row]) -> frozenset[str]:
-        """Paths this slice's Files tables list, to settle abbreviated refs."""
-        scope: set[str] = set()
-        for row in rows:
-            cell = row.cell("path") if "role" in row.header else None
-            for reference in (
-                extract_references(cell, self.tree.top_level) if cell else []
-            ):
-                scope.update(self.tree.resolve(reference.path))
-        return frozenset(scope)
+        def _check_line_in_range(
+            self, row: Row, item: LineItem, candidates: list[str]
+        ) -> None: ...
 
-    def _narrow(self, candidates: list[str]) -> list[str]:
-        in_scope = [
-            c
-            for c in candidates
-            if any(c == s or c.startswith(s + "/") for s in self.scope)
-        ]
-        return in_scope or candidates
+    class MapCheckSelf(MapCheckSurface, MapSymbolChecksSurface, Protocol):
+        """Every cross-class member a moved method body reaches via ``self``, each
+        class's on its surface (MapCheck's dataclass fields on MapCheckSurface)."""
 
-    # -- rows ---------------------------------------------------------------
+    _Base = MapCheckSelf
+else:
+    _Base = object
 
-    def _location_cells(self, row: Row) -> list[tuple[str, Cell]]:
-        cells = []
-        for column in LOCATION_COLUMNS:
-            if column == "path" and "role" not in row.header:
-                continue  # an endpoint table's Path is a URL
-            cell = row.cell(column)
-            if cell is not None and cell.text:
-                cells.append((column, cell))
-        return cells
 
-    def _row_names(self, row: Row) -> list[str]:
-        kind = row.cell("kind")
-        if kind is not None and any(
-            k in kind.text.lower() for k in KINDS_WITHOUT_SYMBOL
-        ):
-            return []
-        for column in NAME_COLUMNS:
-            cell = row.cell(column)
-            if cell is not None:
-                return symbol_names(cell.text)
-        return []
-
-    def _check_row(self, row: Row) -> None:
-        resolved: list[tuple[Reference, list[str], bool]] = []
-        for column, cell in self._location_cells(row):
-            for reference in extract_references(cell, self.tree.top_level):
-                candidates = self._narrow(self.tree.resolve(reference.path))
-                if not candidates:
-                    self._report(
-                        row, "missing-path", f"`{reference.path}` does not exist"
-                    )
-                    continue
-                resolved.append((reference, candidates, column in CALL_SITE_COLUMNS))
-                self._record_mapped(candidates)
-        names = self._row_names(row)
-        if resolved and not names and self._row_hints(row):
-            self._check_hints(row, self._row_hints(row), resolved)
-        elif resolved:
-            self._check_symbols(row, names, resolved)
-        self._check_size(row, resolved)
-
-    def _record_mapped(self, candidates: list[str]) -> None:
-        """Files a row names: one unambiguous file, or every match of a glob.
-
-        An ambiguous basename maps none of its candidates, and a directory
-        maps none of its contents.
-        """
-        files = [c for c in candidates if c in self.tree.files]
-        if len(files) == 1 or len(files) == len(candidates) > 1:
-            self.mapped.update(files)
+class MapHintChecks(_Base):
+    """A prose row's line hints: the functions its prose names, where they are
+    defined, the lines that mention them, and whether the cited line sits inside
+    one."""
 
     def _row_hints(self, row: Row) -> list[str]:
         if any(column in row.header for column in NAME_COLUMNS):
@@ -827,6 +773,12 @@ class MapCheck:
             re.search(rf"(?<!\w){re.escape(hint)}(?!\w)", source.lines[line - 1])
             for hint in hints
         )
+
+
+class MapSymbolChecks(_Base):
+    """A symbol row's checks: the symbol is defined where the row says, its cited
+    line falls inside the file, its anchor sits at that line, and drift is reported
+    with a fix."""
 
     def _check_symbols(
         self,
@@ -911,7 +863,8 @@ class MapCheck:
             if lines:
                 return [], lines
         if name.rsplit(".", 1)[-1] == Path(path).stem:
-            return [], [1]  # the row names the module itself
+            # The row names the module itself
+            return [], [1]
         return [], []
 
     def _check_anchor(
@@ -956,40 +909,10 @@ class MapCheck:
             tuple(fixes),
         )
 
-    # -- sizes --------------------------------------------------------------
 
-    def _check_size(
-        self, row: Row, resolved: list[tuple[Reference, list[str], bool]]
-    ) -> None:
-        column = next(
-            (
-                c
-                for c in (*EXACT_SIZE_COLUMNS, *APPROXIMATE_SIZE_COLUMNS)
-                if c in row.header
-            ),
-            None,
-        )
-        cell = row.cell(column) if column else None
-        match = _SIZE_CELL.match(cell.text) if cell else None
-        files = {c for _, candidates, _ in resolved for c in candidates}
-        if cell is None or match is None or len(files) != 1:
-            return
-        source = self.tree.source(files.pop())
-        if source is None:
-            return
-        claimed, actual = int(match.group("count")), source.line_count
-        approximate = bool(match.group("approx")) or column in APPROXIMATE_SIZE_COLUMNS
-        if claimed == actual or (
-            approximate and abs(claimed - actual) <= actual * APPROXIMATE_SIZE_TOLERANCE
-        ):
-            return
-        span = (cell.start + match.start("count"), cell.start + match.end("count"))
-        self._report(
-            row,
-            "loc-drift",
-            f"claims {match.group('approx')}{claimed} lines, the file has {actual}",
-            (self._fix(row, span, str(actual)),),
-        )
+class MapMigrationChecks(_Base):
+    """The migrations table: every revision mapped, and each cited chain range
+    matching the revisions it names."""
 
     # -- migrations ---------------------------------------------------------
 
@@ -1051,6 +974,143 @@ class MapCheck:
                     tuple(fixes),
                 )
             )
+
+
+@dataclass
+class MapCheck(MapHintChecks, MapMigrationChecks, MapSymbolChecks):
+    """Checks one map file's tables against the tree."""
+
+    tree: Tree
+    doc: str
+    lines: list[str]
+    findings: list[Finding] = field(default_factory=list)
+    scope: frozenset[str] = frozenset()
+    mapped: set[str] = field(default_factory=set)
+
+    def run(self) -> list[Finding]:
+        rows = parse_table_rows(self.lines)
+        self.scope = self._slice_scope(rows)
+        for row in rows:
+            self._check_row(row)
+        if self.doc.endswith("/" + MIGRATIONS_SLICE):
+            self._check_migrations(rows)
+        return self.findings
+
+    def _report(
+        self, row: Row, kind: str, message: str, fixes: tuple[Fix, ...] = ()
+    ) -> None:
+        self.findings.append(Finding(self.doc, row.line_index, kind, message, fixes))
+
+    def _fix(self, row: Row, span: tuple[int, int], text: str) -> Fix:
+        return Fix(self.doc, row.line_index, span[0], span[1], text)
+
+    def _slice_scope(self, rows: list[Row]) -> frozenset[str]:
+        """Paths this slice's Files tables list, to settle abbreviated refs."""
+        scope: set[str] = set()
+        for row in rows:
+            cell = row.cell("path") if "role" in row.header else None
+            for reference in (
+                extract_references(cell, self.tree.top_level) if cell else []
+            ):
+                scope.update(self.tree.resolve(reference.path))
+        return frozenset(scope)
+
+    def _narrow(self, candidates: list[str]) -> list[str]:
+        in_scope = [
+            c
+            for c in candidates
+            if any(c == s or c.startswith(s + "/") for s in self.scope)
+        ]
+        return in_scope or candidates
+
+    # -- rows ---------------------------------------------------------------
+
+    def _location_cells(self, row: Row) -> list[tuple[str, Cell]]:
+        cells = []
+        for column in LOCATION_COLUMNS:
+            if column == "path" and "role" not in row.header:
+                # An endpoint table's Path is a URL
+                continue
+            cell = row.cell(column)
+            if cell is not None and cell.text:
+                cells.append((column, cell))
+        return cells
+
+    def _row_names(self, row: Row) -> list[str]:
+        kind = row.cell("kind")
+        if kind is not None and any(
+            k in kind.text.lower() for k in KINDS_WITHOUT_SYMBOL
+        ):
+            return []
+        for column in NAME_COLUMNS:
+            cell = row.cell(column)
+            if cell is not None:
+                return symbol_names(cell.text)
+        return []
+
+    def _check_row(self, row: Row) -> None:
+        resolved: list[tuple[Reference, list[str], bool]] = []
+        for column, cell in self._location_cells(row):
+            for reference in extract_references(cell, self.tree.top_level):
+                candidates = self._narrow(self.tree.resolve(reference.path))
+                if not candidates:
+                    self._report(
+                        row, "missing-path", f"`{reference.path}` does not exist"
+                    )
+                    continue
+                resolved.append((reference, candidates, column in CALL_SITE_COLUMNS))
+                self._record_mapped(candidates)
+        names = self._row_names(row)
+        if resolved and not names and self._row_hints(row):
+            self._check_hints(row, self._row_hints(row), resolved)
+        elif resolved:
+            self._check_symbols(row, names, resolved)
+        self._check_size(row, resolved)
+
+    def _record_mapped(self, candidates: list[str]) -> None:
+        """Files a row names: one unambiguous file, or every match of a glob.
+
+        An ambiguous basename maps none of its candidates, and a directory
+        maps none of its contents.
+        """
+        files = [c for c in candidates if c in self.tree.files]
+        if len(files) == 1 or len(files) == len(candidates) > 1:
+            self.mapped.update(files)
+
+    # -- sizes --------------------------------------------------------------
+
+    def _check_size(
+        self, row: Row, resolved: list[tuple[Reference, list[str], bool]]
+    ) -> None:
+        column = next(
+            (
+                c
+                for c in (*EXACT_SIZE_COLUMNS, *APPROXIMATE_SIZE_COLUMNS)
+                if c in row.header
+            ),
+            None,
+        )
+        cell = row.cell(column) if column else None
+        match = _SIZE_CELL.match(cell.text) if cell else None
+        files = {c for _, candidates, _ in resolved for c in candidates}
+        if cell is None or match is None or len(files) != 1:
+            return
+        source = self.tree.source(files.pop())
+        if source is None:
+            return
+        claimed, actual = int(match.group("count")), source.line_count
+        approximate = bool(match.group("approx")) or column in APPROXIMATE_SIZE_COLUMNS
+        if claimed == actual or (
+            approximate and abs(claimed - actual) <= actual * APPROXIMATE_SIZE_TOLERANCE
+        ):
+            return
+        span = (cell.start + match.start("count"), cell.start + match.end("count"))
+        self._report(
+            row,
+            "loc-drift",
+            f"claims {match.group('approx')}{claimed} lines, the file has {actual}",
+            (self._fix(row, span, str(actual)),),
+        )
 
 
 def _aliases(name: str) -> list[str]:

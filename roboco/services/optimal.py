@@ -17,7 +17,7 @@ import re
 import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 from uuid import UUID
 
 import structlog
@@ -54,6 +54,11 @@ from roboco.services.optimal_brain.indexes.playbooks import IndexPlaybookParams
 from roboco.services.optimal_brain.indexes.reviews import (
     RecordReviewParams as ReviewParams,
 )
+
+if TYPE_CHECKING:
+    from roboco.services._optimal_service_types import OptimalServiceSelf as _Base
+else:
+    _Base = object
 
 logger = structlog.get_logger()
 
@@ -212,39 +217,9 @@ PLUGIN_REGISTRY: dict[IndexType, type[BaseIndexPlugin]] = {
 }
 
 
-class OptimalService:
-    """
-    Service for knowledge base operations and RAG queries.
-
-    Uses a plugin-based architecture over an in-house PostgreSQL/pgvector
-    vector store. Manages multiple indexes for different content types:
-
-    Existing:
-    - Code: Repositories, functions, classes
-    - Documentation: READMEs, API docs, guides
-    - Conversations: Extracted messages from agent streams
-    - Journals: Agent journal entries
-
-    New (Optimal Brain):
-    - Errors: Error patterns and solutions
-    - Standards: Coding standards, security policies, workflow rules
-    - Decisions: Architectural and design decisions
-    - Reviews: Code review feedback
-    - Learnings: Cross-agent learnings
-    """
-
-    def __init__(self) -> None:
-        self._initialized = False
-        self._plugins: dict[IndexType, BaseIndexPlugin] = {}
-        self._prompt_templates: dict[str, dict[str, Any]] = {}
-        # Background indexing task
-        self._indexing_task: Any = None
-        # Periodic update task
-        self._periodic_update_task: Any = None
-        # Track file modification times
-        self._file_mtimes: dict[str, float] = {}
-        # Cached docs root path
-        self._docs_root: Path | None = None
+class OptimalStartup(_Base):
+    """Starting the service: initializing its plugins, warming the embedder, and
+    indexing the docs on startup."""
 
     async def initialize(self) -> None:
         """
@@ -533,6 +508,69 @@ class OptimalService:
         else:
             await self.index_documentation([str(md_file)])
 
+    async def auto_index_on_startup(
+        self,
+        code_sources: list[str] | None = None,
+        docs_sources: list[str] | None = None,
+        force: bool = False,
+    ) -> dict[str, int]:
+        """
+        Auto-index docs if indexes are empty.
+
+        Called during bootstrap to ensure RAG has content to search.
+
+        NOTE: Code indexing has been deprecated.
+
+        Args:
+            code_sources: DEPRECATED - ignored
+            docs_sources: Paths to index for docs (default: auto-detect)
+            force: Force re-index even if not empty
+
+        Returns:
+            Dict with counts: {"code": 0, "docs": M}
+        """
+        # Deprecated
+        _ = code_sources
+        if not self._initialized:
+            await self.initialize()
+
+        if docs_sources is None:
+            # Try Docker paths first, then local
+            for path in ["/app/docs", "docs/"]:
+                if Path(path).exists():
+                    docs_sources = [path]
+                    break
+            docs_sources = docs_sources or ["docs/"]
+
+        # Code always 0 - deprecated
+        result = {"code": 0, "docs": 0}
+
+        # Check docs index
+        docs_plugin = self._get_plugin(IndexType.DOCUMENTATION)
+        docs_count = await docs_plugin.count()
+
+        if docs_count == 0 or force:
+            logger.info(
+                "Auto-indexing documentation",
+                sources=docs_sources,
+                reason="empty" if docs_count == 0 else "forced",
+            )
+            result["docs"] = await self.index_documentation(
+                docs_sources, project="roboco"
+            )
+
+        if result["docs"] > 0:
+            logger.info("Auto-indexing complete", doc_files=result["docs"])
+        else:
+            logger.info("Indexes already populated, skipping auto-index")
+
+        return result
+
+
+class OptimalPeriodicUpdate(_Base):
+    """The periodic update: scanning the docs root for changed and deleted files,
+    reconciling deletions, and re-indexing."""
+
     # =========================================================================
     # PERIODIC UPDATE (File Change Detection)
     # =========================================================================
@@ -576,7 +614,6 @@ class OptimalService:
                 break
             except Exception as e:
                 logger.error("Periodic update check failed", error=str(e))
-                # Continue running despite errors
 
     def _resolve_docs_root(self) -> Path | None:
         """Resolve and cache the docs root directory."""
@@ -791,64 +828,10 @@ class OptimalService:
                 deleted=total_deleted,
             )
 
-    async def close(self) -> None:
-        """Cleanup resources."""
-        import contextlib
 
-        # Cancel the startup indexing task FIRST — it can still be mid-flight
-        # (slow Ollama, large repo) and writes through the plugins cleared
-        # below. Cancelling before clearing prevents writes against closed
-        # plugins. Its tail also starts the periodic task, so cancel it first.
-        if self._indexing_task and not self._indexing_task.done():
-            self._indexing_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._indexing_task
-
-        # Cancel periodic update task
-        if self._periodic_update_task and not self._periodic_update_task.done():
-            self._periodic_update_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._periodic_update_task
-
-        for plugin in self._plugins.values():
-            await plugin.close()
-        self._plugins.clear()
-        self._initialized = False
-
-        # Close shared embedder
-        from roboco.services.optimal_brain.shared_embedder import close_shared_embedder
-
-        await close_shared_embedder()
-        logger.info("OptimalService closed")
-
-    def _get_plugin(self, index_type: IndexType) -> BaseIndexPlugin:
-        """Get the plugin for an index type.
-
-        Raises a clear error when a plugin is missing (e.g. removed or
-        failed to initialize), rather than leaking a bare KeyError.
-        """
-        if not self._initialized:
-            raise RuntimeError(
-                "OptimalService not initialized. Call initialize() first."
-            )
-        plugin = self._plugins.get(index_type)
-        if plugin is None:
-            available = sorted(t.value for t in self._plugins)
-            raise RuntimeError(
-                f"No plugin registered for index type '{index_type.value}'. "
-                f"Available: {available}. "
-                "This usually means the index is disabled or failed to initialize."
-            )
-        return plugin
-
-    def is_index_registered(self, index_type: IndexType) -> bool:
-        """Whether a live plugin is registered for *index_type*.
-
-        Distinguishes a valid-but-deprecated index (e.g. ``code``) from an
-        active one, so callers can return 404 instead of leaking a 500 from
-        :meth:`_get_plugin`.
-        """
-        return self._initialized and index_type in self._plugins
+class OptimalDocsIndexing(_Base):
+    """Indexing code, documentation, journal entries, playbooks and vault notes, the
+    tracking rows for what is indexed, and unindexing."""
 
     # =========================================================================
     # INDEXING OPERATIONS (Existing - Backwards Compatible)
@@ -1264,6 +1247,11 @@ class OptimalService:
                 error=str(exc),
             )
 
+
+class OptimalKnowledgeIndexing(_Base):
+    """Indexing what the company learns: errors, standards and the standards file,
+    decisions, reviews and learnings."""
+
     # =========================================================================
     # INDEXING OPERATIONS (New - Optimal Brain)
     # =========================================================================
@@ -1449,6 +1437,11 @@ class OptimalService:
             )
 
         return count
+
+
+class OptimalSearch(_Base):
+    """Searching: across indexes and one index, with gaps and citations, and the
+    synthesized answer to a query."""
 
     # =========================================================================
     # SEARCH OPERATIONS
@@ -1872,6 +1865,11 @@ class OptimalService:
 
         return self._build_fallback_summary(citations)
 
+
+class OptimalSpecializedSearch(_Base):
+    """Searches over one kind of knowledge: errors, standards, decisions, learnings,
+    and a file's reviews."""
+
     # =========================================================================
     # SPECIALIZED SEARCH (Optimal Brain)
     # =========================================================================
@@ -1941,6 +1939,11 @@ class OptimalService:
             return await plugin.get_reviews_for_file(file_path, top_k)
         outcome = await plugin.search(query=f"review {file_path}", top_k=top_k)
         return outcome.results
+
+
+class OptimalIndexStats(_Base):
+    """Index statistics and staleness: per-index and overall stats, stale source
+    files, and when each index was last refreshed."""
 
     # =========================================================================
     # UTILITY OPERATIONS
@@ -2175,63 +2178,10 @@ class OptimalService:
         result["needs_reindex"] = len(result["stale_indexes"]) > 0
         return result
 
-    async def auto_index_on_startup(
-        self,
-        code_sources: list[str] | None = None,
-        docs_sources: list[str] | None = None,
-        force: bool = False,
-    ) -> dict[str, int]:
-        """
-        Auto-index docs if indexes are empty.
 
-        Called during bootstrap to ensure RAG has content to search.
-
-        NOTE: Code indexing has been deprecated.
-
-        Args:
-            code_sources: DEPRECATED - ignored
-            docs_sources: Paths to index for docs (default: auto-detect)
-            force: Force re-index even if not empty
-
-        Returns:
-            Dict with counts: {"code": 0, "docs": M}
-        """
-        # Deprecated
-        _ = code_sources
-        if not self._initialized:
-            await self.initialize()
-
-        if docs_sources is None:
-            # Try Docker paths first, then local
-            for path in ["/app/docs", "docs/"]:
-                if Path(path).exists():
-                    docs_sources = [path]
-                    break
-            docs_sources = docs_sources or ["docs/"]
-
-        # Code always 0 - deprecated
-        result = {"code": 0, "docs": 0}
-
-        # Check docs index
-        docs_plugin = self._get_plugin(IndexType.DOCUMENTATION)
-        docs_count = await docs_plugin.count()
-
-        if docs_count == 0 or force:
-            logger.info(
-                "Auto-indexing documentation",
-                sources=docs_sources,
-                reason="empty" if docs_count == 0 else "forced",
-            )
-            result["docs"] = await self.index_documentation(
-                docs_sources, project="roboco"
-            )
-
-        if result["docs"] > 0:
-            logger.info("Auto-indexing complete", doc_files=result["docs"])
-        else:
-            logger.info("Indexes already populated, skipping auto-index")
-
-        return result
+class OptimalPromptsAndHealth(_Base):
+    """Prompt templates, clearing and refreshing an index, listing its documents,
+    and the embedding, LLM and vector store health checks."""
 
     # =========================================================================
     # PROMPT TEMPLATE MANAGEMENT
@@ -2420,6 +2370,111 @@ class OptimalService:
         llm_ok = await self._check_llm_health(details, timeout)
         vector_ok = await self._check_vector_store_health(details, timeout)
         return embedding_ok, llm_ok, vector_ok, details
+
+
+class OptimalService(
+    OptimalDocsIndexing,
+    OptimalIndexStats,
+    OptimalKnowledgeIndexing,
+    OptimalPeriodicUpdate,
+    OptimalPromptsAndHealth,
+    OptimalSearch,
+    OptimalSpecializedSearch,
+    OptimalStartup,
+):
+    """
+    Service for knowledge base operations and RAG queries.
+
+    Uses a plugin-based architecture over an in-house PostgreSQL/pgvector
+    vector store. Manages multiple indexes for different content types:
+
+    Existing:
+    - Code: Repositories, functions, classes
+    - Documentation: READMEs, API docs, guides
+    - Conversations: Extracted messages from agent streams
+    - Journals: Agent journal entries
+
+    New (Optimal Brain):
+    - Errors: Error patterns and solutions
+    - Standards: Coding standards, security policies, workflow rules
+    - Decisions: Architectural and design decisions
+    - Reviews: Code review feedback
+    - Learnings: Cross-agent learnings
+    """
+
+    def __init__(self) -> None:
+        self._initialized = False
+        self._plugins: dict[IndexType, BaseIndexPlugin] = {}
+        self._prompt_templates: dict[str, dict[str, Any]] = {}
+        # Background indexing task
+        self._indexing_task: Any = None
+        # Periodic update task
+        self._periodic_update_task: Any = None
+        # Track file modification times
+        self._file_mtimes: dict[str, float] = {}
+        # Cached docs root path
+        self._docs_root: Path | None = None
+
+    # Continue running despite errors
+
+    async def close(self) -> None:
+        """Cleanup resources."""
+        import contextlib
+
+        # Cancel the startup indexing task FIRST — it can still be mid-flight
+        # (slow Ollama, large repo) and writes through the plugins cleared
+        # below. Cancelling before clearing prevents writes against closed
+        # plugins. Its tail also starts the periodic task, so cancel it first.
+        if self._indexing_task and not self._indexing_task.done():
+            self._indexing_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._indexing_task
+
+        # Cancel periodic update task
+        if self._periodic_update_task and not self._periodic_update_task.done():
+            self._periodic_update_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._periodic_update_task
+
+        for plugin in self._plugins.values():
+            await plugin.close()
+        self._plugins.clear()
+        self._initialized = False
+
+        # Close shared embedder
+        from roboco.services.optimal_brain.shared_embedder import close_shared_embedder
+
+        await close_shared_embedder()
+        logger.info("OptimalService closed")
+
+    def _get_plugin(self, index_type: IndexType) -> BaseIndexPlugin:
+        """Get the plugin for an index type.
+
+        Raises a clear error when a plugin is missing (e.g. removed or
+        failed to initialize), rather than leaking a bare KeyError.
+        """
+        if not self._initialized:
+            raise RuntimeError(
+                "OptimalService not initialized. Call initialize() first."
+            )
+        plugin = self._plugins.get(index_type)
+        if plugin is None:
+            available = sorted(t.value for t in self._plugins)
+            raise RuntimeError(
+                f"No plugin registered for index type '{index_type.value}'. "
+                f"Available: {available}. "
+                "This usually means the index is disabled or failed to initialize."
+            )
+        return plugin
+
+    def is_index_registered(self, index_type: IndexType) -> bool:
+        """Whether a live plugin is registered for *index_type*.
+
+        Distinguishes a valid-but-deprecated index (e.g. ``code``) from an
+        active one, so callers can return 404 instead of leaking a 500 from
+        :meth:`_get_plugin`.
+        """
+        return self._initialized and index_type in self._plugins
 
 
 class _OptimalServiceHolder:

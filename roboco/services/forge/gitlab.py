@@ -43,11 +43,27 @@ import httpx
 
 from roboco.config import settings
 from roboco.exceptions import GitError
-from roboco.services.forge.base import GitProvider, RepoRef
+from roboco.services.forge.base import (
+    ForgeBranches,
+    ForgeCI,
+    ForgePullRequests,
+    ForgeReleases,
+    ForgeRepository,
+    ForgeReviews,
+    GitProvider,
+    RepoRef,
+)
 from roboco.services.forge.shaping import ShapedResponse, not_implemented
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
+
+if TYPE_CHECKING:
+    from roboco.services.forge._gitlab_provider_types import (
+        GitLabProviderSelf as _Base,
+    )
+else:
+    _Base = object
 
 # GitLab MR list `state` param: "open" is GitHub/RoboCo's vocabulary, GitLab
 # calls it "opened". Every other value (closed/merged/locked/all) passes
@@ -89,56 +105,9 @@ def _project_path(name: str) -> str:
     return slug or "project"
 
 
-class GitLabProvider(GitProvider):
-    """Self-hosted or gitlab.com REST v4 transport, addressed by instance host."""
-
-    def __init__(self, host: str, scheme: str = "https") -> None:
-        self._host = host.strip().rstrip("/")
-        self._scheme = scheme
-        self._repo_url_re = re.compile(
-            re.escape(self._host) + r"[:/]+(?P<path>[^\s]+?)(?:\.git)?$"
-        )
-
-    def _project_base(self, repo: RepoRef) -> str:
-        # RepoRef.owner carries the FULL namespace path (subgroups included);
-        # GitLab addresses a project by that path (or numeric id) URL-encoded
-        # as a single path segment.
-        encoded = quote(repo.owner, safe="")
-        return f"{self._scheme}://{self._host}/api/v4/projects/{encoded}"
-
-    def _url(self, repo: RepoRef, *segments: str) -> str:
-        base = self._project_base(repo)
-        return "/".join([base, *segments]) if segments else base
-
-    @staticmethod
-    def _headers(token: str) -> dict[str, str]:
-        return {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-
-    async def _send(
-        self,
-        method: str,
-        url: str,
-        *,
-        headers: Mapping[str, str],
-        json_body: dict[str, Any] | None = None,
-        params: dict[str, Any] | None = None,
-        client: httpx.AsyncClient | None = None,
-        timeout: float | None = None,
-    ) -> httpx.Response:
-        kwargs: dict[str, Any] = {"headers": headers}
-        if json_body is not None:
-            kwargs["json"] = json_body
-        if params is not None:
-            kwargs["params"] = params
-        if client is not None:
-            if timeout is not None:
-                kwargs["timeout"] = timeout
-            return cast("httpx.Response", await getattr(client, method)(url, **kwargs))
-        owned_timeout = timeout if timeout is not None else _default_timeout()
-        async with httpx.AsyncClient(timeout=owned_timeout) as owned_client:
-            return cast(
-                "httpx.Response", await getattr(owned_client, method)(url, **kwargs)
-            )
+class GitLabRepository(ForgeRepository, _Base):
+    """`ForgeRepository` over GitLab's REST v4 API, with the namespace lookup and
+    the project-create reshaping that creating a repo under a group needs."""
 
     # -- identity ------------------------------------------------------------
 
@@ -159,6 +128,156 @@ class GitLabProvider(GitProvider):
                 {"host": self._host, "path": match.group("path")},
             )
         return RepoRef("/".join(segments), "", host=self._host)
+
+    # -- repo / labels / branches / releases -----------------------------------
+
+    async def get_repo(
+        self,
+        repo: RepoRef,
+        token: str,
+        *,
+        client: httpx.AsyncClient | None = None,
+        timeout: float | None = None,
+    ) -> Any:
+        """GitLab names merge-method settings differently — reshape onto
+        GitHub's ``allow_*`` keys the merge-method fallback reads."""
+        resp = await self._send(
+            "get",
+            self._url(repo),
+            headers=self._headers(token),
+            client=client,
+            timeout=timeout,
+        )
+        if not resp.is_success:
+            return resp
+        data = resp.json()
+        if not isinstance(data, dict):
+            return resp
+        squash_option = data.get("squash_option")
+        merge_method = data.get("merge_method")
+        shaped = dict(data)
+        shaped["full_name"] = data.get("path_with_namespace") or ""
+        shaped["html_url"] = data.get("web_url") or ""
+        shaped["clone_url"] = data.get("http_url_to_repo") or ""
+        shaped["allow_squash_merge"] = (
+            squash_option != "never" if squash_option else True
+        )
+        shaped["allow_merge_commit"] = merge_method in (None, "merge")
+        shaped["allow_rebase_merge"] = merge_method in ("rebase_merge", "ff")
+        return ShapedResponse(resp, json_payload=shaped)
+
+    async def ensure_label(
+        self, repo: RepoRef, token: str, name: str, color: str
+    ) -> httpx.Response:
+        # GitLab wants the leading '#' on label colors; GitHub omits it.
+        hex_color = color if color.startswith("#") else f"#{color}"
+        return await self._send(
+            "post",
+            self._url(repo, "labels"),
+            headers=self._headers(token),
+            json_body={"name": name, "color": hex_color},
+        )
+
+    async def create_org_repo(
+        self,
+        token: str,
+        org: str,
+        *,
+        name: str,
+        description: str,
+        private: bool,
+        auto_init: bool,
+        client: httpx.AsyncClient | None = None,
+        timeout: float | None = None,
+    ) -> Any:
+        """GitLab has no ``/orgs/{org}/repos`` — resolve ``org`` (a group's
+        full path, subgroups included) to its numeric namespace id and POST
+        ``/projects`` under it. A 404 group lookup means ``org`` is a
+        personal namespace instead: the project lands under the token's own
+        namespace by omitting ``namespace_id`` entirely.
+
+        Reshapes the 201 body onto the GitHub fields callers read
+        (``full_name``/``clone_url``/``html_url``), mirroring ``get_repo``.
+        GitLab signals a duplicate project path as 400 "has already been
+        taken" where GitHub uses 422 "already exists" — reshaped to 422 so
+        the status code lines up; the text is left untouched (the
+        provisioning service's already-exists match covers both phrases).
+        """
+        headers = self._headers(token)
+        base = f"{self._scheme}://{self._host}/api/v4"
+        namespace_id = await self._resolve_namespace_id(
+            org, headers=headers, client=client, timeout=timeout
+        )
+        if isinstance(namespace_id, httpx.Response | ShapedResponse):
+            # Group lookup itself errored (not a 404)
+            return namespace_id
+
+        payload: dict[str, Any] = {
+            "name": name,
+            "path": _project_path(name),
+            "description": description,
+            "visibility": "private" if private else "internal",
+            "initialize_with_readme": auto_init,
+        }
+        if namespace_id is not None:
+            payload["namespace_id"] = namespace_id
+        resp = await self._send(
+            "post",
+            f"{base}/projects",
+            headers=headers,
+            json_body=payload,
+            client=client,
+            timeout=timeout,
+        )
+        return self._shape_create_project(resp)
+
+    async def _resolve_namespace_id(
+        self,
+        org: str,
+        *,
+        headers: dict[str, str],
+        client: httpx.AsyncClient | None,
+        timeout: float | None,
+    ) -> int | httpx.Response | ShapedResponse | None:
+        """The group's numeric id, ``None`` for a personal (404) namespace,
+        or the raw error response for anything else."""
+        group_resp = await self._send(
+            "get",
+            f"{self._scheme}://{self._host}/api/v4/groups/{quote(org, safe='')}",
+            headers=headers,
+            client=client,
+            timeout=timeout,
+        )
+        if group_resp.is_success:
+            group_data = group_resp.json()
+            return group_data.get("id") if isinstance(group_data, dict) else None
+        if group_resp.status_code == httpx.codes.NOT_FOUND:
+            return None
+        return group_resp
+
+    @staticmethod
+    def _shape_create_project(resp: httpx.Response) -> Any:
+        """Reshape a project-create response onto the GitHub fields callers
+        read, and GitLab's duplicate-path 400 onto GitHub's 422."""
+        if (
+            resp.status_code == httpx.codes.BAD_REQUEST
+            and "has already been taken" in resp.text
+        ):
+            return ShapedResponse(resp, status_code=httpx.codes.UNPROCESSABLE_ENTITY)
+        if not resp.is_success:
+            return resp
+        data = resp.json()
+        if not isinstance(data, dict):
+            return resp
+        shaped = dict(data)
+        shaped["full_name"] = data.get("path_with_namespace") or ""
+        shaped["html_url"] = data.get("web_url") or ""
+        shaped["clone_url"] = data.get("http_url_to_repo") or ""
+        return ShapedResponse(resp, json_payload=shaped)
+
+
+class GitLabPullRequests(ForgePullRequests, _Base):
+    """`ForgePullRequests` over GitLab's merge requests, shaped as GitHub pull rows."""
 
     # -- pull requests (merge requests) --------------------------------------
 
@@ -334,6 +453,21 @@ class GitLabProvider(GitProvider):
             json_body={"squash": merge_method == "squash"},
         )
 
+    async def mark_pr_ready_for_review(
+        self, repo: RepoRef, token: str, pr_node_id: str
+    ) -> Any:
+        """Only GitHub-backed PRs are adopted from Entire, so nothing here
+        is ever un-drafted: a shaped 501."""
+        _ = (repo, token, pr_node_id)
+        return not_implemented(
+            f"{self._scheme}://{self._host}",
+            "GitLab: un-drafting a pull request is not supported",
+        )
+
+
+class GitLabReviews(ForgeReviews, _Base):
+    """`ForgeReviews` over GitLab's REST API."""
+
     async def request_reviewers(
         self, repo: RepoRef, token: str, pr_number: int, reviewers: list[str]
     ) -> Any:
@@ -370,16 +504,31 @@ class GitLabProvider(GitProvider):
             json_body={"body": body},
         )
 
-    async def mark_pr_ready_for_review(
-        self, repo: RepoRef, token: str, pr_node_id: str
-    ) -> Any:
-        """Only GitHub-backed PRs are adopted from Entire, so nothing here
-        is ever un-drafted: a shaped 501."""
-        _ = (repo, token, pr_node_id)
-        return not_implemented(
-            f"{self._scheme}://{self._host}",
-            "GitLab: un-drafting a pull request is not supported",
+    async def add_labels(
+        self, repo: RepoRef, token: str, pr_number: int, labels: list[str]
+    ) -> httpx.Response:
+        return await self._send(
+            "put",
+            self._url(repo, "merge_requests", str(pr_number)),
+            headers=self._headers(token),
+            json_body={"add_labels": ",".join(labels)},
         )
+
+    async def create_issue_comment(
+        self, repo: RepoRef, token: str, issue_number: int, body: str
+    ) -> httpx.Response:
+        # RoboCo only ever comments on PRs — GitLab's PR comments live under
+        # the merge-request "notes" endpoint, not a separate issues API call.
+        return await self._send(
+            "post",
+            self._url(repo, "merge_requests", str(issue_number), "notes"),
+            headers=self._headers(token),
+            json_body={"body": body},
+        )
+
+
+class GitLabBranches(ForgeBranches, _Base):
+    """`ForgeBranches` over GitLab's REST API."""
 
     async def merge_branch(
         self, repo: RepoRef, token: str, *, base: str, head: str, commit_message: str
@@ -439,6 +588,21 @@ class GitLabProvider(GitProvider):
         return not_implemented(
             f"{self._scheme}://{self._host}", _NO_SERVER_SIDE_COMMITS
         )
+
+    async def delete_branch_ref(
+        self, repo: RepoRef, token: str, branch: str, *, timeout: float | None = None
+    ) -> httpx.Response:
+        return await self._send(
+            "delete",
+            self._url(repo, "repository", "branches", quote(branch, safe="")),
+            headers=self._headers(token),
+            timeout=timeout,
+        )
+
+
+class GitLabCI(ForgeCI, _Base):
+    """`ForgeCI` over GitLab's pipelines and commit statuses, shaped as GitHub check
+    runs."""
 
     # -- CI --------------------------------------------------------------------
 
@@ -530,86 +694,9 @@ class GitLabProvider(GitProvider):
         total = 1 if isinstance(pipelines, list) and pipelines else 0
         return ShapedResponse(resp, json_payload={"total_count": total})
 
-    # -- repo / labels / branches / releases -----------------------------------
 
-    async def get_repo(
-        self,
-        repo: RepoRef,
-        token: str,
-        *,
-        client: httpx.AsyncClient | None = None,
-        timeout: float | None = None,
-    ) -> Any:
-        """GitLab names merge-method settings differently — reshape onto
-        GitHub's ``allow_*`` keys the merge-method fallback reads."""
-        resp = await self._send(
-            "get",
-            self._url(repo),
-            headers=self._headers(token),
-            client=client,
-            timeout=timeout,
-        )
-        if not resp.is_success:
-            return resp
-        data = resp.json()
-        if not isinstance(data, dict):
-            return resp
-        squash_option = data.get("squash_option")
-        merge_method = data.get("merge_method")
-        shaped = dict(data)
-        shaped["full_name"] = data.get("path_with_namespace") or ""
-        shaped["html_url"] = data.get("web_url") or ""
-        shaped["clone_url"] = data.get("http_url_to_repo") or ""
-        shaped["allow_squash_merge"] = (
-            squash_option != "never" if squash_option else True
-        )
-        shaped["allow_merge_commit"] = merge_method in (None, "merge")
-        shaped["allow_rebase_merge"] = merge_method in ("rebase_merge", "ff")
-        return ShapedResponse(resp, json_payload=shaped)
-
-    async def ensure_label(
-        self, repo: RepoRef, token: str, name: str, color: str
-    ) -> httpx.Response:
-        # GitLab wants the leading '#' on label colors; GitHub omits it.
-        hex_color = color if color.startswith("#") else f"#{color}"
-        return await self._send(
-            "post",
-            self._url(repo, "labels"),
-            headers=self._headers(token),
-            json_body={"name": name, "color": hex_color},
-        )
-
-    async def add_labels(
-        self, repo: RepoRef, token: str, pr_number: int, labels: list[str]
-    ) -> httpx.Response:
-        return await self._send(
-            "put",
-            self._url(repo, "merge_requests", str(pr_number)),
-            headers=self._headers(token),
-            json_body={"add_labels": ",".join(labels)},
-        )
-
-    async def delete_branch_ref(
-        self, repo: RepoRef, token: str, branch: str, *, timeout: float | None = None
-    ) -> httpx.Response:
-        return await self._send(
-            "delete",
-            self._url(repo, "repository", "branches", quote(branch, safe="")),
-            headers=self._headers(token),
-            timeout=timeout,
-        )
-
-    async def create_issue_comment(
-        self, repo: RepoRef, token: str, issue_number: int, body: str
-    ) -> httpx.Response:
-        # RoboCo only ever comments on PRs — GitLab's PR comments live under
-        # the merge-request "notes" endpoint, not a separate issues API call.
-        return await self._send(
-            "post",
-            self._url(repo, "merge_requests", str(issue_number), "notes"),
-            headers=self._headers(token),
-            json_body={"body": body},
-        )
+class GitLabReleases(ForgeReleases, _Base):
+    """`ForgeReleases` over GitLab's REST API."""
 
     async def create_release(
         self,
@@ -644,98 +731,62 @@ class GitLabProvider(GitProvider):
         shaped["html_url"] = links.get("self") or ""
         return ShapedResponse(resp, json_payload=shaped)
 
-    async def create_org_repo(
-        self,
-        token: str,
-        org: str,
-        *,
-        name: str,
-        description: str,
-        private: bool,
-        auto_init: bool,
-        client: httpx.AsyncClient | None = None,
-        timeout: float | None = None,
-    ) -> Any:
-        """GitLab has no ``/orgs/{org}/repos`` — resolve ``org`` (a group's
-        full path, subgroups included) to its numeric namespace id and POST
-        ``/projects`` under it. A 404 group lookup means ``org`` is a
-        personal namespace instead: the project lands under the token's own
-        namespace by omitting ``namespace_id`` entirely.
 
-        Reshapes the 201 body onto the GitHub fields callers read
-        (``full_name``/``clone_url``/``html_url``), mirroring ``get_repo``.
-        GitLab signals a duplicate project path as 400 "has already been
-        taken" where GitHub uses 422 "already exists" — reshaped to 422 so
-        the status code lines up; the text is left untouched (the
-        provisioning service's already-exists match covers both phrases).
-        """
-        headers = self._headers(token)
-        base = f"{self._scheme}://{self._host}/api/v4"
-        namespace_id = await self._resolve_namespace_id(
-            org, headers=headers, client=client, timeout=timeout
-        )
-        if isinstance(namespace_id, httpx.Response | ShapedResponse):
-            return namespace_id  # group lookup itself errored (not a 404)
+class GitLabProvider(
+    GitLabBranches,
+    GitLabCI,
+    GitLabPullRequests,
+    GitLabReleases,
+    GitLabRepository,
+    GitLabReviews,
+    GitProvider,
+):
+    """Self-hosted or gitlab.com REST v4 transport, addressed by instance host."""
 
-        payload: dict[str, Any] = {
-            "name": name,
-            "path": _project_path(name),
-            "description": description,
-            "visibility": "private" if private else "internal",
-            "initialize_with_readme": auto_init,
-        }
-        if namespace_id is not None:
-            payload["namespace_id"] = namespace_id
-        resp = await self._send(
-            "post",
-            f"{base}/projects",
-            headers=headers,
-            json_body=payload,
-            client=client,
-            timeout=timeout,
+    def __init__(self, host: str, scheme: str = "https") -> None:
+        self._host = host.strip().rstrip("/")
+        self._scheme = scheme
+        self._repo_url_re = re.compile(
+            re.escape(self._host) + r"[:/]+(?P<path>[^\s]+?)(?:\.git)?$"
         )
-        return self._shape_create_project(resp)
 
-    async def _resolve_namespace_id(
-        self,
-        org: str,
-        *,
-        headers: dict[str, str],
-        client: httpx.AsyncClient | None,
-        timeout: float | None,
-    ) -> int | httpx.Response | ShapedResponse | None:
-        """The group's numeric id, ``None`` for a personal (404) namespace,
-        or the raw error response for anything else."""
-        group_resp = await self._send(
-            "get",
-            f"{self._scheme}://{self._host}/api/v4/groups/{quote(org, safe='')}",
-            headers=headers,
-            client=client,
-            timeout=timeout,
-        )
-        if group_resp.is_success:
-            group_data = group_resp.json()
-            return group_data.get("id") if isinstance(group_data, dict) else None
-        if group_resp.status_code == httpx.codes.NOT_FOUND:
-            return None
-        return group_resp
+    def _project_base(self, repo: RepoRef) -> str:
+        # RepoRef.owner carries the FULL namespace path (subgroups included);
+        # GitLab addresses a project by that path (or numeric id) URL-encoded
+        # as a single path segment.
+        encoded = quote(repo.owner, safe="")
+        return f"{self._scheme}://{self._host}/api/v4/projects/{encoded}"
+
+    def _url(self, repo: RepoRef, *segments: str) -> str:
+        base = self._project_base(repo)
+        return "/".join([base, *segments]) if segments else base
 
     @staticmethod
-    def _shape_create_project(resp: httpx.Response) -> Any:
-        """Reshape a project-create response onto the GitHub fields callers
-        read, and GitLab's duplicate-path 400 onto GitHub's 422."""
-        if (
-            resp.status_code == httpx.codes.BAD_REQUEST
-            and "has already been taken" in resp.text
-        ):
-            return ShapedResponse(resp, status_code=httpx.codes.UNPROCESSABLE_ENTITY)
-        if not resp.is_success:
-            return resp
-        data = resp.json()
-        if not isinstance(data, dict):
-            return resp
-        shaped = dict(data)
-        shaped["full_name"] = data.get("path_with_namespace") or ""
-        shaped["html_url"] = data.get("web_url") or ""
-        shaped["clone_url"] = data.get("http_url_to_repo") or ""
-        return ShapedResponse(resp, json_payload=shaped)
+    def _headers(token: str) -> dict[str, str]:
+        return {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+
+    async def _send(
+        self,
+        method: str,
+        url: str,
+        *,
+        headers: Mapping[str, str],
+        json_body: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+        client: httpx.AsyncClient | None = None,
+        timeout: float | None = None,
+    ) -> httpx.Response:
+        kwargs: dict[str, Any] = {"headers": headers}
+        if json_body is not None:
+            kwargs["json"] = json_body
+        if params is not None:
+            kwargs["params"] = params
+        if client is not None:
+            if timeout is not None:
+                kwargs["timeout"] = timeout
+            return cast("httpx.Response", await getattr(client, method)(url, **kwargs))
+        owned_timeout = timeout if timeout is not None else _default_timeout()
+        async with httpx.AsyncClient(timeout=owned_timeout) as owned_client:
+            return cast(
+                "httpx.Response", await getattr(owned_client, method)(url, **kwargs)
+            )

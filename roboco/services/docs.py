@@ -19,6 +19,11 @@ from sqlalchemy import select
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+if TYPE_CHECKING:
+    from roboco.services._docs_service_types import DocsServiceSelf as _Base
+else:
+    _Base = object
+
 from roboco.agents_config import get_agent_role, get_agent_team
 from roboco.config import settings
 from roboco.db.tables import TaskTable
@@ -67,7 +72,8 @@ TYPE_SUBFOLDERS: dict[str, str] = {
     "api": "api",
     "qa": "qa",
     "guide": "guides",
-    "readme": "",  # Root of team folder
+    # Root of team folder
+    "readme": "",
     "changelog": "",
     "architecture": "architecture",
     "design": "design",
@@ -184,7 +190,224 @@ def _resolve_contained_path(base: Path, rel: str) -> Path:
 # =============================================================================
 
 
-class DocsService(BaseService):
+class DocsFiles(_Base):
+    """The docs tree on disk: reading, writing and deleting a file off the event
+    loop, listing a team's docs, and inferring a doc's type from its path."""
+
+    def _infer_doc_type(self, path: str) -> str:
+        """Infer doc_type from path."""
+        parts = path.split("/")
+        if len(parts) >= _MIN_PATH_PARTS_FOR_SUBFOLDER:
+            has_subfolder = len(parts) > _MIN_PATH_PARTS_FOR_SUBFOLDER
+            subfolder = parts[_SUBFOLDER_INDEX] if has_subfolder else ""
+            return next(
+                (k for k, v in TYPE_SUBFOLDERS.items() if v == subfolder),
+                "readme",
+            )
+        return "readme"
+
+    # =========================================================================
+    # INTERNAL METHODS
+    # =========================================================================
+
+    async def _write_file(self, path: Path, content: str) -> None:
+        """Write file using thread pool."""
+
+        def _do_write() -> None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(content, encoding="utf-8")
+
+        await asyncio.to_thread(_do_write)
+        self.log.debug("File written", path=str(path), size=len(content))
+
+    async def _read_file(self, path: Path) -> str:
+        """Read file using thread pool."""
+
+        def _do_read() -> str:
+            if not path.exists():
+                raise NotFoundError("Documentation file", str(path))
+            return path.read_text(encoding="utf-8")
+
+        return await asyncio.to_thread(_do_read)
+
+    async def _delete_file(self, path: Path) -> None:
+        """Delete file using thread pool."""
+
+        def _do_delete() -> None:
+            if path.exists():
+                path.unlink()
+
+        await asyncio.to_thread(_do_delete)
+        self.log.debug("File deleted", path=str(path))
+
+    async def _list_docs_for_team(self, team: str) -> list[DocRef]:
+        """List documentation files for a team from filesystem."""
+        team_path = TEAM_PATHS.get(team, team)
+        base = DOCS_BASE_PATH / team_path
+
+        def _scan_docs() -> list[DocRef]:
+            docs: list[DocRef] = []
+            if not base.exists():
+                return docs
+
+            for md_file in base.rglob("*.md"):
+                rel_path = str(md_file.relative_to(DOCS_BASE_PATH))
+                docs.append(
+                    DocRef(
+                        path=rel_path,
+                        title=md_file.stem.replace("_", " ").replace("-", " ").title(),
+                        doc_type=self._infer_doc_type(rel_path),
+                    )
+                )
+            return docs
+
+        return await asyncio.to_thread(_scan_docs)
+
+
+class DocsRecords(_Base):
+    """Where a doc is recorded besides its file: the RAG search for a similar doc,
+    the task's documents list, and the RAG index."""
+
+    async def _find_similar_doc(
+        self,
+        title: str,
+        content: str,
+        team: str,
+    ) -> str | None:
+        """
+        Search RAG for existing doc with similar content.
+
+        Uses content (not just title) to find semantically similar documents.
+        Returns the path of the similar doc if found above threshold,
+        None otherwise.
+        """
+        try:
+            from roboco.models.optimal import IndexType, QueryContext
+            from roboco.services.optimal import get_optimal_service
+
+            optimal = await get_optimal_service()
+
+            # Build search query from title + content summary
+            content_summary = (
+                content[:_CONTENT_SUMMARY_LENGTH]
+                if len(content) > _CONTENT_SUMMARY_LENGTH
+                else content
+            )
+            search_query = f"{title}\n\n{content_summary}"
+
+            # Search documentation index by content similarity
+            context = QueryContext(index_types=[IndexType.DOCUMENTATION])
+            results = await optimal.search(
+                query=search_query,
+                context=context,
+                top_k=5,
+            )
+
+            if not results:
+                return None
+
+            # Check for high-similarity match in same team
+            for result in results:
+                if result.score >= _SIMILARITY_THRESHOLD:
+                    # Check if it's in the same team's docs
+                    source = result.source or ""
+                    if source.startswith(f"{team}/") or f"/{team}/" in source:
+                        self.log.info(
+                            "Found similar existing doc by content",
+                            title=title,
+                            existing_path=source,
+                            score=result.score,
+                        )
+                        return source
+
+            return None
+
+        except Exception as e:
+            # RAG search failure shouldn't block doc creation
+            self.log.warning(
+                "RAG search for similar docs failed",
+                title=title,
+                error=str(e),
+            )
+            return None
+
+    async def _get_existing_doc_ref(self, task_id: UUID, path: str) -> DocRef | None:
+        """Get existing DocRef from task.documents by path."""
+        result = await self.session.execute(
+            select(TaskTable).where(TaskTable.id == task_id)
+        )
+        task = result.scalar_one_or_none()
+        if not task or not task.documents:
+            return None
+
+        for doc in task.documents:
+            ref = _coerce_doc_ref(doc)
+            if ref.path == path:
+                return ref
+        return None
+
+    async def _add_doc_to_task(self, task_id: UUID, doc_ref: DocRef) -> None:
+        """Add DocRef to task.documents."""
+        result = await self.session.execute(
+            select(TaskTable).where(TaskTable.id == task_id)
+        )
+        task = result.scalar_one_or_none()
+        if not task:
+            raise NotFoundError("Task", str(task_id))
+
+        # Append to documents list
+        docs = list(task.documents or [])
+
+        # Check if doc with same path exists (update) or new (create)
+        existing_idx = next(
+            (i for i, d in enumerate(docs) if d.get("path") == doc_ref.path),
+            None,
+        )
+
+        if existing_idx is not None:
+            docs[existing_idx] = doc_ref.model_dump()
+            status = "updated"
+        else:
+            docs.append(doc_ref.model_dump())
+            status = "created"
+
+        task.documents = docs
+        self.log.info(
+            f"DocRef {status} in task",
+            task_id=str(task_id),
+            path=doc_ref.path,
+        )
+
+    async def _index_doc_in_rag(self, path: Path, task_id: UUID | None = None) -> None:
+        """Index document in RAG. Failures are logged but don't break flow.
+
+        Marked ``provenance="live_write"`` (roboco_docs_write writes a doc
+        mid-task, before the task's PR merges) so a ``roboco_kb_search`` hit
+        built from it carries an explicit caveat instead of reading like
+        deployed reality — the live incident this guards against: a dev
+        built UI against an API contract that existed only in a still-open PR.
+        """
+        try:
+            # Import here to avoid circular dependency
+            from roboco.services.optimal import get_optimal_service
+
+            optimal = await get_optimal_service()
+            await optimal.index_documentation(
+                sources=[str(path)],
+                provenance="live_write",
+                task_id=str(task_id) if task_id else None,
+            )
+            self.log.debug("Document indexed in RAG", path=str(path))
+        except Exception as e:
+            # Log but don't fail - RAG indexing is nice-to-have
+            self.log.warning(
+                "Failed to index document in RAG",
+                path=str(path),
+                error=str(e),
+            )
+
+
+class DocsService(BaseService, DocsFiles, DocsRecords):
     """Service for documentation file management."""
 
     service_name: ClassVar[str] = "docs"
@@ -367,69 +590,6 @@ class DocsService(BaseService):
             raw = AGENT_UUIDS.get(agent_id)
             return UUID(str(raw)) if raw is not None else None
 
-    async def _find_similar_doc(
-        self,
-        title: str,
-        content: str,
-        team: str,
-    ) -> str | None:
-        """
-        Search RAG for existing doc with similar content.
-
-        Uses content (not just title) to find semantically similar documents.
-        Returns the path of the similar doc if found above threshold,
-        None otherwise.
-        """
-        try:
-            from roboco.models.optimal import IndexType, QueryContext
-            from roboco.services.optimal import get_optimal_service
-
-            optimal = await get_optimal_service()
-
-            # Build search query from title + content summary
-            content_summary = (
-                content[:_CONTENT_SUMMARY_LENGTH]
-                if len(content) > _CONTENT_SUMMARY_LENGTH
-                else content
-            )
-            search_query = f"{title}\n\n{content_summary}"
-
-            # Search documentation index by content similarity
-            context = QueryContext(index_types=[IndexType.DOCUMENTATION])
-            results = await optimal.search(
-                query=search_query,
-                context=context,
-                top_k=5,
-            )
-
-            if not results:
-                return None
-
-            # Check for high-similarity match in same team
-            for result in results:
-                if result.score >= _SIMILARITY_THRESHOLD:
-                    # Check if it's in the same team's docs
-                    source = result.source or ""
-                    if source.startswith(f"{team}/") or f"/{team}/" in source:
-                        self.log.info(
-                            "Found similar existing doc by content",
-                            title=title,
-                            existing_path=source,
-                            score=result.score,
-                        )
-                        return source
-
-            return None
-
-        except Exception as e:
-            # RAG search failure shouldn't block doc creation
-            self.log.warning(
-                "RAG search for similar docs failed",
-                title=title,
-                error=str(e),
-            )
-            return None
-
     async def _create_new_doc(
         self,
         agent_id: str,
@@ -477,7 +637,8 @@ class DocsService(BaseService):
         # Index in RAG
         await self._index_doc_in_rag(full_path, req.task_id)
 
-        return rel_path, doc_ref, False  # is_update=False
+        # is_update=False
+        return rel_path, doc_ref, False
 
     async def _update_existing_doc(
         self,
@@ -525,7 +686,8 @@ class DocsService(BaseService):
         # Re-index in RAG
         await self._index_doc_in_rag(full_path, req.task_id)
 
-        return existing_path, doc_ref, True  # is_update=True
+        # is_update=True
+        return existing_path, doc_ref, True
 
     async def read_doc(
         self,
@@ -642,162 +804,6 @@ class DocsService(BaseService):
 
         self.log.info("Documentation deleted", agent_id=agent_id, path=path)
         return True
-
-    def _infer_doc_type(self, path: str) -> str:
-        """Infer doc_type from path."""
-        parts = path.split("/")
-        if len(parts) >= _MIN_PATH_PARTS_FOR_SUBFOLDER:
-            has_subfolder = len(parts) > _MIN_PATH_PARTS_FOR_SUBFOLDER
-            subfolder = parts[_SUBFOLDER_INDEX] if has_subfolder else ""
-            return next(
-                (k for k, v in TYPE_SUBFOLDERS.items() if v == subfolder),
-                "readme",
-            )
-        return "readme"
-
-    # =========================================================================
-    # INTERNAL METHODS
-    # =========================================================================
-
-    async def _write_file(self, path: Path, content: str) -> None:
-        """Write file using thread pool."""
-
-        def _do_write() -> None:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(content, encoding="utf-8")
-
-        await asyncio.to_thread(_do_write)
-        self.log.debug("File written", path=str(path), size=len(content))
-
-    async def _read_file(self, path: Path) -> str:
-        """Read file using thread pool."""
-
-        def _do_read() -> str:
-            if not path.exists():
-                raise NotFoundError("Documentation file", str(path))
-            return path.read_text(encoding="utf-8")
-
-        return await asyncio.to_thread(_do_read)
-
-    async def _delete_file(self, path: Path) -> None:
-        """Delete file using thread pool."""
-
-        def _do_delete() -> None:
-            if path.exists():
-                path.unlink()
-
-        await asyncio.to_thread(_do_delete)
-        self.log.debug("File deleted", path=str(path))
-
-    async def _get_existing_doc_ref(self, task_id: UUID, path: str) -> DocRef | None:
-        """Get existing DocRef from task.documents by path."""
-        result = await self.session.execute(
-            select(TaskTable).where(TaskTable.id == task_id)
-        )
-        task = result.scalar_one_or_none()
-        if not task or not task.documents:
-            return None
-
-        for doc in task.documents:
-            ref = _coerce_doc_ref(doc)
-            if ref.path == path:
-                return ref
-        return None
-
-    async def _add_doc_to_task(self, task_id: UUID, doc_ref: DocRef) -> None:
-        """Add DocRef to task.documents."""
-        result = await self.session.execute(
-            select(TaskTable).where(TaskTable.id == task_id)
-        )
-        task = result.scalar_one_or_none()
-        if not task:
-            raise NotFoundError("Task", str(task_id))
-
-        # Append to documents list
-        docs = list(task.documents or [])
-
-        # Check if doc with same path exists (update) or new (create)
-        existing_idx = next(
-            (i for i, d in enumerate(docs) if d.get("path") == doc_ref.path),
-            None,
-        )
-
-        if existing_idx is not None:
-            docs[existing_idx] = doc_ref.model_dump()
-            status = "updated"
-        else:
-            docs.append(doc_ref.model_dump())
-            status = "created"
-
-        task.documents = docs
-        self.log.info(
-            f"DocRef {status} in task",
-            task_id=str(task_id),
-            path=doc_ref.path,
-        )
-
-    async def _index_doc_in_rag(self, path: Path, task_id: UUID | None = None) -> None:
-        """Index document in RAG. Failures are logged but don't break flow.
-
-        Marked ``provenance="live_write"`` (roboco_docs_write writes a doc
-        mid-task, before the task's PR merges) so a ``roboco_kb_search`` hit
-        built from it carries an explicit caveat instead of reading like
-        deployed reality — the live incident this guards against: a dev
-        built UI against an API contract that existed only in a still-open PR.
-        """
-        try:
-            # Import here to avoid circular dependency
-            from roboco.services.optimal import get_optimal_service
-
-            optimal = await get_optimal_service()
-            await optimal.index_documentation(
-                sources=[str(path)],
-                provenance="live_write",
-                task_id=str(task_id) if task_id else None,
-            )
-            self.log.debug("Document indexed in RAG", path=str(path))
-        except Exception as e:
-            # Log but don't fail - RAG indexing is nice-to-have
-            self.log.warning(
-                "Failed to index document in RAG",
-                path=str(path),
-                error=str(e),
-            )
-
-    async def _list_docs_for_team(self, team: str) -> list[DocRef]:
-        """List documentation files for a team from filesystem."""
-        team_path = TEAM_PATHS.get(team, team)
-        base = DOCS_BASE_PATH / team_path
-
-        def _scan_docs() -> list[DocRef]:
-            docs: list[DocRef] = []
-            if not base.exists():
-                return docs
-
-            for md_file in base.rglob("*.md"):
-                rel_path = str(md_file.relative_to(DOCS_BASE_PATH))
-                # Infer doc_type from path
-                parts = rel_path.split("/")
-                if len(parts) >= _MIN_PATH_PARTS_FOR_SUBFOLDER:
-                    has_subfolder = len(parts) > _MIN_PATH_PARTS_FOR_SUBFOLDER
-                    subfolder = parts[_SUBFOLDER_INDEX] if has_subfolder else ""
-                    doc_type = next(
-                        (k for k, v in TYPE_SUBFOLDERS.items() if v == subfolder),
-                        "readme",
-                    )
-                else:
-                    doc_type = "readme"
-
-                docs.append(
-                    DocRef(
-                        path=rel_path,
-                        title=md_file.stem.replace("_", " ").replace("-", " ").title(),
-                        doc_type=doc_type,
-                    )
-                )
-            return docs
-
-        return await asyncio.to_thread(_scan_docs)
 
 
 # =============================================================================

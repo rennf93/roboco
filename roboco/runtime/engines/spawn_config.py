@@ -52,6 +52,10 @@ class AgentSettingsEngine(_Base):
     and the MCP config with its role-scoped servers (and which spawns get
     playwright: a video-authoring ux dev, a dogfooding Product Owner)."""
 
+    # =========================================================================
+    # PER-AGENT SETTINGS GENERATION
+    # =========================================================================
+
     def _get_role_permissions(
         self, role: str, workspace_path: str, cell_workspace_path: str
     ) -> dict[str, list[str]]:

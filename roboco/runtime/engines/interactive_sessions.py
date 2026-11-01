@@ -104,6 +104,22 @@ class IntakeSessionEngine(_Base):
     or synchronously) with its mounts and run command, and deliver and
     record the CEO's opening message."""
 
+    # =========================================================================
+    # INTAKE (PROMPTER) LIVE SESSION
+    #
+    # The intake agent is not task-driven and is never dispatched. It is a
+    # persistent Claude-Agent-SDK driver the CEO chats with live (the container
+    # entrypoint is roboco.agent_sdk.intake_main). One fixed container —
+    # `intake-1`, the seeded board-adjacent interviewer — serves one live
+    # session at a time (single CEO; one-session-per-CEO).
+    #
+    # This spawn is a DELIBERATELY separate path from spawn_agent: no task, no
+    # readiness gate, no `claude -p` CLI args (the image ENTRYPOINT is the
+    # driver), no settings.json/hook mount (the driver owns the receiver on
+    # port 9000, not the inbox sidecar), and no MCP/gateway surface (the live
+    # agent reads code with Read/Grep/Glob and talks only to the human).
+    # =========================================================================
+
     @staticmethod
     def _require_one_intake_scope(
         project_slug: str | None,
@@ -783,6 +799,10 @@ class IntakeScopeEngine(_Base):
 class SecretarySessionEngine(_Base):
     """The Secretary chat: open the relay and spawn its persistent container,
     with its mounts and run command."""
+
+    # ------------------------------------------------------------------ #
+    # Secretary live session (mirrors intake; no scope clone; auth token)
+    # ------------------------------------------------------------------ #
 
     async def start_secretary_session(
         self, session_id: str, *, initial_message: str | None = None

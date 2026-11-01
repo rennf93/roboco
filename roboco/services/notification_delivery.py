@@ -55,6 +55,13 @@ from roboco.utils.converters import require_uuid
 if TYPE_CHECKING:
     from roboco.models.metrics import TaskMetrics
 
+if TYPE_CHECKING:
+    from roboco.services._notification_delivery_types import (
+        NotificationDeliveryServiceSelf as _Base,
+    )
+else:
+    _Base = object
+
 _log = structlog.get_logger(service="notification_delivery")
 
 
@@ -132,7 +139,8 @@ async def _drain_pending_work(pending: list[Callable[[], Awaitable[None]]]) -> N
     for work in pending:
         try:
             await work()
-        except Exception as e:  # best-effort: never break the drain
+        except Exception as e:
+            # Best-effort: never break the drain
             _log.warning("Deferred after-commit work failed", error=str(e))
 
 
@@ -149,7 +157,8 @@ def _schedule_pending_work(session: AsyncSession) -> None:
         return
     try:
         loop = asyncio.get_running_loop()
-    except RuntimeError:  # no running loop — nothing we can do, drop silently
+    except RuntimeError:
+        # No running loop — nothing we can do, drop silently
         return
     task = loop.create_task(_drain_pending_work(pending))
     session.info.setdefault(_DRAIN_TASKS_KEY, []).append(task)
@@ -243,114 +252,10 @@ class BlockerDetails:
     what_needed: str
 
 
-class NotificationDeliveryService(BaseService):
-    """
-    Service for delivering notifications to agents.
-
-    Provides:
-    - Delivery through multiple channels (WebSocket, Redis, DB)
-    - Delivery status tracking
-    - ACK system (received + read)
-    - Pending notification queries
-
-    Usage:
-        service = NotificationDeliveryService(db_session)
-
-        # Get pending notifications for an agent
-        pending = await service.get_pending_for_agent(agent_id)
-
-        # Acknowledge a notification
-        await service.acknowledge(notification_id, agent_id, "received")
-    """
-
-    service_name: ClassVar[str] = "notification_delivery"
-
-    # =========================================================================
-    # DELIVERY OPERATIONS (TASK-016)
-    # =========================================================================
-
-    async def deliver(self, notification_id: UUID) -> bool:
-        """
-        Deliver a notification to its recipients.
-
-        Attempts delivery through:
-        1. WebSocket (if agent connected) - immediate push
-        2. Redis pub/sub - for polling agents
-        3. Database - persistent storage (always)
-
-        The Redis/bus publish is deferred until the caller's transaction
-        commits (`defer_bus_publish`) — publishing before the commit produced
-        phantom notifications when the commit failed (F107). The `delivered_at`
-        DB marker is written inside the transaction (it rolls back with the
-        row if the commit fails), and the bus event fires only once the row is
-        durable.
-
-        Returns True if at least one delivery channel succeeded.
-        """
-        notification = await self.get_notification(notification_id)
-        if not notification:
-            self.log.warning(
-                "Notification not found", notification_id=str(notification_id)
-            )
-            return False
-
-        # Mark delivery attempted (in-tx — rolls back with the row on
-        # commit failure, so the marker and the row stay consistent).
-        notification.delivered_at = datetime.now(UTC)
-        await self.session.flush()
-
-        # Build the per-recipient bus events up front (the data is materialized
-        # to strings, so deferring is safe even if the ORM object later
-        # expires) and defer each to the session's after_commit. The event is
-        # dropped on rollback (no phantom) and fired once the row is durable.
-        # Best-effort: a bus-init failure is logged but never propagates — the
-        # notification row + delivered_at marker are already flushed, and the
-        # bus is a secondary delivery channel (the row is the durable store).
-        try:
-            bus = get_event_bus()
-            if bus.is_connected():
-                # SQLAlchemy normally hydrates Enum columns back to enum
-                # members, but a handful of code paths feed raw strings in
-                # (e.g. direct dict construction in bulk-insert helpers) and
-                # those round-trip as plain str on read. Coerce defensively:
-                # an enum has `.value`, a str is its own value.
-                def _enum_value(v: object) -> object:
-                    return v.value if hasattr(v, "value") else v
-
-                for recipient_id in notification.to_agents:
-                    defer_bus_publish(
-                        self.session,
-                        Event(
-                            type=EventType.NOTIFICATION_SENT,
-                            data={
-                                "notification_id": str(notification_id),
-                                "recipient_id": str(recipient_id),
-                                "type": _enum_value(notification.type),
-                                "priority": _enum_value(notification.priority),
-                                "subject": notification.subject,
-                            },
-                        ),
-                    )
-                self.log.info(
-                    "Notification bus publish deferred until commit",
-                    notification_id=str(notification_id),
-                    recipient_count=len(notification.to_agents),
-                )
-        except Exception as e:
-            self.log.warning(
-                "Failed to defer notification bus publish",
-                notification_id=str(notification_id),
-                error=str(e),
-            )
-
-        return True
-
-    async def get_notification(self, notification_id: UUID) -> NotificationTable | None:
-        """Get a notification by ID."""
-        result = await self.session.execute(
-            select(NotificationTable).where(NotificationTable.id == notification_id)
-        )
-        return result.scalar_one_or_none()
+class NotificationSweeps(_Base):
+    """The expiry sweep: expired and permanently unacknowledged notifications, auto-
+    acknowledging escalations whose task ended, and the uptime ledger the sweep
+    consults."""
 
     @staticmethod
     def _notification_is_fully_acked(n: NotificationTable) -> bool:
@@ -567,6 +472,11 @@ class NotificationDeliveryService(BaseService):
             return True
         return ledger.active_elapsed(created_at, now) >= (expires_at - created_at)
 
+
+class NotificationReescalation(_Base):
+    """Re-escalating an unacknowledged notification on its backoff: claiming the
+    slot, and re-sending to each recipient."""
+
     @staticmethod
     def _backoff_now(
         n: NotificationTable, now: datetime, ledger: UptimeLedger | None
@@ -616,9 +526,11 @@ class NotificationDeliveryService(BaseService):
             ),
         )
         if decision != "due":
-            return  # "wait": not due yet; "capped": already logged + done
+            # "wait": not due yet; "capped": already logged + done
+            return
         if not await self._claim_reescalation_slot(n, now):
-            return  # another sweep tick already claimed this attempt
+            # Another sweep tick already claimed this attempt
+            return
         # Commit the claim immediately: the row lock the CAS took is released
         # before any delivery work (holding it across delivery is what starved
         # concurrent mark-read/ack UPDATEs into lock_timeout), and the burned
@@ -747,6 +659,12 @@ class NotificationDeliveryService(BaseService):
                 error=str(e),
             )
             return False
+
+
+class NotificationInbox(_Base):
+    """A recipient's inbox: pending and unacknowledged notifications, counts,
+    acknowledging and marking read, the ack status and delivery summary, and the
+    system list."""
 
     async def get_pending_for_agent(
         self,
@@ -1052,6 +970,159 @@ class NotificationDeliveryService(BaseService):
         }
 
     # =========================================================================
+    # API-FACING LIST + CRUD (consumed by api/routes/notifications.py)
+    # =========================================================================
+
+    async def list_system_notifications(
+        self,
+        *,
+        pending_ack_only: bool,
+        type_filter: str | None,
+        limit: int,
+    ) -> list[NotificationTable]:
+        """List every notification (system role only).
+
+        `pending_ack_only` filters post-fetch because "not fully acked" isn't
+        a SQL-friendly predicate against PostgreSQL array columns. The SQL
+        ``limit`` is therefore NOT applied for that branch — applying it before
+        the Python filter would let a window of newer fully-acked rows mask
+        older unacked ones the operator still needs to act on. We fetch the
+        ack-required set ordered newest-first, drop the fully-acked rows in
+        Python, then slice to ``limit``.
+        """
+        query = select(NotificationTable)
+        if pending_ack_only:
+            query = query.where(NotificationTable.requires_ack.is_(True))
+        if type_filter:
+            query = query.where(NotificationTable.type == type_filter)
+        query = query.order_by(NotificationTable.timestamp.desc())
+        if not pending_ack_only:
+            query = query.limit(limit)
+
+        result = await self.session.execute(query)
+        notifications = list(result.scalars().all())
+        if pending_ack_only:
+            unacked = [
+                n
+                for n in notifications
+                if not all(t in n.acked_by for t in n.to_agents)
+            ]
+            return unacked[:limit]
+        return notifications
+
+    async def list_for_agent(
+        self,
+        *,
+        agent_id: UUID,
+        unread_only: bool,
+        pending_ack_only: bool,
+        type_filter: NotificationType | None,
+        limit: int,
+    ) -> list[NotificationTable]:
+        """Return notifications addressed to `agent_id` with the given filters.
+
+        Query construction and execution both live here so route modules
+        never touch `NotificationTable` or `db.execute`.
+        """
+        query = select(NotificationTable).where(
+            NotificationTable.to_agents.contains([agent_id])
+        )
+        if unread_only:
+            query = query.where(~NotificationTable.read_by.contains([agent_id]))
+        if pending_ack_only:
+            query = query.where(
+                NotificationTable.requires_ack.is_(True),
+                ~NotificationTable.acked_by.contains([agent_id]),
+            )
+        if type_filter is not None:
+            query = query.where(NotificationTable.type == type_filter)
+        query = query.order_by(NotificationTable.timestamp.desc()).limit(limit)
+
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
+    async def get_for_recipient_and_mark_read(
+        self, *, notification_id: UUID, agent_id: UUID
+    ) -> NotificationTable:
+        """Fetch a notification for a recipient and auto-mark read."""
+        notification = await self.get_notification(notification_id)
+        if notification is None:
+            raise NotFoundError(
+                resource_type="Notification", resource_id=str(notification_id)
+            )
+        if agent_id not in notification.to_agents:
+            raise PermissionError("view notification: not a recipient")
+
+        if agent_id not in notification.read_by:
+            notification.read_by = [*notification.read_by, agent_id]
+            await self.session.flush()
+        return notification
+
+    async def acknowledge_for_recipient(
+        self, *, notification_id: UUID, agent_id: UUID
+    ) -> NotificationTable:
+        """Ack a notification that requires it; raises if not allowed."""
+        notification = await self.get_notification(notification_id)
+        if notification is None:
+            raise NotFoundError(
+                resource_type="Notification", resource_id=str(notification_id)
+            )
+        if agent_id not in notification.to_agents:
+            raise PermissionError("acknowledge notification: not a recipient")
+        if not notification.requires_ack:
+            raise ValueError("This notification does not require acknowledgment")
+
+        # Drop the per-recipient Redis dedup key so a post-ack re-send of the
+        # same notification is not suppressed by a stale 60s window. The key
+        # is per (type, sender, recipient, task, subject); only loop-prone
+        # types carry one, and clear_dedup_key is a no-op fail-open for the
+        # rest. Best-effort: a Redis miss never blocks the ack. Runs BEFORE
+        # the flush so the row lock the flush takes is never held across a
+        # Redis round-trip (a stalled Redis would starve concurrent writers
+        # on this row into lock_timeout); clearing for an ack that then fails
+        # is harmless — the key is only a re-send suppression window.
+        await clear_dedup_key(
+            ntype=notification.type,
+            from_agent=cast("UUID", notification.from_agent),
+            recipient=agent_id,
+            related_task_id=cast("UUID | None", notification.related_task_id),
+            subject=notification.subject,
+        )
+
+        now = datetime.now(UTC)
+        if agent_id not in notification.acked_by:
+            notification.acked_by = [*notification.acked_by, agent_id]
+            notification.acked_at = {
+                **notification.acked_at,
+                str(agent_id): now.isoformat(),
+            }
+        if agent_id not in notification.read_by:
+            notification.read_by = [*notification.read_by, agent_id]
+
+        await self.session.flush()
+        return notification
+
+    async def mark_read_for_recipient(
+        self, *, notification_id: UUID, agent_id: UUID
+    ) -> None:
+        """Mark a notification read on behalf of a recipient."""
+        notification = await self.get_notification(notification_id)
+        if notification is None:
+            raise NotFoundError(
+                resource_type="Notification", resource_id=str(notification_id)
+            )
+        if agent_id not in notification.to_agents:
+            raise PermissionError("mark notification read: not a recipient")
+        if agent_id not in notification.read_by:
+            notification.read_by = [*notification.read_by, agent_id]
+            await self.session.flush()
+
+
+class NotificationHandoffs(_Base):
+    """Task handoff notices to PMs, assignees and the auditor, escalation, and
+    resolving the PM, CEO and auditor agents they go to."""
+
+    # =========================================================================
     # TASK HANDOFF NOTIFICATIONS
     # =========================================================================
     # These compose the full "resolve recipient + persist + deliver" pattern
@@ -1241,6 +1312,107 @@ class NotificationDeliveryService(BaseService):
             escalator_slug=escalator.slug,
         )
 
+    async def notify_auditor_of_rework(
+        self,
+        *,
+        task: TaskTable,
+        task_id: UUID,
+        reason: str,
+        actor_agent_id: UUID | None = None,
+        actor_role: str | None = None,
+    ) -> None:
+        """Auditor-targeted alert when a task enters needs_revision.
+
+        The orchestrator's ``_dispatch_audit_work`` watches for notifications of
+        type ``ALERT`` whose ``to_agents`` include the auditor and spawns the
+        auditor with a quality-alert prompt. This producer reactivates that
+        reactive dispatch path at the QA-fail / rework chokepoints.
+
+        Bypasses DB purpose-dedup: a second ``needs_revision`` on the same
+        task from the same actor is a genuine repeat rework event that must
+        still reach the auditor even while the first ALERT sits unacked —
+        suppressing it would silently stop `_dispatch_audit_work` from
+        re-spawning the auditor on later rework cycles.
+        """
+        auditor = await self._get_auditor_agent()
+        if not auditor:
+            return
+
+        actor = await self._get_agent_by_id(actor_agent_id) if actor_agent_id else None
+        from_agent = actor_agent_id if actor_agent_id is not None else auditor.id
+        title = task.title or "Untitled task"
+        role_label = actor_role or (actor.role if actor else "system")
+
+        body_lines = [
+            f"Task {task_display(title, task_id)} entered needs_revision.",
+            "",
+            f"Reason: {reason}",
+            f"Actor role: {role_label}",
+        ]
+        if actor:
+            body_lines.append(f"Actor: {actor.slug}")
+
+        notification = NotificationTable(
+            type=NotificationType.ALERT,
+            priority=NotificationPriority.HIGH,
+            from_agent=from_agent,
+            to_agents=[auditor.id],
+            subject=f"Rework alert: {title[:40]}",
+            body="\n".join(body_lines),
+            related_task_id=task_id,
+            requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.ALERT],
+            read_by=[],
+            acked_by=[],
+        )
+        await self._persist_and_deliver(notification, bypass_purpose_dedup=True)
+
+    # ------------------------------------------------------------------
+    # Private helpers for recipient resolution + persist
+    # ------------------------------------------------------------------
+
+    async def _resolve_team_pm(self, task: TaskTable) -> AgentTable | None:
+        """Return the PM agent for the task's team, or None if not found."""
+        team = task.team
+        if not team:
+            return None
+        pm_slug = get_pm_for_team(team.value)
+        if not pm_slug:
+            return None
+        return await self._get_agent_by_slug(pm_slug)
+
+    async def _resolve_pm_for_agent_or_team(
+        self, agent_id: UUID, task: TaskTable
+    ) -> AgentTable | None:
+        """Prefer the agent's cell-PM; fall back to the task's team-PM."""
+        agent = await self._get_agent_by_id(agent_id)
+        pm_slug: str | None = None
+        if agent and agent.slug:
+            pm_slug = get_pm_for_agent(agent.slug)
+        if not pm_slug and task.team:
+            pm_slug = get_pm_for_team(task.team.value)
+        if not pm_slug:
+            return None
+        return await self._get_agent_by_slug(pm_slug)
+
+    async def _get_ceo_agent(self) -> AgentTable | None:
+        """Find the CEO agent (org-wide singleton; earliest-created if many).
+
+        Delegates to the shared `get_agent_by_role` helper — a plain
+        one-or-none raises MultipleResultsFound if a second CEO-role row ever
+        exists, so it pins to the earliest-created (the canonical seeded CEO)
+        instead.
+        """
+        return await get_agent_by_role(self.session, AgentRole.CEO)
+
+    async def _get_auditor_agent(self) -> AgentTable | None:
+        """Find the auditor agent (org-wide; earliest-created if many)."""
+        return await get_agent_by_role(self.session, AgentRole.AUDITOR)
+
+
+class NotificationCEONotices(_Base):
+    """Notices to the CEO: the queue, escalations, pitches, briefs, reports, drafts,
+    budget breaches, completions and postmortems, and their Telegram copy."""
+
     async def _send_telegram_deferred(
         self,
         *,
@@ -1272,7 +1444,8 @@ class NotificationDeliveryService(BaseService):
 
         try:
             creds = await get_telegram_credentials_service(self.session).get_decrypted()
-        except Exception as exc:  # best-effort — never block the producer
+        except Exception as exc:
+            # Best-effort — never block the producer
             _log.warning("telegram_notify_failed", error=str(exc))
             return
 
@@ -1290,7 +1463,8 @@ class NotificationDeliveryService(BaseService):
                 )
                 if not result.sent:
                     _log.warning("telegram_notify_skip", detail=result.detail)
-            except Exception as exc:  # best-effort — never break the drain
+            except Exception as exc:
+                # Best-effort — never break the drain
                 _log.warning("telegram_notify_failed", error=str(exc))
             finally:
                 if client is not None:
@@ -1739,7 +1913,8 @@ class NotificationDeliveryService(BaseService):
 
         try:
             metrics = await MetricsService(self.session).get_task_metrics(task_id)
-        except Exception:  # metrics are best-effort — degrade to wall-clock-only
+        except Exception:
+            # Metrics are best-effort — degrade to wall-clock-only
             metrics = None
         from_agent = cast("UUID", task.assigned_to) if task.assigned_to else ceo.id
         notification = NotificationTable(
@@ -1823,87 +1998,122 @@ class NotificationDeliveryService(BaseService):
         )
         await self._persist_and_deliver(notification)
 
-    async def notify_auditor_of_rework(
-        self,
-        *,
-        task: TaskTable,
-        task_id: UUID,
-        reason: str,
-        actor_agent_id: UUID | None = None,
-        actor_role: str | None = None,
-    ) -> None:
-        """Auditor-targeted alert when a task enters needs_revision.
 
-        The orchestrator's ``_dispatch_audit_work`` watches for notifications of
-        type ``ALERT`` whose ``to_agents`` include the auditor and spawns the
-        auditor with a quality-alert prompt. This producer reactivates that
-        reactive dispatch path at the QA-fail / rework chokepoints.
+class NotificationDeliveryService(
+    BaseService,
+    NotificationCEONotices,
+    NotificationHandoffs,
+    NotificationInbox,
+    NotificationReescalation,
+    NotificationSweeps,
+):
+    """
+    Service for delivering notifications to agents.
 
-        Bypasses DB purpose-dedup: a second ``needs_revision`` on the same
-        task from the same actor is a genuine repeat rework event that must
-        still reach the auditor even while the first ALERT sits unacked —
-        suppressing it would silently stop `_dispatch_audit_work` from
-        re-spawning the auditor on later rework cycles.
+    Provides:
+    - Delivery through multiple channels (WebSocket, Redis, DB)
+    - Delivery status tracking
+    - ACK system (received + read)
+    - Pending notification queries
+
+    Usage:
+        service = NotificationDeliveryService(db_session)
+
+        # Get pending notifications for an agent
+        pending = await service.get_pending_for_agent(agent_id)
+
+        # Acknowledge a notification
+        await service.acknowledge(notification_id, agent_id, "received")
+    """
+
+    service_name: ClassVar[str] = "notification_delivery"
+
+    # =========================================================================
+    # DELIVERY OPERATIONS (TASK-016)
+    # =========================================================================
+
+    async def deliver(self, notification_id: UUID) -> bool:
         """
-        auditor = await self._get_auditor_agent()
-        if not auditor:
-            return
+        Deliver a notification to its recipients.
 
-        actor = await self._get_agent_by_id(actor_agent_id) if actor_agent_id else None
-        from_agent = actor_agent_id if actor_agent_id is not None else auditor.id
-        title = task.title or "Untitled task"
-        role_label = actor_role or (actor.role if actor else "system")
+        Attempts delivery through:
+        1. WebSocket (if agent connected) - immediate push
+        2. Redis pub/sub - for polling agents
+        3. Database - persistent storage (always)
 
-        body_lines = [
-            f"Task {task_display(title, task_id)} entered needs_revision.",
-            "",
-            f"Reason: {reason}",
-            f"Actor role: {role_label}",
-        ]
-        if actor:
-            body_lines.append(f"Actor: {actor.slug}")
+        The Redis/bus publish is deferred until the caller's transaction
+        commits (`defer_bus_publish`) — publishing before the commit produced
+        phantom notifications when the commit failed (F107). The `delivered_at`
+        DB marker is written inside the transaction (it rolls back with the
+        row if the commit fails), and the bus event fires only once the row is
+        durable.
 
-        notification = NotificationTable(
-            type=NotificationType.ALERT,
-            priority=NotificationPriority.HIGH,
-            from_agent=from_agent,
-            to_agents=[auditor.id],
-            subject=f"Rework alert: {title[:40]}",
-            body="\n".join(body_lines),
-            related_task_id=task_id,
-            requires_ack=ACK_REQUIRED_BY_TYPE[NotificationType.ALERT],
-            read_by=[],
-            acked_by=[],
+        Returns True if at least one delivery channel succeeded.
+        """
+        notification = await self.get_notification(notification_id)
+        if not notification:
+            self.log.warning(
+                "Notification not found", notification_id=str(notification_id)
+            )
+            return False
+
+        # Mark delivery attempted (in-tx — rolls back with the row on
+        # commit failure, so the marker and the row stay consistent).
+        notification.delivered_at = datetime.now(UTC)
+        await self.session.flush()
+
+        # Build the per-recipient bus events up front (the data is materialized
+        # to strings, so deferring is safe even if the ORM object later
+        # expires) and defer each to the session's after_commit. The event is
+        # dropped on rollback (no phantom) and fired once the row is durable.
+        # Best-effort: a bus-init failure is logged but never propagates — the
+        # notification row + delivered_at marker are already flushed, and the
+        # bus is a secondary delivery channel (the row is the durable store).
+        try:
+            bus = get_event_bus()
+            if bus.is_connected():
+                # SQLAlchemy normally hydrates Enum columns back to enum
+                # members, but a handful of code paths feed raw strings in
+                # (e.g. direct dict construction in bulk-insert helpers) and
+                # those round-trip as plain str on read. Coerce defensively:
+                # an enum has `.value`, a str is its own value.
+                def _enum_value(v: object) -> object:
+                    return v.value if hasattr(v, "value") else v
+
+                for recipient_id in notification.to_agents:
+                    defer_bus_publish(
+                        self.session,
+                        Event(
+                            type=EventType.NOTIFICATION_SENT,
+                            data={
+                                "notification_id": str(notification_id),
+                                "recipient_id": str(recipient_id),
+                                "type": _enum_value(notification.type),
+                                "priority": _enum_value(notification.priority),
+                                "subject": notification.subject,
+                            },
+                        ),
+                    )
+                self.log.info(
+                    "Notification bus publish deferred until commit",
+                    notification_id=str(notification_id),
+                    recipient_count=len(notification.to_agents),
+                )
+        except Exception as e:
+            self.log.warning(
+                "Failed to defer notification bus publish",
+                notification_id=str(notification_id),
+                error=str(e),
+            )
+
+        return True
+
+    async def get_notification(self, notification_id: UUID) -> NotificationTable | None:
+        """Get a notification by ID."""
+        result = await self.session.execute(
+            select(NotificationTable).where(NotificationTable.id == notification_id)
         )
-        await self._persist_and_deliver(notification, bypass_purpose_dedup=True)
-
-    # ------------------------------------------------------------------
-    # Private helpers for recipient resolution + persist
-    # ------------------------------------------------------------------
-
-    async def _resolve_team_pm(self, task: TaskTable) -> AgentTable | None:
-        """Return the PM agent for the task's team, or None if not found."""
-        team = task.team
-        if not team:
-            return None
-        pm_slug = get_pm_for_team(team.value)
-        if not pm_slug:
-            return None
-        return await self._get_agent_by_slug(pm_slug)
-
-    async def _resolve_pm_for_agent_or_team(
-        self, agent_id: UUID, task: TaskTable
-    ) -> AgentTable | None:
-        """Prefer the agent's cell-PM; fall back to the task's team-PM."""
-        agent = await self._get_agent_by_id(agent_id)
-        pm_slug: str | None = None
-        if agent and agent.slug:
-            pm_slug = get_pm_for_agent(agent.slug)
-        if not pm_slug and task.team:
-            pm_slug = get_pm_for_team(task.team.value)
-        if not pm_slug:
-            return None
-        return await self._get_agent_by_slug(pm_slug)
+        return result.scalar_one_or_none()
 
     async def _get_agent_by_id(self, agent_id: UUID) -> AgentTable | None:
         result = await self.session.execute(
@@ -1916,20 +2126,6 @@ class NotificationDeliveryService(BaseService):
             select(AgentTable).where(AgentTable.slug == slug)
         )
         return result.scalar_one_or_none()
-
-    async def _get_ceo_agent(self) -> AgentTable | None:
-        """Find the CEO agent (org-wide singleton; earliest-created if many).
-
-        Delegates to the shared `get_agent_by_role` helper — a plain
-        one-or-none raises MultipleResultsFound if a second CEO-role row ever
-        exists, so it pins to the earliest-created (the canonical seeded CEO)
-        instead.
-        """
-        return await get_agent_by_role(self.session, AgentRole.CEO)
-
-    async def _get_auditor_agent(self) -> AgentTable | None:
-        """Find the auditor agent (org-wide; earliest-created if many)."""
-        return await get_agent_by_role(self.session, AgentRole.AUDITOR)
 
     async def _persist_and_deliver(
         self, notification: NotificationTable, *, bypass_purpose_dedup: bool = False
@@ -2013,154 +2209,6 @@ class NotificationDeliveryService(BaseService):
         await self.session.flush()
         await self.deliver(require_uuid(notification.id))
         return True
-
-    # =========================================================================
-    # API-FACING LIST + CRUD (consumed by api/routes/notifications.py)
-    # =========================================================================
-
-    async def list_system_notifications(
-        self,
-        *,
-        pending_ack_only: bool,
-        type_filter: str | None,
-        limit: int,
-    ) -> list[NotificationTable]:
-        """List every notification (system role only).
-
-        `pending_ack_only` filters post-fetch because "not fully acked" isn't
-        a SQL-friendly predicate against PostgreSQL array columns. The SQL
-        ``limit`` is therefore NOT applied for that branch — applying it before
-        the Python filter would let a window of newer fully-acked rows mask
-        older unacked ones the operator still needs to act on. We fetch the
-        ack-required set ordered newest-first, drop the fully-acked rows in
-        Python, then slice to ``limit``.
-        """
-        query = select(NotificationTable)
-        if pending_ack_only:
-            query = query.where(NotificationTable.requires_ack.is_(True))
-        if type_filter:
-            query = query.where(NotificationTable.type == type_filter)
-        query = query.order_by(NotificationTable.timestamp.desc())
-        if not pending_ack_only:
-            query = query.limit(limit)
-
-        result = await self.session.execute(query)
-        notifications = list(result.scalars().all())
-        if pending_ack_only:
-            unacked = [
-                n
-                for n in notifications
-                if not all(t in n.acked_by for t in n.to_agents)
-            ]
-            return unacked[:limit]
-        return notifications
-
-    async def list_for_agent(
-        self,
-        *,
-        agent_id: UUID,
-        unread_only: bool,
-        pending_ack_only: bool,
-        type_filter: NotificationType | None,
-        limit: int,
-    ) -> list[NotificationTable]:
-        """Return notifications addressed to `agent_id` with the given filters.
-
-        Query construction and execution both live here so route modules
-        never touch `NotificationTable` or `db.execute`.
-        """
-        query = select(NotificationTable).where(
-            NotificationTable.to_agents.contains([agent_id])
-        )
-        if unread_only:
-            query = query.where(~NotificationTable.read_by.contains([agent_id]))
-        if pending_ack_only:
-            query = query.where(
-                NotificationTable.requires_ack.is_(True),
-                ~NotificationTable.acked_by.contains([agent_id]),
-            )
-        if type_filter is not None:
-            query = query.where(NotificationTable.type == type_filter)
-        query = query.order_by(NotificationTable.timestamp.desc()).limit(limit)
-
-        result = await self.session.execute(query)
-        return list(result.scalars().all())
-
-    async def get_for_recipient_and_mark_read(
-        self, *, notification_id: UUID, agent_id: UUID
-    ) -> NotificationTable:
-        """Fetch a notification for a recipient and auto-mark read."""
-        notification = await self.get_notification(notification_id)
-        if notification is None:
-            raise NotFoundError(
-                resource_type="Notification", resource_id=str(notification_id)
-            )
-        if agent_id not in notification.to_agents:
-            raise PermissionError("view notification: not a recipient")
-
-        if agent_id not in notification.read_by:
-            notification.read_by = [*notification.read_by, agent_id]
-            await self.session.flush()
-        return notification
-
-    async def acknowledge_for_recipient(
-        self, *, notification_id: UUID, agent_id: UUID
-    ) -> NotificationTable:
-        """Ack a notification that requires it; raises if not allowed."""
-        notification = await self.get_notification(notification_id)
-        if notification is None:
-            raise NotFoundError(
-                resource_type="Notification", resource_id=str(notification_id)
-            )
-        if agent_id not in notification.to_agents:
-            raise PermissionError("acknowledge notification: not a recipient")
-        if not notification.requires_ack:
-            raise ValueError("This notification does not require acknowledgment")
-
-        # Drop the per-recipient Redis dedup key so a post-ack re-send of the
-        # same notification is not suppressed by a stale 60s window. The key
-        # is per (type, sender, recipient, task, subject); only loop-prone
-        # types carry one, and clear_dedup_key is a no-op fail-open for the
-        # rest. Best-effort: a Redis miss never blocks the ack. Runs BEFORE
-        # the flush so the row lock the flush takes is never held across a
-        # Redis round-trip (a stalled Redis would starve concurrent writers
-        # on this row into lock_timeout); clearing for an ack that then fails
-        # is harmless — the key is only a re-send suppression window.
-        await clear_dedup_key(
-            ntype=notification.type,
-            from_agent=cast("UUID", notification.from_agent),
-            recipient=agent_id,
-            related_task_id=cast("UUID | None", notification.related_task_id),
-            subject=notification.subject,
-        )
-
-        now = datetime.now(UTC)
-        if agent_id not in notification.acked_by:
-            notification.acked_by = [*notification.acked_by, agent_id]
-            notification.acked_at = {
-                **notification.acked_at,
-                str(agent_id): now.isoformat(),
-            }
-        if agent_id not in notification.read_by:
-            notification.read_by = [*notification.read_by, agent_id]
-
-        await self.session.flush()
-        return notification
-
-    async def mark_read_for_recipient(
-        self, *, notification_id: UUID, agent_id: UUID
-    ) -> None:
-        """Mark a notification read on behalf of a recipient."""
-        notification = await self.get_notification(notification_id)
-        if notification is None:
-            raise NotFoundError(
-                resource_type="Notification", resource_id=str(notification_id)
-            )
-        if agent_id not in notification.to_agents:
-            raise PermissionError("mark notification read: not a recipient")
-        if agent_id not in notification.read_by:
-            notification.read_by = [*notification.read_by, agent_id]
-            await self.session.flush()
 
 
 # =============================================================================

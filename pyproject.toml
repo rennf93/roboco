@@ -253,6 +253,10 @@ runtime-evaluated-base-classes = ["pydantic.BaseModel"]
 # the supersede branch-cut path's skip of the 60s origin refresh-fetch;
 # bundling would just relocate the same named fields behind one hop.
 "roboco/services/workspace.py" = ["PLR0913"]
+# PLR0913: the WorkspaceService mixins' Protocol stub of ensure_workspace
+# states its real signature (workspace.py's, exempt above) so mypy checks
+# every mixin's call against it.
+"roboco/services/_workspace_service_types.py" = ["PLR0913"]
 # _bounded_index_search and _search_single_index carry the per-index search
 # contract (index entry, embedding, query text, top_k, buffer/gaps, timeout)
 # — bundling would just relocate the same named fields behind one hop.
