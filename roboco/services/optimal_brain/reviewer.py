@@ -10,7 +10,7 @@ Code review assistant that synthesizes feedback from multiple sources:
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID
 
 import structlog
@@ -20,6 +20,13 @@ from roboco.models.optimal import (
     CodeReviewResult,
     SearchResult,
 )
+
+if TYPE_CHECKING:
+    from roboco.services.optimal_brain._reviewer_service_types import (
+        ReviewerServiceSelf as _Base,
+    )
+else:
+    _Base = object
 
 logger = structlog.get_logger()
 
@@ -74,176 +81,10 @@ class ReviewSummary:
     past_reviews: list[SearchResult] = field(default_factory=list)
 
 
-class ReviewerService:
-    """
-    Code review assistant that provides automated feedback.
-
-    Searches across multiple knowledge indexes to provide
-    comprehensive review feedback:
-    - STANDARDS: Coding standards and best practices
-    - REVIEWS: Past review comments on similar code
-    - ERRORS: Known error patterns to watch for
-    """
-
-    # Score deductions by severity
-    SEVERITY_DEDUCTIONS: ClassVar[dict[ReviewSeverity, int]] = {
-        ReviewSeverity.BLOCKER: 25,
-        ReviewSeverity.MAJOR: 10,
-        ReviewSeverity.MINOR: 3,
-        ReviewSeverity.SUGGESTION: 0,
-    }
-
-    # Similarity thresholds
-    PAST_REVIEW_THRESHOLD: ClassVar[float] = 0.7
-    ERROR_PATTERN_THRESHOLD: ClassVar[float] = 0.6
-
-    def __init__(self) -> None:
-        """Initialize ReviewerService."""
-        self._optimal_service: Any = None
-
-    async def initialize(self, optimal_service: Any) -> None:
-        """
-        Initialize with OptimalService reference.
-
-        Args:
-            optimal_service: The OptimalService instance
-        """
-        self._optimal_service = optimal_service
-        logger.info("ReviewerService initialized")
-
-    async def review_code(
-        self,
-        request: CodeReviewRequest,
-    ) -> CodeReviewResult:
-        """
-        Review code and provide feedback.
-
-        Args:
-            request: CodeReviewRequest with code, file_path, and change_type
-
-        Returns:
-            CodeReviewResult with comments, score, and approval status
-        """
-        if not self._optimal_service:
-            raise RuntimeError("ReviewerService not initialized")
-
-        comments: list[ReviewComment] = []
-
-        # 1. Get relevant coding standards
-        standards = await self._get_relevant_standards(
-            request.file_path,
-            request.code,
-        )
-
-        # 2. Get past reviews for similar code
-        past_reviews = await self._get_similar_reviews(
-            request.file_path,
-            request.code,
-        )
-
-        # 3. Check for known error patterns
-        error_patterns = await self._check_error_patterns(request.code)
-
-        # 4. Apply standards checks
-        standards_comments = self._check_standards(
-            request.code,
-            standards,
-            request.file_path,
-        )
-        comments.extend(standards_comments)
-
-        # 5. Apply security checks
-        security_comments = await self._check_security(
-            request.code,
-            request.file_path,
-        )
-        comments.extend(security_comments)
-
-        # 6. Add comments from similar past reviews
-        past_comments = self._apply_past_reviews(
-            request.code,
-            past_reviews,
-        )
-        comments.extend(past_comments)
-
-        # 7. Add warnings for known error patterns
-        error_comments = self._apply_error_patterns(
-            request.code,
-            error_patterns,
-        )
-        comments.extend(error_comments)
-
-        # Build summary
-        summary = self._build_summary(
-            file_path=request.file_path,
-            change_type=request.change_type,
-            comments=comments,
-            standards=standards,
-            past_reviews=past_reviews,
-        )
-
-        return CodeReviewResult(
-            file_path=request.file_path,
-            approved=summary.approved,
-            score=int(summary.overall_score),
-            comments=[
-                {
-                    "category": c.category.value,
-                    "severity": c.severity.value,
-                    "message": c.message,
-                    "line_number": c.line_number,
-                    "suggestion": c.suggestion,
-                    "rule_reference": c.rule_reference,
-                }
-                for c in comments
-            ],
-            standards_checked=[s.content[:100] for s in standards[:5]],
-            similar_reviews=[r.content[:100] for r in past_reviews[:3]],
-        )
-
-    async def _get_relevant_standards(
-        self,
-        file_path: str,
-        code: str,
-    ) -> list[SearchResult]:
-        """Get coding standards relevant to the file and code."""
-        # Determine language from file extension
-        language = self._detect_language(file_path)
-
-        # Search for relevant standards
-        standards: list[SearchResult] = cast(
-            "list[SearchResult]",
-            await self._optimal_service.get_standards(
-                domain="coding",
-                language=language,
-            ),
-        )
-
-        # Also search for security standards if code looks sensitive
-        if self._looks_security_sensitive(code):
-            security_standards = cast(
-                "list[SearchResult]",
-                await self._optimal_service.get_standards(
-                    domain="security",
-                ),
-            )
-            standards.extend(security_standards)
-
-        return standards
-
-    async def _get_similar_reviews(
-        self,
-        file_path: str,
-        _code: str,
-    ) -> list[SearchResult]:
-        """Get past review comments on similar code."""
-        return cast(
-            "list[SearchResult]",
-            await self._optimal_service.get_reviews_for_file(
-                file_path=file_path,
-                top_k=5,
-            ),
-        )
+class ReviewerChecks(_Base):
+    """The checks a review runs on the code itself: known error patterns, the
+    language's standards (Python and TypeScript), security, and the language and
+    security-sensitivity guesses they rest on."""
 
     async def _check_error_patterns(
         self,
@@ -424,6 +265,234 @@ class ReviewerService:
 
         return comments
 
+    def _detect_language(self, file_path: str) -> str:
+        """Detect programming language from file path."""
+        ext_map = {
+            ".py": "python",
+            ".ts": "typescript",
+            ".tsx": "typescript",
+            ".js": "javascript",
+            ".jsx": "javascript",
+            ".go": "go",
+            ".rs": "rust",
+            ".java": "java",
+            ".rb": "ruby",
+            ".php": "php",
+            ".cs": "csharp",
+            ".cpp": "cpp",
+            ".c": "c",
+            ".h": "c",
+            ".hpp": "cpp",
+            ".md": "markdown",
+            ".sql": "sql",
+            ".sh": "shell",
+            ".bash": "shell",
+            ".yml": "yaml",
+            ".yaml": "yaml",
+            ".json": "json",
+        }
+
+        for ext, lang in ext_map.items():
+            if file_path.endswith(ext):
+                return lang
+
+        return "unknown"
+
+    def _looks_security_sensitive(self, code: str) -> bool:
+        """Check if code appears to handle sensitive operations."""
+        sensitive_keywords = [
+            "password",
+            "secret",
+            "token",
+            "auth",
+            "credential",
+            "api_key",
+            "private_key",
+            "encrypt",
+            "decrypt",
+            "hash",
+            "session",
+            "cookie",
+            "permission",
+            "role",
+            "admin",
+        ]
+
+        code_lower = code.lower()
+        return any(kw in code_lower for kw in sensitive_keywords)
+
+
+class ReviewerService(ReviewerChecks):
+    """
+    Code review assistant that provides automated feedback.
+
+    Searches across multiple knowledge indexes to provide
+    comprehensive review feedback:
+    - STANDARDS: Coding standards and best practices
+    - REVIEWS: Past review comments on similar code
+    - ERRORS: Known error patterns to watch for
+    """
+
+    # Score deductions by severity
+    SEVERITY_DEDUCTIONS: ClassVar[dict[ReviewSeverity, int]] = {
+        ReviewSeverity.BLOCKER: 25,
+        ReviewSeverity.MAJOR: 10,
+        ReviewSeverity.MINOR: 3,
+        ReviewSeverity.SUGGESTION: 0,
+    }
+
+    # Similarity thresholds
+    PAST_REVIEW_THRESHOLD: ClassVar[float] = 0.7
+    ERROR_PATTERN_THRESHOLD: ClassVar[float] = 0.6
+
+    def __init__(self) -> None:
+        """Initialize ReviewerService."""
+        self._optimal_service: Any = None
+
+    async def initialize(self, optimal_service: Any) -> None:
+        """
+        Initialize with OptimalService reference.
+
+        Args:
+            optimal_service: The OptimalService instance
+        """
+        self._optimal_service = optimal_service
+        logger.info("ReviewerService initialized")
+
+    async def review_code(
+        self,
+        request: CodeReviewRequest,
+    ) -> CodeReviewResult:
+        """
+        Review code and provide feedback.
+
+        Args:
+            request: CodeReviewRequest with code, file_path, and change_type
+
+        Returns:
+            CodeReviewResult with comments, score, and approval status
+        """
+        if not self._optimal_service:
+            raise RuntimeError("ReviewerService not initialized")
+
+        comments: list[ReviewComment] = []
+
+        # 1. Get relevant coding standards
+        standards = await self._get_relevant_standards(
+            request.file_path,
+            request.code,
+        )
+
+        # 2. Get past reviews for similar code
+        past_reviews = await self._get_similar_reviews(
+            request.file_path,
+            request.code,
+        )
+
+        # 3. Check for known error patterns
+        error_patterns = await self._check_error_patterns(request.code)
+
+        # 4. Apply standards checks
+        standards_comments = self._check_standards(
+            request.code,
+            standards,
+            request.file_path,
+        )
+        comments.extend(standards_comments)
+
+        # 5. Apply security checks
+        security_comments = await self._check_security(
+            request.code,
+            request.file_path,
+        )
+        comments.extend(security_comments)
+
+        # 6. Add comments from similar past reviews
+        past_comments = self._apply_past_reviews(
+            request.code,
+            past_reviews,
+        )
+        comments.extend(past_comments)
+
+        # 7. Add warnings for known error patterns
+        error_comments = self._apply_error_patterns(
+            request.code,
+            error_patterns,
+        )
+        comments.extend(error_comments)
+
+        # Build summary
+        summary = self._build_summary(
+            file_path=request.file_path,
+            change_type=request.change_type,
+            comments=comments,
+            standards=standards,
+            past_reviews=past_reviews,
+        )
+
+        return CodeReviewResult(
+            file_path=request.file_path,
+            approved=summary.approved,
+            score=int(summary.overall_score),
+            comments=[
+                {
+                    "category": c.category.value,
+                    "severity": c.severity.value,
+                    "message": c.message,
+                    "line_number": c.line_number,
+                    "suggestion": c.suggestion,
+                    "rule_reference": c.rule_reference,
+                }
+                for c in comments
+            ],
+            standards_checked=[s.content[:100] for s in standards[:5]],
+            similar_reviews=[r.content[:100] for r in past_reviews[:3]],
+        )
+
+    async def _get_relevant_standards(
+        self,
+        file_path: str,
+        code: str,
+    ) -> list[SearchResult]:
+        """Get coding standards relevant to the file and code."""
+        # Determine language from file extension
+        language = self._detect_language(file_path)
+
+        # Search for relevant standards
+        standards: list[SearchResult] = cast(
+            "list[SearchResult]",
+            await self._optimal_service.get_standards(
+                domain="coding",
+                language=language,
+            ),
+        )
+
+        # Also search for security standards if code looks sensitive
+        if self._looks_security_sensitive(code):
+            security_standards = cast(
+                "list[SearchResult]",
+                await self._optimal_service.get_standards(
+                    domain="security",
+                ),
+            )
+            standards.extend(security_standards)
+
+        return standards
+
+    async def _get_similar_reviews(
+        self,
+        file_path: str,
+        _code: str,
+    ) -> list[SearchResult]:
+        """Get past review comments on similar code."""
+        return cast(
+            "list[SearchResult]",
+            await self._optimal_service.get_reviews_for_file(
+                file_path=file_path,
+                top_k=5,
+            ),
+        )
+
     def _apply_past_reviews(
         self,
         _code: str,
@@ -506,62 +575,6 @@ class ReviewerService:
             relevant_standards=standards,
             past_reviews=past_reviews,
         )
-
-    def _detect_language(self, file_path: str) -> str:
-        """Detect programming language from file path."""
-        ext_map = {
-            ".py": "python",
-            ".ts": "typescript",
-            ".tsx": "typescript",
-            ".js": "javascript",
-            ".jsx": "javascript",
-            ".go": "go",
-            ".rs": "rust",
-            ".java": "java",
-            ".rb": "ruby",
-            ".php": "php",
-            ".cs": "csharp",
-            ".cpp": "cpp",
-            ".c": "c",
-            ".h": "c",
-            ".hpp": "cpp",
-            ".md": "markdown",
-            ".sql": "sql",
-            ".sh": "shell",
-            ".bash": "shell",
-            ".yml": "yaml",
-            ".yaml": "yaml",
-            ".json": "json",
-        }
-
-        for ext, lang in ext_map.items():
-            if file_path.endswith(ext):
-                return lang
-
-        return "unknown"
-
-    def _looks_security_sensitive(self, code: str) -> bool:
-        """Check if code appears to handle sensitive operations."""
-        sensitive_keywords = [
-            "password",
-            "secret",
-            "token",
-            "auth",
-            "credential",
-            "api_key",
-            "private_key",
-            "encrypt",
-            "decrypt",
-            "hash",
-            "session",
-            "cookie",
-            "permission",
-            "role",
-            "admin",
-        ]
-
-        code_lower = code.lower()
-        return any(kw in code_lower for kw in sensitive_keywords)
 
     async def get_review_history(
         self,
