@@ -25,9 +25,9 @@ from roboco.runtime.orchestrator import (
     _PARENT_BRANCH_WAIT,
     _PM_DISPATCH_FETCH_LIMIT,
     _SINGLE_ACTIVE_TASK_ROLES,
-    AgentReadinessError,
     AgentState,
     _agent_api_headers,
+    _attempt_dispatch,
     _dispatch_board_program_exploration,
     _is_branch_pending,
     _is_held_ceo_source,
@@ -60,10 +60,9 @@ async def _dispatch_pending_task_to_pm(
     """Triage one pending task for ``_dispatch_pm_work``: an assigned task to
     its Board Program, board role or PM, an unassigned one through routing.
 
-    ``spawn_agent`` refuses a task that is not ready by auto-blocking it and
-    raising ``AgentReadinessError``, whose contract is that callers log and
-    move on; the caller does that per task, so one refusal no longer ends the
-    tick for every pending task after it. Module-level (not a method), like
+    ``_dispatch_pm_work`` awaits it per task through ``_attempt_dispatch``, so
+    a spawn refused as not ready no longer ends the tick for every pending
+    task after it. Module-level (not a method), like
     ``_dispatch_board_program_exploration``: the pm_work tests drive
     ``_dispatch_pm_work`` on a stub that mocks only the handlers below.
     """
@@ -163,14 +162,11 @@ class PMDispatchEngine(_Base):
         dispatch_paused = await self._is_paused(PauseScope.DISPATCH)
 
         for task in tasks:
-            try:
-                await _dispatch_pending_task_to_pm(self, client, task, dispatch_paused)
-            except AgentReadinessError as exc:
-                logger.info(
-                    "PM triage: spawn refused, task not ready; next pending task",
-                    task_id=task.get("id"),
-                    reason=str(exc),
-                )
+            await _attempt_dispatch(
+                "pm_work",
+                task.get("id"),
+                _dispatch_pending_task_to_pm(self, client, task, dispatch_paused),
+            )
 
     async def _dispatch_revision_coordination_roots(
         self, client: httpx.AsyncClient
@@ -201,12 +197,16 @@ class PMDispatchEngine(_Base):
             # stop respawning the coordinator (progress resets the strikes).
             if await self._pm_respawn_should_gate(agent_slug, task):
                 continue
-            await self.spawn_agent(
-                agent_id=agent_slug,
-                task_id=task["id"],
-                initial_prompt=await self._get_prompt_for_agent(agent_slug, task),
-                git_context=self._task_git_context(task),
-                spawned_by="_dispatch_revision_coordination_roots",
+            await _attempt_dispatch(
+                "revision_coordination",
+                task["id"],
+                self.spawn_agent(
+                    agent_id=agent_slug,
+                    task_id=task["id"],
+                    initial_prompt=await self._get_prompt_for_agent(agent_slug, task),
+                    git_context=self._task_git_context(task),
+                    spawned_by="_dispatch_revision_coordination_roots",
+                ),
             )
 
     async def _dispatch_pm_review_work(self, client: httpx.AsyncClient) -> None:
@@ -252,12 +252,16 @@ class PMDispatchEngine(_Base):
             if await self._pm_respawn_should_gate(assigned_slug, task):
                 continue
             # Agent not running - spawn them to continue
-            await self.spawn_agent(
-                agent_id=assigned_slug,
-                task_id=task["id"],
-                initial_prompt=self._build_pm_review_prompt(task),
-                git_context=self._task_git_context(task),
-                spawned_by="_dispatch_pm_review_work",
+            await _attempt_dispatch(
+                "pm_review_work",
+                task["id"],
+                self.spawn_agent(
+                    agent_id=assigned_slug,
+                    task_id=task["id"],
+                    initial_prompt=self._build_pm_review_prompt(task),
+                    git_context=self._task_git_context(task),
+                    spawned_by="_dispatch_pm_review_work",
+                ),
             )
 
     async def _dispatch_blocker_work(self, client: httpx.AsyncClient) -> None:
@@ -298,14 +302,18 @@ class PMDispatchEngine(_Base):
             if await self._pm_respawn_should_gate(agent_id, task):
                 continue
 
-            await self.spawn_agent(
-                agent_id=agent_id,
-                task_id=task["id"],
-                initial_prompt=self._build_pm_blocker_prompt(task),
-                git_context=self._task_git_context(task),
-                spawned_by="_dispatch_blocker_work",
-            )
-            break
+            if await _attempt_dispatch(
+                "blocker_work",
+                task["id"],
+                self.spawn_agent(
+                    agent_id=agent_id,
+                    task_id=task["id"],
+                    initial_prompt=self._build_pm_blocker_prompt(task),
+                    git_context=self._task_git_context(task),
+                    spawned_by="_dispatch_blocker_work",
+                ),
+            ):
+                break
 
 
 class BoardDispatchEngine(_Base):
@@ -549,14 +557,18 @@ class BoardDispatchEngine(_Base):
                 # Already running, they'll pick up on scan
                 continue
 
-            await self.spawn_agent(
-                agent_id="head-marketing",
-                task_id=task["id"],
-                initial_prompt=self._build_marketing_prompt(task),
-                git_context=self._task_git_context(task),
-                spawned_by="_dispatch_marketing_work",
-            )
-            break
+            if await _attempt_dispatch(
+                "marketing_work",
+                task["id"],
+                self.spawn_agent(
+                    agent_id="head-marketing",
+                    task_id=task["id"],
+                    initial_prompt=self._build_marketing_prompt(task),
+                    git_context=self._task_git_context(task),
+                    spawned_by="_dispatch_marketing_work",
+                ),
+            ):
+                break
 
 
 class BoardProgramContextEngine(_Base):
@@ -1469,7 +1481,9 @@ class DevDispatchEngine(_Base):
             # dispatchers (their own routes / _dispatch_pm_work), never a dev.
             if _is_non_dev_dispatch_source(task):
                 continue
-            await self._dev_dispatch_one(client, task)
+            await _attempt_dispatch(
+                "dev_work", task.get("id"), self._dev_dispatch_one(client, task)
+            )
 
     async def _spawn_pending_dev(
         self,
@@ -1651,7 +1665,8 @@ class DevDispatchEngine(_Base):
     async def _respawn_agentless_claim_assignee(
         self, client: httpx.AsyncClient, task: dict[str, Any], agent_slug: str
     ) -> bool:
-        """Respawn ``agent_slug`` on its agentless claim; True when it spawned.
+        """Respawn ``agent_slug`` on its agentless claim; True when it spawned
+        (False also when ``spawn_agent`` refused the task as not ready).
 
         Held to the same two rules as every other task-keyed spawn path. A
         work author still holding other work is not booted onto this claim
@@ -1677,14 +1692,17 @@ class DevDispatchEngine(_Base):
             agent=agent_slug,
             status=task.get("status"),
         )
-        await self.spawn_agent(
-            agent_id=agent_slug,
-            task_id=str(task.get("id")),
-            initial_prompt=await self._get_prompt_for_agent(agent_slug, task),
-            git_context=self._task_git_context(task),
-            spawned_by="_dispatch_claimed_without_agent",
+        return await _attempt_dispatch(
+            "claimed_without_agent",
+            task.get("id"),
+            self.spawn_agent(
+                agent_id=agent_slug,
+                task_id=str(task.get("id")),
+                initial_prompt=await self._get_prompt_for_agent(agent_slug, task),
+                git_context=self._task_git_context(task),
+                spawned_by="_dispatch_claimed_without_agent",
+            ),
         )
-        return True
 
     async def _agentless_claim_author_holds_other_work(
         self, client: httpx.AsyncClient, task: dict[str, Any], agent_slug: str
@@ -1751,14 +1769,27 @@ class QADispatchEngine(_Base):
         # task-keyed spawn path; notifies the CEO once it trips.
         if await self._pm_respawn_should_gate(assigned_slug, task):
             return True
-        await self.spawn_agent(
-            agent_id=assigned_slug,
-            task_id=task["id"],
-            initial_prompt=self._build_qa_prompt(task),
-            git_context=self._task_git_context(task),
-            spawned_by="_spawn_assigned_qa",
+        await _attempt_dispatch(
+            "qa_work",
+            task["id"],
+            self.spawn_agent(
+                agent_id=assigned_slug,
+                task_id=task["id"],
+                initial_prompt=self._build_qa_prompt(task),
+                git_context=self._task_git_context(task),
+                spawned_by="_spawn_assigned_qa",
+            ),
         )
         return True
+
+    def _qa_candidates(self, tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """The awaiting_qa tasks of a delivery cell not yet handled this tick."""
+        return [
+            task
+            for task in tasks
+            if not self._is_task_handled_this_tick(task.get("id"))
+            and task.get("team") in ("backend", "frontend", "ux_ui")
+        ]
 
     async def _dispatch_qa_work(self, client: httpx.AsyncClient) -> None:
         """
@@ -1773,14 +1804,7 @@ class QADispatchEngine(_Base):
         tasks = await self._fetch_tasks(
             client, "awaiting_qa", limit=_PM_DISPATCH_FETCH_LIMIT
         )
-        candidates = []
-        for task in tasks:
-            if self._is_task_handled_this_tick(task.get("id")):
-                continue
-            team = task.get("team")
-            if team not in ["backend", "frontend", "ux_ui"]:
-                continue
-            candidates.append(task)
+        candidates = self._qa_candidates(tasks)
         # B35 review_queue_priority: score the queue (risk x staleness x
         # blast radius) and review depth, then order and inform. Reorders
         # and informs only - it never decides verdicts and never touches
@@ -1811,16 +1835,20 @@ class QADispatchEngine(_Base):
             # claim_review/pass_review demand awaiting_qa (live 2026-07-02,
             # ba7b751c). The agent claims itself via claim_review; the
             # _is_agent_active guard prevents a double-spawn across ticks.
-            await self.spawn_agent(
-                agent_id=agent_id,
-                task_id=task["id"],
-                initial_prompt=self._build_qa_prompt(task)
-                + self._decisions_qa_depth_directive(task, depth_directives),
-                git_context=self._task_git_context(task),
-                spawned_by="_dispatch_qa_work",
-            )
             # Only spawn one QA at a time per cell
-            break
+            if await _attempt_dispatch(
+                "qa_work",
+                task["id"],
+                self.spawn_agent(
+                    agent_id=agent_id,
+                    task_id=task["id"],
+                    initial_prompt=self._build_qa_prompt(task)
+                    + self._decisions_qa_depth_directive(task, depth_directives),
+                    git_context=self._task_git_context(task),
+                    spawned_by="_dispatch_qa_work",
+                ),
+            ):
+                break
 
     async def _decisions_order_qa_queue(
         self, candidates: list[dict[str, Any]]
@@ -1951,7 +1979,9 @@ class DocDispatchEngine(_Base):
         for task in tasks:
             if self._is_task_handled_this_tick(task.get("id")):
                 continue
-            await self._doc_dispatch_one(client, task)
+            await _attempt_dispatch(
+                "doc_work", task.get("id"), self._doc_dispatch_one(client, task)
+            )
 
     async def _auto_assign_doc(
         self, client: httpx.AsyncClient, task: dict[str, Any], team: str
@@ -2294,14 +2324,18 @@ class PRReviewDispatchEngine(_Base):
             # Respawn circuit breaker — parity with the in-path gate dispatcher.
             if await self._pm_respawn_should_gate(reviewer, task):
                 continue
-            await self.spawn_agent(
-                agent_id=reviewer,
-                task_id=task["id"],
-                initial_prompt=self._build_pr_review_prompt(task),
-                git_context=self._task_git_context(task),
-                spawned_by="_dispatch_pr_review_work",
-            )
-            break
+            if await _attempt_dispatch(
+                "pr_review_work",
+                task["id"],
+                self.spawn_agent(
+                    agent_id=reviewer,
+                    task_id=task["id"],
+                    initial_prompt=self._build_pr_review_prompt(task),
+                    git_context=self._task_git_context(task),
+                    spawned_by="_dispatch_pr_review_work",
+                ),
+            ):
+                break
 
     async def _dispatch_pr_gate_work(self, client: httpx.AsyncClient) -> None:
         """Dispatch in-path PR-review-gate tasks (awaiting_pr_review) to reviewers.
@@ -2357,14 +2391,18 @@ class PRReviewDispatchEngine(_Base):
             if await self._pm_respawn_should_gate(reviewer, task):
                 continue
             await self._sync_gate_reviewer_assignment(task, reviewer)
-            spawned.add(reviewer)
-            await self.spawn_agent(
-                agent_id=reviewer,
-                task_id=task["id"],
-                initial_prompt=self._build_pr_gate_prompt(task),
-                git_context=self._task_git_context(task),
-                spawned_by="_dispatch_pr_gate_work",
-            )
+            if await _attempt_dispatch(
+                "pr_gate_work",
+                task["id"],
+                self.spawn_agent(
+                    agent_id=reviewer,
+                    task_id=task["id"],
+                    initial_prompt=self._build_pr_gate_prompt(task),
+                    git_context=self._task_git_context(task),
+                    spawned_by="_dispatch_pr_gate_work",
+                ),
+            ):
+                spawned.add(reviewer)
         # DevOps second-reviewer slot (the infra review gate, Stage 3,
         # flag-gated) - runs AFTER the primary pass above so the existing
         # gate is never starved: devops-1 only ever joins a gate the primary
@@ -2373,7 +2411,9 @@ class PRReviewDispatchEngine(_Base):
         # the primary reviewer's ownership untouched) and one seat fleet-wide
         # (``is_agent_active`` prevents double-spawn across ticks).
         for task in tasks:
-            await self._dispatch_devops_gate_review(task)
+            await _attempt_dispatch(
+                "pr_gate_work", task.get("id"), self._dispatch_devops_gate_review(task)
+            )
 
     async def _dispatch_devops_gate_review(self, task: dict[str, Any]) -> None:
         """Spawn devops-1 for ONE awaiting_pr_review task whose diff hits the
@@ -2598,7 +2638,11 @@ class AuditDispatchEngine(_Base):
                 db
             ).list_completed_roots_pending_vault_curation()
             for task in candidates:
-                await self._maybe_spawn_vault_curation(str(task.id), task.title)
+                await _attempt_dispatch(
+                    "vault_curation_work",
+                    task.id,
+                    self._maybe_spawn_vault_curation(str(task.id), task.title),
+                )
 
     async def _maybe_spawn_vault_curation(self, task_id: str, title: str) -> None:
         """One-shot Auditor spawn for one completed root task.
@@ -2744,12 +2788,16 @@ class NotificationDispatchEngine(_Base):
                     continue
                 if not await self._notification_has_live_work(client, notif):
                     continue
-                await self.spawn_agent(
-                    agent_id=agent_slug,
-                    initial_prompt=self._build_escalation_prompt(notif),
-                    spawned_by="_dispatch_escalation_work",
-                )
-                break
+                if await _attempt_dispatch(
+                    "escalation_work",
+                    notif.get("id"),
+                    self.spawn_agent(
+                        agent_id=agent_slug,
+                        initial_prompt=self._build_escalation_prompt(notif),
+                        spawned_by="_dispatch_escalation_work",
+                    ),
+                ):
+                    break
 
     async def _dispatch_approval_work(self, client: httpx.AsyncClient) -> None:
         """
@@ -2777,12 +2825,16 @@ class NotificationDispatchEngine(_Base):
                     continue
                 if not await self._notification_has_live_work(client, notif):
                     continue
-                await self.spawn_agent(
-                    agent_id=agent_slug,
-                    initial_prompt=self._build_approval_prompt(notif),
-                    spawned_by="_dispatch_approval_work",
-                )
-                break
+                if await _attempt_dispatch(
+                    "approval_work",
+                    notif.get("id"),
+                    self.spawn_agent(
+                        agent_id=agent_slug,
+                        initial_prompt=self._build_approval_prompt(notif),
+                        spawned_by="_dispatch_approval_work",
+                    ),
+                ):
+                    break
 
     async def _dispatch_a2a_work(self, client: httpx.AsyncClient) -> None:
         """
@@ -2834,9 +2886,13 @@ class NotificationDispatchEngine(_Base):
                 # Agent is offline - spawn them with A2A context
                 if await self._notification_spawn_cooled(agent_slug, notif.get("id")):
                     continue
-                await self.spawn_agent(
-                    agent_id=agent_slug,
-                    initial_prompt=self._build_a2a_prompt(notif),
-                    spawned_by="_dispatch_a2a_work",
-                )
-                break
+                if await _attempt_dispatch(
+                    "a2a_work",
+                    notif.get("id"),
+                    self.spawn_agent(
+                        agent_id=agent_slug,
+                        initial_prompt=self._build_a2a_prompt(notif),
+                        spawned_by="_dispatch_a2a_work",
+                    ),
+                ):
+                    break

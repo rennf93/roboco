@@ -23,6 +23,7 @@ from roboco.models.runtime import (
 )
 from roboco.runtime.orchestrator import (
     _PARENT_BRANCH_WAIT,
+    _attempt_dispatch,
     _branch_is_expected,
     _created_before,
     _is_coordination_task,
@@ -1013,12 +1014,16 @@ class ClaimBarrierEngine(_Base):
             task_id=task_id,
             agent=agent_slug,
         )
-        await self.spawn_agent(
-            agent_id=agent_slug,
-            task_id=task_id,
-            initial_prompt=await self._build_dev_prompt(task),
-            git_context=self._task_git_context(task),
-            spawned_by="_resume_paused_task_for_author",
+        await _attempt_dispatch(
+            "resume_paused_task_for_author",
+            task_id,
+            self.spawn_agent(
+                agent_id=agent_slug,
+                task_id=task_id,
+                initial_prompt=await self._build_dev_prompt(task),
+                git_context=self._task_git_context(task),
+                spawned_by="_resume_paused_task_for_author",
+            ),
         )
 
     async def _blocked_by_earlier_sibling(self, task: dict[str, Any]) -> bool:

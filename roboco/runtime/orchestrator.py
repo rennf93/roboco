@@ -22,13 +22,14 @@ import shutil
 import sys
 import tempfile
 import time
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Callable
 
     from roboco.llm.providers import ProviderRegistry
     from roboco.services.uptime import UptimeLedger
@@ -1081,6 +1082,33 @@ class AgentReadinessError(Exception):
     The pre-flight gate auto-blocks the offending task before raising, so the
     dispatcher doesn't keep retrying. Callers should log and move on.
     """
+
+
+async def _attempt_dispatch(
+    dispatcher: str, candidate_id: Any, attempt: Awaitable[object]
+) -> bool:
+    """Await one dispatch candidate's attempt; True when it completed, False
+    when ``spawn_agent`` refused it as not ready.
+
+    The refusal is that candidate's outcome (``AgentReadinessError``'s
+    contract: the readiness gate has already auto-blocked the task, callers
+    log and move on), so the dispatcher goes on with its next candidate
+    instead of the exception ending its tick for every candidate after it
+    (live 2026-10-28 06:40:08: fe-pm refused on d42e53ea ended pm_work).
+    Every per-candidate dispatcher loop awaits its spawn step through here;
+    one that spawns once per tick only spends that spawn on a True.
+    """
+    try:
+        await attempt
+    except AgentReadinessError as exc:
+        logger.info(
+            "Spawn refused, task not ready; dispatcher moves on",
+            dispatcher=dispatcher,
+            candidate_id=str(candidate_id),
+            reason=str(exc),
+        )
+        return False
+    return True
 
 
 class _SpawnAbortedDuringShutdown(Exception):
