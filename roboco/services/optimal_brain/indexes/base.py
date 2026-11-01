@@ -703,8 +703,8 @@ class IndexPluginSearch(_Base):
 
 
 class IndexPluginAnswers(_Base):
-    """RAG answers: asking a question over the index's search results, the retried
-    LLM synthesis with think tags stripped, and the empty fallback."""
+    """RAG answers: asking a question over the index's search results, and the retried
+    LLM synthesis with think tags stripped."""
 
     def _extract_from_think_tags(self, text: str) -> str:
         """Extract answer from LLM response, handling think tags."""
@@ -720,16 +720,6 @@ class IndexPluginAnswers(_Base):
             return inside_match.group(1).strip()
 
         return text.strip()
-
-    def _fallback_answer(self, _search_results: list[SearchResult]) -> str:
-        """
-        Return empty to let OptimalService continue searching other indexes.
-
-        Previously this returned a formatted string of search results, but that
-        caused query() to early-return and skip remaining indexes. Now we return
-        empty and let the service-level aggregation handle fallback synthesis.
-        """
-        return ""
 
     async def ask(
         self,
@@ -1043,9 +1033,12 @@ class BaseIndexPlugin(
     - build_source_uri() method
 
     Subclasses CAN override:
-    - chunk() for custom chunking
     - search() for custom search behavior
     - validate_content() for content validation
+
+    Chunking is TextChunker's, sized by the index's IndexConfig (chunk_size,
+    chunk_overlap); a plugin that chunks its own way runs its own ingest path,
+    as CodeIndexPlugin does for source files.
     """
 
     # When True (default), re-ingesting a source first deletes that source's
