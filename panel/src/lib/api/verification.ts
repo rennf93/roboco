@@ -1,10 +1,12 @@
 // Pure client-side derivations for the task-detail Verification receipt and
-// the release-proposal rollup. No new backend endpoints or capture: every
-// export here reshapes data GET /tasks/{id}, GET /tasks/{id}/findings,
-// GET /tasks/{id}/attestation, and GET /projects/{id}/conventions/findings
-// already return.
+// the release-proposal rollup. Every export here reshapes data GET
+// /tasks/{id}, GET /tasks/{id}/findings, GET /tasks/{id}/attestation, GET
+// /projects/{id}/conventions/findings, or the rollup's two bulk reads (GET
+// /release/proposal/verification and /ci-verdicts) already return.
 import type { AttestationCiVerdict, TaskFinding } from "./tasks";
 import type { TaskMetricsReviewerChainEntry } from "./dashboard";
+import type { ConventionFinding } from "./conventions";
+import type { ReleaseMemberCiVerdict, ReleaseMemberReceipt } from "./release";
 
 // One acceptance criterion's QA verification state, parsed from the
 // deterministic "[AC] <criterion> — verified: <evidence>" lines
@@ -177,3 +179,56 @@ export function prCiVerdictFromAttestation(
 // message is the release-proposal rollup's empty-state copy for that case.
 export const RELEASE_NO_MEMBER_TASKS_MESSAGE =
   "This release has no member tasks. There's nothing to verify per-task.";
+
+// One member task's receipt shaped for the shared presentational pieces: the
+// same derivations the task-detail Verification tab applies to the per-task
+// endpoints, applied to one entry of GET /release/proposal/verification.
+export interface MemberVerification {
+  taskId: string;
+  title: string;
+  ac: AcVerificationStamp[];
+  findings: ReviewRoundFindings[];
+  conventions: ConventionFinding[];
+  reviewers: ReviewerChainEntry[];
+}
+
+export function memberVerificationFromReceipt(
+  receipt: ReleaseMemberReceipt,
+): MemberVerification {
+  return {
+    taskId: receipt.task_id,
+    title: receipt.title,
+    ac: parseAcVerificationStamps(
+      receipt.acceptance_criteria,
+      receipt.qa_notes,
+    ),
+    findings: groupFindingsByRound(receipt.findings),
+    conventions: receipt.conventions_findings,
+    reviewers: buildReviewerChain(receipt.reviewer_chain),
+  };
+}
+
+// GET /release/proposal/ci-verdicts' entries keyed by member task id.
+export function ciVerdictsByTask(
+  verdicts: ReleaseMemberCiVerdict[],
+): Record<string, PrCiVerdict> {
+  return Object.fromEntries(
+    verdicts.map((v) => [v.task_id, prCiVerdictFromAttestation(v.ci)]),
+  );
+}
+
+// One member's CI verdict from the rollup's bulk read: unreadable when that
+// read failed, not-available when the member has no verdict (yet).
+export function memberCiVerdict(
+  verdicts: Record<string, PrCiVerdict> | undefined,
+  failed: boolean,
+  taskId: string,
+): PrCiVerdict {
+  if (failed) return PR_CI_VERDICT_UNREADABLE;
+  return verdicts?.[taskId] ?? PR_CI_VERDICT_NOT_AVAILABLE;
+}
+
+// The rollup's copy when its bulk receipts read fails: never an empty list
+// that would read as "nothing to verify".
+export const RELEASE_ROLLUP_UNREADABLE_MESSAGE =
+  "The release's verification receipts couldn't be loaded.";

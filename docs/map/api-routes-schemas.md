@@ -29,7 +29,7 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | roboco/api/routes/prompter_live.py | Live Intake chat (start/stream/messages/confirm/confirm-batch). |
 | roboco/api/routes/secretary.py | Company state + CEO directives confirm/reject. |
 | roboco/api/routes/secretary_live.py | Live Secretary chat (start/stream/messages/stop/events). |
-| roboco/api/routes/release.py | CEO-only release proposal approve/reject. |
+| roboco/api/routes/release.py | CEO-only release proposal read/approve/reject, plus the verification rollup's two bulk reads (`/proposal/verification`, `/proposal/ci-verdicts`). |
 | roboco/api/routes/playbooks.py | Playbook approve/reject/archive (Auditor/CEO). |
 | roboco/api/routes/pitch.py | Pitch create/list/approve/reject. |
 | roboco/api/routes/provider.py | Provider catalog + ollama/grok/self-hosted key + mode + routing presets (`/presets` list/save/apply/delete). |
@@ -93,7 +93,7 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | GET | /api/prompter/live/{id}/search-tasks | prompter_live.py | session-aliveness check (no agent identity) — intake's `search_past_tasks` tool (wave 1, `d1cf6ecb`) |
 | POST | /api/secretary/live, /live/{id}/{stream,messages,stop,events} ; /api/secretary/{state,directives} | secretary*.py | panel token / agent ctx |
 | GET | /api/secretary/tasks?q= (search_tasks) | secretary.py | agent ctx, Secretary or CEO role — resolve a task NAME to id(s) for a directive (wave 1, `d1cf6ecb`) |
-| GET/POST | /api/release/proposal, /proposal/approve, /proposal/reject | release.py | `_require_ceo` (agent.role==CEO) |
+| GET/POST | /api/release/proposal, /proposal/verification, /proposal/ci-verdicts, /proposal/approve, /proposal/reject | release.py | `_require_ceo` (agent.role==CEO) |
 | GET/POST | /api/playbooks, /{id}/{approve,reject,archive} | playbooks.py | agent context (Auditor/CEO) |
 | GET/POST | /api/x/posts, /posts/{id}/{approve,reject}, /credentials | x.py | `require_ceo_role` (agent context) |
 | GET/POST | /api/roadmap/cycles, /cycles/{id}/items/{id}/{approve,reject} | roadmap.py | `require_ceo_role` (agent context) |

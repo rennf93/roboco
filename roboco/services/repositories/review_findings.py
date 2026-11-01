@@ -21,6 +21,7 @@ from roboco.services.entire_trails import hooks as entire_trails
 from roboco.services.repositories.base import BaseRepository
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from datetime import datetime
     from uuid import UUID
 
@@ -88,6 +89,39 @@ class ReviewFindingsRepository(BaseRepository[TaskReviewFindingTable]):
             TaskReviewFindingTable.round.desc(),
             TaskReviewFindingTable.created_at.desc(),
         ).limit(limit)
+        result = await self.session.execute(stmt)
+        return list(result.scalars().all())
+
+    async def list_for_tasks(
+        self, task_ids: Sequence[UUID], *, limit_per_task: int = 500
+    ) -> list[TaskReviewFindingTable]:
+        """``list_for_task`` for many tasks in one query: each task's findings,
+        newest round first, capped at ``limit_per_task`` rows per task. Rows of
+        different tasks come grouped by task, in no particular task order."""
+        if not task_ids:
+            return []
+        position = (
+            func.row_number()
+            .over(
+                partition_by=TaskReviewFindingTable.task_id,
+                order_by=(
+                    TaskReviewFindingTable.round.desc(),
+                    TaskReviewFindingTable.created_at.desc(),
+                ),
+            )
+            .label("position")
+        )
+        ranked = (
+            select(TaskReviewFindingTable.id, position)
+            .where(TaskReviewFindingTable.task_id.in_(task_ids))
+            .subquery()
+        )
+        stmt = (
+            select(TaskReviewFindingTable)
+            .join(ranked, ranked.c.id == TaskReviewFindingTable.id)
+            .where(ranked.c.position <= limit_per_task)
+            .order_by(TaskReviewFindingTable.task_id, ranked.c.position)
+        )
         result = await self.session.execute(stmt)
         return list(result.scalars().all())
 

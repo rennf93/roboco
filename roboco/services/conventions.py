@@ -39,6 +39,8 @@ from roboco.services.git_relay import is_dispatcher_owned, run_private_git
 from roboco.services.workspace_git import run_workspace_git
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from sqlalchemy.exc import IntegrityError
     from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -579,19 +581,37 @@ class ConventionsService(BaseService, ConventionsMapResolution):
             .order_by(ProjectConventionFindingTable.detected_at.desc())
             .limit(limit)
         )
-        return [
-            {
-                "file": row.file,
-                "line": row.line,
-                "rule": row.rule,
-                "level": row.level,
-                "kind": row.kind,
-                "message": row.message,
-                "task_id": str(row.task_id) if row.task_id is not None else None,
-                "detected_at": row.detected_at.isoformat(),
-            }
-            for row in result.scalars().all()
-        ]
+        return [convention_finding_to_dict(row) for row in result.scalars().all()]
+
+
+def convention_finding_to_dict(row: ProjectConventionFindingTable) -> dict[str, Any]:
+    """One recorded conventions finding in the panel feed's wire shape."""
+    return {
+        "file": row.file,
+        "line": row.line,
+        "rule": row.rule,
+        "level": row.level,
+        "kind": row.kind,
+        "message": row.message,
+        "task_id": str(row.task_id) if row.task_id is not None else None,
+        "detected_at": row.detected_at.isoformat(),
+    }
+
+
+async def convention_findings_for_tasks(
+    session: AsyncSession, task_ids: Sequence[UUID]
+) -> list[dict[str, Any]]:
+    """Every conventions finding recorded against any of ``task_ids``, newest
+    first, in the feed's wire shape: the task-scoped read the project feed's
+    50-row cap cannot give."""
+    if not task_ids:
+        return []
+    result = await session.execute(
+        select(ProjectConventionFindingTable)
+        .where(ProjectConventionFindingTable.task_id.in_(task_ids))
+        .order_by(ProjectConventionFindingTable.detected_at.desc())
+    )
+    return [convention_finding_to_dict(row) for row in result.scalars().all()]
 
 
 def get_conventions_service(session: AsyncSession) -> ConventionsService:

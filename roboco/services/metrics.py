@@ -490,6 +490,52 @@ class MetricsFlow(_Base):
         ]
 
 
+async def reviewer_chains_for_tasks(
+    session: AsyncSession, task_ids: Sequence[UUID]
+) -> dict[str, list[ReviewerChainEntry]]:
+    """Each task's non-developer spawn chain, in round order, keyed by task id.
+
+    ``round`` is a session's 1-based position among its task's own
+    non-developer (review-layer: qa/pr_reviewer/cell_pm/main_pm/ceo) spawn
+    sessions, ordered by ``started_at``; a developer's own authoring spawns
+    are excluded, they aren't reviews. Exposure only: every field already
+    exists on ``agent_spawn_sessions``, whose ``task_id`` is a ``String(36)``.
+    One query whatever the number of tasks; a task with no review session is
+    absent from the result.
+    """
+    if not task_ids:
+        return {}
+    rows = (
+        await session.execute(
+            select(
+                AgentSpawnSessionTable.task_id,
+                AgentSpawnSessionTable.role,
+                AgentSpawnSessionTable.model,
+                AgentSpawnSessionTable.agent_slug,
+                AgentSpawnSessionTable.started_at,
+            )
+            .where(
+                AgentSpawnSessionTable.task_id.in_([str(t) for t in task_ids]),
+                AgentSpawnSessionTable.role != str(AgentRole.DEVELOPER),
+            )
+            .order_by(AgentSpawnSessionTable.task_id, AgentSpawnSessionTable.started_at)
+        )
+    ).all()
+    chains: dict[str, list[ReviewerChainEntry]] = {}
+    for r in rows:
+        chain = chains.setdefault(str(r.task_id), [])
+        chain.append(
+            ReviewerChainEntry(
+                round=len(chain) + 1,
+                role=r.role,
+                model=r.model,
+                agent_slug=r.agent_slug,
+                started_at=r.started_at.isoformat(),
+            )
+        )
+    return chains
+
+
 class MetricsTaskDetail(_Base):
     """One task's metrics: its spawn rollup, stage windows, fail counts, reviewer
     chain, and token cost."""
@@ -596,39 +642,10 @@ class MetricsTaskDetail(_Base):
         )
 
     async def _reviewer_chain_for_task(self, task_id: UUID) -> list[ReviewerChainEntry]:
-        """The non-developer spawn chain for this task, in round order.
-
-        ``round`` is this session's 1-based position among the task's own
-        non-developer (review-layer: qa/pr_reviewer/cell_pm/main_pm/ceo)
-        spawn sessions, ordered by ``started_at`` — a developer's own
-        authoring spawns are excluded, they aren't reviews. Exposure only:
-        every field already exists on ``agent_spawn_sessions``.
-        """
-        rows = (
-            await self.session.execute(
-                select(
-                    AgentSpawnSessionTable.role,
-                    AgentSpawnSessionTable.model,
-                    AgentSpawnSessionTable.agent_slug,
-                    AgentSpawnSessionTable.started_at,
-                )
-                .where(
-                    AgentSpawnSessionTable.task_id == str(task_id),
-                    AgentSpawnSessionTable.role != str(AgentRole.DEVELOPER),
-                )
-                .order_by(AgentSpawnSessionTable.started_at)
-            )
-        ).all()
-        return [
-            ReviewerChainEntry(
-                round=i,
-                role=r.role,
-                model=r.model,
-                agent_slug=r.agent_slug,
-                started_at=r.started_at.isoformat(),
-            )
-            for i, r in enumerate(rows, start=1)
-        ]
+        """The non-developer spawn chain for this task, in round order (see
+        ``reviewer_chains_for_tasks``, the one place rounds are numbered)."""
+        chains = await reviewer_chains_for_tasks(self.session, [task_id])
+        return chains.get(str(task_id), [])
 
     async def get_task_metrics(self, task_id: UUID) -> TaskMetrics | None:
         """Live granular metrics for one task, or None if the task doesn't exist.

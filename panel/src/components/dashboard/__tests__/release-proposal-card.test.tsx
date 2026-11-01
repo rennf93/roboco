@@ -4,15 +4,23 @@ import type { ReactNode } from "react";
 import type { ReleaseProposal } from "@/lib/api/release";
 
 // Control useQuery per test; the mutation + queryClient hooks just need to exist.
-const { mockUseQuery } = vi.hoisted(() => ({
+// The verification rollup's own bulk reads (["release", "verification" |
+// "ci-verdicts", id]) stay idle: these tests drive the card's proposal query,
+// and the rollup's reads are covered in release-proposal-card-fanout.test.tsx.
+const { mockUseQuery, ROLLUP_QUERY_SEGMENTS, IDLE_QUERY } = vi.hoisted(() => ({
   mockUseQuery: vi.fn(),
+  ROLLUP_QUERY_SEGMENTS: new Set(["verification", "ci-verdicts"]),
+  IDLE_QUERY: { data: undefined, isLoading: false, isError: false },
 }));
 
 vi.mock("@tanstack/react-query", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-query")>();
   return {
     ...actual,
-    useQuery: mockUseQuery,
+    useQuery: (options: { queryKey: readonly unknown[] }) =>
+      ROLLUP_QUERY_SEGMENTS.has(String(options.queryKey[1]))
+        ? IDLE_QUERY
+        : mockUseQuery(options),
     useMutation: vi.fn(() => ({ mutate: vi.fn(), mutateAsync: vi.fn() })),
     useQueryClient: vi.fn(() => ({
       invalidateQueries: vi.fn(),

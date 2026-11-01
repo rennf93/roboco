@@ -6,8 +6,16 @@ builds the model, mirroring ``schemas/x.py``.
 """
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field
+
+from roboco.api.schemas.attestation import AttestationCiVerdictResponse
+from roboco.api.schemas.project import ConventionFinding
+from roboco.api.schemas.tasks import TaskFindingResponse, finding_to_response
+
+if TYPE_CHECKING:
+    from roboco.services.release_verification import MemberCiVerdict, MemberReceipt
 
 
 class ReleaseGapModel(BaseModel):
@@ -144,3 +152,81 @@ class ReleaseCertificateResponse(BaseModel):
     changelog_excerpt: str
     task_states: list[ReleaseCertificateTaskState]
     findings_summary: ReleaseCertificateFindingsSummary
+
+
+class ReleaseReviewerChainEntryModel(BaseModel):
+    """One review-layer spawn session against a member task (the same entry
+    ``GET /dashboard/metrics/task/{task_id}`` reports as ``reviewer_chain``)."""
+
+    round: int
+    role: str
+    model: str | None
+    agent_slug: str
+    started_at: str
+
+
+class ReleaseMemberReceiptModel(BaseModel):
+    """One member task's verification receipt for the release rollup: the
+    ingredients the panel's task-detail Verification tab reads from four
+    per-task endpoints, in their existing wire shapes."""
+
+    task_id: str
+    title: str
+    acceptance_criteria: list[str]
+    qa_notes: str | None
+    findings: list[TaskFindingResponse]
+    conventions_findings: list[ConventionFinding]
+    reviewer_chain: list[ReleaseReviewerChainEntryModel]
+
+
+class ReleaseVerificationResponse(BaseModel):
+    """Every member task's receipt for the open proposal, in one response."""
+
+    proposal_task_id: str
+    members: list[ReleaseMemberReceiptModel]
+
+
+class ReleaseMemberCiVerdictModel(BaseModel):
+    """One member task's PR CI verdict."""
+
+    task_id: str
+    ci: AttestationCiVerdictResponse
+
+
+class ReleaseCiVerdictsResponse(BaseModel):
+    """Every member task's PR CI verdict for the open proposal."""
+
+    proposal_task_id: str
+    verdicts: list[ReleaseMemberCiVerdictModel]
+
+
+def member_receipt_to_model(receipt: "MemberReceipt") -> ReleaseMemberReceiptModel:
+    """The service's frozen receipt as its response model."""
+    return ReleaseMemberReceiptModel(
+        task_id=str(receipt.task_id),
+        title=receipt.title,
+        acceptance_criteria=list(receipt.acceptance_criteria),
+        qa_notes=receipt.qa_notes,
+        findings=[finding_to_response(row) for row in receipt.findings],
+        conventions_findings=[
+            ConventionFinding(**finding) for finding in receipt.conventions_findings
+        ],
+        reviewer_chain=[
+            ReleaseReviewerChainEntryModel(**entry.to_dict())
+            for entry in receipt.reviewer_chain
+        ],
+    )
+
+
+def member_ci_verdict_to_model(
+    verdict: "MemberCiVerdict",
+) -> ReleaseMemberCiVerdictModel:
+    """The service's member CI verdict as its response model."""
+    return ReleaseMemberCiVerdictModel(
+        task_id=str(verdict.task_id),
+        ci=AttestationCiVerdictResponse(
+            state=verdict.ci.state,
+            head_sha=verdict.ci.head_sha,
+            failing_checks=list(verdict.ci.failing_checks),
+        ),
+    )
