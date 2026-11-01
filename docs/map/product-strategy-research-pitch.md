@@ -155,13 +155,13 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `program_due` | func | foundation/policy/board_programs.py:355 | Pure cron-due check; METRIC/EVENT programs always return False (opened by their own hooks, never the loop) |
 | `project_participates` | func | foundation/policy/board_programs.py:371 | Dual-polarity scope predicate — affirmative opt-in for `scope="project"`, opt-out (`"!key"`) for `scope="org"` |
 | `validate_board_programs_field` | func | foundation/policy/board_programs.py:388 | Rejects an unknown key or a polarity mismatched to the program's own scope |
-| `BoardProgramEngine` | class | services/board_programs.py:836 | Trigger/dedup/originate/LEARN over every registered program |
-| `BoardProgramDecisions` | class | board_programs.py:586 | Mixin of `BoardProgramEngine` (6 methods): Recording a program cycle's decision: resolving its cycle and snapshot, the decision or nothing-to-propose, the dedup state, and closing the cycle. |
-| `BoardProgramCycles` | class | board_programs.py:752 | Mixin of `BoardProgramEngine` (6 methods): Reading program cycles: one cycle's state, listing them, the prior cycles' context, rendering one, the latest, and the cycle an exploration belongs to. |
-| `BoardProgramEngine.run_due_programs` | method | services/board_programs.py:845 | Originates a cycle for every enabled+due CRON program, then every metric predicate that fires off-schedule; one program's failure never blocks the rest |
-| `BoardProgramEngine.open_program_cycle` | method | services/board_programs.py:942 | Enabled+scope+dedup only, no cron-due check — the CEO "run now" / strategy-engine idle-trigger seam |
-| `BoardProgramEngine.record_decision` / `prior_cycle_context` | method | services/board_programs.py:622 / 779 | LEARN: accrue a CEO approve/reject onto the cycle row; render the last N closed cycles for the next exploration prompt |
-| `program_armed` | func | services/board_programs.py:567 | THE arming chokepoint — settings-store `board_program.{key}.enabled`, falling back to a legacy flag only for `roadmap`/`x_feature` |
+| `BoardProgramEngine` | class | services/board_programs.py:835 | Trigger/dedup/originate/LEARN over every registered program |
+| `BoardProgramDecisions` | class | board_programs.py:585 | Mixin of `BoardProgramEngine` (6 methods): Recording a program cycle's decision: resolving its cycle and snapshot, the decision or nothing-to-propose, the dedup state, and closing the cycle. |
+| `BoardProgramCycles` | class | board_programs.py:751 | Mixin of `BoardProgramEngine` (6 methods): Reading program cycles: one cycle's state, listing them, the prior cycles' context, rendering one, the latest, and the cycle an exploration belongs to. |
+| `BoardProgramEngine.run_due_programs` | method | services/board_programs.py:844 | Originates a cycle for every enabled+due CRON program, then every metric predicate that fires off-schedule; one program's failure never blocks the rest |
+| `BoardProgramEngine.open_program_cycle` | method | services/board_programs.py:941 | Enabled+scope+dedup only, no cron-due check — the CEO "run now" / strategy-engine idle-trigger seam |
+| `BoardProgramEngine.record_decision` / `prior_cycle_context` | method | services/board_programs.py:621 / 778 | LEARN: accrue a CEO approve/reject onto the cycle row; render the last N closed cycles for the next exploration prompt |
+| `program_armed` | func | services/board_programs.py:566 | THE arming chokepoint — settings-store `board_program.{key}.enabled`, falling back to a legacy flag only for `roadmap`/`x_feature` |
 | `pick_rotation_target` | func | services/board_programs.py:214 | Shared round-robin for project-scoped programs (Pest Control/Spackle/Mirror/Dogfood): never-explored first, else oldest `last_opened_at` |
 | `PestControlEngine.run_cycle` / `evidence_context` | method | pest_control_engine.py:79 / 152 | Weekly+metric cron; server-assembles rework-hotspot/recurring/waived-finding evidence for the PO's prompt |
 | `SpackleEngine.run_cycle` | method | spackle_engine.py:71 | Biweekly cron, project-scoped gap-fill audit |
