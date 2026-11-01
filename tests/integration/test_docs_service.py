@@ -1098,12 +1098,13 @@ async def test_list_docs_for_team_shallow_path_infers_readme(
     """A .md file directly under the team folder (1 part after team) → readme.
 
     The filesystem scan returns the relative path including the team prefix
-    (e.g., 'backend/x.md'). Splitting that gives 2 parts — meeting the
-    `>= _MIN_PATH_PARTS_FOR_SUBFOLDER` check but `not has_subfolder` (since
-    `len(parts) > _MIN_PATH_PARTS_FOR_SUBFOLDER` is False with exactly 2).
-    The else-branch on line 604 runs when len(parts) < 2, which only happens
-    for a path with no separators — `_list_docs_for_team` always produces at
-    least `team/file`, so we patch DOCS_BASE_PATH to be the team dir itself.
+    (e.g., 'backend/x.md'), and `_infer_doc_type` types each file. Splitting
+    that gives 2 parts — meeting the `>= _MIN_PATH_PARTS_FOR_SUBFOLDER` check
+    but `not has_subfolder` (since `len(parts) > _MIN_PATH_PARTS_FOR_SUBFOLDER`
+    is False with exactly 2). Its final `return "readme"` runs when
+    len(parts) < 2, which only happens for a path with no separators — the
+    scan always produces at least `team/file`, so we patch DOCS_BASE_PATH to
+    be the team dir itself.
     """
     svc = docs_setup["svc"]
     # Place the docs root AT the team level so rel_path is just "x.md".
@@ -1117,6 +1118,29 @@ async def test_list_docs_for_team_shallow_path_infers_readme(
     ):
         docs = await svc._list_docs_for_team("backend")
     assert any(d.doc_type == "readme" for d in docs)
+
+
+@pytest.mark.asyncio
+async def test_list_docs_for_team_types_each_file_by_its_subfolder(
+    docs_setup: dict, tmp_path: Path
+) -> None:
+    """The scan types every file the way `_infer_doc_type` does: a file in
+    a known subfolder gets that subfolder's type, one at the team root is a
+    readme."""
+    svc = docs_setup["svc"]
+    (tmp_path / "backend" / "api").mkdir(parents=True)
+    (tmp_path / "backend" / "api" / "endpoints.md").write_text("# e", encoding="utf-8")
+    (tmp_path / "backend" / "overview.md").write_text("# o", encoding="utf-8")
+    with (
+        patch("roboco.services.docs.DOCS_BASE_PATH", tmp_path),
+        patch("roboco.services.docs.TEAM_PATHS", {"backend": "backend"}),
+    ):
+        docs = await svc._list_docs_for_team("backend")
+    by_path = {d.path: d.doc_type for d in docs}
+    assert by_path == {
+        "backend/api/endpoints.md": "api",
+        "backend/overview.md": "readme",
+    }
 
 
 @pytest.mark.asyncio

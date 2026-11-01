@@ -82,19 +82,19 @@ The per-project architectural-conventions standard for RoboCo: a service layer (
 | `_seed_rules` | fn | `conventions/scan.py:137` | Seed hygiene + placement + modularity rules (stack-scoped) |
 | `_lift_claude_md` | fn | `conventions/scan.py:220` | Lift imperative CLAUDE.md code-spans into warn custom rules |
 | `render_yaml` | fn | `conventions/scan.py:307` | Render a standard to commented YAML (round-trips via parse_yaml) |
-| `DocsService` | class | `services/docs.py:422` | Documentation file management |
+| `DocsService` | class | `services/docs.py:410` | Documentation file management |
 | `DocsFiles` | class | docs.py:193 | Mixin of `DocsService` (5 methods): The docs tree on disk: reading, writing and deleting a file off the event loop, listing a team's docs, and inferring a doc's type from its path. |
-| `DocsRecords` | class | docs.py:279 | Mixin of `DocsService` (4 methods): Where a doc is recorded besides its file: the RAG search for a similar doc, the task's documents list, and the RAG index. |
-| `DocsService.write_doc` | method | `services/docs.py:427` | Write/update a doc with RAG dedup + repo commit |
-| `DocsService.read_doc` | method | `services/docs.py:704` | Read a doc (role-gated, path-contained) |
-| `DocsService.list_docs` | method | `services/docs.py:740` | List docs (by task or by team filesystem scan) |
-| `DocsService.delete_doc` | method | `services/docs.py:779` | Delete a doc (role-gated, path-contained) |
-| `DocsService._commit_doc_to_repo` | method | `services/docs.py:527` | Best-effort commit the doc onto the task branch via `GitService` |
-| `DocsService._find_similar_doc` | method | `services/docs.py:283` | RAG content-similarity dedup (≥0.75, same team) |
+| `DocsRecords` | class | docs.py:267 | Mixin of `DocsService` (4 methods): Where a doc is recorded besides its file: the RAG search for a similar doc, the task's documents list, and the RAG index. |
+| `DocsService.write_doc` | method | `services/docs.py:415` | Write/update a doc with RAG dedup + repo commit |
+| `DocsService.read_doc` | method | `services/docs.py:692` | Read a doc (role-gated, path-contained) |
+| `DocsService.list_docs` | method | `services/docs.py:728` | List docs (by task or by team filesystem scan) |
+| `DocsService.delete_doc` | method | `services/docs.py:767` | Delete a doc (role-gated, path-contained) |
+| `DocsService._commit_doc_to_repo` | method | `services/docs.py:515` | Best-effort commit the doc onto the task branch via `GitService` |
+| `DocsService._find_similar_doc` | method | `services/docs.py:271` | RAG content-similarity dedup (≥0.75, same team) |
 | `_resolve_contained_path` | fn | `services/docs.py:162` | Containment-prove `base / rel` (anti path-traversal, absolute-escape) |
 | `_coerce_doc_ref` | fn | `services/docs.py:146` | Defensive DocRef coercion from str/dict/DocRef |
 | `WriteDocInput` | dataclass | `services/docs.py:40` | Route DTO for write_doc |
-| `get_docs_service` | fn | `services/docs.py:826` | Factory for `DocsService(session)` |
+| `get_docs_service` | fn | `services/docs.py:814` | Factory for `DocsService(session)` |
 
 ## Data Flow
 

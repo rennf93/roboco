@@ -252,23 +252,11 @@ class DocsFiles(_Base):
 
             for md_file in base.rglob("*.md"):
                 rel_path = str(md_file.relative_to(DOCS_BASE_PATH))
-                # Infer doc_type from path
-                parts = rel_path.split("/")
-                if len(parts) >= _MIN_PATH_PARTS_FOR_SUBFOLDER:
-                    has_subfolder = len(parts) > _MIN_PATH_PARTS_FOR_SUBFOLDER
-                    subfolder = parts[_SUBFOLDER_INDEX] if has_subfolder else ""
-                    doc_type = next(
-                        (k for k, v in TYPE_SUBFOLDERS.items() if v == subfolder),
-                        "readme",
-                    )
-                else:
-                    doc_type = "readme"
-
                 docs.append(
                     DocRef(
                         path=rel_path,
                         title=md_file.stem.replace("_", " ").replace("-", " ").title(),
-                        doc_type=doc_type,
+                        doc_type=self._infer_doc_type(rel_path),
                     )
                 )
             return docs
