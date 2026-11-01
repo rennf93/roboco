@@ -19,8 +19,14 @@ callers already treat as "could not start".
 A caller may add one more directory, read-only (``ReadOnlyMount``: the
 Entire step's agent transcript folder), checked the same way.
 
-A container that cannot be started raises ``WorkspaceContainerError``; callers
-skip the step (logged), they never fall back to running the code here.
+A container that does not run the command raises ``WorkspaceContainerError``
+with the reason (the docker CLI's own error, the entry script's, the exit
+status); callers skip the step (logged), they never fall back to running the
+code here. The entry script prints ``STARTED_MARKER`` on stderr right before
+it runs the command, so a failed run tells "the command failed" (it started:
+its own exit status and output) apart from "the container could not run it"
+(the docker CLI's 125/126/127/1, a mount check or ``HOME`` that failed, a
+kill before the start).
 """
 
 from __future__ import annotations
@@ -54,10 +60,17 @@ _NAME_SEGMENT_MAX_CHARS = 40
 _AGENT_PATH_DEPTH = 3
 
 # `docker run` exits 125 when the daemon could not create/start the container
-# (bad image, unreachable daemon, invalid option) — not the command's status.
+# (bad image, unreachable daemon, invalid option); the entry script's own
+# checks use it too. A command that started may exit 125 itself.
 _DOCKER_RUN_FAILED = 125
 _TIMED_OUT = 124
 _KILL_TIMEOUT_SECONDS = 30.0
+# How much of the container's stderr a WorkspaceContainerError carries.
+_ERROR_CHARS = 2000
+
+# Printed on stderr by the entry script right before it runs the command
+# (shell-safe as a bare word); removed from what callers get back.
+STARTED_MARKER = "roboco-wsx:command-started"
 
 # Grace between the in-container timeout's TERM and its KILL.
 _KILL_GRACE_SECONDS = 10
@@ -72,7 +85,8 @@ def _entry_script(timeout: float, *, merge_stderr: bool) -> str:
 
     It first checks that the mount is the directory identified here
     (``ROBOCO_WORKSPACE_MOUNT_ID``), and so is the read-only extra mount when
-    there is one, else exits 125 without running anything.
+    there is one, else exits 125 without running anything. ``STARTED_MARKER``
+    goes to stderr once everything before the command succeeded.
     umask 002 keeps every file the command writes group-writable for the
     agent group. VIRTUAL_ENV / UV_PROJECT_ENVIRONMENT are this image's own
     /app/.venv pins: unset, uv resolves the clone's .venv instead.
@@ -93,6 +107,7 @@ def _entry_script(timeout: float, *, merge_stderr: bool) -> str:
         'read-only mount is not the expected directory" >&2; '
         f"exit {_DOCKER_RUN_FAILED}; }}; "
         'umask 002 && mkdir -p "$HOME" && '
+        f"echo {STARTED_MARKER} >&2 && "
         f"exec timeout -k {_KILL_GRACE_SECONDS} {max(1, int(timeout))} "
         "env -u VIRTUAL_ENV -u UV_PROJECT_ENVIRONMENT -u ROBOCO_WORKSPACE_GIT_DROP "
         '"$@"'
@@ -105,7 +120,7 @@ _own_image: dict[str, str] = {}
 
 
 class WorkspaceContainerError(RuntimeError):
-    """The throwaway workspace container could not be started."""
+    """The throwaway workspace container did not run the command."""
 
 
 @dataclass(frozen=True)
@@ -145,12 +160,22 @@ class _Run:
 
 @dataclass(frozen=True)
 class WorkspaceContainerResult:
-    """Outcome of one command run in a throwaway workspace container."""
+    """Outcome of one command run in a throwaway workspace container.
+
+    ``stderr`` is the command's own (unless merged into ``stdout``) plus
+    whatever the docker CLI printed; on a timeout it ends with the deadline.
+    """
 
     returncode: int
     stdout: str
     stderr: str
     timed_out: bool = False
+
+    @property
+    def output(self) -> str:
+        """Everything the run printed: stdout, then stderr."""
+        parts = (self.stdout.rstrip("\n"), self.stderr.strip())
+        return "\n".join(part for part in parts if part)
 
 
 def host_path_for(path: Path) -> str:
@@ -216,6 +241,19 @@ async def _run_container(
     cwd: Path, command: WorkspaceCommand, run: _Run
 ) -> WorkspaceContainerResult:
     name = workspace_container_name(cwd, command.purpose)
+    proc = await _start_container(name, cwd, command, run)
+    try:
+        stdout, stderr, timed_out = await _collect_output(proc, name, run.timeout)
+    except asyncio.CancelledError:
+        await _stop_workspace_container(name, proc)
+        raise
+    return _result_of_run(proc.returncode, stdout, stderr, timed_out, run.timeout)
+
+
+async def _start_container(
+    name: str, cwd: Path, command: WorkspaceCommand, run: _Run
+) -> asyncio.subprocess.Process:
+    """``docker run`` the entry script and ``command`` (the CLI process)."""
     mount = clone_root_of(Path(os.path.normpath(cwd)))
     try:
         identity = await asyncio.to_thread(workspace_dir_identity, mount)
@@ -227,7 +265,7 @@ async def _run_container(
     script = _entry_script(run.timeout, merge_stderr=run.merge_stderr)
     options, env_values = docker_options_without_env_values(options)
     image = await workspace_container_image()
-    proc = await asyncio.create_subprocess_exec(
+    return await asyncio.create_subprocess_exec(
         *options,
         image,
         "-c",
@@ -238,24 +276,84 @@ async def _run_container(
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
+
+
+async def _collect_output(
+    proc: asyncio.subprocess.Process, name: str, timeout: float
+) -> tuple[bytes, bytes, bool]:
+    """``(stdout, stderr, timed_out)`` of the CLI. At the deadline the
+    container is killed and what it printed until then is kept."""
+    reading = asyncio.ensure_future(proc.communicate())
     try:
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=run.timeout)
+        stdout, stderr = await asyncio.wait_for(asyncio.shield(reading), timeout)
     except TimeoutError:
         await _stop_workspace_container(name, proc)
-        return WorkspaceContainerResult(
-            _TIMED_OUT, "", f"timed out after {run.timeout}s", timed_out=True
-        )
+        stdout, stderr = await _output_after_stop(reading)
+        return stdout, stderr, True
     except asyncio.CancelledError:
-        await _stop_workspace_container(name, proc)
+        reading.cancel()
         raise
+    return stdout, stderr, False
+
+
+async def _output_after_stop(
+    reading: asyncio.Future[tuple[bytes, bytes]],
+) -> tuple[bytes, bytes]:
+    """What the killed run printed: its pipes close once the CLI is reaped."""
+    try:
+        return await asyncio.wait_for(reading, _KILL_TIMEOUT_SECONDS)
+    except TimeoutError:
+        return b"", b""
+
+
+def _result_of_run(
+    returncode: int | None,
+    stdout: bytes,
+    stderr: bytes,
+    timed_out: bool,
+    timeout: float,
+) -> WorkspaceContainerResult:
+    """The command's result, or ``WorkspaceContainerError`` when the run
+    failed before the command started (no ``STARTED_MARKER``)."""
     out = stdout.decode(errors="replace")
-    err = stderr.decode(errors="replace")
-    if proc.returncode == _DOCKER_RUN_FAILED:
-        raise WorkspaceContainerError(f"docker run failed: {err.strip()[:500]}")
+    started, err = _split_started_marker(stderr.decode(errors="replace"))
+    failed = timed_out or returncode != 0
+    if failed and not started:
+        raise WorkspaceContainerError(
+            _not_run_reason(returncode, err, timed_out, timeout)
+        )
+    if timed_out:
+        note = f"timed out after {timeout}s"
+        return WorkspaceContainerResult(
+            _TIMED_OUT, out, f"{err}{note}\n", timed_out=True
+        )
     # No recorded exit code (the CLI was ended out-of-band) is a failure: an
     # unknown status must never pass a gate.
-    returncode = proc.returncode if proc.returncode is not None else 1
-    return WorkspaceContainerResult(returncode, out, err)
+    return WorkspaceContainerResult(
+        returncode if returncode is not None else 1, out, err
+    )
+
+
+def _split_started_marker(stderr: str) -> tuple[bool, str]:
+    """Whether the entry script reached the command, and stderr without its
+    marker line."""
+    lines = stderr.splitlines(keepends=True)
+    for index, line in enumerate(lines):
+        if line.rstrip("\n") == STARTED_MARKER:
+            return True, "".join(lines[:index] + lines[index + 1 :])
+    return False, stderr
+
+
+def _not_run_reason(
+    returncode: int | None, stderr: str, timed_out: bool, timeout: float
+) -> str:
+    """Why the container did not run the command, for a log line or a gate."""
+    said = stderr.strip()[-_ERROR_CHARS:] or "no output"
+    if timed_out:
+        return f"the container did not start the command within {timeout}s: {said}"
+    return (
+        f"the container did not run the command (docker run exit {returncode}): {said}"
+    )
 
 
 def workspace_container_name(cwd: Path, purpose: str) -> str:

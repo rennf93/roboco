@@ -83,6 +83,8 @@ _DEP_LOCK_DEFAULTS = ("uv.lock", "pnpm-lock.yaml")
 
 
 _REFS_PRUNE_TIMEOUT_SECONDS = 60
+# The tail of a failed install's output that its log line carries.
+_LOGGED_OUTPUT_CHARS = 2000
 
 # Run by the workspace git user (stdlib only): prints the sha256 over each
 # present lockfile's name + bytes, or nothing when none is present.
@@ -1509,8 +1511,9 @@ class WorkspaceReadClones(_Base):
             logger.warning(
                 "dep-update probe: upgrade command non-zero; not originating",
                 command=command,
+                returncode=upgrade.returncode,
                 timed_out=upgrade.timed_out,
-                stderr=upgrade.stderr.strip()[:2000],
+                output=upgrade.output[-_LOGGED_OUTPUT_CHARS:],
             )
             return False
         status = await run_in_workspace_container(
@@ -1691,7 +1694,9 @@ class WorkspaceToolchain(_Base):
 
         The install executes the clone's build backend / package scripts,
         which any agent can rewrite, so it never runs here as root. Logs and
-        swallows every failure; returns True only when it exited 0.
+        swallows every failure (a container that did not run it, with the
+        reason; an install that failed, with its exit status and output);
+        returns True only when it exited 0.
         """
         logger.info(
             "Installing workspace dev dependencies",
@@ -1719,8 +1724,9 @@ class WorkspaceToolchain(_Base):
                 "Dev-deps install returned non-zero",
                 workspace=str(workspace),
                 command=label,
+                returncode=result.returncode,
                 timed_out=result.timed_out,
-                stderr=result.stderr.strip()[:2000],
+                output=result.output[-_LOGGED_OUTPUT_CHARS:],
             )
             return False
 

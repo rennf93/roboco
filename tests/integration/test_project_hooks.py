@@ -272,3 +272,16 @@ async def test_a_hook_that_cannot_run_refuses_rather_than_passes(
     _hook(ws, "pre-commit", "exit 0")
     with pytest.raises(GitCommandError, match="could not run"):
         await _commit(ws)
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_carries_what_the_hook_wrote_to_stderr(
+    ws: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    async def _stderr_only(*_args: Any, **_kwargs: Any) -> WorkspaceContainerResult:
+        return WorkspaceContainerResult(1, "", "lint-staged: 2 files failed\n")
+
+    monkeypatch.setattr(project_hooks, "run_in_workspace_container", _stderr_only)
+    _hook(ws, "pre-commit", "exit 1")
+    with pytest.raises(GitCommandError, match="lint-staged: 2 files failed"):
+        await _commit(ws)

@@ -99,7 +99,7 @@ async def test_run_one_runs_the_command_in_the_workspace_container(
 
     rc, out = await quality_gate._run_one(tmp_path, "gate", "make gate")
 
-    assert (rc, out) == (0, "ok\n")
+    assert (rc, out) == (0, "ok")
     runner.assert_awaited_once_with(
         tmp_path,
         WorkspaceCommand(["sh", "-c", "make gate"], "gate"),
@@ -219,3 +219,29 @@ async def test_gate_is_fail_open_on_infrastructure_error() -> None:
         side_effect=RuntimeError("workspace not found")
     )
     assert await _choreo(git)._check_quality_gate(_ctx()) is None
+
+
+_COMMAND_FAILED = 127
+
+
+@pytest.mark.asyncio
+async def test_a_failing_check_reports_its_stderr_and_exit_status(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Live 2026-11-01: `$ make panel-gate` refused a submit with no output at
+    all. Whatever reached the container's stderr and the exit status are the
+    developer's only clue; the gate keeps both."""
+    loader_error = "pnpm: error while loading shared libraries: libatomic.so.1"
+    monkeypatch.setattr(
+        quality_gate,
+        "run_in_workspace_container",
+        AsyncMock(
+            return_value=WorkspaceContainerResult(_COMMAND_FAILED, "", loader_error)
+        ),
+    )
+
+    result = await run_quality_commands(tmp_path, [("quality", "make panel-gate")])
+
+    assert not result.passed
+    assert loader_error in result.output
+    assert f"(exit {_COMMAND_FAILED})" in result.output

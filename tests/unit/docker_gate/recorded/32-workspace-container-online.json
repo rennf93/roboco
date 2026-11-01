@@ -5,7 +5,7 @@
     "AttachStdout": true,
     "Cmd": [
       "-c",
-      "[ \"$(stat -c %d:%i -- \"$ROBOCO_WORKSPACE_MOUNT\")\" = \"$ROBOCO_WORKSPACE_MOUNT_ID\" ] || { echo \"the mounted workspace is not the expected directory\" >&2; exit 125; }; [ -z \"$ROBOCO_EXTRA_MOUNT\" ] || [ \"$(stat -c %d:%i -- \"$ROBOCO_EXTRA_MOUNT\")\" = \"$ROBOCO_EXTRA_MOUNT_ID\" ] || { echo \"the read-only mount is not the expected directory\" >&2; exit 125; }; umask 002 && mkdir -p \"$HOME\" && exec timeout -k 10 60 env -u VIRTUAL_ENV -u UV_PROJECT_ENVIRONMENT -u ROBOCO_WORKSPACE_GIT_DROP \"$@\"",
+      "[ \"$(stat -c %d:%i -- \"$ROBOCO_WORKSPACE_MOUNT\")\" = \"$ROBOCO_WORKSPACE_MOUNT_ID\" ] || { echo \"the mounted workspace is not the expected directory\" >&2; exit 125; }; [ -z \"$ROBOCO_EXTRA_MOUNT\" ] || [ \"$(stat -c %d:%i -- \"$ROBOCO_EXTRA_MOUNT\")\" = \"$ROBOCO_EXTRA_MOUNT_ID\" ] || { echo \"the read-only mount is not the expected directory\" >&2; exit 125; }; umask 002 && mkdir -p \"$HOME\" && echo roboco-wsx:command-started >&2 && exec timeout -k 10 60 env -u VIRTUAL_ENV -u UV_PROJECT_ENVIRONMENT -u ROBOCO_WORKSPACE_GIT_DROP \"$@\"",
       "sh",
       "make",
       "quality"

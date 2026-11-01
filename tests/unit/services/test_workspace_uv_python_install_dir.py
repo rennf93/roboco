@@ -174,3 +174,31 @@ async def test_a_container_that_cannot_start_skips_the_install(tmp_path: Path) -
         ok = await _service()._run_dep_install(ws, "uv sync", ["uv", "sync"])
 
     assert ok is False
+
+
+_UV_FAILED = 2
+
+
+@pytest.mark.asyncio
+async def test_a_failed_install_logs_its_status_and_output(tmp_path: Path) -> None:
+    """Live 2026-11-01: `Dev-deps install returned non-zero ... stderr: ''`
+    named neither the exit status nor what uv printed on stdout."""
+    ws = _make_workspace(tmp_path)
+    runner = AsyncMock(
+        return_value=WorkspaceContainerResult(
+            _UV_FAILED, "Resolved 212 packages\n", "error: no space left on device\n"
+        )
+    )
+    log = MagicMock()
+
+    with (
+        patch("roboco.services.workspace.run_in_workspace_container", runner),
+        patch("roboco.services.workspace.logger", log),
+    ):
+        ok = await _service()._run_dep_install(ws, "uv sync", ["uv", "sync"])
+
+    assert ok is False
+    kwargs = log.warning.call_args.kwargs
+    assert kwargs["returncode"] == _UV_FAILED
+    assert "Resolved 212 packages" in kwargs["output"]
+    assert "no space left on device" in kwargs["output"]
