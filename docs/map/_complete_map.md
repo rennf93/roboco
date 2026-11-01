@@ -921,12 +921,12 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 
 | Path | Role | LOC |
 |---|---|---|
-| docker-compose.yaml | Build-from-source compose: postgres/redis/ollama/ollama-init, 14 agent-*-image builders, orchestrator, panel, nginx, `backup` pg_dump sidecar on the `roboco_data` DB-isolation network; NAS prod env vars + volume mounts, `ROBOCO_OBSIDIAN_VAULT_ENABLED`/`ROBOCO_VAULT_INTAKE_ENABLED` default `true`; Docker only through `docker-gate-blue`/`-green` (the only services that mount the host socket; each color's api and dispatcher get `DOCKER_HOST` on its own socket in the shared `docker-gate` volume and wait for that gate to be healthy; the gates share `x-docker-gate-env`/`x-docker-gate-volumes`: `GATE_BIND_ROOTS` repeats the orchestrator's `ROBOCO_HOST_*` paths, each mounted read-only at its own path, plus CHOWN and DAC_READ_SEARCH) | 1466 |
-| docker-compose.yml | Byte-identical copy of docker-compose.yaml (kept for the canonical name compose picks up by default) | 1466 |
-| docker-compose.registry.yml | Pull-and-run compose using pre-built GHCR/Docker Hub images (ROBOCO_REGISTRY + ROBOCO_VERSION); infra services byte-identical to build compose (incl. `backup` + vault defaults), agent-* services are one-shot pre-pulls, own `roboco_data` network; one `docker-gate` (builds refused, since every image is pulled; `GATE_REGISTRY` from `ROBOCO_REGISTRY`; the same read-only bind roots as the build file's gates) serves the orchestrator and dispatcher | 973 |
+| docker-compose.yaml | Build-from-source compose: postgres/redis/ollama/ollama-init, 14 agent-*-image builders, orchestrator, panel, nginx, `backup` pg_dump sidecar on the `roboco_data` DB-isolation network; NAS prod env vars + volume mounts, `ROBOCO_OBSIDIAN_VAULT_ENABLED`/`ROBOCO_VAULT_INTAKE_ENABLED` default `true`; Docker only through `docker-gate-blue`/`-green` (the only services that mount the host socket; each color's api and dispatcher get `DOCKER_HOST` on its own socket in the shared `docker-gate` volume and wait for that gate to be healthy; the gates share `x-docker-gate-env`/`x-docker-gate-volumes`: `GATE_BIND_ROOTS` repeats the orchestrator's `ROBOCO_HOST_*` paths, each mounted read-only at its own path, plus CHOWN and DAC_READ_SEARCH) | 1472 |
+| docker-compose.yml | Byte-identical copy of docker-compose.yaml (kept for the canonical name compose picks up by default) | 1472 |
+| docker-compose.registry.yml | Pull-and-run compose using pre-built GHCR/Docker Hub images (ROBOCO_REGISTRY + ROBOCO_VERSION); infra services byte-identical to build compose (incl. `backup` + vault defaults), agent-* services are one-shot pre-pulls, own `roboco_data` network; one `docker-gate` (builds refused, since every image is pulled; `GATE_REGISTRY` from `ROBOCO_REGISTRY`; the same read-only bind roots as the build file's gates) serves the orchestrator and dispatcher | 979 |
 | Makefile | Ops + quality targets: infra, dev/run/orchestrator, quality gate (ruff/mypy/pytest/xenon/radon/vulture/bandit/pip-audit/deptry/lint-imports/alembic/foundation-check), fast pre-submit `gate` target (ruff format/check, mypy, xenon, lint-imports), per-Python test matrix, docs, lifecycle regen | 628 |
 | pyproject.toml | Project + dependency manifest: requires-python >=3.13,<3.15, deps, dev/docs extras, console scripts, ruff/mypy/pytest/coverage/vulture/bandit/radon/xenon/deptry/importlinter config | 717 |
-| roboco/config.py | Pydantic Settings (env prefix ROBOCO_, cached via lru_cache); every tunable: DB, Redis, RAG, LLM/Ollama, workspaces, agent guardrails, gateway thresholds, autonomy-engine flags | 3312 |
+| roboco/config.py | Pydantic Settings (env prefix ROBOCO_, cached via lru_cache); every tunable: DB, Redis, RAG, LLM/Ollama, workspaces, agent guardrails, gateway thresholds, autonomy-engine flags | 3373 |
 | roboco/__init__.py | Package root: __version__ + re-exports settings, exceptions, logging helpers | 36 |
 | roboco/bootstrap.py | Async bootstrap: git-user drop self-test (every role but indexer; SystemExit(1) on failure), a warning when an api or dispatcher has the host Docker socket and no `DOCKER_HOST` (a compose file from before the Docker gate), DB init, Redis event bus, websocket bridge, orchestrator construction, uvicorn API server task, wait-for-ready poll, optional agent spawn, graceful shutdown | 259 |
 | roboco/cli.py | argparse CLI wrapper around bootstrap.main / db-only; the ENTRYPOINT invoked by `python -m roboco.cli` | 67 |
@@ -1019,7 +1019,7 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | Name | Kind | File:Line | Responsibility |
 |---|---|---|---|
 | Settings | class | roboco/config.py:26 | Pydantic BaseSettings; all ROBOCO_ env-backed tunables + derived URL properties (database_url, redis_url, internal_api_url, rag_store_url) |
-| get_settings | function | roboco/config.py:3305 | lru_cache-backed singleton factory returning the cached Settings instance |
+| get_settings | function | roboco/config.py:3367 | lru_cache-backed singleton factory returning the cached Settings instance |
 | internal_api_url | property | roboco/config.py:139 | service-to-service API base URL (api_url override or http://host:port/api, maps 0.0.0.0 to 127.0.0.1) |
 | database_url | property | roboco/config.py:214 | asyncpg connection URL |
 | database_url_sync | property | roboco/config.py:222 | sync psycopg URL for Alembic |
@@ -3687,7 +3687,7 @@ The organizational-memory + playbooks slice: captures cross-agent learnings and 
 | roboco/services/repositories/indexed_document.py | IndexedDocumentRepository: upsert/get/delete_by_source for the indexed_documents tracking table (used by playbook de-index) | 136 |
 | roboco/services/repositories/query_helpers.py | Generic SQLAlchemy query helpers (pagination/status/team/agent/timestamp filters, slug resolution) — not slice-specific | 294 |
 | `roboco/services/rag_index_failures.py` | RAG index dead-letter: persists a failed fire-and-forget index write to `rag_index_failures` (migration 065), counts it for the health route, and reclaims due rows with backoff (delete on success, bump `attempts` on failure); also backfills journal entries that were silently zero-chunked | 422 |
-| `roboco/services/optimal_brain/indexer_worker.py` | Indexer worker: producers call `enqueue_index_request`, the request rides the Redis stream `roboco:stream:index` to the `ROBOCO_ROLE=indexer` process running `run_indexer` (or runs inline when the stream is unavailable); also owns the boot-time RAG reconcile | 485 |
+| `roboco/services/optimal_brain/indexer_worker.py` | Indexer worker: producers call `enqueue_index_request`, the request rides the Redis stream `roboco:stream:index` to the `ROBOCO_ROLE=indexer` process running `run_indexer` (or runs inline when the stream is unavailable); also owns the boot-time RAG reconcile | 487 |
 | `roboco/services/optimal_brain/indexes/code.py` | `CodeIndexPlugin`: boundary-aware code chunking with incremental indexing through a content-hash `FileHashRegistry`; extension, skip-directory and auto-index file caps | 655 |
 | `roboco/services/optimal_brain/indexes/decisions.py` | `DecisionsIndexPlugin`: record an architectural or design decision and check for a similar earlier one; search by scope or agent | 200 |
 | `roboco/services/optimal_brain/indexes/docs.py` | `DocsIndexPlugin`: batch-embedded documentation indexing (the auto-indexed `docs/rag` and `docs/map` corpora) and `flip_task_provenance` for docs written by given tasks | 277 |
@@ -3781,8 +3781,8 @@ The organizational-memory + playbooks slice: captures cross-agent learnings and 
 | IndexedDocumentRepository.upsert_batch | method | roboco/services/repositories/indexed_document.py:24 | Bulk upsert tracking rows keyed by (index_type, source_hash) |
 | `reclaim_due` | function | `roboco/services/rag_index_failures.py:105` | Re-index due dead-letter rows: delete on success, bump on failure |
 | `enqueue_index_request` | function | `roboco/services/optimal_brain/indexer_worker.py:87` | Producer entry point: enqueue an index write, or run it inline when the stream is unavailable |
-| `run_indexer` | function | `roboco/services/optimal_brain/indexer_worker.py:417` | Consume `roboco:stream:index` and own all embedding work |
-| `reconcile_rag_indexes` | function | `roboco/services/optimal_brain/indexer_worker.py:383` | Boot-time RAG reconcile: playbooks, dead-letter reclaim, backfill |
+| `run_indexer` | function | `roboco/services/optimal_brain/indexer_worker.py:419` | Consume `roboco:stream:index` and own all embedding work |
+| `reconcile_rag_indexes` | function | `roboco/services/optimal_brain/indexer_worker.py:385` | Boot-time RAG reconcile: playbooks, dead-letter reclaim, backfill |
 | `OllamaEmbedder` | class | `roboco/services/optimal_brain/ollama_embedder.py:602` | Embedding generator over Ollama's native API |
 | `OllamaEmbedResponses` | class | `roboco/services/optimal_brain/ollama_embedder.py:160` | Mixin of `OllamaEmbedder` (6 methods): What comes back from /api/embed and what to do when it fails: validating and extracting the embeddings, the 429 backoff and its log, mapping a request error to the embedder's own, and the connect-retry sleeps, sync and async. |
 | `OllamaDocumentEmbeddings` | class | `roboco/services/optimal_brain/ollama_embedder.py:256` | Mixin of `OllamaEmbedder` (11 methods): Embedding many documents: the cached and uncached split, sequential and semaphore-limited parallel batches, merging and caching the results, and chunk embedding with the default batch size. |
@@ -7900,16 +7900,16 @@ External:
 | Flag / setting | Source | Used for |
 |----------------|--------|----------|
 | `ROBOCO_GIT_EXECUTOR_WORKERS` (env, default 16) | `os.environ` at git.py:222 | Dedicated git subprocess pool size |
-| `settings.git_command_timeout_seconds` | config.py:2229 | Default `_run_git` timeout |
-| `settings.git_commit_timeout_seconds` | config.py:2280 | Staging/commit large changeset timeout |
-| `settings.git_network_timeout_seconds` | config.py:2302 | fetch/pull/push/ls-remote timeout |
-| `settings.git_diff_timeout_seconds` | config.py:2313 | `GET /api/git/diff`'s outer "diff" stage bound (default 60s) around the paired `git diff` + `git diff --stat` calls — on top of, not instead of, `git_command_timeout_seconds` bounding each call individually |
-| `settings.workspaces_root` | config.py:1993 | Workspace path root (token derivation) |
-| `settings.workspace_auto_clone` | config.py:1997 | `get_workspace` auto-clone branch |
-| `settings.public_base_url` | config.py:2422 | Commit/PR template link base (`+ /api`) |
+| `settings.git_command_timeout_seconds` | config.py:2290 | Default `_run_git` timeout |
+| `settings.git_commit_timeout_seconds` | config.py:2341 | Staging/commit large changeset timeout |
+| `settings.git_network_timeout_seconds` | config.py:2363 | fetch/pull/push/ls-remote timeout |
+| `settings.git_diff_timeout_seconds` | config.py:2374 | `GET /api/git/diff`'s outer "diff" stage bound (default 60s) around the paired `git diff` + `git diff --stat` calls — on top of, not instead of, `git_command_timeout_seconds` bounding each call individually |
+| `settings.workspaces_root` | config.py:2054 | Workspace path root (token derivation) |
+| `settings.workspace_auto_clone` | config.py:2058 | `get_workspace` auto-clone branch |
+| `settings.public_base_url` | config.py:2483 | Commit/PR template link base (`+ /api`) |
 | `settings.internal_api_url` | config.py:139 | Internal PR body link base |
-| `settings.github_api_base_url` | config.py:1061 | GitHub REST API base (PR/CI/review) |
-| `settings.release_ci_workflow` | config.py:1537 | Named workflow file (e.g. `ci.yml`) used by the release CI gate in `get_latest_ci_conclusion`; always resolves a named workflow so the gate never degrades to the imprecise all-workflows mode |
+| `settings.github_api_base_url` | config.py:1122 | GitHub REST API base (PR/CI/review) |
+| `settings.release_ci_workflow` | config.py:1598 | Named workflow file (e.g. `ci.yml`) used by the release CI gate in `get_latest_ci_conclusion`; always resolves a named workflow so the gate never degrades to the imprecise all-workflows mode |
 
 Module-level tunables (not env): `_SLOW_GIT_OP_MS=5000`, `_CI_RUN_WINDOW=20`, `_CI_FETCH_ATTEMPTS=3`, `_CI_FETCH_BACKOFF_SECONDS=0.5`, `_CI_RETRYABLE_STATUS`, `_CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS=120`, `_GH_UNPROCESSABLE=422`, `_HTTP_NOT_FOUND=404`, `_HTTP_CONFLICT=409`.
 
@@ -9984,32 +9984,32 @@ product-strategy-research-pitch
 
 | Flag | Default | File:Line | Effect |
 |------|---------|-----------|--------|
-| `ROBOCO_CONVENTIONS_ENABLED` | `False` | config.py:699 | `ProjectService.create` best-effort scaffolds `.roboco/conventions.yml` PR; inert when off |
-| `ROBOCO_RESEARCH_ENABLED` | `True` | config.py:805 | Mounts `roboco-search` MCP into Board/PM containers (orchestrator:2914) |
-| `ROBOCO_RESEARCH_PROVIDER` | `tavily` | config.py:812 | `tavily`/`brave`/`exa`/`null` adapter selection |
-| `ROBOCO_RESEARCH_API_KEY` | `None` | config.py:825 | Server-side only; unset → `NullProvider` |
-| `ROBOCO_RESEARCH_MAX_RESULTS` | `5` | config.py:843 | Hard cap on `web_search` results (1–20) |
-| `ROBOCO_RESEARCH_FETCH_MAX_CHARS` | `20000` | config.py:849 | Hard cap on `web_fetch` extracted chars |
-| `ROBOCO_RESEARCH_TIMEOUT_SECONDS` | `15.0` | config.py:854 | Outbound provider HTTP timeout |
-| `ROBOCO_RESEARCH_DAILY_QUOTA_PER_AGENT` | `50` | config.py:859 | Per-agent/day call ceiling (Redis, fail-open) |
-| `ROBOCO_PROVISIONING_ENABLED` | `True` | config.py:1043 | Pitch auto-provisioning master switch (still inert without token+org) |
-| `ROBOCO_PROVISIONING_TOKEN` | `""` | config.py:1050 | GitHub PAT for repo creation (server-side only) |
-| `ROBOCO_PROVISIONING_ORG` | `""` | config.py:1057 | GitHub org where repos are provisioned |
-| `ROBOCO_GITHUB_API_BASE_URL` | `https://api.github.com` | config.py:1061 | Override for GitHub Enterprise |
-| `ROBOCO_PROVISIONING_TIMEOUT_SECONDS` | `30.0` | config.py:1065 | Outbound GitHub provisioning timeout |
-| `ROBOCO_PROVISIONING_REPO_PRIVATE` | `True` | config.py:1070 | Whether provisioned repos are private |
-| `ROBOCO_PROVISIONING_PROVIDER` | `github` | config.py:1074 | Phase 4 forge parity: `github`/`gitlab`/`gitea` selects the concrete provisioning target via `_build_provider` |
-| `ROBOCO_PROVISIONING_HOST` | `""` | config.py:1083 | Self-hosted forge host (e.g. `gitlab.example.com`); `.enabled` additionally requires this when `provisioning_provider` is gitlab/gitea (ignored for github/gitlab.com) |
-| `ROBOCO_STRATEGY_ENGINE_ENABLED` | `False` | config.py:1099 | Master switch — loop never starts when off |
-| `ROBOCO_STRATEGY_ENGINE_INTERVAL_SECONDS` | `1800` | config.py:1106 | Seconds between strategy assessment passes |
-| `ROBOCO_STRATEGY_STRANDED_BLOCKED_MINUTES` | `120` | config.py:1111 | Blocked-task threshold for "stranded" observation |
-| `ROBOCO_PROTECTED_GIT_URLS` | `[]` | config.py:2353 | Denylist — `ProjectService` rejects `git_url` containing any entry |
-| `ROBOCO_ENCRYPTION_KEY` | `""` | config.py:871 | Fernet key for git-token encrypt/decrypt |
-| `ROBOCO_ROADMAP_ENGINE_ENABLED` | `False` | config.py:1890 | Master switch — `_roadmap_engine_loop` never opens an exploration cycle when off |
-| `ROBOCO_ROADMAP_INTERVAL_SECONDS` | `604800` | config.py:1900 | Seconds between roadmap-exploration cycles (default weekly) |
-| `ROBOCO_ROADMAP_MIN_ITEMS_PER_CYCLE` | `3` | config.py:1905 | Minimum item drafts `propose_roadmap` must submit for a themed cycle |
-| `ROBOCO_ROADMAP_MAX_ITEMS_PER_CYCLE` | `7` | config.py:1910 | Maximum item drafts per cycle |
-| `ROBOCO_PEST_REWORK_THRESHOLD` | `0.3` | config.py:1923 | 7-day rework rate above which Pest Control's metric predicate opens a cycle off-schedule, on top of its weekly cron. The ONLY env-settable knob among the twelve new Board Programs — every other one arms exclusively via its own settings-store row (`board_program.{key}.enabled`, no `ROBOCO_*_ENABLED` flag exists for them) |
+| `ROBOCO_CONVENTIONS_ENABLED` | `False` | config.py:760 | `ProjectService.create` best-effort scaffolds `.roboco/conventions.yml` PR; inert when off |
+| `ROBOCO_RESEARCH_ENABLED` | `True` | config.py:866 | Mounts `roboco-search` MCP into Board/PM containers (orchestrator:2914) |
+| `ROBOCO_RESEARCH_PROVIDER` | `tavily` | config.py:873 | `tavily`/`brave`/`exa`/`null` adapter selection |
+| `ROBOCO_RESEARCH_API_KEY` | `None` | config.py:886 | Server-side only; unset → `NullProvider` |
+| `ROBOCO_RESEARCH_MAX_RESULTS` | `5` | config.py:904 | Hard cap on `web_search` results (1–20) |
+| `ROBOCO_RESEARCH_FETCH_MAX_CHARS` | `20000` | config.py:910 | Hard cap on `web_fetch` extracted chars |
+| `ROBOCO_RESEARCH_TIMEOUT_SECONDS` | `15.0` | config.py:915 | Outbound provider HTTP timeout |
+| `ROBOCO_RESEARCH_DAILY_QUOTA_PER_AGENT` | `50` | config.py:920 | Per-agent/day call ceiling (Redis, fail-open) |
+| `ROBOCO_PROVISIONING_ENABLED` | `True` | config.py:1104 | Pitch auto-provisioning master switch (still inert without token+org) |
+| `ROBOCO_PROVISIONING_TOKEN` | `""` | config.py:1111 | GitHub PAT for repo creation (server-side only) |
+| `ROBOCO_PROVISIONING_ORG` | `""` | config.py:1118 | GitHub org where repos are provisioned |
+| `ROBOCO_GITHUB_API_BASE_URL` | `https://api.github.com` | config.py:1122 | Override for GitHub Enterprise |
+| `ROBOCO_PROVISIONING_TIMEOUT_SECONDS` | `30.0` | config.py:1126 | Outbound GitHub provisioning timeout |
+| `ROBOCO_PROVISIONING_REPO_PRIVATE` | `True` | config.py:1131 | Whether provisioned repos are private |
+| `ROBOCO_PROVISIONING_PROVIDER` | `github` | config.py:1135 | Phase 4 forge parity: `github`/`gitlab`/`gitea` selects the concrete provisioning target via `_build_provider` |
+| `ROBOCO_PROVISIONING_HOST` | `""` | config.py:1144 | Self-hosted forge host (e.g. `gitlab.example.com`); `.enabled` additionally requires this when `provisioning_provider` is gitlab/gitea (ignored for github/gitlab.com) |
+| `ROBOCO_STRATEGY_ENGINE_ENABLED` | `False` | config.py:1160 | Master switch — loop never starts when off |
+| `ROBOCO_STRATEGY_ENGINE_INTERVAL_SECONDS` | `1800` | config.py:1167 | Seconds between strategy assessment passes |
+| `ROBOCO_STRATEGY_STRANDED_BLOCKED_MINUTES` | `120` | config.py:1172 | Blocked-task threshold for "stranded" observation |
+| `ROBOCO_PROTECTED_GIT_URLS` | `[]` | config.py:2414 | Denylist — `ProjectService` rejects `git_url` containing any entry |
+| `ROBOCO_ENCRYPTION_KEY` | `""` | config.py:932 | Fernet key for git-token encrypt/decrypt |
+| `ROBOCO_ROADMAP_ENGINE_ENABLED` | `False` | config.py:1951 | Master switch — `_roadmap_engine_loop` never opens an exploration cycle when off |
+| `ROBOCO_ROADMAP_INTERVAL_SECONDS` | `604800` | config.py:1961 | Seconds between roadmap-exploration cycles (default weekly) |
+| `ROBOCO_ROADMAP_MIN_ITEMS_PER_CYCLE` | `3` | config.py:1966 | Minimum item drafts `propose_roadmap` must submit for a themed cycle |
+| `ROBOCO_ROADMAP_MAX_ITEMS_PER_CYCLE` | `7` | config.py:1971 | Maximum item drafts per cycle |
+| `ROBOCO_PEST_REWORK_THRESHOLD` | `0.3` | config.py:1984 | 7-day rework rate above which Pest Control's metric predicate opens a cycle off-schedule, on top of its weekly cron. The ONLY env-settable knob among the twelve new Board Programs — every other one arms exclusively via its own settings-store row (`board_program.{key}.enabled`, no `ROBOCO_*_ENABLED` flag exists for them) |
 
 ## Gotchas
 
@@ -10971,7 +10971,7 @@ GET /api/tasks/{task_id}/attestation?format=json|markdown
 
 The Decisions service: typed "System One" decisions at points that would otherwise be a full LLM call or a hardcoded heuristic. A call site sends a structured state and a batch of typed questions (noul yes/no, choice, score) and gets back answers with calibrated confidence; the calling code accepts, rejects, or falls back on a per-pilot confidence floor. Each integration point is a named **pilot** (`PILOT_SLUGS`) with its own mode (off, shadow, on).
 
-Three tiers serve one wire format, resolved per call by `resolver.py`: Clef (the default, a self-hosted 27B llama.cpp model in the `roboco-decisions` sidecar, no key and no spend), Laya (the same sidecar's 421M model, used when Clef is disabled or unhealthy), and OpenRouter (opt-in, metered, only when the CEO opts in and the AI Provider screen holds a key). The floor below all tiers is "no verdict": master flag off, a pilot off, or no healthy tier means every call site does exactly what it did before the service existed. Decisions only add behaviour; no verdict may satisfy, skip or auto-pass a lifecycle gate, and nothing materializes on a verdict alone.
+Three tiers serve one wire format, resolved per call by `resolver.py`: Clef (the default: Cloudflare's 9B Clef-Flash on llama.cpp in the `roboco-decisions` sidecar, on the host's Intel iGPU when it has one, no key and no spend), Laya (the same sidecar's 421M model, used when Clef is disabled or unhealthy), and OpenRouter (opt-in, metered, only when the CEO opts in and the AI Provider screen holds a key). The floor below all tiers is "no verdict": master flag off, a pilot off, or no healthy tier means every call site does exactly what it did before the service existed. Decisions only add behaviour; no verdict may satisfy, skip or auto-pass a lifecycle gate, and nothing materializes on a verdict alone.
 
 Every verdict is buffered into `decision_log` (migrations 105 to 107). The trajectory labeler (`roboco/runtime/engines/decisions_labeler.py`, mapped in `docs/map/orchestrator.md`) later grades those rows against what the tasks table says happened, `export.py` turns labelled rows into a fine-tune corpus, and the Decisions Audit Board Program gives the Auditor a daily per-pilot review and prunes the log past its retention window.
 
@@ -10980,14 +10980,15 @@ Every verdict is buffered into `decision_log` (migrations 105 to 107). The traje
 | Path | Role | LOC |
 |---|---|---|
 | `roboco/services/decisions/__init__.py` | Package exports and the service doctrine: three tiers behind one wire format, fail-open, one attempt, every verdict logged, shadow before on, no verdict passes a lifecycle gate | 85 |
-| `roboco/services/decisions/resolver.py` | Per-call tier resolution: master flag off is the floor; else Clef if enabled and healthy, else Laya, else OpenRouter if opted in with a key; 30-second cached sidecar health, 60-second cached OpenRouter key, one CEO notification per boot when the opted-in key is missing | 296 |
-| `roboco/services/decisions/client.py` | `DecisionsClient`: the one HTTP client for every tier; client-side state caps and the stage-2 total-budget cap for self-hosted tiers, a per-process circuit breaker, `decide` returns None for no verdict | 461 |
+| `roboco/services/decisions/deadlines.py` | How long each pilot's caller waits for an ON verdict: inline (any verb or shared loop, the default), agent-requested, the long submit verbs, or an engine's own loop | 58 |
+| `roboco/services/decisions/resolver.py` | Per-call tier resolution: master flag off is the floor; else Clef if enabled and healthy, else Laya, else OpenRouter if opted in with a key; 30-second cached sidecar health, 60-second cached OpenRouter key, one CEO notification per boot when the opted-in key is missing | 302 |
+| `roboco/services/decisions/client.py` | `DecisionsClient`: the one HTTP client for every tier; client-side state caps and the stage-2 total-budget cap for self-hosted tiers, a per-process circuit breaker, `decide` returns None for no verdict | 610 |
 | `roboco/services/decisions/schemas.py` | Pydantic models of the Decisions wire format: `NoulQuestion`, `ChoiceQuestion`, `ScoreQuestion`, `DecisionAnswer`, `DecisionResult`, and the lenient `parse_decisions_payload` | 174 |
-| `roboco/services/decisions/pilots.py` | `PilotMode`, `PILOT_SLUGS`, `pilot_mode` (the single mode chokepoint), `decide_for_pilot`, `log_action`, and the core pilots: self-heal transient gate, parking lane, complexity score, preflight diff, test triage, transcript note, A2A steer gate, tool spotlight | 871 |
+| `roboco/services/decisions/pilots.py` | `PilotMode`, `PILOT_SLUGS`, `pilot_mode` (the single mode chokepoint), `decide_for_pilot`, `log_action`, and the core pilots: self-heal transient gate, parking lane, complexity score, preflight diff, test triage, transcript note, A2A steer gate, tool spotlight | 945 |
 | `roboco/services/decisions/pilots_content.py` | Content-lane pilots: intake pre-routing, X mention triage, segment classification, vault prefilter, secretary directive kind and assignee, Telegram free-text gate, memory distill gate, changelog highlights, proactive standards domain, decision-note sufficiency | 979 |
 | `roboco/services/decisions/pilots_dispatch.py` | Dispatch-lane pilots: external PR triage, idle-session reaping, context pruning, budget wrap-up, delta brief, review queue priority and depth, Board evidence skip, respawn verdict, submit-now confidence, park cause, PM closure safety, silent-exit pickup | 1267 |
 | `roboco/services/decisions/pilots_gateway.py` | Gateway-lane pilots: PM plan quality, commit-intent hint, findings-to-diff mapping, idle legitimacy, branch staleness, lesson pruning, assembled-branch coherence | 749 |
-| `roboco/services/decisions/pilots_infra.py` | Infrastructure-lane pilots: injection screen, collision edges, CI-watch route, heal severity, release-worthy urgency, second-review high stakes, notification semantic dedup, Board due-early and rotation target, stranded-batch lane, Coroner warranted, dep-update risk, release risk advisory | 1220 |
+| `roboco/services/decisions/pilots_infra.py` | Infrastructure-lane pilots: injection screen, collision edges, CI-watch route, heal severity, release-worthy urgency, second-review high stakes, notification semantic dedup, Board due-early and rotation target, stranded-batch lane, Coroner warranted, dep-update risk, release risk advisory | 1223 |
 | `roboco/services/decisions/context.py` | Recipient work context composed for the A2A steer-gate verdict | 203 |
 | `roboco/services/decisions/persist.py` | Fire-and-forget `decision_log` persistence: buffered `record_decision` with a background flusher, and outcome stamping (`record_outcome`, `record_question_outcomes`) on a subject's unlabeled rows | 310 |
 | `roboco/services/decisions/outcomes.py` | Outcome label vocabulary shared by outcome producers and the corpus exporter, with the slug-to-gold-probability mapping and gold-shape validation | 327 |
@@ -10995,23 +10996,24 @@ Every verdict is buffered into `decision_log` (migrations 105 to 107). The traje
 | `roboco/services/decisions/export.py` | Exports labelled `decision_log` rows as the JSONL fine-tune corpus (`python -m roboco.services.decisions.export`) | 290 |
 | `roboco/services/decisions/spend_guard.py` | Per-tier spend accounting from `usage.cost`; alerts the CEO on two HTTP 402s in a rolling hour or when the OpenRouter total crosses `decisions_cost_alert_usd` | 194 |
 | `roboco/services/decisions_audit_engine.py` | Decisions Audit Board Program (Auditor): daily cycle prunes `decision_log` past retention, originates one held review task, and injects the previous day's per-pilot aggregates into the Auditor's prompt | 275 |
-| `docker/decisions.Dockerfile` | CPU-only `roboco-decisions` sidecar image: two llama.cpp decision servers (Clef and Laya weights) behind the FastAPI proxy | 172 |
-| `docker/decisions/entrypoint.sh` | Sidecar supervisor: starts the Clef (127.0.0.1:8110) and Laya (127.0.0.1:8111) llama-servers, waits for each `/health`, then runs the proxy in the foreground | 186 |
-| `docker/decisions/server.py` | Sidecar FastAPI proxy serving the OpenRouter Decisions wire shape at `POST /api/alpha/decisions`, forwarding to the routed llama.cpp backend and normalizing answers; `GET /health` returns 503 while Clef is unreachable so traffic moves to a fallback tier | 512 |
+| `docker/decisions.Dockerfile` | `roboco-decisions` sidecar image (Debian trixie): llama.cpp b11371 built with the Vulkan and CPU backends, Clef-Flash Q4_K_M and Laya Q8_0 weights pinned by hash, behind the FastAPI proxy | 190 |
+| `docker/decisions/entrypoint.sh` | Sidecar supervisor: starts the Clef (127.0.0.1:8110) and Laya (127.0.0.1:8111) llama-servers with batch = context = input cap, one slot and every layer on the GPU when present, seeds the proxy's throughput from the device found, waits for each `/health`, then runs the proxy in the foreground | 224 |
+| `docker/decisions/server.py` | Sidecar FastAPI proxy serving the OpenRouter Decisions wire shape at `POST /api/alpha/decisions`, admitting one input at a time per backend only when it can finish before the caller's `x-decisions-deadline-s` (else 503 `busy:` at once), forwarding to the routed llama.cpp backend and normalizing answers; `GET /health` returns 503 while Clef is unreachable so traffic moves to a fallback tier, and reports each backend's queue | 687 |
+| `docker-compose.igpu.yaml` | Override `scripts/deploy-nas.sh` adds when the host has `/dev/dri/renderD128`: passes the Intel iGPU to the decisions sidecar (with the host's render group) and to ollama (Vulkan, integrated-GPU opt-in) | 31 |
 
 ## Key Symbols
 
 | Name | Kind | File:Line | Responsibility |
 |---|---|---|---|
 | `resolve_endpoint` | function | `roboco/services/decisions/resolver.py:68` | The tier for this call, or None for the floor |
-| `check_openrouter_fallback_at_startup` | function | `roboco/services/decisions/resolver.py:98` | Startup check for an opted-in OpenRouter fallback without a key |
-| `DecisionsClient.decide` | method | `roboco/services/decisions/client.py:275` | Ask one batched question set; None means no verdict |
-| `get_decisions_client` | function | `roboco/services/decisions/client.py:459` | Process-wide client (per-process circuit breaker) |
+| `check_openrouter_fallback_at_startup` | function | `roboco/services/decisions/resolver.py:104` | Startup check for an opted-in OpenRouter fallback without a key |
+| `DecisionsClient.decide` | method | `roboco/services/decisions/client.py:405` | Ask one batched question set; None means no verdict |
+| `get_decisions_client` | function | `roboco/services/decisions/client.py:608` | Process-wide client (per-process circuit breaker) |
 | `parse_decisions_payload` | function | `roboco/services/decisions/schemas.py:143` | Leniently parse a Decisions response body |
-| `PilotMode` | StrEnum | `roboco/services/decisions/pilots.py:59` | `off`, `shadow`, `on` |
-| `pilot_mode` | function | `roboco/services/decisions/pilots.py:129` | Mode for one pilot: master flag, then settings row, then env lists, else off |
-| `decide_for_pilot` | function | `roboco/services/decisions/pilots.py:153` | Resolve mode and tier, ask one batched question set, log the verdict |
-| `steer_gate` | function | `roboco/services/decisions/pilots.py:702` | How a peer DM should reach its recipient |
+| `PilotMode` | StrEnum | `roboco/services/decisions/pilots.py:68` | `off`, `shadow`, `on` |
+| `pilot_mode` | function | `roboco/services/decisions/pilots.py:138` | Mode for one pilot: master flag, then settings row, then env lists, else off |
+| `decide_for_pilot` | function | `roboco/services/decisions/pilots.py:162` | Resolve mode and tier, ask one batched question set, log the verdict |
+| `steer_gate` | function | `roboco/services/decisions/pilots.py:776` | How a peer DM should reach its recipient |
 | `external_pr_triage` | function | `roboco/services/decisions/pilots_dispatch.py:145` | Score an inbound PR's review priority and screen its text |
 | `respawn_verdict` | function | `roboco/services/decisions/pilots_dispatch.py:837` | Classify a respawn candidate the strike counter is gating |
 | `plan_quality` | function | `roboco/services/decisions/pilots_gateway.py:121` | Score a structurally valid PM decomposition plan |
@@ -11022,7 +11024,10 @@ Every verdict is buffered into `decision_log` (migrations 105 to 107). The traje
 | `export_corpus` | function | `roboco/services/decisions/export.py:243` | Stream labelled rows to JSONL; returns the row count |
 | `record_402` | function | `roboco/services/decisions/spend_guard.py:55` | Count one HTTP 402 and alert on the second within an hour |
 | `DecisionsAuditEngine.run_cycle` | method | `roboco/services/decisions_audit_engine.py:68` | Daily pass: prune, originate the held review, assemble the brief |
-| `decisions` | function | `docker/decisions/server.py:430` | `POST /api/alpha/decisions` proxy handler |
+| `decisions` | function | `docker/decisions/server.py:583` | `POST /api/alpha/decisions` proxy handler |
+| `pilot_deadline_s` | function | `roboco/services/decisions/deadlines.py:50` | Seconds a pilot's caller waits for an ON verdict |
+| `AdmissionQueue` | class | `docker/decisions/server.py:218` | One input at a time per backend, admitted only when it can finish before its caller's deadline |
+| `ServiceTime` | class | `docker/decisions/server.py:187` | Per-backend service-time estimate, seeded from NAS measurements and learned from answered calls |
 
 ## Data Flow
 
@@ -11079,7 +11084,9 @@ docker/decisions.Dockerfile, docker/decisions/{entrypoint.sh,server.py} — the 
 | `decisions_base_url` | `http://roboco-decisions:8100` | Sidecar address for the Clef and Laya tiers |
 | `decisions_tier_clef_enabled` / `decisions_tier_laya_enabled` | True / True | Self-hosted tiers |
 | `decisions_tier_openrouter_enabled` | False | Opt-in metered fallback tier |
-| `decisions_timeout_s` / `decisions_clef_timeout_s` / `decisions_openrouter_timeout_s` | 5 / 60 / 2 seconds | Per-tier call budgets |
+| `decisions_timeout_s` / `decisions_clef_timeout_s` / `decisions_openrouter_timeout_s` | 5 / 180 / 2 seconds | Per-tier upper bounds on one call |
+| `decisions_clef_max_input_tokens` | 8192 | Clef input cap: the sidecar's llama.cpp batch and, at two characters per token, the client's Clef state budget (one compose knob for both) |
+| `decisions_inline_deadline_s` / `decisions_agent_tool_deadline_s` / `decisions_long_verb_deadline_s` / `decisions_background_deadline_s` | 20 / 25 / 60 / 60 seconds | How long a pilot waits for its verdict: inside an agent verb or shared loop (the default), for an agent-requested verdict, inside the 900-second submit verbs, and in an engine's own loop or a background task (every shadow verdict) |
 | `decisions_cost_alert_usd` | 1.0 | Spend alert threshold |
 | `decisions_pilots_on` / `decisions_pilots_shadow` | empty | Env arming lists; a settings-store row wins |
 | `decisions_log_retention_days` | 90 | `decision_log` pruning by the audit cycle |
@@ -11089,6 +11096,8 @@ docker/decisions.Dockerfile, docker/decisions/{entrypoint.sh,server.py} — the 
 ## Gotchas
 
 - Fail-open everywhere: a timeout, an unhealthy tier, a parse failure or an open circuit returns no verdict, and the call site keeps its pre-Decisions behaviour.
+- Measured on the NAS (2026-11-01): the 27B Clef read about 5 tokens/s on the CPU and returned 0 verdicts in 948 calls on 2026-10-28 (16 timeouts, 13 inputs of 518 to 3,538 tokens refused by the 512-token default batch). Clef-Flash Q4_K_M on the Iris Xe answers real pilot payloads at about 70 tokens/s (p50 3.6 s, p95 22.9 s) and agreed with Q8_0 on 89 of 93 answers.
+- Decision models keep no KV cache: an input runs in one physical batch and cannot be paused or cancelled, so the sidecar never starts one that cannot finish before its caller's deadline, and a `busy:` refusal is not a backend failure.
 - The sidecar's answer normalization (boolean noul coercion, confidence recovered from the reported answer's probability) is load-bearing: the orchestrator's parser rejects booleans on purpose, and an entropy-style confidence would fail every 0.6 to 0.8 gating floor.
 - A missing OpenRouter key with the fallback opted in sends one ack-required CEO notification per boot, not one per call.
 - The build compose arms the master flag for the NAS deploy; the registry compose ships it off.

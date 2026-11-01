@@ -2,7 +2,7 @@
 
 The Decisions service: typed "System One" decisions at points that would otherwise be a full LLM call or a hardcoded heuristic. A call site sends a structured state and a batch of typed questions (noul yes/no, choice, score) and gets back answers with calibrated confidence; the calling code accepts, rejects, or falls back on a per-pilot confidence floor. Each integration point is a named **pilot** (`PILOT_SLUGS`) with its own mode (off, shadow, on).
 
-Three tiers serve one wire format, resolved per call by `resolver.py`: Clef (the default, a self-hosted 27B llama.cpp model in the `roboco-decisions` sidecar, no key and no spend), Laya (the same sidecar's 421M model, used when Clef is disabled or unhealthy), and OpenRouter (opt-in, metered, only when the CEO opts in and the AI Provider screen holds a key). The floor below all tiers is "no verdict": master flag off, a pilot off, or no healthy tier means every call site does exactly what it did before the service existed. Decisions only add behaviour; no verdict may satisfy, skip or auto-pass a lifecycle gate, and nothing materializes on a verdict alone.
+Three tiers serve one wire format, resolved per call by `resolver.py`: Clef (the default: Cloudflare's 9B Clef-Flash on llama.cpp in the `roboco-decisions` sidecar, on the host's Intel iGPU when it has one, no key and no spend), Laya (the same sidecar's 421M model, used when Clef is disabled or unhealthy), and OpenRouter (opt-in, metered, only when the CEO opts in and the AI Provider screen holds a key). The floor below all tiers is "no verdict": master flag off, a pilot off, or no healthy tier means every call site does exactly what it did before the service existed. Decisions only add behaviour; no verdict may satisfy, skip or auto-pass a lifecycle gate, and nothing materializes on a verdict alone.
 
 Every verdict is buffered into `decision_log` (migrations 105 to 107). The trajectory labeler (`roboco/runtime/engines/decisions_labeler.py`, mapped in `docs/map/orchestrator.md`) later grades those rows against what the tasks table says happened, `export.py` turns labelled rows into a fine-tune corpus, and the Decisions Audit Board Program gives the Auditor a daily per-pilot review and prunes the log past its retention window.
 
@@ -11,14 +11,15 @@ Every verdict is buffered into `decision_log` (migrations 105 to 107). The traje
 | Path | Role | LOC |
 |---|---|---|
 | `roboco/services/decisions/__init__.py` | Package exports and the service doctrine: three tiers behind one wire format, fail-open, one attempt, every verdict logged, shadow before on, no verdict passes a lifecycle gate | 85 |
-| `roboco/services/decisions/resolver.py` | Per-call tier resolution: master flag off is the floor; else Clef if enabled and healthy, else Laya, else OpenRouter if opted in with a key; 30-second cached sidecar health, 60-second cached OpenRouter key, one CEO notification per boot when the opted-in key is missing | 296 |
-| `roboco/services/decisions/client.py` | `DecisionsClient`: the one HTTP client for every tier; client-side state caps and the stage-2 total-budget cap for self-hosted tiers, a per-process circuit breaker, `decide` returns None for no verdict | 461 |
+| `roboco/services/decisions/deadlines.py` | How long each pilot's caller waits for an ON verdict: inline (any verb or shared loop, the default), agent-requested, the long submit verbs, or an engine's own loop | 58 |
+| `roboco/services/decisions/resolver.py` | Per-call tier resolution: master flag off is the floor; else Clef if enabled and healthy, else Laya, else OpenRouter if opted in with a key; 30-second cached sidecar health, 60-second cached OpenRouter key, one CEO notification per boot when the opted-in key is missing | 302 |
+| `roboco/services/decisions/client.py` | `DecisionsClient`: the one HTTP client for every tier; client-side state caps and the stage-2 total-budget cap for self-hosted tiers, a per-process circuit breaker, `decide` returns None for no verdict | 610 |
 | `roboco/services/decisions/schemas.py` | Pydantic models of the Decisions wire format: `NoulQuestion`, `ChoiceQuestion`, `ScoreQuestion`, `DecisionAnswer`, `DecisionResult`, and the lenient `parse_decisions_payload` | 174 |
-| `roboco/services/decisions/pilots.py` | `PilotMode`, `PILOT_SLUGS`, `pilot_mode` (the single mode chokepoint), `decide_for_pilot`, `log_action`, and the core pilots: self-heal transient gate, parking lane, complexity score, preflight diff, test triage, transcript note, A2A steer gate, tool spotlight | 871 |
+| `roboco/services/decisions/pilots.py` | `PilotMode`, `PILOT_SLUGS`, `pilot_mode` (the single mode chokepoint), `decide_for_pilot`, `log_action`, and the core pilots: self-heal transient gate, parking lane, complexity score, preflight diff, test triage, transcript note, A2A steer gate, tool spotlight | 945 |
 | `roboco/services/decisions/pilots_content.py` | Content-lane pilots: intake pre-routing, X mention triage, segment classification, vault prefilter, secretary directive kind and assignee, Telegram free-text gate, memory distill gate, changelog highlights, proactive standards domain, decision-note sufficiency | 979 |
 | `roboco/services/decisions/pilots_dispatch.py` | Dispatch-lane pilots: external PR triage, idle-session reaping, context pruning, budget wrap-up, delta brief, review queue priority and depth, Board evidence skip, respawn verdict, submit-now confidence, park cause, PM closure safety, silent-exit pickup | 1267 |
 | `roboco/services/decisions/pilots_gateway.py` | Gateway-lane pilots: PM plan quality, commit-intent hint, findings-to-diff mapping, idle legitimacy, branch staleness, lesson pruning, assembled-branch coherence | 749 |
-| `roboco/services/decisions/pilots_infra.py` | Infrastructure-lane pilots: injection screen, collision edges, CI-watch route, heal severity, release-worthy urgency, second-review high stakes, notification semantic dedup, Board due-early and rotation target, stranded-batch lane, Coroner warranted, dep-update risk, release risk advisory | 1220 |
+| `roboco/services/decisions/pilots_infra.py` | Infrastructure-lane pilots: injection screen, collision edges, CI-watch route, heal severity, release-worthy urgency, second-review high stakes, notification semantic dedup, Board due-early and rotation target, stranded-batch lane, Coroner warranted, dep-update risk, release risk advisory | 1223 |
 | `roboco/services/decisions/context.py` | Recipient work context composed for the A2A steer-gate verdict | 203 |
 | `roboco/services/decisions/persist.py` | Fire-and-forget `decision_log` persistence: buffered `record_decision` with a background flusher, and outcome stamping (`record_outcome`, `record_question_outcomes`) on a subject's unlabeled rows | 310 |
 | `roboco/services/decisions/outcomes.py` | Outcome label vocabulary shared by outcome producers and the corpus exporter, with the slug-to-gold-probability mapping and gold-shape validation | 327 |
@@ -26,23 +27,24 @@ Every verdict is buffered into `decision_log` (migrations 105 to 107). The traje
 | `roboco/services/decisions/export.py` | Exports labelled `decision_log` rows as the JSONL fine-tune corpus (`python -m roboco.services.decisions.export`) | 290 |
 | `roboco/services/decisions/spend_guard.py` | Per-tier spend accounting from `usage.cost`; alerts the CEO on two HTTP 402s in a rolling hour or when the OpenRouter total crosses `decisions_cost_alert_usd` | 194 |
 | `roboco/services/decisions_audit_engine.py` | Decisions Audit Board Program (Auditor): daily cycle prunes `decision_log` past retention, originates one held review task, and injects the previous day's per-pilot aggregates into the Auditor's prompt | 275 |
-| `docker/decisions.Dockerfile` | CPU-only `roboco-decisions` sidecar image: two llama.cpp decision servers (Clef and Laya weights) behind the FastAPI proxy | 172 |
-| `docker/decisions/entrypoint.sh` | Sidecar supervisor: starts the Clef (127.0.0.1:8110) and Laya (127.0.0.1:8111) llama-servers, waits for each `/health`, then runs the proxy in the foreground | 186 |
-| `docker/decisions/server.py` | Sidecar FastAPI proxy serving the OpenRouter Decisions wire shape at `POST /api/alpha/decisions`, forwarding to the routed llama.cpp backend and normalizing answers; `GET /health` returns 503 while Clef is unreachable so traffic moves to a fallback tier | 512 |
+| `docker/decisions.Dockerfile` | `roboco-decisions` sidecar image (Debian trixie): llama.cpp b11371 built with the Vulkan and CPU backends, Clef-Flash Q4_K_M and Laya Q8_0 weights pinned by hash, behind the FastAPI proxy | 190 |
+| `docker/decisions/entrypoint.sh` | Sidecar supervisor: starts the Clef (127.0.0.1:8110) and Laya (127.0.0.1:8111) llama-servers with batch = context = input cap, one slot and every layer on the GPU when present, seeds the proxy's throughput from the device found, waits for each `/health`, then runs the proxy in the foreground | 224 |
+| `docker/decisions/server.py` | Sidecar FastAPI proxy serving the OpenRouter Decisions wire shape at `POST /api/alpha/decisions`, admitting one input at a time per backend only when it can finish before the caller's `x-decisions-deadline-s` (else 503 `busy:` at once), forwarding to the routed llama.cpp backend and normalizing answers; `GET /health` returns 503 while Clef is unreachable so traffic moves to a fallback tier, and reports each backend's queue | 687 |
+| `docker-compose.igpu.yaml` | Override `scripts/deploy-nas.sh` adds when the host has `/dev/dri/renderD128`: passes the Intel iGPU to the decisions sidecar (with the host's render group) and to ollama (Vulkan, integrated-GPU opt-in) | 31 |
 
 ## Key Symbols
 
 | Name | Kind | File:Line | Responsibility |
 |---|---|---|---|
 | `resolve_endpoint` | function | `roboco/services/decisions/resolver.py:68` | The tier for this call, or None for the floor |
-| `check_openrouter_fallback_at_startup` | function | `roboco/services/decisions/resolver.py:98` | Startup check for an opted-in OpenRouter fallback without a key |
-| `DecisionsClient.decide` | method | `roboco/services/decisions/client.py:275` | Ask one batched question set; None means no verdict |
-| `get_decisions_client` | function | `roboco/services/decisions/client.py:459` | Process-wide client (per-process circuit breaker) |
+| `check_openrouter_fallback_at_startup` | function | `roboco/services/decisions/resolver.py:104` | Startup check for an opted-in OpenRouter fallback without a key |
+| `DecisionsClient.decide` | method | `roboco/services/decisions/client.py:405` | Ask one batched question set; None means no verdict |
+| `get_decisions_client` | function | `roboco/services/decisions/client.py:608` | Process-wide client (per-process circuit breaker) |
 | `parse_decisions_payload` | function | `roboco/services/decisions/schemas.py:143` | Leniently parse a Decisions response body |
-| `PilotMode` | StrEnum | `roboco/services/decisions/pilots.py:59` | `off`, `shadow`, `on` |
-| `pilot_mode` | function | `roboco/services/decisions/pilots.py:129` | Mode for one pilot: master flag, then settings row, then env lists, else off |
-| `decide_for_pilot` | function | `roboco/services/decisions/pilots.py:153` | Resolve mode and tier, ask one batched question set, log the verdict |
-| `steer_gate` | function | `roboco/services/decisions/pilots.py:702` | How a peer DM should reach its recipient |
+| `PilotMode` | StrEnum | `roboco/services/decisions/pilots.py:68` | `off`, `shadow`, `on` |
+| `pilot_mode` | function | `roboco/services/decisions/pilots.py:138` | Mode for one pilot: master flag, then settings row, then env lists, else off |
+| `decide_for_pilot` | function | `roboco/services/decisions/pilots.py:162` | Resolve mode and tier, ask one batched question set, log the verdict |
+| `steer_gate` | function | `roboco/services/decisions/pilots.py:776` | How a peer DM should reach its recipient |
 | `external_pr_triage` | function | `roboco/services/decisions/pilots_dispatch.py:145` | Score an inbound PR's review priority and screen its text |
 | `respawn_verdict` | function | `roboco/services/decisions/pilots_dispatch.py:837` | Classify a respawn candidate the strike counter is gating |
 | `plan_quality` | function | `roboco/services/decisions/pilots_gateway.py:121` | Score a structurally valid PM decomposition plan |
@@ -53,7 +55,10 @@ Every verdict is buffered into `decision_log` (migrations 105 to 107). The traje
 | `export_corpus` | function | `roboco/services/decisions/export.py:243` | Stream labelled rows to JSONL; returns the row count |
 | `record_402` | function | `roboco/services/decisions/spend_guard.py:55` | Count one HTTP 402 and alert on the second within an hour |
 | `DecisionsAuditEngine.run_cycle` | method | `roboco/services/decisions_audit_engine.py:68` | Daily pass: prune, originate the held review, assemble the brief |
-| `decisions` | function | `docker/decisions/server.py:430` | `POST /api/alpha/decisions` proxy handler |
+| `decisions` | function | `docker/decisions/server.py:583` | `POST /api/alpha/decisions` proxy handler |
+| `pilot_deadline_s` | function | `roboco/services/decisions/deadlines.py:50` | Seconds a pilot's caller waits for an ON verdict |
+| `AdmissionQueue` | class | `docker/decisions/server.py:218` | One input at a time per backend, admitted only when it can finish before its caller's deadline |
+| `ServiceTime` | class | `docker/decisions/server.py:187` | Per-backend service-time estimate, seeded from NAS measurements and learned from answered calls |
 
 ## Data Flow
 
@@ -110,7 +115,9 @@ docker/decisions.Dockerfile, docker/decisions/{entrypoint.sh,server.py} — the 
 | `decisions_base_url` | `http://roboco-decisions:8100` | Sidecar address for the Clef and Laya tiers |
 | `decisions_tier_clef_enabled` / `decisions_tier_laya_enabled` | True / True | Self-hosted tiers |
 | `decisions_tier_openrouter_enabled` | False | Opt-in metered fallback tier |
-| `decisions_timeout_s` / `decisions_clef_timeout_s` / `decisions_openrouter_timeout_s` | 5 / 60 / 2 seconds | Per-tier call budgets |
+| `decisions_timeout_s` / `decisions_clef_timeout_s` / `decisions_openrouter_timeout_s` | 5 / 180 / 2 seconds | Per-tier upper bounds on one call |
+| `decisions_clef_max_input_tokens` | 8192 | Clef input cap: the sidecar's llama.cpp batch and, at two characters per token, the client's Clef state budget (one compose knob for both) |
+| `decisions_inline_deadline_s` / `decisions_agent_tool_deadline_s` / `decisions_long_verb_deadline_s` / `decisions_background_deadline_s` | 20 / 25 / 60 / 60 seconds | How long a pilot waits for its verdict: inside an agent verb or shared loop (the default), for an agent-requested verdict, inside the 900-second submit verbs, and in an engine's own loop or a background task (every shadow verdict) |
 | `decisions_cost_alert_usd` | 1.0 | Spend alert threshold |
 | `decisions_pilots_on` / `decisions_pilots_shadow` | empty | Env arming lists; a settings-store row wins |
 | `decisions_log_retention_days` | 90 | `decision_log` pruning by the audit cycle |
@@ -120,6 +127,8 @@ docker/decisions.Dockerfile, docker/decisions/{entrypoint.sh,server.py} — the 
 ## Gotchas
 
 - Fail-open everywhere: a timeout, an unhealthy tier, a parse failure or an open circuit returns no verdict, and the call site keeps its pre-Decisions behaviour.
+- Measured on the NAS (2026-11-01): the 27B Clef read about 5 tokens/s on the CPU and returned 0 verdicts in 948 calls on 2026-10-28 (16 timeouts, 13 inputs of 518 to 3,538 tokens refused by the 512-token default batch). Clef-Flash Q4_K_M on the Iris Xe answers real pilot payloads at about 70 tokens/s (p50 3.6 s, p95 22.9 s) and agreed with Q8_0 on 89 of 93 answers.
+- Decision models keep no KV cache: an input runs in one physical batch and cannot be paused or cancelled, so the sidecar never starts one that cannot finish before its caller's deadline, and a `busy:` refusal is not a backend failure.
 - The sidecar's answer normalization (boolean noul coercion, confidence recovered from the reported answer's probability) is load-bearing: the orchestrator's parser rejects booleans on purpose, and an entropy-style confidence would fail every 0.6 to 0.8 gating floor.
 - A missing OpenRouter key with the fallback opted in sends one ack-required CEO notification per boot, not one per call.
 - The build compose arms the master flag for the NAS deploy; the registry compose ships it off.
