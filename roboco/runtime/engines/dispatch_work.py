@@ -1705,8 +1705,16 @@ class DevDispatchEngine(_Base):
     async def _respawn_dev_if_inactive(
         self, task: dict[str, Any], agent_slug: str
     ) -> None:
-        """Respawn a dev agent on an existing task when it isn't running."""
+        """Respawn a dev agent on an existing task when it isn't running.
+
+        Behind the respawn breaker like every other task-keyed spawn: an owner
+        that keeps exiting without advancing its task stops being respawned
+        after the strike threshold (live 2026-10-28: fe-dev-1 respawned on
+        in_progress 86ed0eab at 06:01:04 and 06:03:12, the task unchanged).
+        """
         if self._is_agent_active(agent_slug):
+            return
+        if await self._pm_respawn_should_gate(agent_slug, task):
             return
         await self.spawn_agent(
             agent_id=agent_slug,
