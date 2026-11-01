@@ -264,30 +264,35 @@ Start now: evidence(task_id="{task_id}")
 
         if is_root:
             target_line = (
-                "submit_up promotes to awaiting_ceo_approval; the CEO reviews "
+                "submit_root opens the root→master PR into the PR-review gate "
+                "(awaiting_pr_review); after pr_pass you complete the root, "
+                "which escalates it to awaiting_ceo_approval. The CEO reviews "
                 "and merges to master. You do NOT merge to master yourself."
             )
             submit_step = (
-                f'3. submit_up(task_id="{task_id}",\n'
+                f'3. submit_root(task_id="{task_id}",\n'
                 '       notes="<aggregate summary: what shipped across the '
                 'cells, evidence, risk callouts>")\n'
-                "   — promotes to awaiting_ceo_approval. "
-                "CEO is the final approver. notes is recorded as your "
-                "journal decision."
+                "   — opens the root→master PR into the PR-review gate "
+                "(awaiting_pr_review). notes is recorded as your journal "
+                "decision. A branchless coordination root (a MegaTask "
+                "umbrella or a product fan-out, no PR of its own) skips the "
+                f'gate: complete(task_id="{task_id}", notes="...") escalates '
+                "it to the CEO directly."
             )
         else:
             target_line = (
-                "submit_up opens your cell-level PR into the parent task's "
-                "branch and transitions you to awaiting_pm_review for the "
-                "parent PM."
+                "submit_up opens your cell→root PR into the cell PR-review "
+                "gate (awaiting_pr_review); after pr_pass you complete it, "
+                "which merges it into the root branch."
             )
             submit_step = (
                 f'3. submit_up(task_id="{task_id}",\n'
                 '       notes="<cell summary: what your cell shipped, '
                 'evidence>")\n'
-                "   — opens cell-level PR up to the parent's branch and "
-                "transitions to awaiting_pm_review. notes is recorded as "
-                "your journal decision."
+                "   — opens the cell→root PR into the PR-review gate "
+                "(awaiting_pr_review). notes is recorded as your journal "
+                "decision."
             )
 
         return f"""You are closing YOUR OWN parent task. All subtasks are
