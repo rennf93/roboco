@@ -179,6 +179,16 @@ def _ensure_lock_for(project_slug: str, agent_slug: str) -> asyncio.Lock:
     return lock
 
 
+def _names_missing_remote_ref(stderr: str, branch: str) -> bool:
+    """True when git's fetch failed because origin has no ``branch``
+    (``fatal: couldn't find remote ref [refs/heads/]<branch>``)."""
+    endings = (f"remote ref {branch}", f"remote ref refs/heads/{branch}")
+    return any(
+        "couldn't find remote ref" in line and line.rstrip().endswith(endings)
+        for line in stderr.splitlines()
+    )
+
+
 class WorkspaceError(Exception):
     """Raised when workspace operations fail."""
 
@@ -967,6 +977,12 @@ class WorkspaceProvisioning(_Base):
         are its own branch and the default; the integration branch is refreshed
         at branch-creation time (`create_branch_for_task`), not here.
 
+        git aborts a whole fetch when one named ref is gone from origin, so a
+        clone root parked on a branch origin deleted (merged and pruned) used
+        to refresh nothing at all, the default branch included, on every
+        call. That case is handled by
+        `_refresh_default_after_vanished_branch`.
+
         Served through the project's relay, so a private repo refreshes too
         (the token stays in the relay). Timeout uses
         `workspace_refresh_fetch_timeout_seconds` (default 60s), NOT
@@ -974,26 +990,10 @@ class WorkspaceProvisioning(_Base):
         so 300s of blocking on every spawn against a hung remote is
         operationally bad.
         """
-
-        def _scoped_refs() -> list[str]:
-            """The current branch + the repo's default branch, deduped."""
-            current = self._worktree_git(
-                workspace, ["rev-parse", "--abbrev-ref", "HEAD"], check=False
-            ).stdout.strip()
-            origin_head = self._worktree_git(
-                workspace,
-                ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-                check=False,
-            ).stdout.strip()
-            default = origin_head.split("/", 1)[1] if "/" in origin_head else "master"
-            refs: list[str] = []
-            for ref in (current, default):
-                if ref and ref != "HEAD" and ref not in refs:
-                    refs.append(ref)
-            return refs or ["master"]
-
         try:
-            refs = await asyncio.to_thread(_scoped_refs)
+            current, default = await asyncio.to_thread(
+                self._current_and_default_branch, workspace
+            )
         except (UnsafeWorkspaceGitConfigError, subprocess.SubprocessError) as exc:
             logger.warning(
                 "ensure_workspace: refresh fetch skipped",
@@ -1002,19 +1002,74 @@ class WorkspaceProvisioning(_Base):
                 error=str(exc),
             )
             return
-        result = await self._origin_git(
+        refs = list(dict.fromkeys(ref for ref in (current, default) if ref != "HEAD"))
+        result = await self._refresh_fetch(workspace, project_slug, refs)
+        if result.returncode == 0:
+            return
+        if current != default and _names_missing_remote_ref(result.stderr, current):
+            await self._refresh_default_after_vanished_branch(
+                workspace, project_slug, current, default
+            )
+            return
+        self._log_failed_refresh(workspace, project_slug, result)
+
+    def _current_and_default_branch(self, workspace: Path) -> tuple[str, str]:
+        """The clone's checked-out branch (``HEAD`` when detached) and the
+        repo's default branch (from ``origin/HEAD``, else ``master``)."""
+        current = self._worktree_git(
+            workspace, ["rev-parse", "--abbrev-ref", "HEAD"], check=False
+        ).stdout.strip()
+        origin_head = self._worktree_git(
+            workspace,
+            ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+            check=False,
+        ).stdout.strip()
+        default = origin_head.split("/", 1)[1] if "/" in origin_head else "master"
+        return current or "HEAD", default
+
+    async def _refresh_fetch(
+        self, workspace: Path, project_slug: str, refs: list[str]
+    ) -> subprocess.CompletedProcess[str]:
+        """``git fetch --no-tags --prune origin <refs>`` through the relay."""
+        return await self._origin_git(
             workspace,
             project_slug,
             ["fetch", "--no-tags", "--prune", "origin", *refs],
             timeout=settings.workspace_refresh_fetch_timeout_seconds,
         )
+
+    async def _refresh_default_after_vanished_branch(
+        self, workspace: Path, project_slug: str, vanished: str, default: str
+    ) -> None:
+        """Fetch the default branch alone, then move the clone root off the
+        branch origin no longer has, onto the default branch (F123: the clone
+        root parks there; its task branches live in worktrees). The vanished
+        branch keeps its local ref and a dirty tree is never overwritten
+        (``_park_clone_root_off_branch``), so nothing is lost."""
+        result = await self._refresh_fetch(workspace, project_slug, [default])
         if result.returncode != 0:
-            logger.warning(
-                "ensure_workspace: refresh fetch returned non-zero",
-                workspace=str(workspace),
-                project=project_slug,
-                stderr=result.stderr.strip(),
-            )
+            self._log_failed_refresh(workspace, project_slug, result)
+            return
+        logger.info(
+            "ensure_workspace: clone root's branch is gone from origin; "
+            "parking it on the default branch",
+            workspace=str(workspace),
+            project=project_slug,
+            branch=vanished,
+            default_branch=default,
+        )
+        await asyncio.to_thread(self._park_clone_root_off_branch, workspace, vanished)
+
+    @staticmethod
+    def _log_failed_refresh(
+        workspace: Path, project_slug: str, result: subprocess.CompletedProcess[str]
+    ) -> None:
+        logger.warning(
+            "ensure_workspace: refresh fetch returned non-zero",
+            workspace=str(workspace),
+            project=project_slug,
+            stderr=result.stderr.strip(),
+        )
 
     async def ensure_workspace(
         self,
