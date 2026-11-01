@@ -45,6 +45,10 @@ else:
     _Base = object
 
 
+# The roles the single-active-task rule holds to one unfinished task, mirroring
+# TaskService._SINGLE_ACTIVE_TASK_ROLES (the claim chokepoint's set).
+_SINGLE_ACTIVE_TASK_ROLES = frozenset({"developer", "devops"})
+
 # B35 review_queue_priority banding constants: unscored tasks sit at the
 # neutral priority band; depth 3 renders the forensic directive.
 _QA_PRIORITY_NEUTRAL = 1
@@ -1607,7 +1611,8 @@ class DevDispatchEngine(_Base):
         many agentless claims at once; without the cap this single tick would
         burst-spawn a container for every one of them. The release-to-pending
         path spawns nothing, so it does not consume the per-tick spawn budget
-        and keeps draining stale claims.
+        and keeps draining stale claims; neither does a respawn held back by
+        ``_respawn_agentless_claim_assignee``.
         """
         tasks = await self._fetch_tasks(client, ["claimed", "in_progress"])
         for task in tasks:
@@ -1621,20 +1626,62 @@ class DevDispatchEngine(_Base):
                 # Unknown assignee — no agent to spawn; release for re-dispatch.
                 await self._release_claim_to_pending(str(task_id))
                 continue
-            logger.warning(
-                "Claimed/in_progress task has no running agent; respawning assignee",
-                task_id=task_id,
-                agent=agent_slug,
-                status=task.get("status"),
-            )
-            await self.spawn_agent(
-                agent_id=agent_slug,
-                task_id=str(task_id),
-                initial_prompt=await self._get_prompt_for_agent(agent_slug, task),
-                git_context=self._task_git_context(task),
-                spawned_by="_dispatch_claimed_without_agent",
-            )
-            break
+            if await self._respawn_agentless_claim_assignee(client, task, agent_slug):
+                break
+
+    async def _respawn_agentless_claim_assignee(
+        self, client: httpx.AsyncClient, task: dict[str, Any], agent_slug: str
+    ) -> bool:
+        """Respawn ``agent_slug`` on its agentless claim; True when it spawned.
+
+        Held to the same two rules as every other task-keyed spawn path. A
+        work author still holding other work is not booted onto this claim
+        (``_work_author_holds_other_work``, which also resumes its paused task
+        or releases a second never-started claim), and the respawn breaker
+        stops a claim the assignee keeps failing to advance. Live 2026-11-01
+        04:55:33 this path spawned be-dev-1 onto claimed 106f46e3 while it
+        held f5d66db6 (escalated, restored to it in_progress at 04:56:04);
+        its i_will_work_on was refused ("You have a in_progress task"),
+        i_am_done and i_am_blocked were refused from 'claimed'. Live
+        2026-10-28 it spawned main-pm on claimed be2145b0 five times
+        (06:28-06:53) without the task ever leaving 'claimed'.
+        """
+        if await self._agentless_claim_author_holds_other_work(
+            client, task, agent_slug
+        ):
+            return False
+        if await self._pm_respawn_should_gate(agent_slug, task):
+            return False
+        logger.warning(
+            "Claimed/in_progress task has no running agent; respawning assignee",
+            task_id=task.get("id"),
+            agent=agent_slug,
+            status=task.get("status"),
+        )
+        await self.spawn_agent(
+            agent_id=agent_slug,
+            task_id=str(task.get("id")),
+            initial_prompt=await self._get_prompt_for_agent(agent_slug, task),
+            git_context=self._task_git_context(task),
+            spawned_by="_dispatch_claimed_without_agent",
+        )
+        return True
+
+    async def _agentless_claim_author_holds_other_work(
+        self, client: httpx.AsyncClient, task: dict[str, Any], agent_slug: str
+    ) -> bool:
+        """The single-active-task rule for an agentless claim's assignee.
+
+        Applies to the work authors the claim chokepoint holds to one task
+        (``TaskService._SINGLE_ACTIVE_TASK_ROLES``: developer, devops); a
+        coordinator PM holds many roots by design and is never held back here.
+        """
+        if get_agent_role(agent_slug) not in _SINGLE_ACTIVE_TASK_ROLES:
+            return False
+        owner_uuid = task.get("assigned_to") or task.get("claimed_by")
+        return await self._work_author_holds_other_work(
+            client, task, str(owner_uuid), agent_slug
+        )
 
     async def _respawn_dev_if_inactive(
         self, task: dict[str, Any], agent_slug: str
