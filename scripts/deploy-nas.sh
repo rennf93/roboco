@@ -83,6 +83,17 @@ wait_healthy() { # wait_healthy <container> [exit0]
 
 COMPOSE=(docker compose -f docker-compose.yaml)
 
+# The host's Intel iGPU serves the decisions sidecar (Clef-Flash) and
+# ollama's embedder when the host exposes it (docker-compose.igpu.yaml has
+# the measurements: ~5x and ~11x faster than the CPU on the NAS). A host
+# without the device keeps both on the CPU.
+if [ -c /dev/dri/renderD128 ]; then
+  ROBOCO_RENDER_GID="$(stat -c %g /dev/dri/renderD128)"
+  export ROBOCO_RENDER_GID
+  COMPOSE+=(-f docker-compose.igpu.yaml)
+  echo "[deploy] Intel iGPU found (/dev/dri/renderD128, group $ROBOCO_RENDER_GID): decisions and ollama run on it"
+fi
+
 # Redis runs with requirepass, and compose refuses to start without
 # ROBOCO_REDIS_PASSWORD (`:?`). The first deploy after that change generates
 # one into .env; it never replaces a value that is already set (in .env or

@@ -14,7 +14,7 @@ name: Decisions sidecar
 #     the proxy with CLEF_ENABLED=false, drive
 #     tests/integration/test_decisions_sidecar_live.py: /health shows laya
 #     ok + clef disabled, a laya-routed POST returns a real inference, and a
-#     clef-routed POST 503s cleanly. NEVER fetches the 19GB clef GGUF.
+#     clef-routed POST 503s cleanly. NEVER fetches the ~6.7GB Clef-Flash GGUF.
 #   image-build, docker-based: builds docker/decisions.Dockerfile (validating the
 #     multi-stage llama.cpp build + weight fetch the NAS image build
 #     performs) with FETCH_CLEF_WEIGHTS=false and smokes the served
@@ -126,7 +126,7 @@ jobs:
           cat /tmp/llama-laya.log
           exit 1
 
-      - name: Start the sidecar proxy (clef disabled, no 19GB tier in CI)
+      - name: Start the sidecar proxy (clef disabled, no Clef-Flash weights in CI)
         run: |
           CLEF_ENABLED=false \
             uv run python docker/decisions/server.py > /tmp/sidecar.log 2>&1 &
@@ -164,7 +164,7 @@ jobs:
             http://127.0.0.1:8100/api/alpha/decisions \
             -H 'Content-Type: application/json' \
             -d '{
-              "model": "ggml-org/Clef-GGUF:Q4_K_M",
+              "model": "ggml-org/Clef-Flash-GGUF:Q4_K_M",
               "state": {"repo": "roboco"},
               "questions": {
                 "gate": {"type": "noul", "instructions": "The tier is reachable."}
@@ -213,7 +213,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7.0.1
 
-      # FETCH_CLEF_WEIGHTS=false: the 19GB clef GGUF stays NAS-side. This
+      # FETCH_CLEF_WEIGHTS=false: the ~6.7GB Clef-Flash GGUF stays NAS-side. This
       # job validates the multi-stage build machinery (llama.cpp compile at
       # the pin, weight fetch, proxy assembly) and smokes the laya tier.
       - name: Build the sidecar image (llama.cpp build + weight fetch)
