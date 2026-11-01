@@ -94,7 +94,11 @@ class GitCommitsSurface(Protocol):
         self, task_id: UUID, agent_id: UUID
     ) -> TaskTable: ...
     async def _ensure_worktree_for_commit(
-        self, clone_root: Path, worktree: Path, branch: str | None
+        self,
+        clone_root: Path,
+        worktree: Path,
+        branch: str | None,
+        project_slug: str | None = ...,
     ) -> None: ...
     async def ensure_task_worktree(
         self, project_slug: str, agent_id: UUID, task: Any

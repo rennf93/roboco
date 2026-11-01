@@ -910,7 +910,11 @@ class GitCommits(_Base):
         return worktree_path_of(clone_root, str(task_id)[:8])
 
     async def _ensure_worktree_for_commit(
-        self, clone_root: Path, worktree: Path, branch: str | None
+        self,
+        clone_root: Path,
+        worktree: Path,
+        branch: str | None,
+        project_slug: str | None = None,
     ) -> None:
         """Ensure a task's worktree is attached before a cwd-dependent git op.
 
@@ -918,11 +922,17 @@ class GitCommits(_Base):
         mid-task (disk pressure, manual cleanup); a commit/checkout against a
         missing dir fails opaquely. Idempotent — no-op when the worktree is
         present, re-adds (no ``-b``) from the surviving branch ref when pruned.
+        With ``project_slug`` a missing local branch ref is first recovered
+        from origin through the relay (a clone that never held the branch,
+        e.g. a documenter's); without it the re-add can only cut the branch
+        from ``origin/HEAD``.
         """
         if not branch:
             return
         workspace_service = get_workspace_service(self.session)
-        await workspace_service.ensure_worktree_for_resume(clone_root, worktree, branch)
+        await workspace_service.ensure_worktree_for_resume(
+            clone_root, worktree, branch, project_slug
+        )
 
     async def ensure_task_worktree(
         self, project_slug: str, agent_id: UUID, task: Any
@@ -933,7 +943,8 @@ class GitCommits(_Base):
         whatever branch it last held, so anything that reads, writes or runs
         a task's files (the pre-QA gate, a documenter's repo write) must use
         this path. A pruned worktree is re-added from the task branch, as the
-        commit path does. A task without a branch has no worktree:
+        commit path does (recovered from origin when this clone never held
+        it). A task without a branch has no worktree:
         ``ValidationError`` (``NO_BRANCH``), never the clone root instead.
         """
         if not task.branch_name:
@@ -943,7 +954,7 @@ class GitCommits(_Base):
         clone_root = await self.get_workspace(project_slug, agent_id)
         worktree = self._worktree_for_task(clone_root, require_uuid(task.id))
         await self._ensure_worktree_for_commit(
-            clone_root, worktree, str(task.branch_name)
+            clone_root, worktree, str(task.branch_name), project_slug
         )
         return worktree
 
@@ -4880,29 +4891,32 @@ class GitAgentWorkspace(_Base):
         workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
         return await self.get_workspace(project.slug, agent_id=workspace_agent_id)
 
-    async def checkout_branch_in_agent_workspace(
+    async def ensure_branch_worktree_for_agent(
         self,
         branch_name: str,
         *,
         actor_agent_id: UUID,
     ) -> None:
-        """Check out `branch_name` into the actor's own clone.
+        """Attach the worktree of the task owning ``branch_name`` in the
+        actor's own clone (``ensure_task_worktree``).
 
-        Dev/PM workspaces land on the right branch because
-        ``_auto_create_branch`` runs ``git checkout -b`` in the dev's
-        clone at claim time. The documenter's clone is a *separate*
-        workspace; when it claims an awaiting_documentation task the
-        branch already exists (created by the dev) so no checkout ever
-        ran in the doc's clone — it stayed on the default branch and
-        ``roboco_docs_write`` / ``commit`` failed with BRANCH_MISMATCH.
-        This puts the doc's workspace on the task branch (fetch +
-        tracking-branch create). Best-effort: a checkout failure must
-        not break the claim itself — the caller surfaces a remediation.
+        The documenter's clone is a *separate* workspace: when it claims an
+        awaiting_documentation task the branch exists only in the dev's
+        clone and on origin. Under F123 the documenter writes and commits in
+        the task's worktree; this attaches it (the branch recovered from
+        origin through the relay). The clone root is never checked out: that
+        either failed ("already checked out" at the worktree) or parked the
+        clone root on a task branch origin deletes once merged, after which
+        every refresh fetch of that clone failed. Best-effort at the caller:
+        a failure must not break the claim.
         """
-        workspace = await self._workspace_for_branch(
-            branch_name, actor_agent_id=actor_agent_id
-        )
-        await self.checkout(workspace, branch_name)
+        task = await self._task_for_branch(branch_name)
+        if task is None:
+            raise NotFoundError("Branch", branch_name)
+        project = await self._project_for_task(task)
+        if project is None:
+            raise NotFoundError("Project", str(task.project_id))
+        await self.ensure_task_worktree(project.slug, actor_agent_id, task)
 
     async def push_branch(
         self,
