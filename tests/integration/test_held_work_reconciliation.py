@@ -16,6 +16,7 @@ why on each task, and leaves started work alone.
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -25,6 +26,7 @@ from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType
 from roboco.models.task import TaskCreateRequest
 from roboco.services.task import TaskService
+from roboco.services.workspace import WorkspaceService
 from sqlalchemy import select
 
 if TYPE_CHECKING:
@@ -247,3 +249,39 @@ async def test_a_released_claim_is_its_authors_next_task(cell: dict[str, Any]) -
     assert reclaimed is not None
     assert reclaimed.status == TaskStatus.CLAIMED
     assert reclaimed.branch_name == branch
+
+
+@pytest.mark.asyncio
+async def test_a_dispatcher_release_keeps_the_worktree(
+    cell: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dispatcher's claim release (``_release_claim_to_pending``) used
+    ``unclaim_for_reaper``, whose worktree removal deletes the owner's
+    uncommitted edits; the release keeps the owner, so it keeps the worktree."""
+    svc, db, dev = cell["svc"], cell["db"], cell["dev"]
+    remove = AsyncMock()
+    monkeypatch.setattr(WorkspaceService, "remove_worktree", remove)
+    claim = await _held(cell, TaskStatus.CLAIMED)
+    branch = claim.branch_name
+
+    assert await svc.release_claim_keeping_worktree(claim.id) is True
+
+    await db.refresh(claim)
+    assert claim.status == TaskStatus.PENDING
+    assert claim.assigned_to == dev.id
+    assert claim.branch_name == branch
+    remove.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_reaper_still_removes_a_dead_holders_worktree(
+    cell: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    svc = cell["svc"]
+    remove = AsyncMock()
+    monkeypatch.setattr(WorkspaceService, "remove_worktree", remove)
+    claim = await _held(cell, TaskStatus.IN_PROGRESS)
+
+    await svc.unclaim_for_reaper(claim.id)
+
+    remove.assert_awaited_once()

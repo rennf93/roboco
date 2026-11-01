@@ -7788,6 +7788,27 @@ class TaskUnclaim(_Base):
                 error=str(e),
             )
 
+    async def release_claim_keeping_worktree(self, task_id: UUID) -> bool:
+        """Release a claimed/in_progress task to pending for its owner to take
+        up again, leaving its worktree where it is; True when released.
+
+        The dispatcher's release of a claim whose owner is alive or unknown
+        (a second never-started claim of a work author, an agentless claim
+        with an unknown assignee) used ``unclaim_for_reaper``, whose
+        ``git worktree remove --force`` deletes every uncommitted edit and
+        untracked file in the task's worktree. Commits survive that removal,
+        uncommitted work does not, and the owner kept on the task is the
+        author who wrote it (be-dev-1 ran in claimed 106f46e3's worktree on
+        2026-10-28 and 2026-11-01). The workspace doctrine never discards an
+        author's dirty edits, and the re-claim re-attaches a present worktree
+        without resetting them. Only a release whose holder is dead (the
+        stale-claim reaper, a stopped agent's claim, the startup orphan
+        reconcile) goes through ``unclaim_for_reaper`` and removes it.
+        """
+        return await self._force_unclaim_to_pending(
+            task_id, reason="dispatcher-release"
+        )
+
     async def release_dependency_blocked_claim(self, task_id: UUID) -> None:
         """Release a claimed/in_progress task whose dependency is still unmet.
 
