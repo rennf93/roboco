@@ -2179,7 +2179,7 @@ The "misc" foundation-policy slice holds the pure, service-agnostic rule catalog
 | roboco/foundation/policy/communications.py | Notification sender allowlist (`NOTIFY_SENDER_ROLES`), `NO_COMMS_ROLES`, NotificationType→requires_ack map, A2A priority parser, and the unacked-notification re-escalation backoff (`reescalation_decision`) | 150 |
 | roboco/foundation/policy/journaling.py | Journal Scope enum, scope→JournalEntryType map, per-role journal ReadTier, protected-journal slugs | 84 |
 | roboco/foundation/policy/task_completeness.py | Task field completeness rules + placeholder denylist + auto-fill helpers (team/priority/parent) | 376 |
-| roboco/foundation/policy/tracing.py | Tracing-gate: Requirement enum, per-requirement checkers, VERB_REQUIREMENTS table, VERBS_WITHOUT_TRACING set, check_requirements entry | 481 |
+| roboco/foundation/policy/tracing.py | Tracing-gate: Requirement enum, per-requirement checkers, VERB_REQUIREMENTS table, VERBS_WITHOUT_TRACING set, check_requirements entry | 482 |
 | roboco/foundation/policy/agent_loop.py | Per-agent budget/loop policy defaults, per-verb retry caps, unlimited-retry verb set, retry_limit_for lookup | 170 |
 | roboco/foundation/policy/content/__init__.py | Public surface re-export for the content schema package | 55 |
 | roboco/foundation/policy/content/enums.py | Severity + Verdict controlled vocabularies for PR-review/QA content | 35 |
@@ -2231,8 +2231,8 @@ The "misc" foundation-policy slice holds the pure, service-agnostic rule catalog
 | _CHECKERS | constant | roboco/foundation/policy/tracing.py:242 | Requirement→Checker function dispatch table |
 | check_requirements | function | roboco/foundation/policy/tracing.py:270 | Run a list of Requirements against task+ctx; return GateResult |
 | VERB_REQUIREMENTS | constant | roboco/foundation/policy/tracing.py:288 | Verb→frozenset[Requirement] single source of truth (i_will_work_on, i_am_done, pass_review, pr_pass, submit_root, complete, etc.) |
-| VERBS_WITHOUT_TRACING | constant | roboco/foundation/policy/tracing.py:433 | frozenset of verbs intentionally exempt from tracing (give_me_work, open_pr, sync_branch, claim_*, resume, unclaim, etc.) |
-| requirements_for | function | roboco/foundation/policy/tracing.py:467 | Lookup required-set for a verb; raises KeyError on unknown verb |
+| VERBS_WITHOUT_TRACING | constant | roboco/foundation/policy/tracing.py:434 | frozenset of verbs intentionally exempt from tracing (give_me_work, open_pr, sync_branch, claim_*, resume, unclaim, etc.) |
+| requirements_for | function | roboco/foundation/policy/tracing.py:468 | Lookup required-set for a verb; raises KeyError on unknown verb |
 | BudgetPolicy | dataclass | roboco/foundation/policy/agent_loop.py:31 | Per-agent runtime budget + loop policy defaults (tool call warn/halt, loop threshold/window/action, PM respawn caps, verb retry default) |
 | DEFAULT_BUDGET | constant | roboco/foundation/policy/agent_loop.py:77 | Canonical BudgetPolicy instance consumers fall back to |
 | VERB_RETRY_LIMITS | constant | roboco/foundation/policy/agent_loop.py:98 | Per-verb retry caps over 60s window keyed by MCP-exposed verb names (pass/fail, i_am_done, open_pr=5, etc.) |
@@ -2401,7 +2401,7 @@ foundation/policy (misc slice)
 |---|---|---|
 | check (task_completeness) | roboco/foundation/policy/task_completeness.py:283 | Called by TaskService.create / PrompterService.create_task_from_draft / choreographer.pm.SubtaskCreateMixin._create_subtask_from_inputs at task construction |
 | check_requirements (tracing) | roboco/foundation/policy/tracing.py:270 | Called by gateway choreographer (_impl/qa/doc/pr_gate/pr_review) before each gated verb's state transition |
-| requirements_for (tracing) | roboco/foundation/policy/tracing.py:467 | Called by choreographer to resolve a verb's required-set; parity test iterates every intent verb |
+| requirements_for (tracing) | roboco/foundation/policy/tracing.py:468 | Called by choreographer to resolve a verb's required-set; parity test iterates every intent verb |
 | validate_content | roboco/foundation/policy/content/models.py:614 | Called by gateway content_actions / choreographer / prompter / intake_driver / flow_server when an agent submits a structured-content payload |
 | retry_limit_for (agent_loop) | roboco/foundation/policy/agent_loop.py:141 | Called by agent_sdk/server per-verb circuit breaker on /verb/attempted |
 | parse_priority (communications) | roboco/foundation/policy/communications.py:26 | Called by services/a2a.py + notification_delivery on A2A urgency resolution |
@@ -7126,8 +7126,8 @@ The Choreographer is the server-side composition layer that turns agent intent-v
 | `i_am_done` | async verb | `dev.py:777` | Dev pre-submit; runs `_i_am_done_gate` then `run_intent("i_am_done")`. |
 | `_i_am_done_gate` | async helper | `dev.py:905` | Ordered gate chain: tracing → submit_qa fields → push → behind_base → quality → toolchain → conventions; then write AC status. |
 | `_behind_base_gate` | async helper | `_impl.py:2524` | Refuse submit when branch behind its base (sibling PR merged); fail-open on git error. |
-| `_toolchain_broken_guard` | async helper | `_impl.py:5449` | Block delivery gate when agent workspace can't run suite; `reviewer=True` for `pr_pass`. |
-| `_conventions_guard` | async helper | `_impl.py:5553` | Run architectural-conventions validator; `block` finding refuses gate. |
+| `_toolchain_broken_guard` | async helper | `_impl.py:5451` | Block delivery gate when agent workspace can't run suite; `reviewer=True` for `pr_pass`. |
+| `_conventions_guard` | async helper | `_impl.py:5555` | Run architectural-conventions validator; `block` finding refuses gate. |
 | `_pm_task_type_error` | static method | `pm.py:455` | Reject a code/non-planning task_type delegated to a PM (cell or main); extracted from `_validate_assignee_task_type` to keep that dispatcher under complexity budget. |
 | `i_am_blocked` | async verb | `_impl.py:3112` | Rate-limit parking vs generic block; `run_intent("i_am_blocked")`. |
 | `_handle_rate_limited_parking` | async helper | `_impl.py:3008` | Park provider on 429/overload/session-limit. |
@@ -7142,8 +7142,8 @@ The Choreographer is the server-side composition layer that turns agent intent-v
 | `submit_root` | async verb | `pm.py:2026` | Main PM opens root→master PR + enters gate; umbrella hard-reject + unchanged-PR guard. |
 | `_submit_root_unchanged_pr_guard` | async helper | `pm.py:1976` | Loop-stopper: refuse re-submit when PR head SHA == last `pr_fail` SHA. Fail-open on ambiguity. |
 | `_current_pr_head_sha` | async helper | `pm.py:1991` | Best-effort current PR head SHA via `_project_slug_for` + `git.get_pr_head_sha`. |
-| `complete` | async verb | `pm.py:3658` | Role-dispatch to `cell_pm_complete` / `main_pm_complete`; umbrella-in-progress bypasses spec gate. |
-| `main_pm_complete` | async verb | `pm.py:3543` | Main PM merge + escalate to CEO (never merges master itself). |
+| `complete` | async verb | `pm.py:3707` | Role-dispatch to `cell_pm_complete` / `main_pm_complete`; umbrella-in-progress bypasses spec gate. |
+| `main_pm_complete` | async verb | `pm.py:3592` | Main PM merge + escalate to CEO (never merges master itself). |
 | `escalate_to_ceo` | async verb | `_impl.py:3398` | Escalate to `awaiting_ceo_approval`. |
 | `unblock` | async verb | `pm.py:2428` | Human/PM restores a BLOCKED task; gated by `_oscillation_unblock_guard` (refuses while oscillation-tripped) then, on a real restore, runs `_maybe_trip_oscillation_breaker` (#685). |
 | `_oscillation_unblock_guard` | async helper | `pm.py:2524` | Refuses `unblock` once `markers.is_oscillation_tripped(t)` — an admin override must clear the marker first. |
@@ -7279,7 +7279,7 @@ Choreographer (composed class, __init__.py: the role mixins on BaseChoreographer
 | `pr_merge` project_id scoping assumes `task.project_id` is non-None | `_verb_runner.py:263` | `project_id=task.project_id` — if a coordination/umbrella task ever reaches `pr_merge` with `project_id=None`, the cross-repo collision guard silently matches nothing or None-keys the scoping; could merge the wrong PR or no-op. | High |
 | `_submit_root_unchanged_pr_guard` / `_submit_up_unchanged_pr_guard` fail open on resolver regressions | `pm.py:1976,1837` | Any future break in `_current_pr_head_sha` / `_project_slug_for` / `git.get_pr_head_sha` makes the loop-stopper a no-op, re-opening the 2026-06-27 pr_fail re-submit loop. **Partially mitigated (536bbb64)**: `_current_pr_head_sha` now emits a `structlog.warning` on resolver failure so the fail-open path is observable in logs; the underlying fail-open behavior is intentional and unchanged. | High |
 | `_lane_claim_guard` calls `release_dependency_blocked_claim` on lookup error | `_impl.py:1550` | Fail-closed path releases the claim before returning the error envelope; if the lookup error is transient the dev is bounced + work-session abandoned even though the lane was actually free. | Medium |
-| `complete` umbrella-in-progress bypass skips the spec AWAITING_PM_REVIEW status check | `pm.py:3658` | `_is_umbrella_in_progress` mis-classification (e.g. a non-batch branchless task with matching predicates) lets a non-awaiting_pm_review task reach `main_pm_complete`/`cell_pm_complete`. | Medium |
+| `complete` umbrella-in-progress bypass skips the spec AWAITING_PM_REVIEW status check | `pm.py:3707` | `_is_umbrella_in_progress` mis-classification (e.g. a non-batch branchless task with matching predicates) lets a non-awaiting_pm_review task reach `main_pm_complete`/`cell_pm_complete`. | Medium |
 | `_run_claim_guards` dependency re-check narrows but does not close the race | `_impl.py:1174` | The re-check returns None (skip release) when fresh read sees deps met, but the window between re-check and the caller's claim is still unlocked; a concurrent terminal transition there is benign (monotonic), but a non-monotonic future status could re-open. | Low |
 | `submit_root` runs `create_root_pr` as a pre_side_effect OUTSIDE the savepoint | `_verb_runner.py:67` + `pm.py:2026` | If a later composed `submit_for_review` raises, the root→master PR is already opened and NOT rolled back; re-issue is idempotent-by-contract but a non-idempotent future pre_side_effect would leak. | Medium |
 | `_i_am_done_gate` writes AC criteria status AFTER all gates pass but BEFORE `run_intent` | `dev.py:905` | `_write_criteria_status` runs in the gate phase; if `run_intent("i_am_done")` then raises, the AC status rows persist for a task that did not transition — a stale write the next attempt must overwrite. | Low |
@@ -8793,7 +8793,7 @@ The revision-findings ledger: the structured replacement for prose-only QA/PR-ga
 | `stamp_addressed_verified` | function | `roboco/services/gateway/choreographer/findings.py:334` | Bulk-promotes `addressed→verified` for one `origin` on a task, passing `verified_by` (the QA / PR-gate / PM reviewer's slug, or `ceo`) through to `mark_verified`; not best-effort except at the `ceo_approve` call site. |
 | `fail_review` | async verb | `roboco/services/gateway/choreographer/qa.py` | QA-origin producer: `(qa_agent_id, task_id, issues=None, findings=None)`. |
 | `pr_fail` | async verb | `roboco/services/gateway/choreographer/pr_gate.py` | pr_gate-origin producer, same shape; findings insert happens before `_record_gate_verdict_for` so the verdict note reads real ledger ids. |
-| `request_changes` | async verb | `roboco/services/gateway/choreographer/pm.py` | pm-origin producer, same shape; writes `PmReviewContent` → `pm_notes`. |
+| `request_changes` | async verb | `roboco/services/gateway/choreographer/pm.py` | pm-origin producer, same shape; writes `PmReviewContent` → `pm_notes`. Before the ledger insert it records the findings as the PM's `journal:decision` and gates on it (`_record_request_changes_decision`, write-then-gate like `complete` / `unblock`), so the PM writes no separate decision note. |
 | `ceo_reject` | method | `roboco/services/task.py` | ceo-origin producer — NOT a choreographer verb (no gateway wrapper; the CEO-approval route calls `TaskService.ceo_reject` directly). Validates `reason` via `reject_trivial` (previously an uncaught Pydantic `ValidationError` → 500 on empty/trivial input) and converts it into one `severity=blocker` Finding. |
 | `_bump_coordination_ceo_reject` | method | `roboco/services/task.py` | Manually bumps `revision_count` + inserts a `task.ceo_reject` audit row for a branchless-coordination reject, since that path routes to `PENDING` via `admin_set_status` and never reaches the normal `_emit_status_transition_audit` chokepoint. |
 | `_audit_events_for` | staticmethod | `roboco/services/task.py:13974` | Gains `task.request_changes` (agent_role `cell_pm`/`main_pm`) and `task.ceo_reject` (agent_role `ceo`) branches alongside the existing `task.qa_fail`/`task.pr_fail`. |

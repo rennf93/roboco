@@ -8,7 +8,7 @@ The "misc" foundation-policy slice holds the pure, service-agnostic rule catalog
 | roboco/foundation/policy/communications.py | Notification sender allowlist (`NOTIFY_SENDER_ROLES`), `NO_COMMS_ROLES`, NotificationType→requires_ack map, A2A priority parser, and the unacked-notification re-escalation backoff (`reescalation_decision`) | 150 |
 | roboco/foundation/policy/journaling.py | Journal Scope enum, scope→JournalEntryType map, per-role journal ReadTier, protected-journal slugs | 84 |
 | roboco/foundation/policy/task_completeness.py | Task field completeness rules + placeholder denylist + auto-fill helpers (team/priority/parent) | 376 |
-| roboco/foundation/policy/tracing.py | Tracing-gate: Requirement enum, per-requirement checkers, VERB_REQUIREMENTS table, VERBS_WITHOUT_TRACING set, check_requirements entry | 481 |
+| roboco/foundation/policy/tracing.py | Tracing-gate: Requirement enum, per-requirement checkers, VERB_REQUIREMENTS table, VERBS_WITHOUT_TRACING set, check_requirements entry | 482 |
 | roboco/foundation/policy/agent_loop.py | Per-agent budget/loop policy defaults, per-verb retry caps, unlimited-retry verb set, retry_limit_for lookup | 170 |
 | roboco/foundation/policy/content/__init__.py | Public surface re-export for the content schema package | 55 |
 | roboco/foundation/policy/content/enums.py | Severity + Verdict controlled vocabularies for PR-review/QA content | 35 |
@@ -60,8 +60,8 @@ The "misc" foundation-policy slice holds the pure, service-agnostic rule catalog
 | _CHECKERS | constant | roboco/foundation/policy/tracing.py:242 | Requirement→Checker function dispatch table |
 | check_requirements | function | roboco/foundation/policy/tracing.py:270 | Run a list of Requirements against task+ctx; return GateResult |
 | VERB_REQUIREMENTS | constant | roboco/foundation/policy/tracing.py:288 | Verb→frozenset[Requirement] single source of truth (i_will_work_on, i_am_done, pass_review, pr_pass, submit_root, complete, etc.) |
-| VERBS_WITHOUT_TRACING | constant | roboco/foundation/policy/tracing.py:433 | frozenset of verbs intentionally exempt from tracing (give_me_work, open_pr, sync_branch, claim_*, resume, unclaim, etc.) |
-| requirements_for | function | roboco/foundation/policy/tracing.py:467 | Lookup required-set for a verb; raises KeyError on unknown verb |
+| VERBS_WITHOUT_TRACING | constant | roboco/foundation/policy/tracing.py:434 | frozenset of verbs intentionally exempt from tracing (give_me_work, open_pr, sync_branch, claim_*, resume, unclaim, etc.) |
+| requirements_for | function | roboco/foundation/policy/tracing.py:468 | Lookup required-set for a verb; raises KeyError on unknown verb |
 | BudgetPolicy | dataclass | roboco/foundation/policy/agent_loop.py:31 | Per-agent runtime budget + loop policy defaults (tool call warn/halt, loop threshold/window/action, PM respawn caps, verb retry default) |
 | DEFAULT_BUDGET | constant | roboco/foundation/policy/agent_loop.py:77 | Canonical BudgetPolicy instance consumers fall back to |
 | VERB_RETRY_LIMITS | constant | roboco/foundation/policy/agent_loop.py:98 | Per-verb retry caps over 60s window keyed by MCP-exposed verb names (pass/fail, i_am_done, open_pr=5, etc.) |
@@ -230,7 +230,7 @@ foundation/policy (misc slice)
 |---|---|---|
 | check (task_completeness) | roboco/foundation/policy/task_completeness.py:283 | Called by TaskService.create / PrompterService.create_task_from_draft / choreographer.pm.SubtaskCreateMixin._create_subtask_from_inputs at task construction |
 | check_requirements (tracing) | roboco/foundation/policy/tracing.py:270 | Called by gateway choreographer (_impl/qa/doc/pr_gate/pr_review) before each gated verb's state transition |
-| requirements_for (tracing) | roboco/foundation/policy/tracing.py:467 | Called by choreographer to resolve a verb's required-set; parity test iterates every intent verb |
+| requirements_for (tracing) | roboco/foundation/policy/tracing.py:468 | Called by choreographer to resolve a verb's required-set; parity test iterates every intent verb |
 | validate_content | roboco/foundation/policy/content/models.py:614 | Called by gateway content_actions / choreographer / prompter / intake_driver / flow_server when an agent submits a structured-content payload |
 | retry_limit_for (agent_loop) | roboco/foundation/policy/agent_loop.py:141 | Called by agent_sdk/server per-verb circuit breaker on /verb/attempted |
 | parse_priority (communications) | roboco/foundation/policy/communications.py:26 | Called by services/a2a.py + notification_delivery on A2A urgency resolution |

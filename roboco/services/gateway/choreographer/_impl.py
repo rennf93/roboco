@@ -5009,8 +5009,9 @@ class TracingGatesMixin(_Base):
 
         The write-then-gate pattern (mirrors i_am_blocked → write_struggle):
         a PM verb that already carries a substantive rationale — complete /
-        submit_up / submit_root ``notes``, escalate ``reason``, or a
-        synthesized unblock context line — records it as the decision
+        submit_up / submit_root ``notes``, unblock / escalate / cancel_leaf
+        ``reason``, the delegated subtask's title and description, or the
+        request_changes findings — records it as the decision
         *before* the journal:decision tracing gate runs. A loaded or weak
         model that forgot the separate note(scope='decision') call then no
         longer stalls in a tracing_gap → respawn loop; the gate still runs
@@ -5082,8 +5083,9 @@ class TracingGatesMixin(_Base):
     ) -> Envelope | None:
         """Standard PM-verb tracing gate driven by VERB_REQUIREMENTS.
 
-        Used by ``unblock``, ``escalate_up``, ``escalate_to_ceo``, and
-        ``delegate`` — each declares only ``JOURNAL_DECISION`` in the
+        Used by ``unblock``, ``escalate_up``, ``escalate_to_ceo``,
+        ``cancel_leaf``, ``request_changes`` and ``delegate`` — each declares
+        only ``JOURNAL_DECISION`` in the
         foundation table. Verbs requiring more (``complete``,
         ``submit_up``) use the verb-specific helpers below which thread
         the additional state (reflect, notes, subtasks) into GateContext.

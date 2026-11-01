@@ -41,8 +41,8 @@ The Choreographer is the server-side composition layer that turns agent intent-v
 | `i_am_done` | async verb | `dev.py:777` | Dev pre-submit; runs `_i_am_done_gate` then `run_intent("i_am_done")`. |
 | `_i_am_done_gate` | async helper | `dev.py:905` | Ordered gate chain: tracing → submit_qa fields → push → behind_base → quality → toolchain → conventions; then write AC status. |
 | `_behind_base_gate` | async helper | `_impl.py:2524` | Refuse submit when branch behind its base (sibling PR merged); fail-open on git error. |
-| `_toolchain_broken_guard` | async helper | `_impl.py:5449` | Block delivery gate when agent workspace can't run suite; `reviewer=True` for `pr_pass`. |
-| `_conventions_guard` | async helper | `_impl.py:5553` | Run architectural-conventions validator; `block` finding refuses gate. |
+| `_toolchain_broken_guard` | async helper | `_impl.py:5451` | Block delivery gate when agent workspace can't run suite; `reviewer=True` for `pr_pass`. |
+| `_conventions_guard` | async helper | `_impl.py:5555` | Run architectural-conventions validator; `block` finding refuses gate. |
 | `_pm_task_type_error` | static method | `pm.py:455` | Reject a code/non-planning task_type delegated to a PM (cell or main); extracted from `_validate_assignee_task_type` to keep that dispatcher under complexity budget. |
 | `i_am_blocked` | async verb | `_impl.py:3112` | Rate-limit parking vs generic block; `run_intent("i_am_blocked")`. |
 | `_handle_rate_limited_parking` | async helper | `_impl.py:3008` | Park provider on 429/overload/session-limit. |
@@ -57,8 +57,8 @@ The Choreographer is the server-side composition layer that turns agent intent-v
 | `submit_root` | async verb | `pm.py:2026` | Main PM opens root→master PR + enters gate; umbrella hard-reject + unchanged-PR guard. |
 | `_submit_root_unchanged_pr_guard` | async helper | `pm.py:1976` | Loop-stopper: refuse re-submit when PR head SHA == last `pr_fail` SHA. Fail-open on ambiguity. |
 | `_current_pr_head_sha` | async helper | `pm.py:1991` | Best-effort current PR head SHA via `_project_slug_for` + `git.get_pr_head_sha`. |
-| `complete` | async verb | `pm.py:3658` | Role-dispatch to `cell_pm_complete` / `main_pm_complete`; umbrella-in-progress bypasses spec gate. |
-| `main_pm_complete` | async verb | `pm.py:3543` | Main PM merge + escalate to CEO (never merges master itself). |
+| `complete` | async verb | `pm.py:3707` | Role-dispatch to `cell_pm_complete` / `main_pm_complete`; umbrella-in-progress bypasses spec gate. |
+| `main_pm_complete` | async verb | `pm.py:3592` | Main PM merge + escalate to CEO (never merges master itself). |
 | `escalate_to_ceo` | async verb | `_impl.py:3398` | Escalate to `awaiting_ceo_approval`. |
 | `unblock` | async verb | `pm.py:2428` | Human/PM restores a BLOCKED task; gated by `_oscillation_unblock_guard` (refuses while oscillation-tripped) then, on a real restore, runs `_maybe_trip_oscillation_breaker` (#685). |
 | `_oscillation_unblock_guard` | async helper | `pm.py:2524` | Refuses `unblock` once `markers.is_oscillation_tripped(t)` — an admin override must clear the marker first. |
@@ -194,7 +194,7 @@ Choreographer (composed class, __init__.py: the role mixins on BaseChoreographer
 | `pr_merge` project_id scoping assumes `task.project_id` is non-None | `_verb_runner.py:263` | `project_id=task.project_id` — if a coordination/umbrella task ever reaches `pr_merge` with `project_id=None`, the cross-repo collision guard silently matches nothing or None-keys the scoping; could merge the wrong PR or no-op. | High |
 | `_submit_root_unchanged_pr_guard` / `_submit_up_unchanged_pr_guard` fail open on resolver regressions | `pm.py:1976,1837` | Any future break in `_current_pr_head_sha` / `_project_slug_for` / `git.get_pr_head_sha` makes the loop-stopper a no-op, re-opening the 2026-06-27 pr_fail re-submit loop. **Partially mitigated (536bbb64)**: `_current_pr_head_sha` now emits a `structlog.warning` on resolver failure so the fail-open path is observable in logs; the underlying fail-open behavior is intentional and unchanged. | High |
 | `_lane_claim_guard` calls `release_dependency_blocked_claim` on lookup error | `_impl.py:1550` | Fail-closed path releases the claim before returning the error envelope; if the lookup error is transient the dev is bounced + work-session abandoned even though the lane was actually free. | Medium |
-| `complete` umbrella-in-progress bypass skips the spec AWAITING_PM_REVIEW status check | `pm.py:3658` | `_is_umbrella_in_progress` mis-classification (e.g. a non-batch branchless task with matching predicates) lets a non-awaiting_pm_review task reach `main_pm_complete`/`cell_pm_complete`. | Medium |
+| `complete` umbrella-in-progress bypass skips the spec AWAITING_PM_REVIEW status check | `pm.py:3707` | `_is_umbrella_in_progress` mis-classification (e.g. a non-batch branchless task with matching predicates) lets a non-awaiting_pm_review task reach `main_pm_complete`/`cell_pm_complete`. | Medium |
 | `_run_claim_guards` dependency re-check narrows but does not close the race | `_impl.py:1174` | The re-check returns None (skip release) when fresh read sees deps met, but the window between re-check and the caller's claim is still unlocked; a concurrent terminal transition there is benign (monotonic), but a non-monotonic future status could re-open. | Low |
 | `submit_root` runs `create_root_pr` as a pre_side_effect OUTSIDE the savepoint | `_verb_runner.py:67` + `pm.py:2026` | If a later composed `submit_for_review` raises, the root→master PR is already opened and NOT rolled back; re-issue is idempotent-by-contract but a non-idempotent future pre_side_effect would leak. | Medium |
 | `_i_am_done_gate` writes AC criteria status AFTER all gates pass but BEFORE `run_intent` | `dev.py:905` | `_write_criteria_status` runs in the gate phase; if `run_intent("i_am_done")` then raises, the AC status rows persist for a task that did not transition — a stale write the next attempt must overwrite. | Low |
