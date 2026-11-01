@@ -143,14 +143,20 @@ async def _call_diff() -> object:
     )
 
 
-@pytest.mark.parametrize("call", [_call_log, _call_diff], ids=["log", "diff"])
+@pytest.mark.parametrize(
+    ("call", "resolver"),
+    [(_call_log, "get_workspace"), (_call_diff, "tree_for_agent_read")],
+    ids=["log", "diff"],
+)
 async def test_reads_that_need_no_refresh_ask_for_none(
-    call: Callable[[], Awaitable[object]],
+    call: Callable[[], Awaitable[object]], resolver: str
 ) -> None:
     """``/api/git/log`` resolves its branch with its own fetch
     (``_resolve_head_ref``); ``/api/git/diff`` reads the working tree."""
+    tree = Path("/data/workspaces/p/t/a")
     git = MagicMock()
-    git.get_workspace = AsyncMock(return_value=Path("/data/workspaces/p/t/a"))
+    git.get_workspace = AsyncMock(return_value=tree)
+    git.tree_for_agent_read = AsyncMock(return_value=(tree, None))
     git._resolve_head_ref = AsyncMock(return_value="origin/feature/frontend/c3a63a00")
 
     async def _run_git(*_args: Any, **_kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -165,8 +171,9 @@ async def test_reads_that_need_no_refresh_ask_for_none(
     ):
         await call()
 
-    assert git.get_workspace.await_args is not None
-    assert git.get_workspace.await_args.kwargs == {"skip_refresh": True}
+    resolved = getattr(git, resolver).await_args
+    assert resolved is not None
+    assert resolved.kwargs == {"skip_refresh": True}
 
 
 async def test_evidence_inspection_fetches_only_its_branch(tmp_path: Path) -> None:

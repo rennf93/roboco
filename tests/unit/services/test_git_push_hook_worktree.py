@@ -132,7 +132,7 @@ async def test_without_an_attached_worktree_the_push_stays_in_the_clone_root(
     task = SimpleNamespace(id=uuid4(), branch_name=_BRANCH, project_id=uuid4())
     _git(clone, "branch", _BRANCH, "main")
 
-    tree = await GitService(MagicMock())._push_tree_for_task(clone, task)
+    tree = await GitService(MagicMock())._attached_task_tree(clone, task)
 
     assert tree == clone
     assert not (clone / ".worktrees").exists()

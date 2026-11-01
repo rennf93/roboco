@@ -18,6 +18,13 @@ class GitStatusResponse(BaseModel):
     """Git status response."""
 
     project_slug: str
+    task_id: UUID | None = Field(
+        default=None,
+        description=(
+            "The task whose worktree was read; null when the clone root was "
+            "read (the caller has no task)."
+        ),
+    )
     current_branch: str
     has_changes: bool
     staged_files: list[str] = []
@@ -112,6 +119,13 @@ class GitDiffResponse(BaseModel):
     """Git diff response."""
 
     project_slug: str
+    task_id: UUID | None = Field(
+        default=None,
+        description=(
+            "The task whose worktree was read; null when the clone root was "
+            "read (the caller has no task)."
+        ),
+    )
     staged: bool
     file_path: str | None = None
     diff: str

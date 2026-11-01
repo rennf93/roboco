@@ -166,7 +166,7 @@ async def test_status_success(git_client: dict) -> None:
     workspace = "/tmp/ws"
     with patch("roboco.api.routes.git.get_git_service") as mock_get:
         svc = AsyncMock()
-        svc.get_workspace = AsyncMock(return_value=workspace)
+        svc.tree_for_agent_read = AsyncMock(return_value=(workspace, None))
         svc.get_status = AsyncMock(return_value=("main", False, [], [], [], 0, 0))
         mock_get.return_value = svc
         response = await git_client["client"].get(
@@ -180,7 +180,7 @@ async def test_status_success(git_client: dict) -> None:
 async def test_status_validation_error(git_client: dict) -> None:
     with patch("roboco.api.routes.git.get_git_service") as mock_get:
         svc = AsyncMock()
-        svc.get_workspace = AsyncMock(side_effect=ValidationError("bad"))
+        svc.tree_for_agent_read = AsyncMock(side_effect=ValidationError("bad"))
         mock_get.return_value = svc
         response = await git_client["client"].get(
             f"/api/git/status?project_slug={git_client['project'].slug}",
@@ -193,7 +193,7 @@ async def test_status_validation_error(git_client: dict) -> None:
 async def test_status_unauthorized(git_client: dict) -> None:
     with patch("roboco.api.routes.git.get_git_service") as mock_get:
         svc = AsyncMock()
-        svc.get_workspace = AsyncMock(side_effect=UnauthorizedError("nope"))
+        svc.tree_for_agent_read = AsyncMock(side_effect=UnauthorizedError("nope"))
         mock_get.return_value = svc
         response = await git_client["client"].get(
             f"/api/git/status?project_slug={git_client['project'].slug}",
@@ -206,7 +206,7 @@ async def test_status_unauthorized(git_client: dict) -> None:
 async def test_status_not_found(git_client: dict) -> None:
     with patch("roboco.api.routes.git.get_git_service") as mock_get:
         svc = AsyncMock()
-        svc.get_workspace = AsyncMock(side_effect=NotFoundError("missing"))
+        svc.tree_for_agent_read = AsyncMock(side_effect=NotFoundError("missing"))
         mock_get.return_value = svc
         response = await git_client["client"].get(
             f"/api/git/status?project_slug={git_client['project'].slug}",
@@ -480,7 +480,7 @@ async def test_diff_basic(git_client: dict) -> None:
     stat_res = MagicMock(stdout="a.py | 2\nb.py | 4\n2 files changed\n")
     with patch("roboco.api.routes.git.get_git_service") as mock_get:
         svc = AsyncMock()
-        svc.get_workspace = AsyncMock(return_value="/tmp/ws")
+        svc.tree_for_agent_read = AsyncMock(return_value=("/tmp/ws", None))
         svc._run_git = AsyncMock(side_effect=[diff_res, stat_res])
         mock_get.return_value = svc
         response = await git_client["client"].get(
@@ -496,7 +496,7 @@ async def test_diff_staged_with_file(git_client: dict) -> None:
     stat_res = MagicMock(stdout="")
     with patch("roboco.api.routes.git.get_git_service") as mock_get:
         svc = AsyncMock()
-        svc.get_workspace = AsyncMock(return_value="/tmp/ws")
+        svc.tree_for_agent_read = AsyncMock(return_value=("/tmp/ws", None))
         svc._run_git = AsyncMock(side_effect=[diff_res, stat_res])
         mock_get.return_value = svc
         response = await git_client["client"].get(
@@ -511,7 +511,7 @@ async def test_diff_staged_with_file(git_client: dict) -> None:
 async def test_diff_service_error(git_client: dict) -> None:
     with patch("roboco.api.routes.git.get_git_service") as mock_get:
         svc = AsyncMock()
-        svc.get_workspace = AsyncMock(side_effect=NotFoundError("no ws"))
+        svc.tree_for_agent_read = AsyncMock(side_effect=NotFoundError("no ws"))
         mock_get.return_value = svc
         response = await git_client["client"].get(
             f"/api/git/diff?project_slug={git_client['project'].slug}",
@@ -524,17 +524,17 @@ async def test_diff_service_error(git_client: dict) -> None:
 async def test_diff_workspace_resolution_real_stall_returns_bounded_504(
     git_client: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """get_workspace genuinely stalls past a short bound -> 504 naming the
+    """Workspace resolution genuinely stalls past a short bound -> 504 naming the
     stalled stage, not a mocked exception."""
     monkeypatch.setattr(settings, "workspace_clone_timeout", 0.05)
 
-    async def _stall(*_args: object, **_kwargs: object) -> str:
+    async def _stall(*_args: object, **_kwargs: object) -> tuple[str, None]:
         await asyncio.sleep(0.3)
-        return "/tmp/ws"
+        return "/tmp/ws", None
 
     with patch("roboco.api.routes.git.get_git_service") as mock_get:
         svc = AsyncMock()
-        svc.get_workspace = _stall
+        svc.tree_for_agent_read = _stall
         mock_get.return_value = svc
         response = await git_client["client"].get(
             f"/api/git/diff?project_slug={git_client['project'].slug}",
@@ -558,7 +558,7 @@ async def test_diff_diff_stage_real_stall_returns_bounded_504(
 
     with patch("roboco.api.routes.git.get_git_service") as mock_get:
         svc = AsyncMock()
-        svc.get_workspace = AsyncMock(return_value="/tmp/ws")
+        svc.tree_for_agent_read = AsyncMock(return_value=("/tmp/ws", None))
         svc._run_git = _stall
         mock_get.return_value = svc
         response = await git_client["client"].get(
@@ -573,12 +573,14 @@ async def test_diff_diff_stage_real_stall_returns_bounded_504(
 async def test_diff_workspace_resolution_git_timeout_error_returns_bounded_504(
     git_client: dict,
 ) -> None:
-    """A real GitTimeoutError raised inside get_workspace (the internal
+    """A real GitTimeoutError raised inside workspace resolution (the internal
     _run_git subprocess bound, not asyncio.wait_for's own cancellation)
     still translates to the same stage-naming 504."""
     with patch("roboco.api.routes.git.get_git_service") as mock_get:
         svc = AsyncMock()
-        svc.get_workspace = AsyncMock(side_effect=GitTimeoutError("git clone", 30))
+        svc.tree_for_agent_read = AsyncMock(
+            side_effect=GitTimeoutError("git clone", 30)
+        )
         mock_get.return_value = svc
         response = await git_client["client"].get(
             f"/api/git/diff?project_slug={git_client['project'].slug}",
@@ -856,7 +858,7 @@ async def test_status_with_uuid(git_client: dict) -> None:
     """Pass a UUID string instead of slug — should look up by UUID."""
     with patch("roboco.api.routes.git.get_git_service") as mock_get:
         svc = AsyncMock()
-        svc.get_workspace = AsyncMock(return_value="/tmp/ws")
+        svc.tree_for_agent_read = AsyncMock(return_value=("/tmp/ws", None))
         svc.get_status = AsyncMock(return_value=("main", False, [], [], [], 0, 0))
         mock_get.return_value = svc
         response = await git_client["client"].get(
@@ -880,7 +882,7 @@ async def test_status_generic_service_error(git_client: dict) -> None:
 
     with patch("roboco.api.routes.git.get_git_service") as mock_get:
         svc = AsyncMock()
-        svc.get_workspace = AsyncMock(side_effect=CustomError("err"))
+        svc.tree_for_agent_read = AsyncMock(side_effect=CustomError("err"))
         mock_get.return_value = svc
         response = await git_client["client"].get(
             f"/api/git/status?project_slug={git_client['project'].slug}",

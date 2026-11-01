@@ -6,17 +6,20 @@ There is **no** "roboco_git_commit / _push / _create_pr / _merge_pr / _checkout"
 
 | Tool | Purpose |
 |------|---------|
-| `roboco_git_status` | View working tree status |
+| `roboco_git_status` | Status of your task's worktree |
 | `roboco_git_log` | View commit history |
 | `roboco_git_branch_list` | List branches |
-| `roboco_git_diff` | View changes |
+| `roboco_git_diff` | Changes in your task's worktree |
+
+You work in your task's worktree (`.worktrees/<task id[:8]>` in your clone), not in the clone root, which holds some other branch. `roboco_git_status` and `roboco_git_diff` read that worktree: the task you name with `task_id`, else your active task. Only when you have no task at all do they read the clone root. Their result's `task_id` says which task's worktree you are looking at (`null`: the clone root).
 
 ```python
 # project_slug is optional — omit it and your own project is used
 # (from this agent's environment). Pass it explicitly only to inspect
 # a different project than the one you're assigned to.
-status = roboco_git_status()
+status = roboco_git_status()            # your active task's worktree
 diff = roboco_git_diff()
+diff = roboco_git_diff(task_id="a1b2c3d4-...")  # a named task's worktree
 log = roboco_git_log(branch="feature/backend/a1b2c3d4")
 branches = roboco_git_branch_list()
 ```

@@ -107,19 +107,32 @@ _REBASE_ALLOWED_ROLES: frozenset[AgentRole] = frozenset(
 # =============================================================================
 
 
+_TASK_ID_HELP = (
+    "The task whose worktree to read. Omitted: the caller's active task; "
+    "the clone root only when there is none."
+)
+
+
 @router.get("/status", response_model=GitStatusResponse)
 async def get_git_status(
     db: DbSession,
     agent: CurrentAgentContext,
     project_slug: str = Query(...),
-    _task_id: str | None = Query(default=None),
+    task_id: str | None = Query(default=None, description=_TASK_ID_HELP),
+    legacy_task_id: str | None = Query(
+        default=None, alias="_task_id", include_in_schema=False
+    ),
 ) -> GitStatusResponse:
-    """Get git status for a project."""
+    """Git status of the caller's task worktree (``task_id``, else the active
+    task), or of its clone root when it has no task; ``task_id`` in the
+    response names the task whose worktree was read."""
     project_slug = await _resolve_project_slug(project_slug, db)
     git_service = get_git_service(db)
 
     try:
-        workspace = await git_service.get_workspace(project_slug, agent.agent_id)
+        workspace, read_task_id = await git_service.tree_for_agent_read(
+            project_slug, agent.agent_id, task_id or legacy_task_id
+        )
         (
             current_branch,
             has_changes,
@@ -134,6 +147,7 @@ async def get_git_status(
 
     return GitStatusResponse(
         project_slug=project_slug,
+        task_id=read_task_id,
         current_branch=current_branch,
         has_changes=has_changes,
         staged_files=staged,
@@ -281,13 +295,17 @@ async def list_branches(
 
 @router.get("/diff", response_model=GitDiffResponse)
 async def get_git_diff(
+    *,
     db: DbSession,
     agent: CurrentAgentContext,
     project_slug: str = Query(...),
     staged: bool = Query(default=False),
     file_path: str | None = Query(default=None),
+    task_id: str | None = Query(default=None, description=_TASK_ID_HELP),
 ) -> GitDiffResponse:
-    """Get git diff for a project."""
+    """Git diff of the caller's task worktree (``task_id``, else the active
+    task), or of its clone root when it has no task; ``task_id`` in the
+    response names the task whose worktree was read."""
     project_slug = await _resolve_project_slug(project_slug, db)
     git_service = get_git_service(db)
 
@@ -308,8 +326,10 @@ async def get_git_diff(
 
     try:
         # The working tree against the index: no origin ref is read.
-        workspace = await _bounded_git_stage(
-            git_service.get_workspace(project_slug, agent.agent_id, skip_refresh=True),
+        workspace, read_task_id = await _bounded_git_stage(
+            git_service.tree_for_agent_read(
+                project_slug, agent.agent_id, task_id, skip_refresh=True
+            ),
             timeout=settings.workspace_clone_timeout,
             stage="workspace resolution",
         )
@@ -325,6 +345,7 @@ async def get_git_diff(
 
     return GitDiffResponse(
         project_slug=project_slug,
+        task_id=read_task_id,
         staged=staged,
         file_path=file_path,
         diff=diff_result.stdout,

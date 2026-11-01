@@ -19,7 +19,7 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | roboco/api/routes/dashboard.py | CEO/auditor/kanban/metrics/agents/activity dashboards. |
 | roboco/api/routes/tasks.py | Task CRUD + lifecycle transitions (claim/start/verify/qa/complete...). |
 | roboco/api/routes/work_session.py | Work-session list/commit/files/PR/merge/complete/abandon. |
-| roboco/api/routes/git.py | Per-project git status/log/diff/commit/push/PR/rebase/branch-cleanup sweep. |
+| roboco/api/routes/git.py | Per-project git status/log/diff/commit/push/PR/rebase/branch-cleanup sweep. Status and diff read the caller's task worktree (`task_id`, legacy `_task_id`, else the active task; the clone root only without a task). |
 | roboco/api/routes/project.py | Project CRUD + workspace/sync/access + conventions. |
 | roboco/api/routes/product.py | Product CRUD. |
 | roboco/api/routes/optimal.py | RAG: kb/search, rag/query, mentor/ask, learnings, decisions, review. |

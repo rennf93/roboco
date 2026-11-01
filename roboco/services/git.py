@@ -230,6 +230,16 @@ _GIT_EXECUTOR = ThreadPoolExecutor(
 # only a genuinely slow op (>5s) is worth a warning.
 _SLOW_GIT_OP_MS = 5000.0
 
+
+def _task_uuid(task_ref: str) -> UUID:
+    """A task id given to a route as text; ``ValidationError`` when it is
+    not a UUID."""
+    try:
+        return UUID(task_ref)
+    except ValueError as exc:
+        raise ValidationError(f"task_id {task_ref!r} is not a task UUID") from exc
+
+
 # git's message when a fetch names a ref origin does not have; it then
 # aborts the whole fetch, the other named refs included.
 _MISSING_REMOTE_REF = "couldn't find remote ref"
@@ -962,15 +972,77 @@ class GitCommits(_Base):
         )
         return worktree
 
-    async def _push_tree_for_task(self, clone_root: Path, task: Any) -> Path:
-        """Where a push of ``task``'s branch starts: its worktree when that is
-        attached in ``clone_root`` on the task branch, else the clone root.
+    async def tree_for_agent_read(
+        self,
+        project_slug: str,
+        agent_id: UUID,
+        task_ref: str | None,
+        *,
+        skip_refresh: bool = False,
+    ) -> tuple[Path, UUID | None]:
+        """The tree an agent's read of "its workspace" shows (``/api/git/status``,
+        ``/api/git/diff``), and the task whose worktree it is (None: the clone
+        root).
 
-        git runs ``pre-push`` where the push starts, so a push started in the
-        clone root ran the clone root's hook against the clone root's tree,
-        not the commits being pushed. A push never re-adds a pruned worktree
-        (a missing local branch would be cut from ``origin/HEAD`` there); it
-        keeps the clone root and its push-by-name recovery instead.
+        Under F123 the agent's work is in a task worktree, not the clone
+        root. The task is ``task_ref`` when given, else the caller's active
+        task (``TaskService.get_active_task_for_agent``, as the gateway's
+        ``commit`` resolves it); with neither, or a task without a branch,
+        the clone root. The caller's own task gets its worktree re-attached
+        when pruned, as the commit path does; anyone else's is read only if
+        this clone already has it attached (a read adds no worktree).
+        """
+        clone_root = await self.get_workspace(
+            project_slug, agent_id, skip_refresh=skip_refresh
+        )
+        task = await self._task_for_agent_read(project_slug, agent_id, task_ref)
+        if task is None:
+            return clone_root, None
+        if task.assigned_to == agent_id:
+            worktree = self._worktree_for_task(clone_root, require_uuid(task.id))
+            await self._ensure_worktree_for_commit(
+                clone_root, worktree, str(task.branch_name), project_slug
+            )
+            return worktree, require_uuid(task.id)
+        tree = await self._attached_task_tree(clone_root, task)
+        return tree, (require_uuid(task.id) if tree != clone_root else None)
+
+    async def _task_for_agent_read(
+        self, project_slug: str, agent_id: UUID, task_ref: str | None
+    ) -> Any | None:
+        """The named task (``NotFoundError`` when missing, ``ValidationError``
+        when it is not a task UUID or belongs to another project), else the
+        caller's active task in this project; None without a branch."""
+        task_service = get_task_service(self.session)
+        if task_ref:
+            task = await task_service.get(_task_uuid(task_ref))
+            if task is None:
+                raise NotFoundError(resource_type="Task", resource_id=task_ref)
+        else:
+            task = await task_service.get_active_task_for_agent(agent_id)
+        if task is None or not task.branch_name:
+            return None
+        project = await self._project_for_task(task)
+        if project is not None and project.slug == project_slug:
+            return task
+        if task_ref:
+            raise ValidationError(
+                f"task {task_ref} does not belong to project {project_slug!r}"
+            )
+        return None
+
+    async def _attached_task_tree(self, clone_root: Path, task: Any) -> Path:
+        """``task``'s worktree when ``git worktree list`` shows it attached in
+        ``clone_root`` on the task branch, else the clone root. No side
+        effect: nothing is added or re-added.
+
+        A push of the task's branch starts there (git runs ``pre-push`` where
+        the push starts, so from the clone root it ran the clone root's hook
+        against another branch's tree; a push never re-adds a pruned
+        worktree, since a missing local branch would be cut from
+        ``origin/HEAD`` there, and keeps the clone root's push-by-name
+        recovery instead). A read of a task the caller does not own reads it
+        too (``tree_for_agent_read``).
         """
         worktree = self._worktree_for_task(clone_root, require_uuid(task.id))
         listed = await self._run_git(
@@ -1956,7 +2028,7 @@ class GitCheckoutPush(_Base):
             workspace = await self.get_workspace(data.project_slug, agent_id)
             # Push the task's branch BY NAME, not the current checkout — the
             # shared clone is often parked on a later task's branch by now.
-            tree = await self._push_tree_for_task(workspace, task)
+            tree = await self._attached_task_tree(workspace, task)
             return await self.push(tree, force, branch=str(task.branch_name))
         workspace = await self.get_workspace(data.project_slug, agent_id)
         return await self.push(workspace, force)
@@ -1989,7 +2061,7 @@ class GitCheckoutPush(_Base):
         # the locally-committed work never reached origin → open_pr then saw
         # "No commits between" (origin branch empty/missing). The local task
         # branch ref carries the commits; push it by name.
-        tree = await self._push_tree_for_task(workspace, task)
+        tree = await self._attached_task_tree(workspace, task)
         _branch, pushed = await self.push(tree, branch=str(task.branch_name))
         return pushed
 
@@ -5003,7 +5075,7 @@ class GitAgentWorkspace(_Base):
         tree = (
             workspace
             if task is None
-            else await self._push_tree_for_task(workspace, task)
+            else await self._attached_task_tree(workspace, task)
         )
         return await self.push(tree, branch=branch_name)
 
