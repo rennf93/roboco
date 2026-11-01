@@ -28,7 +28,27 @@ web_fetch(url="https://example.com/pricing", max_chars=5000)
 | `url` | yes | The page to extract readable content from. |
 | `max_chars` | no | Cap on returned characters, clamped server-side to `ROBOCO_RESEARCH_FETCH_MAX_CHARS` (default 20000). |
 
-Works with Tavily and Exa (remote extraction endpoints) and with SearXNG, which downloads the page server-side and extracts readable text locally (trafilatura); the response's `truncated` field tells you whether the content was cut at the cap. Brave has no extraction path; calling `web_fetch` against it returns a "does not support web_fetch" error (HTTP 501 at the route, surfaced as an error envelope to the tool). SearXNG's local fetch refuses URLs that are not plain http(s) resolving to a public address, so it can never be aimed at the deployment's internal services.
+Works with Tavily and Exa (remote extraction endpoints) and with SearXNG, which downloads the page server-side and extracts readable text locally (trafilatura); the response's `truncated` field tells you whether the content was cut at the cap. Brave has no extraction path; calling `web_fetch` against it returns a "does not support web_fetch" error (HTTP 501 at the route, surfaced as an error envelope to the tool). SearXNG's local fetch refuses URLs that are not plain http(s) resolving to a public address, so it can never be aimed at the deployment's internal services (HTTP 400, see [Errors](#errors-who-refused-and-why)).
+
+## Errors: who refused and why
+
+A failed `web_search` or `web_fetch` comes back as an error envelope: `details.status` is the HTTP status and `details.detail` carries the message. The message names the party that failed the call and why, and the status tells you which party it was:
+
+| Status | Who failed the call | Message shape | What to do |
+|--------|---------------------|---------------|------------|
+| 424 | The target site of a SearXNG `web_fetch` (SearXNG downloads the page itself) | `Site <host> answered HTTP <code> <phrase> to the page fetch of <url> (<reason>).` or `No answer from site <host> to the page fetch of <url>: <ExceptionKind>: <detail>.` | The page cannot be fetched this way: find the information in another source. When the message says it is a bot-check (challenge) page, the site blocks automated fetches, so retrying the same URL will not help. |
+| 502 | The research provider: SearXNG, Tavily, Brave or Exa | `Research provider <name> answered HTTP <code> <phrase> to <METHOD> <endpoint> (<reason>).`, `... with HTTP 200 OK but a body that is not a JSON object (...)`, or `No answer from research provider <name> to <METHOD> <endpoint>: <ExceptionKind>: <detail>.` | Nothing is wrong with your query or URL: retry later, or proceed without external sources. Tavily and Exa download pages through their own API, so a failed `web_fetch` through them is a provider failure too. |
+| 400 | RoboCo's URL guard | `RoboCo's URL guard refused '<url>': <why>.` (or `request blocked by security policy` from the route's own filter) | The URL is not plain http(s) to a public host: fix the URL. |
+| 501 | Nobody: the provider has no such operation | `brave does not support web_fetch` | Brave has no `web_fetch`; use `web_search` results instead. |
+| 429 | Your daily quota | see [Daily quota](#daily-quota) | Wait for the UTC reset. |
+
+`<reason>` is the page `<title>` when the response has one, else its first readable text cut to one short line, and never raw HTML. A response is a bot-check page when it carries a challenge header (Cloudflare's `cf-mitigated: challenge`, AWS WAF's `x-amzn-waf-action: challenge` or `captcha`, Vercel's `x-vercel-mitigated: challenge`) or the title "Vercel Security Checkpoint". A challenge page is a refusal even when its status is 2xx: AWS WAF's challenge answers 202.
+
+A site that answered 403 with Vercel's Security Checkpoint page reads:
+
+```text
+Site app.example.com answered HTTP 403 Forbidden to the page fetch of https://app.example.com/pricing (page title: Vercel Security Checkpoint). This is Vercel's bot-check (challenge) page: the site blocks automated fetches, so get this information from another source.
+```
 
 ## Self-hosted provider (SearXNG, the default)
 
