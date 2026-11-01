@@ -7131,8 +7131,8 @@ The Choreographer is the server-side composition layer that turns agent intent-v
 | `i_am_done` | async verb | `dev.py:777` | Dev pre-submit; runs `_i_am_done_gate` then `run_intent("i_am_done")`. |
 | `_i_am_done_gate` | async helper | `dev.py:905` | Ordered gate chain: tracing → submit_qa fields → push → behind_base → quality → toolchain → conventions; then write AC status. |
 | `_behind_base_gate` | async helper | `_impl.py:2483` | Refuse submit when branch behind its base (sibling PR merged); fail-open on git error. |
-| `_toolchain_broken_guard` | async helper | `_impl.py:5408` | Block delivery gate when agent workspace can't run suite; `reviewer=True` for `pr_pass`. |
-| `_conventions_guard` | async helper | `_impl.py:5512` | Run architectural-conventions validator; `block` finding refuses gate. |
+| `_toolchain_broken_guard` | async helper | `_impl.py:5436` | Block delivery gate when agent workspace can't run suite; `reviewer=True` for `pr_pass`. |
+| `_conventions_guard` | async helper | `_impl.py:5540` | Run architectural-conventions validator; `block` finding refuses gate. |
 | `_pm_task_type_error` | static method | `pm.py:455` | Reject a code/non-planning task_type delegated to a PM (cell or main); extracted from `_validate_assignee_task_type` to keep that dispatcher under complexity budget. |
 | `i_am_blocked` | async verb | `_impl.py:3071` | Rate-limit parking vs generic block; `run_intent("i_am_blocked")`. |
 | `_handle_rate_limited_parking` | async helper | `_impl.py:2967` | Park provider on 429/overload/session-limit. |
@@ -7141,6 +7141,7 @@ The Choreographer is the server-side composition layer that turns agent intent-v
 | `resume` | async verb | `_impl.py:3753` | Resume paused/blocked task. |
 | `sync_branch` | async verb | `_impl.py:2642` | Gate-level rebase verb (new since baseline). |
 | `i_am_idle` | async verb | `_impl.py:4304` | Idle signal; auto-pause in_progress tasks; pending-assignment / PM review / auditor guards. |
+| `_held_work_refuses_new_claims` | async method | `_impl.py:4721` | i_am_idle's pending-assignment guard never demands a claim the caller's own claim verb refuses for held work: a non-coordinator holding any task `held_task_blocking_claim` names (claimed, in_progress, verifying, blocked or escalated away, paused) may idle with pending work queued (live 2026-10-28 be-dev-1, two paused tasks: refused to claim at 06:46:09 and to idle at 06:46:46). Coordinators still plan a pending root first. |
 | `i_will_plan` | async verb | `_impl.py:2197` | PM plan verb; `_pm_sub_tasks_gate` enforces substantive approach/sub_tasks. |
 | `delegate` | async verb | `pm.py:57` | PM creates subtask; sizing, sibling-dedup, spine-cap, lifecycle guards; `_create_subtask_from_inputs`. |
 | `submit_up` | async verb | `pm.py:1567` | Cell PM opens cell→root PR + enters `awaiting_pr_review`; unchanged-PR guard. |

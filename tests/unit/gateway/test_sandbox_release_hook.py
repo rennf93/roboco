@@ -265,6 +265,7 @@ async def test_i_am_idle_success_releases_sandbox(
     task_svc = AsyncMock()
     task_svc.list_assigned_for_agent.return_value = []
     task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.held_task_blocking_claim.return_value = None
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
     release = AsyncMock()
@@ -305,6 +306,7 @@ async def test_i_am_idle_guard_rejection_does_not_release_sandbox(
     task_svc = AsyncMock()
     task_svc.list_assigned_for_agent.return_value = [pending]
     task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.held_task_blocking_claim.return_value = None
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
     release = AsyncMock()

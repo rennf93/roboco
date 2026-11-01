@@ -1403,6 +1403,7 @@ async def test_pending_assignment_guard_still_blocks_developer() -> None:
     task_svc.agent_for.return_value = MagicMock(
         role="developer", team="backend", slug=None
     )
+    task_svc.held_task_blocking_claim.return_value = None
     c = Choreographer(_make_deps(task=task_svc))
     guard = await c._pending_assignment_guard(uuid4(), {})
     assert guard is not None
@@ -1441,10 +1442,74 @@ async def test_pending_assignment_guard_allows_idle_when_claim_blocked() -> None
     task_svc.agent_for.return_value = MagicMock(
         role="developer", team="backend", slug=None
     )
+    task_svc.held_task_blocking_claim.return_value = None
     task_svc.is_pending_claim_blocked.return_value = True
     c = Choreographer(_make_deps(task=task_svc))
     assert await c._pending_assignment_guard(uuid4(), {}) is None
     task_svc.is_pending_claim_blocked.assert_awaited_once_with(held.id)
+
+
+# A work author's i_will_work_on is refused while it still holds another
+# unfinished task (claimed, in_progress, verifying, blocked or escalated away,
+# paused), but the guard only excused claimed/in_progress holders. Live
+# 2026-10-28 be-dev-1, holding paused f5d66db6 and 11a83407: 06:46:09
+# i_will_work_on refused "You have 2 paused task(s); resume before claiming new
+# work", 06:46:46 i_am_idle refused "You have task ec0b4a38... assigned but
+# never claimed", 06:46:53 the same for 095e3b7c. Refused to act and to exit.
+
+
+def _idle_guard_choreographer(
+    role: str, assigned: list[Any], held: Any | None
+) -> tuple[Choreographer, AsyncMock]:
+    task_svc = AsyncMock()
+    task_svc.list_assigned_for_agent.return_value = assigned
+    task_svc.agent_for.return_value = MagicMock(role=role, team="backend", slug=None)
+    task_svc.held_task_blocking_claim.return_value = held
+    task_svc.is_pending_claim_blocked.return_value = False
+    return Choreographer(_make_deps(task=task_svc)), task_svc
+
+
+def _held_task(status: str) -> MagicMock:
+    return MagicMock(id=uuid4(), status=status, parent_task_id=None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("held_status", ["paused", "verifying", "blocked"])
+async def test_pending_assignment_guard_lets_a_developer_holding_work_idle(
+    held_status: str,
+) -> None:
+    held = _held_task(held_status)
+    pending = _held_task("pending")
+    c, task_svc = _idle_guard_choreographer("developer", [held, pending], held)
+
+    assert await c._pending_assignment_guard(uuid4(), {}) is None
+    task_svc.held_task_blocking_claim.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pending_assignment_guard_counts_work_escalated_away() -> None:
+    """A task escalated to the PM is no longer assigned to the developer but is
+    still its held work (pre_block_assignee), so the exit stays open."""
+    escalated = _held_task("blocked")
+    pending = _held_task("pending")
+    c, _ = _idle_guard_choreographer("developer", [pending], escalated)
+
+    assert await c._pending_assignment_guard(uuid4(), {}) is None
+
+
+@pytest.mark.asyncio
+async def test_pending_assignment_guard_still_sends_a_coordinator_to_plan() -> None:
+    """A PM coordinator holds many roots by design and its i_will_plan is never
+    refused for held work, so a pending root it owns is a claim it can make."""
+    paused = _held_task("paused")
+    pending = _held_task("pending")
+    c, task_svc = _idle_guard_choreographer("cell_pm", [paused, pending], paused)
+
+    guard = await c._pending_assignment_guard(uuid4(), {})
+
+    assert guard is not None
+    assert "i_will_plan" in guard.as_dict()["remediate"]
+    task_svc.held_task_blocking_claim.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

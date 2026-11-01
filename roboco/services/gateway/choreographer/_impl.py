@@ -4685,6 +4685,9 @@ class IdleGuardsMixin(_Base):
           enforces). Demanding a claim the gate will refuse is the same
           "gate A refuses action, gate B refuses exit" trap as the dev's
           lane-held leaf below (be-dev-2's idle refusal, 2026-09-27).
+        - A work author still holds other unfinished work (paused, verifying,
+          blocked or escalated away): its claim is refused for that work
+          (``_held_work_refuses_new_claims``).
         """
         assigned = await self.task.list_assigned_for_agent(agent_id)
         pending = [t for t in assigned if str(t.status) == "pending"]
@@ -4695,6 +4698,8 @@ class IdleGuardsMixin(_Base):
         agent = await self.task.agent_for(agent_id)
         pending = await self._pending_blocking_idle(agent, pending)
         if not pending:
+            return None
+        if await self._held_work_refuses_new_claims(agent_id, agent, pending[0]):
             return None
         claimable = await self._claimable_pending(pending)
         if not claimable:
@@ -4712,6 +4717,29 @@ class IdleGuardsMixin(_Base):
             ),
             context_briefing=briefing,
         )
+
+    async def _held_work_refuses_new_claims(
+        self, agent_id: UUID, agent: Any, pending_task: Any
+    ) -> bool:
+        """True when the caller's own claim verb would be refused for work it
+        still holds, so demanding that claim before idling is a dead end.
+
+        A non-coordinator's ``i_will_work_on`` runs ``already_active_guard`` and
+        ``paused_tasks_guard`` (``TaskService.held_task_blocking_claim``): any
+        claimed, in_progress, verifying, blocked, escalated-away or paused task
+        it holds refuses the claim. The guard above only excused claimed and
+        in_progress holders (live 2026-10-28 be-dev-1, holding two paused
+        tasks: i_will_work_on refused at 06:46:09, i_am_idle refused at
+        06:46:46 and 06:46:53). Its way out is the lifecycle's own: it idles,
+        the dispatcher resumes its paused work or its PM unblocks the blocked
+        one, and the pending task is dispatched to it after that. A
+        coordinator's ``i_will_plan`` is never refused for held work, so a
+        pending root still has to be planned before it idles.
+        """
+        if agent is not None and str(agent.role) in self._COORDINATOR_ROLES:
+            return False
+        held = await self.task.held_task_blocking_claim(agent_id, pending_task.id)
+        return held is not None
 
     async def _claimable_pending(self, pending: list[Any]) -> list[Any]:
         """Pending tasks the claim gate would actually admit right now: a leaf
