@@ -222,3 +222,14 @@ jobs:
       - name: Run quality gate
         if: steps.paths.outputs.relevant == 'true'
         run: make quality
+
+      - name: Hold the PR's changed files to the conventions' block-level rules
+        # Armed deployments' i_am_done / pr_pass already refuse a block-level
+        # finding (.roboco/conventions.yml); this holds every pull request, a
+        # person's included, to the same rules on the files it changes.
+        if: steps.paths.outputs.relevant == 'true' && github.event_name == 'pull_request'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          mapfile -t files < <(git diff --name-only --diff-filter=d "origin/${BASE_REF}...HEAD" -- '*.py' '*.ts' '*.tsx')
+          uv run python -m roboco.conventions check --root . --fail-on block --files "${files[@]}"

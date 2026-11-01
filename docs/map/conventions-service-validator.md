@@ -13,7 +13,7 @@ The per-project architectural-conventions standard for RoboCo: a service layer (
 | `roboco/services/docs.py` | `DocsService` — write/read/list/delete docs, RAG dedup, commit doc to repo, path-traversal containment | 825 |
 | `roboco/services/_docs_service_types.py` | `DocsServiceSelf`, a TYPE_CHECKING-only Protocol declaring the attributes the `DocsService` mixins read through `self` (no moved body calls across classes, so it has no `<Class>Surface` yet); `tests/unit/services/test_docs_service_mixins.py` fails on a stray stub or a member defined twice | 28 |
 | `roboco/conventions/__init__.py` | Package public API re-exports (`run`, `Finding`, `check_*`, `get_parser`, `GrammarUnavailable`, `ValidatorCouldNotRun`) | 30 |
-| `roboco/conventions/__main__.py` | argparse CLI entrypoint (`check --root <dir> --files ...`), JSONL output, exit-0/exit-3 fail-loud | 69 |
+| `roboco/conventions/__main__.py` | argparse CLI entrypoint (`check --root <dir> --files ... [--fail-on block]`), JSONL output, exit-0/exit-3 fail-loud; `--fail-on block` exits 1 on any block-level finding (CI's conventions step) | 81 |
 | `roboco/conventions/runner.py` | `run()` orchestrator: per-file dispatch by suffix, waiver filtering, `ValidatorCouldNotRun` on grammar failure | 107 |
 | `roboco/conventions/findings.py` | `Finding` frozen dataclass + `as_json()` (one JSONL line) | 27 |
 | `roboco/conventions/grammars.py` | Lazy cached tree-sitter parser construction per language; `GrammarUnavailable` | 57 |
@@ -52,9 +52,9 @@ The per-project architectural-conventions standard for RoboCo: a service layer (
 | `ScaffoldResult` | dataclass | `services/conventions.py:66` | Outcome of a scaffold/restore: pr_number, branch, created |
 | `ConventionsHealth` | dataclass | `services/conventions.py:75` | status, head_sha, last_ok_sha |
 | `get_conventions_service` | fn | `services/conventions.py:597` | Construct `ConventionsService(session)` |
-| `main` | fn | `conventions/__main__.py:57` | argparse CLI entrypoint; returns exit code |
-| `_run_check` | fn | `conventions/__main__.py:42` | Load file+scan, build effective map, run validator, print JSONL |
-| `_fail` | fn | `conventions/__main__.py:37` | Emit `{"error": ...}` on stderr + return exit 3 |
+| `main` | fn | `conventions/__main__.py:63` | argparse CLI entrypoint; returns exit code |
+| `_run_check` | fn | `conventions/__main__.py:46` | Load file+scan, build effective map, run validator, print JSONL; with `fail_on`, exit 1 when any finding is at that level |
+| `_fail` | fn | `conventions/__main__.py:41` | Emit `{"error": ...}` on stderr + return exit 3 |
 | `run` | fn | `conventions/runner.py:42` | Check a file list under root against a standard; prepends language-scope findings then applies waivers |
 | `_language_scope_findings` | fn | `conventions/runner.py:55` | Emit warn findings for custom rules scoped to unrecognized languages (typo guard, #129) |
 | `_check_file` | fn | `conventions/runner.py:78` | Read + classify + run all check families for one file |
@@ -264,6 +264,8 @@ No other logic-touching commits in the range.
 > **2026-10-31** (Planning trail #51, wave 3): `ConventionsService` splits in place into a mixin in `conventions.py`, every method body byte-identical: `ConventionsMapResolution` (13). `ConventionsService` keeps its public surface (`get_map`, the infra globs, baseline constraints, the ambient block, `scaffold`, `restore`, `commit_standard`, `health`, recording and reading findings), composes it, and is no longer a god class. Rows naming `ConventionsService.<method>` still hold through inheritance. The mixin's TYPE_CHECKING-only base is `ConventionsServiceSelf` (`roboco/services/_conventions_service_types.py`).
 
 > **2026-10-31** (Planning trail #51, wave 3): `DocsService` splits in place into 2 mixins in `docs.py`, every method body byte-identical: `DocsFiles` (5), `DocsRecords` (4). `DocsService` keeps the doc flow itself: writing (deduplicated against RAG, then committed into the project's clone, with new and updated docs), reading, listing and deleting, composes them, and is no longer a god class. Rows naming `DocsService.<method>` still hold through inheritance. Each mixin's TYPE_CHECKING-only base is `DocsServiceSelf` (`roboco/services/_docs_service_types.py`).
+
+> **2026-11-01** (Planning trail #51, last step): with no class over 15 methods left, RoboCo's `.roboco/conventions.yml` promotes `god_class` from warn to block (the shipped default in `scan.py` stays warn for other projects). The CLI gains `--fail-on block` (exit 1 on any block-level finding), and CI's `ci` job gains a step that runs it on each pull request's changed `.py`/`.ts`/`.tsx` files, so a person's PR is held to the block-level rules too, not only an armed agent's `i_am_done` / `pr_pass`.
 > - `conventions/custom.py` (+14 lines): added `_KNOWN_LANGUAGES` frozenset and `unrecognized_rule_languages()` — surfaces typo language tags on custom rules.
 > - `conventions/runner.py` (+28 lines): imported `Finding` directly (not TYPE_CHECKING); added `_LANGUAGE_SCOPE_RULE`/`_LANGUAGE_SCOPE_FILE` constants and `_language_scope_findings()` helper; `run()` now prepends language-scope warn findings before per-file dispatch.
 > - `conventions/modularity.py` (+2 lines): added `"stream"` and `"stream_scalars"` to `_DB_METHODS` (SA 2.0 streaming gap, #35).
