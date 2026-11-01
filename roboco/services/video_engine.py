@@ -21,12 +21,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
-import httpx
-
 from roboco.config import settings
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
+from roboco.services.background_llm import BackgroundPrompt, generate_background_text
 from roboco.services.base import BaseService
 from roboco.services.company_goals import get_company_goals_service
 from roboco.services.heartbeat_mutex import HeartbeatLockUnavailable, HeartbeatMutex
@@ -108,28 +107,16 @@ _MOTION_DESIGN_POINTER = (
 
 
 async def _chat(prompt: str) -> str | None:
-    """One local-LLM chat call (OpenAI-compatible); None on a non-success.
-
-    Mirrors XEngine's identical helper, duplicated locally (rather than
-    imported) so video_engine doesn't reach into another service's private
-    internals."""
-    async with httpx.AsyncClient(timeout=_CHAT_TIMEOUT_SECONDS) as client:
-        resp = await client.post(
-            f"{settings.local_llm_base_url}/chat/completions",
-            json={
-                "model": settings.local_llm_model,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 200,
-            },
+    """One background-LLM call for a voiceover script; None when no backend
+    answered."""
+    return await generate_background_text(
+        BackgroundPrompt(
+            purpose="video_engine.script",
+            user_prompt=prompt,
+            max_tokens=200,
+            timeout_seconds=_CHAT_TIMEOUT_SECONDS,
         )
-        if not resp.is_success:
-            return None
-        data = resp.json()
-        choices = data.get("choices") or []
-        if not choices:
-            return None
-        content = choices[0].get("message", {}).get("content")
-        return content if isinstance(content, str) else None
+    )
 
 
 def _changelog_highlights(changelog: str) -> list[str]:
@@ -147,7 +134,7 @@ def _changelog_highlights(changelog: str) -> list[str]:
 
 def _first_changelog_bullet(changelog: str) -> str:
     """First CHANGELOG bullet's text, or "" if none — the fallback template's
-    headline when the local model is unavailable."""
+    headline when no background-LLM backend answers."""
     highlights = _changelog_highlights(changelog)
     return highlights[0] if highlights else ""
 
@@ -557,7 +544,7 @@ class VideoEngine(BaseService):
         exemption.
 
         The brief is the structured changelog block (built independent of
-        the local model, so it stands even when the model is down); the
+        the background LLM, so it stands even when no model answers); the
         LLM-drafted (or template-fallback) one-liner is only the ``script``
         prop suggestion, never the whole brief.
         """
@@ -628,7 +615,7 @@ class VideoEngine(BaseService):
             draft = await _chat(_release_video_prompt(version, changelog, product_name))
         except Exception as exc:
             self.log.warning(
-                "video-engine: local-model script draft failed (fallback template)",
+                "video-engine: background-LLM script draft failed (fallback template)",
                 error=str(exc),
             )
             draft = None

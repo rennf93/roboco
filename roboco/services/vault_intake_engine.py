@@ -14,15 +14,16 @@ the held-artifact pattern:
   ``approve_and_start`` hands it to the Main PM. Board dispatch only ever
   spawns the advisory REVIEW; board roles have no verb to claim, plan, or
   delegate, so the CEO gate is structural.
-* **Local model only.** Extraction runs on the local LLM (MemoryDistiller
-  posture) with a deterministic fallback (first heading / raw body /
-  checkbox lines) on any failure — never a cloud LLM in the hot path. The
-  note body is screened (``foundation.policy.injection_guard.
-  screen_external_text``, the same guard x_engine applies to mention text)
-  before it reaches the prompt or the fallback extraction, so neither the
-  local model nor the eventual board/CEO-facing draft carries raw
-  unscreened text — the board + CEO gates downstream remain the
-  containment for anything the screen doesn't catch.
+* **Background LLM.** Extraction runs on the background LLM client
+  (``roboco.services.background_llm``, MemoryDistiller posture: the active
+  provider's cheap model) with a deterministic fallback (first heading /
+  raw body / checkbox lines) when no backend answers. The note body is
+  screened (``foundation.policy.injection_guard.screen_external_text``, the
+  same guard x_engine applies to mention text) before it reaches the prompt
+  or the fallback extraction, so neither the model nor the eventual
+  board/CEO-facing draft carries raw unscreened text — the board + CEO
+  gates downstream remain the containment for anything the screen doesn't
+  catch.
 * **Dedup ledger.** ``vault_seen_notes`` keys on (vault-relative path,
   content hash) so an unchanged note is never reprocessed, but an edited one
   is eligible again. The hash excludes RoboCo's own feedback callout so
@@ -38,7 +39,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
-import httpx
 from sqlalchemy import select
 
 from roboco.config import settings
@@ -51,6 +51,7 @@ from roboco.foundation.policy.injection_guard import (
 from roboco.foundation.policy.vault_notes import content_hash as _content_hash
 from roboco.foundation.policy.vault_notes import split_frontmatter as _split_frontmatter
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
+from roboco.services.background_llm import BackgroundPrompt, generate_background_text
 from roboco.services.base import BaseService
 from roboco.services.project import get_project_service
 from roboco.services.task import VAULT_NOTE_SOURCE, TaskCreateRequest, get_task_service
@@ -103,7 +104,7 @@ class _NoteExtraction:
 
 
 def _deterministic_extract(body: str, fallback_title: str) -> _NoteExtraction:
-    """Local-model-failure fallback: first heading, raw body, checkbox lines."""
+    """No-LLM-answer fallback: first heading, raw body, checkbox lines."""
     heading = _HEADING_RE.search(body)
     title = heading.group(1).strip() if heading else fallback_title
     action_items = [m.group(1).strip() for m in _CHECKBOX_RE.finditer(body)]
@@ -122,28 +123,20 @@ def _extraction_prompt(body: str) -> str:
 
 
 async def _chat(prompt: str) -> str | None:
-    """One local-LLM chat call (OpenAI-compatible); None on a non-success."""
-    async with httpx.AsyncClient(timeout=_CHAT_TIMEOUT_SECONDS) as client:
-        resp = await client.post(
-            f"{settings.local_llm_base_url}/chat/completions",
-            json={
-                "model": settings.local_llm_model,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 400,
-            },
+    """One background-LLM call for a note extraction; None when no backend
+    answered."""
+    return await generate_background_text(
+        BackgroundPrompt(
+            purpose="vault_intake.extraction",
+            user_prompt=prompt,
+            max_tokens=400,
+            timeout_seconds=_CHAT_TIMEOUT_SECONDS,
         )
-        if not resp.is_success:
-            return None
-        data = resp.json()
-        choices = data.get("choices") or []
-        if not choices:
-            return None
-        content = choices[0].get("message", {}).get("content")
-        return content if isinstance(content, str) else None
+    )
 
 
 def _parse_extraction(raw: str) -> _NoteExtraction | None:
-    """Parse the local model's JSON reply; None on any malformed shape."""
+    """Parse the model's JSON reply; None on any malformed shape."""
     cleaned = raw.strip()
     if cleaned.startswith("```"):
         cleaned = cleaned.strip("`").removeprefix("json").strip()
@@ -264,8 +257,9 @@ class VaultIntakeEngine(BaseService):
                 route=prefilter.route,
             )
             return None
-        # Released right before the local-LLM chat call below (up to
-        # _CHAT_TIMEOUT_SECONDS=60s of HTTP IO), per note - not once for the
+        # Released right before the background-LLM call below (up to
+        # _CHAT_TIMEOUT_SECONDS=60s per backend, twice that when Ollama falls
+        # back to Claude Haiku), per note - not once for the
         # whole cycle, so the hold never accumulates across a multi-note
         # batch. Mirrors content_actions.evidence()'s pool-release commit
         # (2026-07-29 pool-exhaustion incident).
@@ -312,7 +306,7 @@ class VaultIntakeEngine(BaseService):
             raw = await _chat(_extraction_prompt(screened_body))
         except Exception as exc:
             self.log.warning(
-                "vault-intake: local-model extraction failed (fallback)",
+                "vault-intake: background-LLM extraction failed (fallback)",
                 error=str(exc),
             )
             raw = None
@@ -361,7 +355,8 @@ class VaultIntakeEngine(BaseService):
                 project_id=project_id,
                 status=TaskStatus.PENDING,
                 source=VAULT_NOTE_SOURCE,
-                confirmed_by_human=True,  # board-routed; approve_and_start is the gate
+                # Board-routed: approve_and_start is the gate
+                confirmed_by_human=True,
             )
         )
         markers.set_vault_note_ref(

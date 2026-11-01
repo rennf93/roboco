@@ -1,5 +1,11 @@
 """
-Unit tests for rate-limit retry behaviour across all LLM call sites.
+Unit tests for rate-limit retry behaviour in the Ollama embedder and the
+Anthropic extraction call.
+
+The text-generation call sites (index ``ask``, the Mentor, the validator) no
+longer retry HTTP 429 themselves: they go through the background LLM client,
+which falls back from Ollama to Claude Haiku instead (see
+tests/unit/services/test_background_llm*.py).
 
 Covers acceptance criteria:
 - 5-retry exhaustion raises RateLimitError
@@ -24,23 +30,17 @@ import pytest
 # Module imports
 # ---------------------------------------------------------------------------
 from roboco.models.extraction import ExtractionContext
-from roboco.models.optimal import IndexType
 from roboco.services.exceptions import (
     MAX_RATE_LIMIT_RETRIES,
     RateLimitError,
     parse_retry_after_header,
 )
 from roboco.services.extraction import ExtractionService
-from roboco.services.optimal_brain.indexes.journals import (
-    JournalsIndexPlugin,
-)
-from roboco.services.optimal_brain.mentor import MentorService
 from roboco.services.optimal_brain.ollama_embedder import (
     MAX_RETRIES,
     OllamaConnectionError,
     OllamaEmbedder,
 )
-from roboco.services.optimal_brain.validator import ValidatorService
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -52,8 +52,10 @@ _RETRY_AFTER_7 = 7.0
 _RETRY_AFTER_9 = 9.0
 _RETRY_AFTER_12 = 12.0
 _RETRY_AFTER_5 = 5.0
-_EMBED_DIM = 4  # zero-vector dimension in test responses
-_CALLS_2RL_1_SUCCESS = 3  # 2 rate-limit errors then 1 success
+# Zero-vector dimension in test responses
+_EMBED_DIM = 4
+# 2 rate-limit errors then 1 success
+_CALLS_2RL_1_SUCCESS = 3
 
 _EMBED_PATH = (
     "roboco.services.optimal_brain.ollama_embedder.OllamaEmbedder._create_async_client"
@@ -122,40 +124,6 @@ def _make_anthropic_rl_exc(
         response=fake_resp,
         body={},
     )
-
-
-def _make_journal_plugin() -> JournalsIndexPlugin:
-    """Create a minimal JournalsIndexPlugin without running initialize()."""
-    plugin = JournalsIndexPlugin.__new__(JournalsIndexPlugin)
-    plugin._config = MagicMock()
-    plugin._config.llm_base_url = "http://ollama-test:11434/v1"
-    plugin._config.llm_model = "glm-5.3:cloud"
-    plugin._store = MagicMock()
-    plugin._chunker = MagicMock()
-    plugin._embedder = MagicMock()
-    plugin._initialized = True
-    return plugin
-
-
-def _make_search_outcome(content: str = "context text") -> Any:
-    mock_outcome = MagicMock()
-    mock_outcome.success = True
-    mock_outcome.results = [
-        MagicMock(content=content, source="src", score=0.9, index_type=None)
-    ]
-    return mock_outcome
-
-
-def _make_sources() -> list[Any]:
-    return [
-        MagicMock(content="ctx", source="s", score=0.9, index_type=IndexType.JOURNALS)
-    ]
-
-
-def _make_standards() -> list[Any]:
-    s = MagicMock()
-    s.content = "### PY-001: Use Type Hints\nMust add return type annotations."
-    return [s]
 
 
 # ===========================================================================
@@ -501,156 +469,3 @@ class TestExtractionAnthropicRetry:
 
         assert not raised, "RateLimitError raised even though 3rd attempt succeeded"
         assert mock_client.messages.create.call_count == _CALLS_2RL_1_SUCCESS
-
-
-# ===========================================================================
-# 7. indexes/base.py - BaseIndexPlugin.ask() LLM 429 retry
-# ===========================================================================
-
-
-class TestIndexAsk429Retry:
-    """Tests for the LLM call in BaseIndexPlugin.ask()."""
-
-    async def test_ask_raises_rate_limit_after_five_429s(self) -> None:
-        plugin = _make_journal_plugin()
-        mock_c = _make_async_client_mock(post_return=_429_response())
-
-        with (
-            patch.object(
-                plugin, "search", AsyncMock(return_value=_make_search_outcome())
-            ),
-            patch("httpx.AsyncClient", return_value=mock_c),
-            patch("asyncio.sleep", new_callable=AsyncMock),
-            pytest.raises(RateLimitError) as exc_info,
-        ):
-            await plugin.ask("what is X")
-
-        assert exc_info.value.provider == "ollama"
-        assert mock_c.post.call_count == MAX_RATE_LIMIT_RETRIES
-
-    async def test_ask_partial_retry_then_success(self) -> None:
-        plugin = _make_journal_plugin()
-        success_body = {"choices": [{"message": {"content": "Here is the answer."}}]}
-        success_resp = _make_response(200, success_body)
-        mock_c = AsyncMock()
-        mock_c.__aenter__ = AsyncMock(return_value=mock_c)
-        mock_c.__aexit__ = AsyncMock(return_value=False)
-        mock_c.post = AsyncMock(side_effect=[_429_response(), success_resp])
-
-        with (
-            patch.object(
-                plugin, "search", AsyncMock(return_value=_make_search_outcome())
-            ),
-            patch("httpx.AsyncClient", return_value=mock_c),
-            patch("asyncio.sleep", new_callable=AsyncMock),
-        ):
-            answer, results = await plugin.ask("what is X")
-
-        assert answer == "Here is the answer."
-        assert results is not None
-
-
-# ===========================================================================
-# 8. mentor.py - MentorService._synthesize_answer() 429 retry
-# ===========================================================================
-
-
-class TestMentorSynthesizeAnswer429:
-    async def test_raises_rate_limit_after_five_429s(self) -> None:
-        mentor = MentorService()
-        mentor._optimal_service = MagicMock()
-        mock_c = _make_async_client_mock(post_return=_429_response())
-
-        with (
-            patch("httpx.AsyncClient", return_value=mock_c),
-            patch("asyncio.sleep", new_callable=AsyncMock),
-            pytest.raises(RateLimitError) as exc_info,
-        ):
-            await mentor._synthesize_answer(
-                question="test",
-                sources=_make_sources(),
-                conversation_context="",
-                agent_profile=None,
-                journal_context=[],
-            )
-
-        assert exc_info.value.provider == "ollama"
-        assert mock_c.post.call_count == MAX_RATE_LIMIT_RETRIES
-
-    async def test_partial_retry_then_success(self) -> None:
-        mentor = MentorService()
-        mentor._optimal_service = MagicMock()
-        success_body = {"choices": [{"message": {"content": "Great answer."}}]}
-        mock_c = AsyncMock()
-        mock_c.__aenter__ = AsyncMock(return_value=mock_c)
-        mock_c.__aexit__ = AsyncMock(return_value=False)
-        mock_c.post = AsyncMock(
-            side_effect=[_429_response(), _make_response(200, success_body)]
-        )
-
-        with (
-            patch("httpx.AsyncClient", return_value=mock_c),
-            patch("asyncio.sleep", new_callable=AsyncMock),
-        ):
-            answer = await mentor._synthesize_answer(
-                question="test",
-                sources=_make_sources(),
-                conversation_context="",
-                agent_profile=None,
-                journal_context=[],
-            )
-
-        assert answer == "Great answer."
-
-
-# ===========================================================================
-# 9. validator.py - ValidatorService._validate_with_llm() 429 retry
-# ===========================================================================
-
-
-class TestValidatorLLMRetry:
-    async def test_raises_rate_limit_after_five_429s(self) -> None:
-        validator = ValidatorService()
-        validator._optimal_service = MagicMock()
-        validator._llm_available = True
-        mock_c = _make_async_client_mock(post_return=_429_response())
-
-        with (
-            patch("httpx.AsyncClient", return_value=mock_c),
-            patch("asyncio.sleep", new_callable=AsyncMock),
-            pytest.raises(RateLimitError) as exc_info,
-        ):
-            await validator._validate_with_llm(
-                action_type="create_endpoint",
-                context="def foo(): pass",
-                standards=_make_standards(),
-            )
-
-        assert exc_info.value.provider == "ollama"
-        assert mock_c.post.call_count == MAX_RATE_LIMIT_RETRIES
-
-    async def test_partial_retry_then_success(self) -> None:
-        validator = ValidatorService()
-        validator._optimal_service = MagicMock()
-        validator._llm_available = True
-        success_content = '{"violations": [], "summary": "ok"}'
-        success_body = {"choices": [{"message": {"content": success_content}}]}
-        mock_c = AsyncMock()
-        mock_c.__aenter__ = AsyncMock(return_value=mock_c)
-        mock_c.__aexit__ = AsyncMock(return_value=False)
-        mock_c.post = AsyncMock(
-            side_effect=[_429_response(), _make_response(200, success_body)]
-        )
-
-        with (
-            patch("httpx.AsyncClient", return_value=mock_c),
-            patch("asyncio.sleep", new_callable=AsyncMock),
-        ):
-            violations, warnings = await validator._validate_with_llm(
-                action_type="create_endpoint",
-                context="def foo(): pass",
-                standards=_make_standards(),
-            )
-
-        assert violations == []
-        assert warnings == []

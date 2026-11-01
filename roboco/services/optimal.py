@@ -34,6 +34,11 @@ from roboco.models.optimal import (
     SearchOutcome,
     SearchResult,
 )
+from roboco.services.background_llm import (
+    BackgroundPrompt,
+    generate_background_reply,
+    generate_background_text,
+)
 from roboco.services.optimal_brain.indexes import (
     BaseIndexPlugin,
     DecisionsIndexPlugin,
@@ -1779,90 +1784,37 @@ class OptimalSearch(_Base):
             "Provide a detailed, helpful response:"
         )
 
-    async def _handle_synthesis_response(
-        self,
-        resp: Any,
-        attempt: int,
-    ) -> tuple[str | None, bool]:
-        """Interpret an LLM response; returns (answer, should_retry).
-
-        - answer is the synthesized text if available, else None.
-        - should_retry is False for terminal errors, True if retry may help.
-        """
-        import httpx
-
-        if resp.is_success:
-            data = resp.json()
-            answer = self._strip_think_tags(data["choices"][0]["message"]["content"])
-            if answer:
-                return answer, False
-            logger.warning("LLM response was all thinking tags")
-            return None, False
-
-        if resp.status_code >= httpx.codes.INTERNAL_SERVER_ERROR:
-            logger.warning(
-                "Synthesis LLM server error",
-                status=resp.status_code,
-                attempt=attempt + 1,
-            )
-            return None, True
-
-        logger.warning("Synthesis LLM failed", status=resp.status_code)
-        return None, False
-
     async def _synthesize_from_citations(
         self,
         query: str,
         citations: list[SearchResult],
     ) -> str:
         """
-        Synthesize an answer from aggregated citations using the local LLM.
+        Synthesize an answer from aggregated citations with the background LLM.
 
         Called when individual indexes returned citations but no LLM answer
-        (e.g., due to timeouts or errors). Includes retry logic for transient
-        failures.
+        (e.g., due to timeouts or errors). The background LLM client falls
+        back from Ollama to Claude Haiku on its own; when neither answers, the
+        reply is a direct extract of the citations.
         """
-        import httpx
-
-        from roboco.config import settings
-
         if not citations:
             return ""
 
         context = self._build_synthesis_context(citations)
-        prompt = self._build_synthesis_prompt(query, context)
-
-        max_retries = 3
-        retry_delay_base = 0.5
-
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            for attempt in range(max_retries):
-                try:
-                    resp = await client.post(
-                        f"{settings.local_llm_base_url}/chat/completions",
-                        json={
-                            "model": settings.local_llm_model,
-                            "messages": [{"role": "user", "content": prompt}],
-                            "max_tokens": 4096,
-                            "options": {"num_ctx": 8192},
-                        },
-                    )
-                    answer, should_retry = await self._handle_synthesis_response(
-                        resp, attempt
-                    )
-                    if answer:
-                        return answer
-                    if not should_retry:
-                        break
-                except (httpx.TimeoutException, httpx.ConnectError) as e:
-                    logger.warning("Synthesis LLM error", attempt=attempt + 1, error=e)
-                except Exception as e:
-                    logger.warning("Synthesis failed", error=str(e))
-                    break
-
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(retry_delay_base * (2**attempt))
-
+        reply_text = await generate_background_text(
+            BackgroundPrompt(
+                purpose="rag.synthesis",
+                user_prompt=self._build_synthesis_prompt(query, context),
+                max_tokens=4096,
+                timeout_seconds=30.0,
+                ollama_num_ctx=8192,
+            )
+        )
+        if reply_text is not None:
+            answer = self._strip_think_tags(reply_text)
+            if answer:
+                return answer
+            logger.warning("LLM response was all thinking tags")
         return self._build_fallback_summary(citations)
 
 
@@ -2294,39 +2246,25 @@ class OptimalPromptsAndHealth(_Base):
         return False
 
     async def _check_llm_health(self, details: dict[str, Any], timeout: float) -> bool:
-        """Test LLM (Ollama) connectivity; record result in `details`."""
-        import httpx
-
-        from roboco.config import settings
-
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                resp = await client.post(
-                    f"{settings.local_llm_base_url}/chat/completions",
-                    json={
-                        "model": settings.local_llm_model,
-                        "messages": [{"role": "user", "content": "ping"}],
-                        "max_tokens": 5,
-                    },
-                )
-                if resp.is_success:
-                    details["llm_model"] = settings.local_llm_model
-                    details["llm_base_url"] = settings.local_llm_base_url
-                    return True
-                # A non-2xx (e.g. Ollama Cloud 429 weekly-limit) is NOT an
-                # httpx exception, so record the status + upstream message
-                # instead of returning a bare, diagnostic-less False.
-                reason = resp.text[:200]
-                try:
-                    body = resp.json()
-                    if isinstance(body, dict) and body.get("error"):
-                        reason = str(body["error"])
-                except Exception:
-                    pass
-                details["llm_error"] = f"HTTP {resp.status_code}: {reason}"
-        except Exception as e:
-            details["llm_error"] = str(e)
-        return False
+        """Ping the background LLM the way RAG synthesis reaches it; record in
+        `details` which backend answered, why any backend before it failed, or
+        why every backend failed."""
+        reply = await generate_background_reply(
+            BackgroundPrompt(
+                purpose="rag.health_check",
+                user_prompt="ping",
+                max_tokens=5,
+                timeout_seconds=timeout,
+            )
+        )
+        if reply.text is None:
+            details["llm_error"] = reply.describe_failures()
+            return False
+        details["llm_backend"] = reply.backend
+        details["llm_model"] = reply.model
+        if reply.failures:
+            details["llm_fallback_reason"] = reply.describe_failures()
+        return True
 
     async def _check_vector_store_health(
         self, details: dict[str, Any], timeout: float

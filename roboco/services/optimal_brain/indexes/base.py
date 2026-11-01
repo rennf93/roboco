@@ -15,12 +15,7 @@ import structlog
 
 from roboco.config import settings
 from roboco.models.optimal import IndexType, SearchOutcome, SearchResult
-from roboco.services.exceptions import (
-    HTTP_TOO_MANY_REQUESTS,
-    MAX_RATE_LIMIT_RETRIES,
-    RateLimitError,
-    parse_retry_after_header,
-)
+from roboco.services.background_llm import BackgroundPrompt, generate_background_text
 from roboco.services.optimal_brain.text_chunker import (
     Chunk,
     Citation,
@@ -89,8 +84,6 @@ class IndexConfig:
     chunk_size: int = 512
     chunk_overlap: int = 50
     embedding_model: str = "qwen3-embedding:0.6b"
-    llm_model: str = "glm-5.3:cloud"
-    llm_base_url: str = "http://roboco-ollama:11434/v1"
     min_chunk_length: int = _MIN_CHUNK_LENGTH
 
     @classmethod
@@ -110,8 +103,6 @@ class IndexConfig:
             chunk_size=chunk_size,
             chunk_overlap=settings.rag_chunk_overlap,
             embedding_model=settings.default_embedding_model,
-            llm_model=settings.local_llm_model,
-            llm_base_url=settings.local_llm_base_url,
             min_chunk_length=_MIN_CHUNK_LENGTH_BY_TYPE.get(
                 index_type, _MIN_CHUNK_LENGTH
             ),
@@ -737,16 +728,15 @@ class IndexPluginAnswers(_Base):
             Tuple of (answer, citations). Returns ("", []) on failure
             to allow OptimalService to continue to next index.
 
-        The Ollama LLM call is retried up to MAX_RATE_LIMIT_RETRIES times on
-        HTTP 429, respecting the Retry-After header.  The vector-search phase
-        is NOT retried and still runs inside the 15-second index timeout.
+        The answer comes from the background LLM client, outside the
+        15-second index timeout that bounds the vector-search phase.
         """
         import asyncio
 
         import httpx
 
         # Per-index timeout to prevent one slow index from blocking everything.
-        # Applied to the search phase only; LLM retries run outside this timeout.
+        # Applied to the search phase only; the LLM call runs outside it.
         INDEX_TIMEOUT = 15.0
 
         search_results: list[SearchResult] = []
@@ -799,84 +789,30 @@ class IndexPluginAnswers(_Base):
             )
             return "", search_results
 
-        # ---- LLM call phase with 429 retry (outside index timeout) -----------
+        # ---- LLM call phase (outside index timeout) ----------------------------
         return await self._ask_llm(prompt, search_results)
 
     async def _ask_llm(
         self, prompt: str, search_results: list[SearchResult]
     ) -> tuple[str, list[SearchResult]]:
-        """Run the 429-retried LLM synthesis for :meth:`ask`.
+        """Synthesize the answer for :meth:`ask` with the background LLM client.
 
-        Returns ``(answer, citations)``; ``("", citations)`` on any non-429
-        failure. Raises RateLimitError only when every 429 retry is exhausted.
+        Returns ``(answer, citations)``; ``("", citations)`` when no backend
+        answered.
         """
-        import asyncio
-
-        import httpx
-
-        llm_url = f"{self.config.llm_base_url}/chat/completions"
-        logger.info(
-            "ask() calling LLM",
-            index_type=self.index_type.value,
-            llm_url=llm_url,
-            model=self.config.llm_model,
-        )
-
-        last_rl_retry_after: float | None = None
-
-        for rl_attempt in range(MAX_RATE_LIMIT_RETRIES):
-            try:
-                async with httpx.AsyncClient(timeout=60.0) as client:
-                    resp = await client.post(
-                        llm_url,
-                        json={
-                            "model": self.config.llm_model,
-                            "messages": [{"role": "user", "content": prompt}],
-                            "max_tokens": 4096,
-                            "options": {"num_ctx": 8192},
-                        },
-                    )
-            except (httpx.TimeoutException, Exception) as e:
-                logger.warning(
-                    "LLM call failed in ask (non-429)",
-                    index_type=self.index_type.value,
-                    error=str(e),
-                )
-                return "", search_results
-
-            if resp.status_code == HTTP_TOO_MANY_REQUESTS:
-                last_rl_retry_after = parse_retry_after_header(resp)
-                backoff = (
-                    last_rl_retry_after
-                    if last_rl_retry_after is not None
-                    else float(2**rl_attempt)
-                )
-                logger.warning(
-                    "Ollama rate limited (429), retrying",
-                    provider="ollama",
-                    attempt=rl_attempt + 1,
-                    max_retries=MAX_RATE_LIMIT_RETRIES,
-                    backoff_duration=backoff,
-                )
-                if rl_attempt < MAX_RATE_LIMIT_RETRIES - 1:
-                    await asyncio.sleep(backoff)
-                continue
-
-            if resp.is_success:
-                data = resp.json()
-                answer_text = self._extract_from_think_tags(
-                    data["choices"][0]["message"]["content"]
-                )
-                return answer_text, search_results
-            logger.warning(
-                "LLM call failed in ask",
-                index_type=self.index_type.value,
-                status=resp.status_code,
-                error=resp.text[:200] if resp.text else "no error text",
+        logger.info("ask() calling LLM", index_type=self.index_type.value)
+        reply_text = await generate_background_text(
+            BackgroundPrompt(
+                purpose=f"rag.index_ask.{self.index_type.value}",
+                user_prompt=prompt,
+                max_tokens=4096,
+                timeout_seconds=60.0,
+                ollama_num_ctx=8192,
             )
+        )
+        if reply_text is None:
             return "", search_results
-
-        raise RateLimitError(provider="ollama", retry_after=last_rl_retry_after)
+        return self._extract_from_think_tags(reply_text), search_results
 
 
 class IndexPluginDocuments(_Base):
