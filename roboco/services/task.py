@@ -1956,17 +1956,21 @@ class TaskAgentQueries(_Base):
         result = await self.session.execute(query)
         return result.scalar_one_or_none()
 
-    async def get_journal_context_task_for_agent(
+    async def list_journal_context_tasks_for_agent(
         self, agent_id: UUID
-    ) -> TaskTable | None:
-        """Most-recently-updated task the agent owns for journal/content context.
+    ) -> list[TaskTable]:
+        """Tasks assigned to the agent that a task-less write may be about.
 
-        Wider than ``get_active_task_for_agent`` — includes BLOCKED, PAUSED,
-        and NEEDS_REVISION so journal entries written while stuck still
-        get the task_id auto-attached. Dogfooding surfaced the bug: PMs
-        wrote decisions during blocked state, auto-injection returned
+        Most recently updated first. Wider than ``get_active_task_for_agent``
+        — includes BLOCKED, PAUSED, NEEDS_REVISION and PENDING, so a write
+        made while the agent is stuck, or on a board-program task worked
+        without a claim, still finds its task. Dogfooding surfaced the bug:
+        PMs wrote decisions during blocked state, auto-injection returned
         None, entries persisted with task_id=NULL, the C8 tracing gate
-        never saw them, agents spiraled forever.
+        never saw them, agents spiraled forever. The content tools no longer
+        pick the newest of several: a write that names no task_id attaches
+        only to the caller's one candidate (see
+        ``ContentActions._task_for_taskless_write``).
         """
         query = (
             select(TaskTable)
@@ -1975,10 +1979,28 @@ class TaskAgentQueries(_Base):
                 TaskTable.status.in_(self._JOURNAL_CONTEXT_STATUSES),
             )
             .order_by(TaskTable.updated_at.desc().nullslast())
-            .limit(1)
         )
         result = await self.session.execute(query)
-        return result.scalar_one_or_none()
+        return list(result.scalars().all())
+
+    async def list_tasks_claimed_by(self, agent_id: UUID) -> list[TaskTable]:
+        """Unfinished tasks whose claim lock the agent holds.
+
+        Most recently updated first. These are exactly the tasks the
+        content-write gate lets a claim-holding agent write on
+        (``active_claimant_id`` is the agent), so a write that names no
+        task_id may attach to one of them and to nothing else.
+        """
+        query = (
+            select(TaskTable)
+            .where(
+                TaskTable.active_claimant_id == agent_id,
+                TaskTable.status.not_in(_TERMINAL_STATES),
+            )
+            .order_by(TaskTable.updated_at.desc().nullslast())
+        )
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
 
     async def list_pending_for_agent(self, agent_id: UUID) -> list[TaskTable]:
         """Tasks assigned to this agent that are still in PENDING status.

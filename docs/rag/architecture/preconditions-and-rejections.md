@@ -65,6 +65,8 @@ There is no `missing[]` array — the agent is simply not allowed, and the remed
 
 A task escalated to you is yours with its claim until you unblock it, so writes on it are accepted.
 
+**A write that names no `task_id`** attaches to the one task whose claim you hold — the same task an explicit write would be accepted on — and never to a guess. Holding several, or holding none while you have assigned work, is refused with `incomplete_input`, `missing=['task_id']`, and the candidate ids with their status in `remediate`; an agent with no task at all writes a task-less journal entry or off-task notification. The auditor and the Board, which work their assigned tasks without a claim, attach to their one assigned task; with several, a note or notification stays task-less (a triage observation, a broadcast) while a `dm` or handoff section is refused with the candidates.
+
 ## How `rejection_kind` works
 
 When a Precondition is defined, it includes a `rejection_kind` field that determines which error flavor it returns:

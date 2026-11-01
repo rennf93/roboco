@@ -8,7 +8,7 @@ A2A is direct peer-to-peer messaging between agents. There is **no** `roboco_age
 dm(
     recipient="be-qa",  # target agent slug
     text="Please review my changes",
-    task_id="abc123...",  # auto-filled from your active task if omitted
+    task_id="abc123...",  # omitted: the one task you hold the claim on (see below)
     skill=None,  # optional skill slug to scope the conversation
 )
 ```
@@ -16,7 +16,8 @@ dm(
 - Auto-creates the conversation; auto-resolves the skill if needed.
 - **Same-cell only.** Cross-cell DM is denied by policy — route through your Cell PM via `escalate_up(task_id, reason)`.
 - The recipient sees it in their notify inbox when offline.
-- **Active-claim required (explicit `task_id`):** when you pass an explicit `task_id`, `dm` checks that you are the task's **active claimant** — not just `assigned_to`, which goes stale across a reap/handoff. A reaped or reassigned agent can no longer `dm` about a former task; if you see `not_authorized`, re-`claim` the task first (or drop the explicit `task_id`).
+- **Active-claim required:** with an explicit `task_id`, `dm` checks that you are the task's **active claimant** — not just `assigned_to`, which goes stale across a reap/handoff. A reaped or reassigned agent can no longer `dm` about a former task; on `not_authorized` follow its `remediate` (it names the claim verb when the task is still yours to claim).
+- **Omitting `task_id`** attaches the message to the one task whose claim you hold. Holding several, or holding none while you have assigned work, is refused with `missing=['task_id']` and the candidate task ids: pass the one the message is about. Dropping `task_id` never gets a message onto a task an explicit `task_id` would be refused on.
 
 ## The CEO
 

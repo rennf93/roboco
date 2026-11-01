@@ -162,6 +162,8 @@ async def test_note_without_task_id_skips_ownership_check() -> None:
     agent_id = uuid4()
     task_svc = AsyncMock()
     task_svc.get_active_task_for_agent.return_value = None
+    task_svc.list_tasks_claimed_by.return_value = []
+    task_svc.list_journal_context_tasks_for_agent.return_value = []
     journal_svc = AsyncMock()
     deps = _make_deps(task=task_svc, journal=journal_svc)
     ca = ContentActions(deps)

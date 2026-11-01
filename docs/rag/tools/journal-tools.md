@@ -6,7 +6,7 @@ There is **no** `roboco_journal_*` tool. Journaling is a single content tool on 
 note(
     text: str,                  # always: one-paragraph summary
     scope: str = "note",        # note | decision | reflect | learning | struggle
-    task_id: str | None = None, # auto-filled from your active task if omitted
+    task_id: str | None = None, # omitted: the one task you hold the claim on
     title: str | None = None,
     # decision-scope fields:
     context: str = "",

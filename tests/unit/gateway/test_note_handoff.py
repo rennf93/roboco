@@ -34,7 +34,8 @@ def _dev_task_svc(task_id: object, role: str = "developer") -> AsyncMock:
     """A task service whose active/context task is owned by the caller."""
     svc = AsyncMock()
     svc.agent_for.return_value = MagicMock(role=role)
-    svc.get_journal_context_task_for_agent.return_value = MagicMock(id=task_id)
+    svc.list_tasks_claimed_by.return_value = [MagicMock(id=task_id)]
+    svc.list_journal_context_tasks_for_agent.return_value = [MagicMock(id=task_id)]
     svc.record_section_note.return_value = None
     return svc
 
@@ -225,7 +226,8 @@ async def test_handoff_no_task_to_attach_is_rejected() -> None:
     agent_id = uuid4()
     svc = AsyncMock()
     svc.agent_for.return_value = MagicMock(role="developer")
-    svc.get_journal_context_task_for_agent.return_value = None
+    svc.list_tasks_claimed_by.return_value = []
+    svc.list_journal_context_tasks_for_agent.return_value = []
     ca = ContentActions(_make_deps(task=svc))
 
     env = await ca.note(agent_id=agent_id, text="orphan note", scope="handoff")
