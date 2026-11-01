@@ -4242,7 +4242,7 @@ This slice is the prompt-composition pipeline and the role/team/permission taxon
 | roboco/agents/factories/__init__.py | One-line re-export shim pointing to _base | 1 |
 | roboco/agents_config.py | 691-line MCP-layer permission/taxonomy module: HMAC agent-token issue/verify, role+team+cell maps derived from foundation, escalation chain, ROLE_PERMISSION_LEVELS, ROLE_SKILLS, A2A routing helpers | 893 |
 | roboco/agent_sdk/prompt_guard.py | Reusable Python port of the bash injection guard: _PATTERNS regex list, detect_injection, refusal_message, CLI main (exit 1 on injection) for the grok entrypoint | 59 |
-| agents/prompts/base.md | Universal base layer: identity separation, gateway-verb-only action, envelope shapes, missing-key cheatsheet, resume-from-briefing, charter alignment, todo rules, ground rules | 94 |
+| agents/prompts/base.md | Universal base layer: identity separation, gateway-verb-only action, envelope shapes, missing-key cheatsheet, resume-from-briefing, charter alignment, todo rules, ground rules | 95 |
 | agents/prompts/doctrine/fable.md | Vendored Fable-5 behavioral doctrine (from `github.com/rennf93/opus-fable-playbook`, MIT, YAML frontmatter stripped): communication/turn-discipline/autonomy-calibration/honesty/code-discipline/delegation/precedence sections; loaded only when `fable_mode_enabled`, injected right after base.md via `fable_doctrine_layer()` | 47 |
 | agents/prompts/doctrine/ponytail.md | Vendored Ponytail build-laziness doctrine for developers (from the ponytail plugin, MIT, Copyright (c) 2026 DietrichGebert, trimmed, YAML frontmatter stripped): the ladder (YAGNI → reuse-in-this-codebase → stdlib → native-platform → installed-dep → one-line → minimal), the rules, the Intensity table (lite/full/ultra), a 5-point RoboCo preamble that makes the ladder yield to placement / coverage gate / design bar / task hygiene / reviewer feedback, and the `ponytail:` comment convention; loaded only when `fable_mode_enabled`, injected right after the Fable doctrine via `ponytail_doctrine_layer()` for `AgentRole.DEVELOPER` only, with a trailing `**Operative intensity: {ponytail_intensity}.**` directive | 66 |
 | agents/prompts/doctrine/ponytail-ethos.md | Vendored Ponytail ethos-only doctrine for non-developer roles (same source/attribution, trimmed): the ethos rules and the RoboCo preamble (the 6th point guards free-text field obligations), with the code-mechanics rungs (the ladder) and the Intensity table removed so they can't leak into prose artifacts; loaded by `ponytail_doctrine_layer()` for every role except `DEVELOPER`; no intensity directive (ethos runs a fixed restrained stance) | 29 |
@@ -7116,23 +7116,25 @@ The Choreographer is the server-side composition layer that turns agent intent-v
 | `_sequencing_claim_guard` | async helper | `_impl.py:1425` | Proactive claim-time check (#681): consults `TaskService.sequence_hold_reason` and, when held, returns `Envelope.sequence_held` (naming the blocking sibling) BEFORE the claim even reaches `TaskService.claim`'s bare-`None`-on-reject path — closes the misdiagnosed `INVALID_STATE` a held PENDING/NEEDS_REVISION claim used to surface as. |
 | `_claim_plan_start_gate` | async helper | `_impl.py:1921` | spec gate → advisory claim lock (non-PM) → behavioral guards → `_sequencing_claim_guard`. |
 | `_claim_plan_start_run` | async helper | `_impl.py:1995` | `runner.run_intent(verb)` + ensure_work_session + `_touch`. |
+| `_post_claim_journal_gate` | async helper | `_impl.py:2084` | After a successful claim, writes the entry the claim's tracing gate asks for (write-then-gate) and then runs that gate: `i_will_plan` records the plan's approach as the PM decision (`_ensure_pm_decision`), `i_will_work_on` records the plan as the at-claim note (`_ensure_claim_note`). A pre-claim `note` is refused by the content-write gate, so the claim verb is every agent's first write on a task. |
+| `_ensure_claim_note` | async helper | `_impl.py:2126` | Savepoint-guarded, best-effort: writes the developer's claim plan as a `scope='note'` journal entry unless one already exists for (agent, task); a failed write leaves `journal:note_at_claim` to the gate. |
 | `i_will_work_on` | async verb | `dev.py:244` | Dev claim+plan+start path; routes re-entry vs fresh claim. |
 | `open_pr` | async verb | `dev.py:499` | Pre-flight + `run_intent("open_pr")` (push_branch + create_pr side effects). |
 | `_open_pr_topology_rejection` | async helper | `dev.py:640` | Calls `merge_chain.find_topology_issue` BEFORE `create_pr` runs; on a bad shape (parented task stranded on the integration branch, or a parentless root nested inside a coordination tree) refuses with an `Envelope.invalid_state` naming the expected base + repair instead of letting `create_pr` fail later. Wrapped in `try/except Exception` (round-1 pr_gate finding F-81e261bd): a `find_topology_issue` DB error is logged (`topology_check_skip`) and returns `None` — fails open like its sibling `_behind_base_gate`, since this check only ever refuses and a transient error must never wedge `open_pr`. |
 | `i_am_done` | async verb | `dev.py:777` | Dev pre-submit; runs `_i_am_done_gate` then `run_intent("i_am_done")`. |
 | `_i_am_done_gate` | async helper | `dev.py:905` | Ordered gate chain: tracing → submit_qa fields → push → behind_base → quality → toolchain → conventions; then write AC status. |
-| `_behind_base_gate` | async helper | `_impl.py:2483` | Refuse submit when branch behind its base (sibling PR merged); fail-open on git error. |
-| `_toolchain_broken_guard` | async helper | `_impl.py:5408` | Block delivery gate when agent workspace can't run suite; `reviewer=True` for `pr_pass`. |
-| `_conventions_guard` | async helper | `_impl.py:5512` | Run architectural-conventions validator; `block` finding refuses gate. |
+| `_behind_base_gate` | async helper | `_impl.py:2524` | Refuse submit when branch behind its base (sibling PR merged); fail-open on git error. |
+| `_toolchain_broken_guard` | async helper | `_impl.py:5449` | Block delivery gate when agent workspace can't run suite; `reviewer=True` for `pr_pass`. |
+| `_conventions_guard` | async helper | `_impl.py:5553` | Run architectural-conventions validator; `block` finding refuses gate. |
 | `_pm_task_type_error` | static method | `pm.py:455` | Reject a code/non-planning task_type delegated to a PM (cell or main); extracted from `_validate_assignee_task_type` to keep that dispatcher under complexity budget. |
-| `i_am_blocked` | async verb | `_impl.py:3071` | Rate-limit parking vs generic block; `run_intent("i_am_blocked")`. |
-| `_handle_rate_limited_parking` | async helper | `_impl.py:2967` | Park provider on 429/overload/session-limit. |
-| `unclaim` | async verb | `_impl.py:3476` | Release claimed task → pending (optional reassign). |
-| `reassign` | async verb | `_impl.py:3673` | Reassign task with `_validate_reassign`. |
-| `resume` | async verb | `_impl.py:3753` | Resume paused/blocked task. |
-| `sync_branch` | async verb | `_impl.py:2642` | Gate-level rebase verb (new since baseline). |
-| `i_am_idle` | async verb | `_impl.py:4304` | Idle signal; auto-pause in_progress tasks; pending-assignment / PM review / auditor guards. |
-| `i_will_plan` | async verb | `_impl.py:2197` | PM plan verb; `_pm_sub_tasks_gate` enforces substantive approach/sub_tasks. |
+| `i_am_blocked` | async verb | `_impl.py:3112` | Rate-limit parking vs generic block; `run_intent("i_am_blocked")`. |
+| `_handle_rate_limited_parking` | async helper | `_impl.py:3008` | Park provider on 429/overload/session-limit. |
+| `unclaim` | async verb | `_impl.py:3517` | Release claimed task → pending (optional reassign). |
+| `reassign` | async verb | `_impl.py:3714` | Reassign task with `_validate_reassign`. |
+| `resume` | async verb | `_impl.py:3794` | Resume paused/blocked task. |
+| `sync_branch` | async verb | `_impl.py:2683` | Gate-level rebase verb (new since baseline). |
+| `i_am_idle` | async verb | `_impl.py:4345` | Idle signal; auto-pause in_progress tasks; pending-assignment / PM review / auditor guards. |
+| `i_will_plan` | async verb | `_impl.py:2238` | PM plan verb; `_pm_sub_tasks_gate` enforces substantive approach/sub_tasks. |
 | `delegate` | async verb | `pm.py:57` | PM creates subtask; sizing, sibling-dedup, spine-cap, lifecycle guards; `_create_subtask_from_inputs`. |
 | `submit_up` | async verb | `pm.py:1567` | Cell PM opens cell→root PR + enters `awaiting_pr_review`; unchanged-PR guard. |
 | `submit_root` | async verb | `pm.py:2026` | Main PM opens root→master PR + enters gate; umbrella hard-reject + unchanged-PR guard. |
@@ -7140,7 +7142,7 @@ The Choreographer is the server-side composition layer that turns agent intent-v
 | `_current_pr_head_sha` | async helper | `pm.py:1991` | Best-effort current PR head SHA via `_project_slug_for` + `git.get_pr_head_sha`. |
 | `complete` | async verb | `pm.py:3658` | Role-dispatch to `cell_pm_complete` / `main_pm_complete`; umbrella-in-progress bypasses spec gate. |
 | `main_pm_complete` | async verb | `pm.py:3543` | Main PM merge + escalate to CEO (never merges master itself). |
-| `escalate_to_ceo` | async verb | `_impl.py:3357` | Escalate to `awaiting_ceo_approval`. |
+| `escalate_to_ceo` | async verb | `_impl.py:3398` | Escalate to `awaiting_ceo_approval`. |
 | `unblock` | async verb | `pm.py:2428` | Human/PM restores a BLOCKED task; gated by `_oscillation_unblock_guard` (refuses while oscillation-tripped) then, on a real restore, runs `_maybe_trip_oscillation_breaker` (#685). |
 | `_oscillation_unblock_guard` | async helper | `pm.py:2524` | Refuses `unblock` once `markers.is_oscillation_tripped(t)` — an admin override must clear the marker first. |
 | `_maybe_trip_oscillation_breaker` | async helper | `pm.py:2553` | Task-scoped strike counter (#685) at the `unblock()` chokepoint (agent-agnostic — legitimate `needs_revision` rework never calls `unblock`, so it structurally can't trip this): `markers.bump_oscillation_strikes(t, progress_fp)` where the progress fingerprint is commit count + `revision_count` + `terminal_children_count` (a coordination root's children advancing between escalations resets the count); past threshold, sets `blocker_resolver_type=HUMAN`, marks the task oscillation-tripped, and best-effort notifies the CEO (`_notify_ceo_oscillation`) naming both agents + the cycle count. |

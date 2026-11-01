@@ -2116,13 +2116,54 @@ class ClaimPlanMixin(_Base):
             await self._ensure_pm_decision(
                 agent_id, task_id, self._planning_rationale(t)
             )
+        elif verb == "i_will_work_on":
+            await self._ensure_claim_note(
+                agent_id, task_id, self._planning_rationale(t)
+            )
         gap = await self._check_claim_journal_at_claim(verb, agent_id, task_id, t)
         return gap if gap is not None else envelope
 
+    async def _ensure_claim_note(
+        self, agent_id: UUID, task_id: UUID, assessment: str | None
+    ) -> None:
+        """Record the developer's claim plan as its at-claim journal note.
+
+        Write-then-gate, the developer's side of what ``i_will_plan`` does for
+        the PM's decision. Pre-gateway parity P1 asks for a journal:note on
+        every claim, the developer's first read of the task, and the plan it
+        just claimed with is that read. ``note`` refuses any write before the
+        claim exists, so the prompted note-then-claim order was refused
+        (dfeb2d8a, 86b799b8, 0f391d46 on 2026-10-28), and claim-first met a
+        tracing_gap that cost a second ``i_will_work_on`` (7 times that day).
+        A note the developer already has on the task is kept. Savepoint-
+        guarded and best-effort: a failed write leaves the gate to ask for
+        the note exactly as before.
+        """
+        text = (assessment or "").strip()
+        if not text:
+            return
+        try:
+            async with self.task.session.begin_nested():
+                if await self.journal.has_note_for_task(agent_id, task_id):
+                    return
+                await self.journal.write_entry(
+                    agent_id=agent_id,
+                    task_id=task_id,
+                    scope="note",
+                    title="Claim plan: initial read of the task",
+                    content=text,
+                )
+        except Exception as exc:
+            logger.warning(
+                "auto-record claim note failed",
+                error=str(exc),
+                task_id=str(task_id),
+            )
+
     @staticmethod
     def _planning_rationale(t: Any) -> str | None:
-        """The PM's planning rationale off the task's persisted plan: a rich
-        plan's ``approach``, else a plain plan's ``text``."""
+        """The claimant's rationale off the task's persisted plan (a PM's
+        decision, a developer's claim note): ``approach``, else ``text``."""
         plan = getattr(t, "plan", None)
         if not isinstance(plan, dict):
             return None

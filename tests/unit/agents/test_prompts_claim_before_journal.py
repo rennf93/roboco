@@ -6,8 +6,9 @@ the writer has not claimed, yet the PM prompts' Workflow told the PM to
 ``i_will_plan``. Commit 66bd6290 fixed the State -> Verb tables but left the
 Workflow steps, so main-pm kept paying a refused note per fresh root (7 on
 2026-10-28 before that commit, 0c4e2592 and 14c9875a on 2026-11-01 after
-it) and the cell PMs did the same on theirs. This grep invariant keeps every
-prompt in claim-then-journal order:
+it) and the cell PMs did the same on theirs; the developer prompt prescribed
+the same order before ``i_will_work_on`` (dfeb2d8a, 86b799b8, 0f391d46).
+This grep invariant keeps every prompt in claim-then-journal order:
 
 * a chained instruction (``a → b → c``) never puts a ``note(`` step before
   an ``i_will_plan(`` / ``i_will_work_on(`` step;
@@ -36,18 +37,11 @@ ARROW = re.compile(r"→|->")
 BEFORE_EVERY_CLAIM = re.compile(
     r"before (?:every|each) `?i_will_(?:plan|work_on)", re.IGNORECASE
 )
-CHECKED_PROMPTS = (
-    "base.md",
-    "roles/main_pm.md",
-    "roles/cell_pm.md",
-)
 
 
 def _checked_documents() -> list[Path]:
-    """The role prompts plus the agent-facing RAG corpus the agents also read."""
-    return [PROMPTS / prompt for prompt in CHECKED_PROMPTS] + sorted(
-        RAG_DOCS.rglob("*.md")
-    )
+    """Every agent prompt plus the agent-facing RAG corpus the agents read."""
+    return sorted(PROMPTS.rglob("*.md")) + sorted(RAG_DOCS.rglob("*.md"))
 
 
 def _chained_note_before_claim(line: str) -> bool:
