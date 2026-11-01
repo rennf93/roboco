@@ -168,6 +168,18 @@ _SCAFFOLD_ATTEMPTED: set[str] = set()
 _READ_CLONE_FETCH_TTL_SECONDS = 30.0
 _read_clone_synced: dict[str, float] = {}
 
+# An agent clone's refresh fetch (ensure_workspace) runs at most this often,
+# process-wide: keyed by clone path, stamped when the fetch finished.
+_REFRESH_TTL_SECONDS = 30.0
+_last_refreshed: dict[str, float] = {}
+
+# A dev-deps install for the same lockfile digest is attempted at most once
+# per this window per clone, process-wide, whatever its outcome: a success
+# writes the marker (later calls are cache hits), a failure or an
+# interrupted run waits the window out instead of rerunning on every call.
+_DEV_DEPS_RETRY_SECONDS = 600.0
+_dev_deps_attempted: dict[str, tuple[str | None, float]] = {}
+
 
 def _ensure_lock_for(project_slug: str, agent_slug: str) -> asyncio.Lock:
     """Return the asyncio.Lock for a (project, agent) pair, creating lazily."""
@@ -177,6 +189,22 @@ def _ensure_lock_for(project_slug: str, agent_slug: str) -> asyncio.Lock:
         lock = asyncio.Lock()
         _ENSURE_WORKSPACE_LOCKS[key] = lock
     return lock
+
+
+def _claim_dev_deps_attempt(workspace: Path, digest: str | None) -> bool:
+    """Record an install attempt for ``workspace`` at ``digest``; False when
+    one for the same digest started within ``_DEV_DEPS_RETRY_SECONDS``."""
+    key = str(workspace)
+    now = _monotonic()
+    previous = _dev_deps_attempted.get(key)
+    if (
+        previous is not None
+        and previous[0] == digest
+        and now - previous[1] < _DEV_DEPS_RETRY_SECONDS
+    ):
+        return False
+    _dev_deps_attempted[key] = (digest, now)
+    return True
 
 
 def _names_missing_remote_ref(stderr: str, branch: str) -> bool:
@@ -1096,14 +1124,15 @@ class WorkspaceProvisioning(_Base):
             agent_id: Agent UUID or slug
             git_url: Git URL to clone (fetched from project if not provided)
             default_branch: Default branch to checkout
-            force: When True, bypass the 30s refresh-fetch TTL cache and
-                always run ``git fetch origin`` on a healthy workspace.
+            force: When True, bypass the 30s refresh-fetch TTL and always
+                run ``git fetch origin`` on a healthy workspace.
                 Defaults to False so existing callers are unaffected.
-            skip_refresh: When True, skip the refresh-fetch entirely on a
-                healthy workspace. Used by the supersede branch-cut path,
-                which fetches ``refs/pull/{n}/head`` (not an existing local
-                branch), so the 60s origin refresh is wasted I/O. The clone
-                path (workspace does not exist) still runs.
+            skip_refresh: When True, hand back a healthy workspace as it is:
+                no refresh fetch, no dev-dependency install. For callers
+                that fetch the one ref they need themselves or need no
+                origin ref at all (the supersede branch cut, the evidence
+                branch inspection, ``/api/git/log``, ``/api/git/diff``). The
+                clone path (workspace does not exist) still runs.
 
         Returns:
             Path to the workspace directory
@@ -1127,37 +1156,10 @@ class WorkspaceProvisioning(_Base):
             # breaks every subsequent fetch/checkout ("origin/<branch> is
             # not a commit"). Require HEAD + objects/ as the real signal.
             if self._is_workspace_healthy(workspace):
-                # Audit H26: a healthy clone short-circuit USED to return
-                # immediately, so a respawned PM/Doc could be reading
-                # arbitrarily stale refs (whatever was on disk from the
-                # last spawn). Fetch every entry so `git diff origin/...`
-                # reflects what's actually on the remote. Best-effort —
-                # network blips and offline mode must not break workspace
-                # setup; checkout is unchanged.
-                #
-                # 30s TTL cache keyed by workspace path. Dogfooding fired
-                # this fetch 9x/run because every
-                # evidence() call triggers ensure_workspace within the same
-                # few seconds. Skip redundant fetches; force=True overrides.
-                _FETCH_CACHE_TTL_SECONDS = 30.0
-                now = _monotonic()
-                # -math.inf as default means "never fetched" — guarantees
-                # the first call always runs the fetch regardless of clock value.
-                last_fetch = self._fetch_cache.get(str(workspace), -math.inf)
-                if not skip_refresh and (
-                    force or (now - last_fetch) >= _FETCH_CACHE_TTL_SECONDS
-                ):
-                    # Repair broken-ref debris first so the fetch (and the
-                    # agent's later `git diff/log origin/...`) doesn't trip on a
-                    # ref left corrupt by an interrupted recovery.
-                    await asyncio.to_thread(self._prune_broken_refs, workspace)
-                    await self._fetch_origin_best_effort(workspace, project_slug)
-                    self._fetch_cache[str(workspace)] = _monotonic()
-                # Ensure dev deps are present even for workspaces cloned
-                # before this feature landed. Idempotent: the lockfile-digest
-                # marker makes this a no-op once installed, so it costs only a
-                # cheap hash on every healthy re-entry.
-                await self.install_dev_deps(workspace)
+                if not skip_refresh:
+                    await self._refresh_healthy_clone(
+                        workspace, project_slug, force=force
+                    )
                 logger.debug(
                     "Workspace already exists",
                     workspace=str(workspace),
@@ -1205,6 +1207,38 @@ class WorkspaceProvisioning(_Base):
             )
             await self._maybe_scaffold_conventions(project, project_slug, workspace)
             return workspace
+
+    async def _refresh_healthy_clone(
+        self, workspace: Path, project_slug: str, *, force: bool
+    ) -> None:
+        """Bring a healthy clone up to date: origin's refs, then its dev deps.
+
+        Audit H26: a healthy clone short-circuit USED to return immediately,
+        so a respawned PM/Doc could be reading arbitrarily stale refs. The
+        refresh fetch runs at most once per ``_REFRESH_TTL_SECONDS`` per
+        clone, process-wide (``_last_refreshed``): every request builds its
+        own ``WorkspaceService``, so a TTL kept on the instance never skipped
+        a fetch, and every git read paid a relay round trip (serialized per
+        project). ``force`` always fetches. Broken-ref debris is repaired
+        first so the fetch (and the agent's later ``git diff/log
+        origin/...``) doesn't trip on a ref left corrupt by an interrupted
+        recovery. Best-effort: network blips and offline mode must not break
+        workspace setup.
+
+        Dev deps are ensured even for workspaces cloned before that feature
+        landed; the lockfile-digest marker makes it a cheap hash once
+        installed, and a failed install waits out its retry window
+        (``install_dev_deps``).
+        """
+        key = str(workspace)
+        now = _monotonic()
+        # -math.inf as default means "never fetched": the first call always
+        # runs the fetch regardless of the clock's value.
+        if force or now - _last_refreshed.get(key, -math.inf) >= _REFRESH_TTL_SECONDS:
+            await asyncio.to_thread(self._prune_broken_refs, workspace)
+            await self._fetch_origin_best_effort(workspace, project_slug)
+            _last_refreshed[key] = _monotonic()
+        await self.install_dev_deps(workspace)
 
     async def _maybe_scaffold_conventions(
         self, project: Any, project_slug: str, workspace: Path
@@ -1599,8 +1633,10 @@ class WorkspaceToolchain(_Base):
         break the agent's clone.
 
         Returns True when an install ran (and at least one command
-        succeeded), False when skipped (cache hit, disabled, or nothing to
-        install).
+        succeeded), False when skipped (cache hit, disabled, nothing to
+        install, or the same lockfiles attempted within
+        ``_DEV_DEPS_RETRY_SECONDS``: a failed install used to rerun, for up to
+        the install timeout, on every call that resolved the clone).
         """
         if not settings.workspace_install_dev_deps:
             return False
@@ -1624,6 +1660,12 @@ class WorkspaceToolchain(_Base):
             # Stamp the toolchain marker the first time it's missing so a
             # workspace provisioned before the flag flipped still records it.
             await self._record_toolchain(workspace, target_python, only_if_missing=True)
+            return False
+        if not _claim_dev_deps_attempt(workspace, digest):
+            logger.debug(
+                "Dev-deps install skipped (attempted recently)",
+                workspace=str(workspace),
+            )
             return False
 
         any_ok = False
@@ -1921,9 +1963,12 @@ class WorkspaceInspection(_Base):
         operations if needed.
         """
         project_slug = await self._resolve_branch_to_project_slug(branch_name)
+        # The fetch below is the one this read needs: the clone's own
+        # refresh (and a dev-deps install) never rides on an evidence leg.
         workspace = await self.ensure_workspace(
             project_slug=project_slug,
             agent_id=agent_id,
+            skip_refresh=True,
         )
         effective_timeout = (
             subprocess_timeout
@@ -2061,13 +2106,6 @@ class WorkspaceService(
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
         self.root = Path(settings.workspaces_root)
-        # TTL cache for refresh fetches. Dogfooding fired 9 refresh-fetch
-        # warnings per run because each evidence() call triggered
-        # ensure_workspace → fetch. The workspace doesn't
-        # change in subseconds. 30s TTL eliminates the noise without
-        # compromising freshness (commits land slower than 30s in practice;
-        # force=True override exists for the rare need-fresh case).
-        self._fetch_cache: dict[str, float] = {}
 
     def get_workspace_path(
         self,

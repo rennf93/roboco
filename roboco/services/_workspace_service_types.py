@@ -114,6 +114,5 @@ class WorkspaceServiceSelf(
     WorkspaceService's instance attributes here, each class's
     members on its surface."""
 
-    _fetch_cache: dict[str, float]
     root: Path
     session: AsyncSession

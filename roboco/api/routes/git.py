@@ -157,7 +157,10 @@ async def get_git_log(
     git_service = get_git_service(db)
 
     try:
-        workspace = await git_service.get_workspace(project_slug, agent.agent_id)
+        # No clone refresh: _resolve_head_ref fetches the one branch read here.
+        workspace = await git_service.get_workspace(
+            project_slug, agent.agent_id, skip_refresh=True
+        )
 
         # Get current branch if not specified
         if not branch:
@@ -304,8 +307,9 @@ async def get_git_diff(
         return diff_result, stat_result
 
     try:
+        # The working tree against the index: no origin ref is read.
         workspace = await _bounded_git_stage(
-            git_service.get_workspace(project_slug, agent.agent_id),
+            git_service.get_workspace(project_slug, agent.agent_id, skip_refresh=True),
             timeout=settings.workspace_clone_timeout,
             stage="workspace resolution",
         )
