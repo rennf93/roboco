@@ -359,11 +359,15 @@ async def self_heal_transient(
 ) -> SelfHealGate:
     """Gate the self-heal origination on a transient-vs-regression verdict.
 
-    ``ORIGINATE`` means the engine may originate the fix task exactly as
-    today; ``SKIP`` means log and skip (no task this sweep); ``NO_VERDICT``
-    means Decisions had nothing to say and the engine does what it did
-    before. The gate direction (affirmed-transience -> originate) and the
-    thresholds come straight from spec 6.1; shadow data is the referee.
+    ``SKIP`` means the failure is confidently transient (a flake): no fix
+    task this sweep, because repair churn on a flake is the expensive
+    mistake (spec 6.1's rationale). ``ORIGINATE`` means a regression, an
+    unsure verdict, or a "flake" past the attempt limit (a failure that
+    keeps coming back is not one): the engine originates the fix task as
+    today. ``NO_VERDICT`` means Decisions had nothing to say and the engine
+    does what it did before. CEO ruling 2026-11-01 (trail #55) on spec 6.1,
+    whose gate text said the opposite of its rationale; the thresholds are
+    the spec's.
     """
     state = {
         "repo": repo,
@@ -390,9 +394,9 @@ async def self_heal_transient(
     if noul is None:
         return SelfHealGate.NO_VERDICT
     if noul >= SELF_HEAL_NOUL_FLOOR and attempt_number <= SELF_HEAL_MAX_ATTEMPT:
-        verdict = SelfHealGate.ORIGINATE
-    else:
         verdict = SelfHealGate.SKIP
+    else:
+        verdict = SelfHealGate.ORIGINATE
     if mode is PilotMode.SHADOW:
         # Shadow: log the would-be action, behave as today.
         log_action("self_heal", mode, verdict.value, "no-op (shadow)", result)

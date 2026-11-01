@@ -5,7 +5,7 @@ Three default-off background "engine" services that watch CI / dependencies and 
 
 | Path | Role | LOC |
 |---|---|---|
-| roboco/services/self_heal_engine.py | Single-repo self-heal: detect a regression in RoboCo's own CI via telemetry, notify CEO, optionally open a HELD PENDING fix task | 566 |
+| roboco/services/self_heal_engine.py | Single-repo self-heal: detect a regression in RoboCo's own CI via telemetry, notify CEO, optionally open a HELD PENDING fix task | 567 |
 | roboco/services/ci_watch_engine.py | Multi-repo CI-watch: for each opted-in project whose CI is red, open one READY-to-start PENDING fix task (deduped per git_url) and notify the cell PM | 272 |
 | roboco/services/dep_update_engine.py | Dependency-update bot: probe each opted-in project's lockfile for changes and open one READY-to-start PENDING update task per repo | 231 |
 | roboco/runtime/orchestrator.py | Owns the three background loops (_self_heal_loop, _ci_watch_loop, _dep_update_loop) that construct the engines, call run_cycle, and commit the session | (slice within a shared file) |
@@ -29,7 +29,7 @@ Three default-off background "engine" services that watch CI / dependencies and 
 | SelfHealEngine._mark_notified | method | roboco/services/self_heal_engine.py:411 | Record that this fingerprint was CEO-notified; sets a Redis key with self_heal_notify_dedupe_seconds TTL; best-effort (failure swallowed) |
 | SelfHealEngine._dedupe_key | staticmethod | roboco/services/self_heal_engine.py:434 | Build the Redis key _NOTIFY_DEDUPE_KEY_PREFIX + fingerprint |
 | SelfHealEngine._originate | method | roboco/services/self_heal_engine.py:452 | Open one PENDING HELD (confirmed_by_human=False) fix task per NEW regression, bounded by per-cycle/rolling caps + fingerprint dedupe |
-| get_self_heal_engine | function | roboco/services/self_heal_engine.py:562 | Factory: construct SelfHealEngine bound to a session with optional test source |
+| get_self_heal_engine | function | roboco/services/self_heal_engine.py:563 | Factory: construct SelfHealEngine bound to a session with optional test source |
 | _cell_pm_slug_for | function | roboco/services/ci_watch_engine.py:46 | Resolve the cell-PM agent slug owning a team (e.g. Team.BACKEND -> 'be-pm'), or None |
 | CiWatchEngine | class | roboco/services/ci_watch_engine.py:54 | Open a fix task per opted-in project whose CI is red; never merges |
 | CiWatchEngine.run_cycle | method | roboco/services/ci_watch_engine.py:63 | Gate on ci_watch_enabled, fetch breaches for the watch set, originate fix tasks; returns opened tasks; flushes, caller commits |

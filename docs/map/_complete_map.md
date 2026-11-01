@@ -1333,7 +1333,7 @@ Three default-off background "engine" services that watch CI / dependencies and 
 
 | Path | Role | LOC |
 |---|---|---|
-| roboco/services/self_heal_engine.py | Single-repo self-heal: detect a regression in RoboCo's own CI via telemetry, notify CEO, optionally open a HELD PENDING fix task | 566 |
+| roboco/services/self_heal_engine.py | Single-repo self-heal: detect a regression in RoboCo's own CI via telemetry, notify CEO, optionally open a HELD PENDING fix task | 567 |
 | roboco/services/ci_watch_engine.py | Multi-repo CI-watch: for each opted-in project whose CI is red, open one READY-to-start PENDING fix task (deduped per git_url) and notify the cell PM | 272 |
 | roboco/services/dep_update_engine.py | Dependency-update bot: probe each opted-in project's lockfile for changes and open one READY-to-start PENDING update task per repo | 231 |
 | roboco/runtime/orchestrator.py | Owns the three background loops (_self_heal_loop, _ci_watch_loop, _dep_update_loop) that construct the engines, call run_cycle, and commit the session | (slice within a shared file) |
@@ -1357,7 +1357,7 @@ Three default-off background "engine" services that watch CI / dependencies and 
 | SelfHealEngine._mark_notified | method | roboco/services/self_heal_engine.py:411 | Record that this fingerprint was CEO-notified; sets a Redis key with self_heal_notify_dedupe_seconds TTL; best-effort (failure swallowed) |
 | SelfHealEngine._dedupe_key | staticmethod | roboco/services/self_heal_engine.py:434 | Build the Redis key _NOTIFY_DEDUPE_KEY_PREFIX + fingerprint |
 | SelfHealEngine._originate | method | roboco/services/self_heal_engine.py:452 | Open one PENDING HELD (confirmed_by_human=False) fix task per NEW regression, bounded by per-cycle/rolling caps + fingerprint dedupe |
-| get_self_heal_engine | function | roboco/services/self_heal_engine.py:562 | Factory: construct SelfHealEngine bound to a session with optional test source |
+| get_self_heal_engine | function | roboco/services/self_heal_engine.py:563 | Factory: construct SelfHealEngine bound to a session with optional test source |
 | _cell_pm_slug_for | function | roboco/services/ci_watch_engine.py:46 | Resolve the cell-PM agent slug owning a team (e.g. Team.BACKEND -> 'be-pm'), or None |
 | CiWatchEngine | class | roboco/services/ci_watch_engine.py:54 | Open a fix task per opted-in project whose CI is red; never merges |
 | CiWatchEngine.run_cycle | method | roboco/services/ci_watch_engine.py:63 | Gate on ci_watch_enabled, fetch breaches for the watch set, originate fix tasks; returns opened tasks; flushes, caller commits |
@@ -10984,7 +10984,7 @@ Every verdict is buffered into `decision_log` (migrations 105 to 107). The traje
 | `roboco/services/decisions/resolver.py` | Per-call tier resolution: master flag off is the floor; else Clef if enabled and healthy, else Laya, else OpenRouter if opted in with a key; 30-second cached sidecar health, 60-second cached OpenRouter key, one CEO notification per boot when the opted-in key is missing | 302 |
 | `roboco/services/decisions/client.py` | `DecisionsClient`: the one HTTP client for every tier; client-side state caps and the stage-2 total-budget cap for self-hosted tiers, a per-process circuit breaker, `decide` returns None for no verdict | 610 |
 | `roboco/services/decisions/schemas.py` | Pydantic models of the Decisions wire format: `NoulQuestion`, `ChoiceQuestion`, `ScoreQuestion`, `DecisionAnswer`, `DecisionResult`, and the lenient `parse_decisions_payload` | 174 |
-| `roboco/services/decisions/pilots.py` | `PilotMode`, `PILOT_SLUGS`, `pilot_mode` (the single mode chokepoint), `decide_for_pilot`, `log_action`, and the core pilots: self-heal transient gate, parking lane, complexity score, preflight diff, test triage, transcript note, A2A steer gate, tool spotlight | 945 |
+| `roboco/services/decisions/pilots.py` | `PilotMode`, `PILOT_SLUGS`, `pilot_mode` (the single mode chokepoint), `decide_for_pilot`, `log_action`, and the core pilots: self-heal transient gate, parking lane, complexity score, preflight diff, test triage, transcript note, A2A steer gate, tool spotlight | 949 |
 | `roboco/services/decisions/pilots_content.py` | Content-lane pilots: intake pre-routing, X mention triage, segment classification, vault prefilter, secretary directive kind and assignee, Telegram free-text gate, memory distill gate, changelog highlights, proactive standards domain, decision-note sufficiency | 979 |
 | `roboco/services/decisions/pilots_dispatch.py` | Dispatch-lane pilots: external PR triage, idle-session reaping, context pruning, budget wrap-up, delta brief, review queue priority and depth, Board evidence skip, respawn verdict, submit-now confidence, park cause, PM closure safety, silent-exit pickup | 1267 |
 | `roboco/services/decisions/pilots_gateway.py` | Gateway-lane pilots: PM plan quality, commit-intent hint, findings-to-diff mapping, idle legitimacy, branch staleness, lesson pruning, assembled-branch coherence | 749 |
@@ -11013,7 +11013,7 @@ Every verdict is buffered into `decision_log` (migrations 105 to 107). The traje
 | `PilotMode` | StrEnum | `roboco/services/decisions/pilots.py:68` | `off`, `shadow`, `on` |
 | `pilot_mode` | function | `roboco/services/decisions/pilots.py:138` | Mode for one pilot: master flag, then settings row, then env lists, else off |
 | `decide_for_pilot` | function | `roboco/services/decisions/pilots.py:162` | Resolve mode and tier, ask one batched question set, log the verdict |
-| `steer_gate` | function | `roboco/services/decisions/pilots.py:776` | How a peer DM should reach its recipient |
+| `steer_gate` | function | `roboco/services/decisions/pilots.py:780` | How a peer DM should reach its recipient |
 | `external_pr_triage` | function | `roboco/services/decisions/pilots_dispatch.py:145` | Score an inbound PR's review priority and screen its text |
 | `respawn_verdict` | function | `roboco/services/decisions/pilots_dispatch.py:837` | Classify a respawn candidate the strike counter is gating |
 | `plan_quality` | function | `roboco/services/decisions/pilots_gateway.py:121` | Score a structurally valid PM decomposition plan |

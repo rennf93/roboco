@@ -68,9 +68,12 @@ def _arm(
 
 
 @pytest.mark.asyncio
-async def test_self_heal_high_noul_allows_origination(
+async def test_self_heal_confident_transient_skips_the_fix_task(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """CEO ruling 2026-11-01 (trail #55): a confidently transient failure is
+    a flake; originating a fix task for it is the repair churn spec 6.1
+    calls expensive, so this sweep skips it."""
     _arm(monkeypatch, payload=_payload({"gate": {"type": "noul", "noul": 0.9}}))
     verdict = await self_heal_transient(
         cast("AsyncSession", None),
@@ -81,11 +84,13 @@ async def test_self_heal_high_noul_allows_origination(
         attempt_number=1,
         run_id="run-1",
     )
-    assert verdict is SelfHealGate.ORIGINATE
+    assert verdict is SelfHealGate.SKIP
 
 
 @pytest.mark.asyncio
-async def test_self_heal_low_noul_skips(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_self_heal_regression_originates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _arm(monkeypatch, payload=_payload({"gate": {"type": "noul", "noul": 0.3}}))
     verdict = await self_heal_transient(
         cast("AsyncSession", None),
@@ -96,13 +101,15 @@ async def test_self_heal_low_noul_skips(monkeypatch: pytest.MonkeyPatch) -> None
         attempt_number=1,
         run_id="run-2",
     )
-    assert verdict is SelfHealGate.SKIP
+    assert verdict is SelfHealGate.ORIGINATE
 
 
 @pytest.mark.asyncio
-async def test_self_heal_high_attempt_number_skips_even_when_confident(
+async def test_self_heal_a_recurring_flake_originates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Past the attempt limit a "transient" failure keeps coming back, which
+    is not a flake: it originates like a regression."""
     _arm(monkeypatch, payload=_payload({"gate": {"type": "noul", "noul": 0.95}}))
     verdict = await self_heal_transient(
         cast("AsyncSession", None),
@@ -113,7 +120,7 @@ async def test_self_heal_high_attempt_number_skips_even_when_confident(
         attempt_number=3,
         run_id="run-3",
     )
-    assert verdict is SelfHealGate.SKIP
+    assert verdict is SelfHealGate.ORIGINATE
 
 
 @pytest.mark.asyncio
