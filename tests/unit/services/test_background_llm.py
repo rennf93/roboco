@@ -484,7 +484,7 @@ async def test_the_haiku_cli_is_launched_as_the_login_directory_owner(
         _REAL_HAIKU_TURN_IN_LOGIN_OWNER_PROCESS,
     )
     monkeypatch.setattr(os, "geteuid", lambda: 0)
-    monkeypatch.setenv("ROBOCO_DATABASE_PASSWORD", "not-for-the-cli")
+    monkeypatch.setenv("ROBOCO_DATABASE_PASSWORD", "pw")
     launches: list[tuple[tuple[object, ...], dict[str, Any]]] = []
 
     async def _record_launch(*args: object, **kwargs: Any) -> _FinishedProcess:
@@ -514,7 +514,7 @@ async def test_the_haiku_process_gets_the_request_home_cwd_and_no_secrets(
         settings, "background_llm_claude_home", str(_login_home(tmp_path))
     )
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-metered")
-    monkeypatch.setenv("ROBOCO_DATABASE_PASSWORD", "not-for-the-cli")
+    monkeypatch.setenv("ROBOCO_DATABASE_PASSWORD", "pw")
     _stand_in_for_the_haiku_process(
         monkeypatch,
         "import json, os, sys\n"
