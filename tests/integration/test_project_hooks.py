@@ -22,6 +22,7 @@ from roboco.exceptions import GitCommandError
 from roboco.services import project_hooks
 from roboco.services.git import GitService
 from roboco.services.workspace_container import (
+    WorkspaceCommand,
     WorkspaceContainerError,
     WorkspaceContainerResult,
 )
@@ -49,14 +50,21 @@ class _Runner:
     async def __call__(
         self,
         cwd: Path,
-        argv: list[str],
+        command: WorkspaceCommand,
         *,
         timeout: float,
         env: dict[str, str] | None = None,
         merge_stderr: bool = False,
     ) -> WorkspaceContainerResult:
+        argv = list(command.argv)
         self.calls.append(
-            {"cwd": cwd, "argv": argv, "env": env or {}, "timeout": timeout}
+            {
+                "cwd": cwd,
+                "argv": argv,
+                "purpose": command.purpose,
+                "env": env or {},
+                "timeout": timeout,
+            }
         )
         done = subprocess.run(
             argv,

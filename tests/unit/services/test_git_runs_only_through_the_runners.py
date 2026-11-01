@@ -46,7 +46,8 @@ _SPAWNERS = frozenset(
 )
 # Calls whose git argv is not a git process started here.
 _RESULT_LABELS = frozenset({"CompletedProcess", "CalledProcessError"})
-_SANDBOXED = frozenset({"run_in_workspace_container"})
+# A WorkspaceCommand only ever runs in the throwaway workspace container.
+_SANDBOXED = frozenset({"run_in_workspace_container", "WorkspaceCommand"})
 # The Codex sandbox's command-prefix policy table: ("git", "push"), ... rules.
 _NOT_SPAWNED = {_PACKAGE / "llm" / "providers" / "codex_cli_config.py"}
 
@@ -127,7 +128,7 @@ subprocess.run([*GIT, "log"])
 run_as_workspace_user("git", *argv[1:])
 subprocess.CompletedProcess(["git", "fetch"], 0, "", "")
 raise subprocess.CalledProcessError(1, ["git", "push"])
-run_in_workspace_container(cwd, ["git", "status"], timeout=1)
+run_in_workspace_container(cwd, WorkspaceCommand(["git", "status"], "x"), timeout=1)
 """
     assert _builds_git_argv(source) == [3, 4]
     assert _spawns_git('run_as_workspace_user("git", "status")') == [1]

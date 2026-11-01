@@ -31,6 +31,7 @@ from roboco.services.workspace import (
     _uv_container_env,
 )
 from roboco.services.workspace_container import (
+    WorkspaceCommand,
     WorkspaceContainerError,
     WorkspaceContainerResult,
 )
@@ -119,7 +120,10 @@ async def test_run_dep_install_sets_uv_python_install_dir(tmp_path: Path) -> Non
         )
 
     assert ok is True
-    assert runner.call_args.args == (ws, ["uv", "sync", "--extra", "dev"])
+    assert runner.call_args.args == (
+        ws,
+        WorkspaceCommand(["uv", "sync", "--extra", "dev"], "dev-deps"),
+    )
     # Must point INSIDE the workspace bind mount (the brick was the managed
     # CPython landing in /root, outside the mount + root-owned).
     assert runner.call_args.kwargs["env"] == {

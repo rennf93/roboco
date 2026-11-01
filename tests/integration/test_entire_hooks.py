@@ -23,6 +23,7 @@ from roboco.services.entire_hooks import ENTIRE_CLI
 from roboco.services.git import GitService
 from roboco.services.workspace_container import (
     ReadOnlyMount,
+    WorkspaceCommand,
     WorkspaceContainerError,
     WorkspaceContainerResult,
 )
@@ -49,13 +50,14 @@ class _Entire:
     async def __call__(
         self,
         cwd: Path,
-        argv: list[str],
+        command: WorkspaceCommand,
         *,
         timeout: float,
         env: dict[str, str] | None = None,
         read_only_mount: ReadOnlyMount | None = None,
     ) -> WorkspaceContainerResult:
-        _sh, _c, script, cli, path = argv
+        _sh, _c, script, cli, path = command.argv
+        assert command.purpose.startswith("entire-")
         assert cli == ENTIRE_CLI
         assert timeout > 0
         self.calls.append({"cwd": cwd, "script": script, "path": path, "env": env})
@@ -234,9 +236,9 @@ async def test_an_entire_wrapper_hook_stands_for_the_hook_it_moved_aside(
     ran: list[str] = []
 
     async def _runner(
-        _cwd: Path, argv: list[str], **_kwargs: Any
+        _cwd: Path, command: WorkspaceCommand, **_kwargs: Any
     ) -> WorkspaceContainerResult:
-        ran.append(Path(argv[0]).name)
+        ran.append(Path(command.argv[0]).name)
         return WorkspaceContainerResult(0, "", "")
 
     monkeypatch.setattr(project_hooks, "run_in_workspace_container", _runner)

@@ -14,22 +14,24 @@ from typing import TYPE_CHECKING
 from roboco.services.workspace_container import WorkspaceContainerResult
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Mapping
     from pathlib import Path
+
+    from roboco.services.workspace_container import WorkspaceCommand
 
 
 async def run_in_local_shell(
     cwd: Path,
-    argv: Sequence[str],
+    command: WorkspaceCommand,
     *,
     timeout: float,
     env: Mapping[str, str] | None = None,
     merge_stderr: bool = False,
 ) -> WorkspaceContainerResult:
-    """Run ``argv`` in ``cwd`` locally with the container runner's signature."""
+    """Run ``command`` in ``cwd`` locally with the container runner's signature."""
     del env  # the container's env is the image's; locally, inherit ours
     proc = await asyncio.create_subprocess_exec(
-        *argv,
+        *command.argv,
         cwd=cwd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT if merge_stderr else asyncio.subprocess.PIPE,

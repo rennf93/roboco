@@ -7,12 +7,14 @@
 from __future__ import annotations
 
 import importlib.util
+import re
 import sys
 from functools import cache
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import pytest
+from roboco.services.workspace_container import workspace_container_name
 
 if TYPE_CHECKING:
     from types import ModuleType
@@ -129,3 +131,18 @@ def test_a_refusal_says_why() -> None:
     reason = _decide("POST", "/v1.51/containers/create?name=evil")
     assert reason is not None
     assert "roboco-agent" in reason
+
+
+@pytest.mark.parametrize(
+    ("cwd", "purpose"),
+    [
+        ("/data/workspaces/p/t/be-dev-1/.worktrees/abc", "codegen"),
+        ("/data/private/dep-probe/p", "dep-update-probe"),
+        ("/srv/elsewhere", "entire-post-commit"),
+    ],
+)
+def test_the_gate_accepts_every_workspace_container_name(
+    cwd: str, purpose: str
+) -> None:
+    name = workspace_container_name(Path(cwd), purpose)
+    assert re.fullmatch(_gate().NAME, name), name

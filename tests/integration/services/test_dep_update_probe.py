@@ -22,6 +22,8 @@ from tests.unit.local_workspace_container import run_in_local_shell
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from roboco.services.workspace_container import WorkspaceCommand
+
 
 @pytest.fixture(autouse=True)
 def _private_scratch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -178,9 +180,10 @@ async def test_upgrade_and_status_both_run_in_the_workspace_container(
     reads a .git that code just ran in: neither may run in this process."""
     calls: list[list[str]] = []
 
-    async def _recording(cwd: Path, argv: list[str], **kw: Any) -> Any:
-        calls.append(list(argv))
-        return await run_in_local_shell(cwd, argv, **kw)
+    async def _recording(cwd: Path, command: WorkspaceCommand, **kw: Any) -> Any:
+        calls.append(list(command.argv))
+        assert command.purpose == "dep-update-probe"
+        return await run_in_local_shell(cwd, command, **kw)
 
     monkeypatch.setattr(workspace_module, "run_in_workspace_container", _recording)
     svc = _svc(_make_read_clone(tmp_path))

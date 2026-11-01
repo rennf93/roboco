@@ -53,6 +53,7 @@ from roboco.services.git_relay import (
 )
 from roboco.services.toolchain import resolve_target_python
 from roboco.services.workspace_container import (
+    WorkspaceCommand,
     WorkspaceContainerError,
     run_in_workspace_container,
 )
@@ -1456,7 +1457,7 @@ class WorkspaceReadClones(_Base):
         timeout = settings.workspace_dep_install_timeout_seconds
         upgrade = await run_in_workspace_container(
             clone_dir,
-            shlex.split(command),
+            WorkspaceCommand(shlex.split(command), "dep-update-probe"),
             timeout=timeout,
             env=_uv_container_env(clone_dir),
         )
@@ -1470,7 +1471,9 @@ class WorkspaceReadClones(_Base):
             return False
         status = await run_in_workspace_container(
             clone_dir,
-            ["git", "status", "--porcelain", "--", *lock_paths],
+            WorkspaceCommand(
+                ["git", "status", "--porcelain", "--", *lock_paths], "dep-update-probe"
+            ),
             timeout=timeout,
         )
         return bool(status.stdout.strip())
@@ -1594,7 +1597,7 @@ class WorkspaceToolchain(_Base):
         try:
             result = await run_in_workspace_container(
                 workspace,
-                argv,
+                WorkspaceCommand(argv, "toolchain-smoke"),
                 timeout=settings.workspace_dep_install_timeout_seconds,
                 env=_uv_container_env(workspace),
             )
@@ -1654,7 +1657,7 @@ class WorkspaceToolchain(_Base):
         try:
             result = await run_in_workspace_container(
                 workspace,
-                argv,
+                WorkspaceCommand(argv, "dev-deps"),
                 timeout=settings.workspace_dep_install_timeout_seconds,
                 env=_uv_container_env(workspace),
             )

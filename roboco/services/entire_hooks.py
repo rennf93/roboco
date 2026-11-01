@@ -41,6 +41,7 @@ from roboco.config import settings
 from roboco.logging import get_logger
 from roboco.services.workspace_container import (
     ReadOnlyMount,
+    WorkspaceCommand,
     WorkspaceContainerError,
     run_offline_in_workspace_container,
 )
@@ -112,7 +113,9 @@ async def _run_entire(
     try:
         result = await run_offline_in_workspace_container(
             cwd,
-            ["sh", "-c", script, ENTIRE_CLI, path_arg],
+            WorkspaceCommand(
+                ["sh", "-c", script, ENTIRE_CLI, path_arg], f"entire-{step}"
+            ),
             timeout=timeout,
             env=_entire_env(),
             read_only_mount=_transcript_mount(cwd),

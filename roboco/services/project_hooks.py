@@ -43,6 +43,7 @@ from roboco.services.entire_hooks import (
     run_entire_message_hooks,
 )
 from roboco.services.workspace_container import (
+    WorkspaceCommand,
     WorkspaceContainerError,
     run_in_workspace_container,
 )
@@ -119,7 +120,11 @@ async def run_project_hook(
         argv = ["sh", "-c", 'exec "$0" "$@" < "$ROBOCO_HOOK_STDIN"', *argv]
     try:
         result = await run_in_workspace_container(
-            cwd, argv, timeout=timeout, env=_hook_env(stdin_file), merge_stderr=True
+            cwd,
+            WorkspaceCommand(argv, f"hook-{name}"),
+            timeout=timeout,
+            env=_hook_env(stdin_file),
+            merge_stderr=True,
         )
     except WorkspaceContainerError as exc:
         return _refused(name, f"{name} hook ({hook}) could not run: {exc}")

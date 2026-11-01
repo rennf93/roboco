@@ -18,7 +18,10 @@ from roboco.services.gateway.choreographer import Choreographer, ChoreographerDe
 from roboco.services.gateway.choreographer._impl import _IAmDoneContext
 from roboco.services.gateway.quality_gate import GateResult, run_quality_commands
 from roboco.services.git import GitService
-from roboco.services.workspace_container import WorkspaceContainerResult
+from roboco.services.workspace_container import (
+    WorkspaceCommand,
+    WorkspaceContainerResult,
+)
 from tests.unit.local_workspace_container import run_in_local_shell
 
 # --- the runner -------------------------------------------------------------
@@ -94,12 +97,12 @@ async def test_run_one_runs_the_command_in_the_workspace_container(
     monkeypatch.setattr(quality_gate, "run_in_workspace_container", runner)
     assert not hasattr(quality_gate, "asyncio"), "no local subprocess path left"
 
-    rc, out = await quality_gate._run_one(tmp_path, "make gate")
+    rc, out = await quality_gate._run_one(tmp_path, "gate", "make gate")
 
     assert (rc, out) == (0, "ok\n")
     runner.assert_awaited_once_with(
         tmp_path,
-        ["sh", "-c", "make gate"],
+        WorkspaceCommand(["sh", "-c", "make gate"], "gate"),
         timeout=quality_gate._GATE_TIMEOUT_SECONDS,
         merge_stderr=True,
     )
@@ -118,7 +121,7 @@ async def test_run_one_reports_a_timeout_as_exit_124(
             )
         ),
     )
-    rc, msg = await quality_gate._run_one(tmp_path, "slow-command")
+    rc, msg = await quality_gate._run_one(tmp_path, "slow", "slow-command")
     assert rc == _TIMEOUT_EXIT_CODE
     assert "timed out" in msg
 

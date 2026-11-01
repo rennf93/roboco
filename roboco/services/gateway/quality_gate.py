@@ -14,7 +14,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from roboco.services.workspace_container import run_in_workspace_container
+from roboco.services.workspace_container import (
+    WorkspaceCommand,
+    run_in_workspace_container,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -63,7 +66,7 @@ async def run_quality_commands(
     failures: list[str] = []
     chunks: list[str] = []
     for name, command in commands:
-        return_code, out = await _run_one(workspace, command)
+        return_code, out = await _run_one(workspace, name, command)
         chunks.append(f"$ {command}\n{out.strip()}")
         if return_code != 0:
             failures.append(name)
@@ -74,7 +77,7 @@ async def run_quality_commands(
     )
 
 
-async def _run_one(workspace: Path, command: str) -> tuple[int, str]:
+async def _run_one(workspace: Path, name: str, command: str) -> tuple[int, str]:
     """Run one operator-configured command string in the workspace shell.
 
     The command executes the clone's own Makefile/tooling, which any agent
@@ -85,7 +88,7 @@ async def _run_one(workspace: Path, command: str) -> tuple[int, str]:
     """
     result = await run_in_workspace_container(
         workspace,
-        ["sh", "-c", command],
+        WorkspaceCommand(["sh", "-c", command], name),
         timeout=_GATE_TIMEOUT_SECONDS,
         merge_stderr=True,
     )

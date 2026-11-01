@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import re
 import socket
 from dataclasses import dataclass
 from pathlib import Path
@@ -44,6 +45,13 @@ if TYPE_CHECKING:
 
 
 WORKSPACE_CONTAINER_LABEL = "roboco.workspace-container=1"
+
+# Container names read `roboco-wsx-<owner>-<purpose>-<8 hex>`; each segment is
+# cut to what docker names allow and to a length `docker ps` stays legible at.
+_NAME_SEGMENT_DISALLOWED = re.compile(r"[^a-z0-9_.-]+")
+_NAME_SEGMENT_MAX_CHARS = 40
+# /data/workspaces/<project>/<team>/<agent>: the agent slug is the third part.
+_AGENT_PATH_DEPTH = 3
 
 # `docker run` exits 125 when the daemon could not create/start the container
 # (bad image, unreachable daemon, invalid option) — not the command's status.
@@ -116,6 +124,15 @@ class ReadOnlyMount:
 
 
 @dataclass(frozen=True)
+class WorkspaceCommand:
+    """What a throwaway container runs: ``argv``, and the ``purpose`` its name
+    carries (``codegen``, ``dev-deps``, ``hook-pre-commit``, ...)."""
+
+    argv: Sequence[str]
+    purpose: str
+
+
+@dataclass(frozen=True)
 class _Run:
     """How one throwaway container runs (all but its cwd and command)."""
 
@@ -159,13 +176,16 @@ def host_path_for(path: Path) -> str:
 
 async def run_in_workspace_container(
     cwd: Path,
-    argv: Sequence[str],
+    command: WorkspaceCommand,
     *,
     timeout: float,
     env: Mapping[str, str] | None = None,
     merge_stderr: bool = False,
 ) -> WorkspaceContainerResult:
-    """Run ``argv`` in ``cwd`` inside a throwaway container as the agent uid.
+    """Run ``command`` in ``cwd`` inside a throwaway container as the agent uid.
+
+    The container is named after the workspace's owner and the command's
+    purpose (``workspace_container_name``).
 
     The clone root of ``cwd`` (so a worktree still reaches the shared
     ``.venv`` / ``.uv-python``) is bind-mounted at the same path, so absolute
@@ -175,12 +195,12 @@ async def run_in_workspace_container(
     the container and reports ``timed_out`` with returncode 124.
     """
     run = _Run(timeout, env or {}, merge_stderr, settings.workspace_container_network)
-    return await _run_container(cwd, argv, run)
+    return await _run_container(cwd, command, run)
 
 
 async def run_offline_in_workspace_container(
     cwd: Path,
-    argv: Sequence[str],
+    command: WorkspaceCommand,
     *,
     timeout: float,
     env: Mapping[str, str] | None = None,
@@ -189,13 +209,13 @@ async def run_offline_in_workspace_container(
     """``run_in_workspace_container`` with no network at all (stdout and
     stderr merged), plus ``read_only_mount`` when given."""
     run = _Run(timeout, env or {}, True, "none", read_only_mount)
-    return await _run_container(cwd, argv, run)
+    return await _run_container(cwd, command, run)
 
 
 async def _run_container(
-    cwd: Path, argv: Sequence[str], run: _Run
+    cwd: Path, command: WorkspaceCommand, run: _Run
 ) -> WorkspaceContainerResult:
-    name = f"roboco-wsx-{uuid4().hex[:12]}"
+    name = workspace_container_name(cwd, command.purpose)
     mount = clone_root_of(Path(os.path.normpath(cwd)))
     try:
         identity = await asyncio.to_thread(workspace_dir_identity, mount)
@@ -213,7 +233,7 @@ async def _run_container(
         "-c",
         script,
         "sh",
-        *argv,
+        *command.argv,
         env=docker_cli_env(env_values),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -236,6 +256,36 @@ async def _run_container(
     # unknown status must never pass a gate.
     returncode = proc.returncode if proc.returncode is not None else 1
     return WorkspaceContainerResult(returncode, out, err)
+
+
+def workspace_container_name(cwd: Path, purpose: str) -> str:
+    """``roboco-wsx-<owner>-<purpose>-<8 hex>``: whose workspace and what runs
+    in it, readable in ``docker ps``; the random suffix keeps concurrent runs
+    of the same purpose apart."""
+    owner = _workspace_owner(Path(os.path.normpath(cwd)))
+    segments = (_name_segment(owner), _name_segment(purpose), uuid4().hex[:8])
+    return "roboco-wsx-" + "-".join(segments)
+
+
+def _workspace_owner(path: Path) -> str:
+    """The agent slug of ``/data/workspaces/<project>/<team>/<agent>/...``, the
+    last segment of a shallower workspace path, ``private`` for the
+    orchestrator-only data root, else ``workspace``."""
+    with contextlib.suppress(ValueError):
+        parts = path.relative_to(settings.workspaces_root).parts
+        if len(parts) >= _AGENT_PATH_DEPTH:
+            return parts[_AGENT_PATH_DEPTH - 1]
+        if parts:
+            return parts[-1]
+    with contextlib.suppress(ValueError):
+        path.relative_to(settings.private_data_root)
+        return "private"
+    return "workspace"
+
+
+def _name_segment(text: str) -> str:
+    segment = _NAME_SEGMENT_DISALLOWED.sub("-", text.lower()).strip("-.")
+    return segment[:_NAME_SEGMENT_MAX_CHARS].rstrip("-.") or "x"
 
 
 async def _read_only_mount_options(mount: ReadOnlyMount) -> list[str]:
