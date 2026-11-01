@@ -61,9 +61,13 @@ Environment variables for RoboCo (prefix: `ROBOCO_`).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ROBOCO_LOCAL_LLM_MODEL` | `glm-5.3:cloud` | Local LLM for RAG |
+| `ROBOCO_LOCAL_LLM_MODEL` | `glm-5.3-flash:cloud` | Ollama model the background LLM client tries first when Claude is not the main driver |
 | `ROBOCO_LOCAL_LLM_BASE_URL` | `http://roboco-ollama:11434/v1` | OpenAI-compat API |
 | `ROBOCO_OLLAMA_BASE_URL` | `http://roboco-ollama:11434` | Native Ollama API |
+| `ROBOCO_BACKGROUND_LLM_MODE_CACHE_SECONDS` | `30` | How long the background LLM client reuses the routing mode it read before reading it again |
+| `ROBOCO_BACKGROUND_LLM_OLLAMA_NO_CREDIT_COOLDOWN_SECONDS` | `600` | After Ollama answers HTTP 402 (no credit), how long the client skips Ollama and goes straight to Claude Haiku |
+
+Every orchestrator-side text-LLM call (RAG answer synthesis, the Mentor, standards validation, lesson distillation, vault intake, X and video drafting, the eval judge) goes through one client, `roboco/services/background_llm.py`, which follows the active AI provider: in Anthropic mode Claude Haiku answers alone; in every other mode Ollama's flash model answers first and Claude Haiku answers when Ollama cannot (an HTTP error, a connection error, a timeout, an empty reply). Haiku runs on the Claude Code login mounted at `~/.claude`, never an API key. When neither answers, each call keeps its own fallback (RAG returns a direct extract of the sources, the validator falls back to heuristics).
 
 ## Grok provider (xAI)
 
