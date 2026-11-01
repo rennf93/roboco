@@ -376,7 +376,8 @@ class MentorRetrieval(_Base):
                     {
                         "type": entry.type.value,
                         "title": entry.title,
-                        "content": entry.content[:500],  # Truncate for context
+                        # Truncate for context
+                        "content": entry.content[:500],
                         "created_at": (
                             entry.created_at.isoformat() if entry.created_at else None
                         ),
