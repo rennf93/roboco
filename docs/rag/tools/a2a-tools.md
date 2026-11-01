@@ -16,7 +16,8 @@ dm(
 - Auto-creates the conversation; auto-resolves the skill if needed.
 - **Same-cell only.** Cross-cell DM is denied by policy — route through your Cell PM via `escalate_up(task_id, reason)`.
 - The recipient sees it in their notify inbox when offline.
-- **Active-claim required:** with an explicit `task_id`, `dm` checks that you are the task's **active claimant** — not just `assigned_to`, which goes stale across a reap/handoff. A reaped or reassigned agent can no longer `dm` about a former task; on `not_authorized` follow its `remediate` (it names the claim verb when the task is still yours to claim).
+- **A cell PM writing about its subtree:** a cell PM may `dm` about any task under a task it is assigned to that task's assignee in its own cell, e.g. `dm(recipient='fe-dev-1', task_id='<fe-dev-1's leaf>', text='unblocked: ...')` from `fe-pm`. Only the assignee: anyone else is refused, and the refusal names the assignee. A Main PM never reaches a cell developer (cross-cell): it dms the cell's PM on a task it holds, and that PM dms the developer. The same goes for a PM writing to another cell's member; both refusals name that route.
+- **Active-claim required:** otherwise, with an explicit `task_id`, `dm` checks that you are the task's **active claimant** — not just `assigned_to`, which goes stale across a reap/handoff. A reaped or reassigned agent can no longer `dm` about a former task; on `not_authorized` follow its `remediate` (it names the claim verb when the task is still yours to claim).
 - **Omitting `task_id`** attaches the message to the one task whose claim you hold. Holding several, or holding none while you have assigned work, is refused with `missing=['task_id']` and the candidate task ids: pass the one the message is about. Dropping `task_id` never gets a message onto a task an explicit `task_id` would be refused on.
 
 ## The CEO

@@ -2166,6 +2166,14 @@ class TaskRoleLookup(_Base):
             raise NotFoundError(resource_type="Agent", resource_id=agent_id_str)
         return UUID(str(agent_uuid))
 
+    async def agent_slug(self, agent_id: UUID) -> str | None:
+        """The slug of agent ``agent_id``, or None when there is no such agent."""
+        result = await self.session.execute(
+            select(AgentTable.slug).where(AgentTable.id == agent_id)
+        )
+        slug = result.scalar_one_or_none()
+        return str(slug) if slug else None
+
     async def agent_for(self, agent_id: UUID) -> GatewayAgentView | None:
         """Return a gateway-shaped view of the agent (DB + config derived).
 

@@ -143,6 +143,8 @@ Persisted to the revision-findings ledger (`origin=pm`), rendered into `pm_notes
 dm(recipient="be-pm", text="Coordinating the API contract — ...", task_id="...")
 ```
 
+You dm the Cell PMs, the Board and each other PM, never a cell's developers, QA or documenter (cross-cell). To reach a developer about its task, dm that cell's PM on a task you hold (your root); the cell PM may dm the developer on the developer's task.
+
 ## Escalation
 
 Escalate to the CEO when:

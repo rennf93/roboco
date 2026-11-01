@@ -85,9 +85,18 @@ class SandboxTestsSurface(Protocol):
     async def _git_capture(*args: Any, **kwargs: Any) -> tuple[bool, str, str]: ...
 
 
+class DmAccessSurface(Protocol):
+    """``DmAccessActions``'s members that other mixins reach."""
+
+    async def _task_for_dm(
+        self, *args: Any, **kwargs: Any
+    ) -> UUID | Envelope | None: ...
+
+
 class TaskAccessSurface(Protocol):
     """``TaskAccessActions``'s members that other mixins reach."""
 
+    async def _caller_owns_an_ancestor(self, *args: Any, **kwargs: Any) -> bool: ...
     async def _evidence_task_or_error(
         self, *args: Any, **kwargs: Any
     ) -> TaskTable | Envelope: ...
@@ -103,6 +112,7 @@ class TaskAccessSurface(Protocol):
 class ContentActionsSelf(
     BoardProposalSurface,
     ContentSurface,
+    DmAccessSurface,
     RoadmapSurface,
     SandboxSurface,
     SandboxTestsSurface,

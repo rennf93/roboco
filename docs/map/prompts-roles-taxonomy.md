@@ -7,7 +7,7 @@ This slice is the prompt-composition pipeline and the role/team/permission taxon
 |---|---|---|
 | roboco/agents/factories/_base.py | Layered prompt composer: loads/concatenates tool-directive + lifecycle + base + an optional fable-mode doctrine + an optional ponytail build-laziness doctrine + role + autogen-verbs + team + identity + ambient layers; exports PROMPTS_BASE_PATH, role/team/builtin-tool maps, compose_prompt, fable_doctrine_layer, ponytail_doctrine_layer, conventions_ambient_layer, make_slug | 378 |
 | roboco/agents/factories/__init__.py | One-line re-export shim pointing to _base | 1 |
-| roboco/agents_config.py | 691-line MCP-layer permission/taxonomy module: HMAC agent-token issue/verify, role+team+cell maps derived from foundation, escalation chain, ROLE_PERMISSION_LEVELS, ROLE_SKILLS, A2A routing helpers | 893 |
+| roboco/agents_config.py | 691-line MCP-layer permission/taxonomy module: HMAC agent-token issue/verify, role+team+cell maps derived from foundation, escalation chain, ROLE_PERMISSION_LEVELS, ROLE_SKILLS, A2A routing helpers | 925 |
 | roboco/agent_sdk/prompt_guard.py | Reusable Python port of the bash injection guard: _PATTERNS regex list, detect_injection, refusal_message, CLI main (exit 1 on injection) for the grok entrypoint | 59 |
 | agents/prompts/base.md | Universal base layer: identity separation, gateway-verb-only action, envelope shapes, missing-key cheatsheet, resume-from-briefing, charter alignment, todo rules, ground rules | 95 |
 | agents/prompts/doctrine/fable.md | Vendored Fable-5 behavioral doctrine (from `github.com/rennf93/opus-fable-playbook`, MIT, YAML frontmatter stripped): communication/turn-discipline/autonomy-calibration/honesty/code-discipline/delegation/precedence sections; loaded only when `fable_mode_enabled`, injected right after base.md via `fable_doctrine_layer()` | 47 |
@@ -82,42 +82,44 @@ This slice is the prompt-composition pipeline and the role/team/permission taxon
 | _UUID_TO_SLUG | dict | roboco/agents_config.py:182 | Reverse map UUID->slug from AGENT_UUIDS seeds |
 | _resolve_to_slug | function | roboco/agents_config.py:187 | Resolve UUID or slug input to slug |
 | AGENT_ROLE_MAP | dict | roboco/agents_config.py:200 | slug->role.value for every non-SYSTEM agent (derived from foundation.AGENTS) |
-| AGENT_TEAM_MAP | dict | roboco/agents_config.py:206 | slug->team.value derived from foundation |
-| CELL_MEMBERS | dict | roboco/agents_config.py:212 | team.value -> sorted slug list per cell |
-| ALL_AGENTS | list | roboco/agents_config.py:219 | All agent slugs |
-| BOARD_MEMBERS | list | roboco/agents_config.py:222 | product-owner, head-marketing, auditor |
-| ALL_DOCS | list | roboco/agents_config.py:225 | Cross-cell documenter slugs for docs workspace perms |
-| TASK_CREATOR_ROLES | frozenset | roboco/agents_config.py:232 | Roles that can call task.create (cell_pm, main_pm, product_owner, head_marketing, ceo) |
-| ESCALATION_CHAIN | dict | roboco/agents_config.py:243 | slug -> escalation target slug (dev/qa/doc -> cell PM -> main-pm -> product-owner -> ceo) |
-| get_agent_role | function | roboco/agents_config.py:277 | Role string for an agent (UUID or slug); 'unknown' if missing |
-| get_agent_team | function | roboco/agents_config.py:283 | Team string for an agent or None |
-| get_agent_cell | function | roboco/agents_config.py:289 | Alias of get_agent_team |
-| get_cell_members | function | roboco/agents_config.py:294 | Slugs for a cell |
-| is_pm | function | roboco/agents_config.py:299 | cell_pm or main_pm predicate |
-| is_board_member | function | roboco/agents_config.py:305 | Board membership predicate by slug |
-| is_management | function | roboco/agents_config.py:310 | PM/Board/CEO predicate |
-| is_ceo | function | roboco/agents_config.py:323 | CEO predicate (full permission bypass) |
-| can_send_notifications | function | roboco/agents_config.py:328 | Role in foundation NOTIFY_SENDER_ROLES |
-| can_create_tasks | function | roboco/agents_config.py:336 | Role in TASK_CREATOR_ROLES |
-| can_assign_tasks | function | roboco/agents_config.py:342 | Same set as can_create_tasks |
-| _CANCEL_ROLES | set | roboco/agents_config.py:349 | Roles that may cancel (cell_pm/main_pm/product_owner/head_marketing — NOT ceo/auditor) |
-| can_cancel_tasks | function | roboco/agents_config.py:357 | Role in _CANCEL_ROLES |
-| get_escalation_target | function | roboco/agents_config.py:363 | Next escalation slug from ESCALATION_CHAIN |
-| get_pm_for_team | function | roboco/agents_config.py:368 | Cell PM slug for a team |
-| get_pm_for_agent | function | roboco/agents_config.py:378 | Responsible PM: cell PM for members, main-pm for cell PMs, product-owner for main PM |
-| ROLE_PERMISSION_LEVELS | dict | roboco/agents_config.py:407 | Single source of truth role->permission-level (CEO/BOARD/AUDITOR/MAIN_PM/CELL_PM/CELL_MEMBER) used by PermissionService |
-| VALID_NOTIFICATION_TYPES | frozenset | roboco/agents_config.py:428 | Valid NotificationType values |
-| VALID_NOTIFICATION_PRIORITIES | frozenset | roboco/agents_config.py:431 | Valid NotificationPriority values |
-| ROLE_SKILLS | dict | roboco/agents_config.py:441 | Role -> A2A skill descriptor list for Agent Cards |
-| get_agent_skills | function | roboco/agents_config.py:569 | A2A skills for an agent by role |
-| _BOARD_ROLES | frozenset | roboco/agents_config.py:587 | Foundation board roles (PO/HoM/Auditor; main_pm intentionally excluded) |
-| _MAIN_PM_TARGETS | frozenset | roboco/agents_config.py:588 | Roles a main PM may A2A directly |
-| _check_cell_pm_a2a | function | roboco/agents_config.py:593 | A2A permission for cell PM (own cell / other PMs / main-pm allowed; board escalated) |
-| _check_cell_member_a2a | function | roboco/agents_config.py:607 | A2A permission for cell members (same-cell allowed; cross-cell via PMs) |
-| _check_main_pm_a2a | function | roboco/agents_config.py:627 | A2A permission for main PM (_MAIN_PM_TARGETS allowed) |
-| can_a2a_direct | function | roboco/agents_config.py:694 | (allowed, error) for direct A2A from one agent to another; routes CEO via `_check_ceo_a2a`, `from_role == "auditor"` unconditionally refuses (silent peer observer — replies to a CEO-opened DM go through A2AService's stateful reply path instead, not this matrix), board/main_pm/cell-member via handlers |
-| _check_ceo_a2a | function | roboco/agents_config.py:635 | CEO-initiated A2A target check: refuses `to_role in NO_COMMS_ROLES` (prompter/secretary only — no `dm`/`read_a2a` on the manifest, so nothing on the other end could read or answer it), else allowed. auditor/pr_reviewer carry `dm`/`read_a2a` now (CEO-reachable, reply-only) so they're no longer in NO_COMMS_ROLES |
-| get_a2a_route_hint | function | roboco/agents_config.py:751 | Human-readable routing hint for an A2A message |
+| AGENT_TEAM_MAP | dict | roboco/agents_config.py:207 | slug->team.value derived from foundation |
+| CELL_MEMBERS | dict | roboco/agents_config.py:213 | team.value -> sorted slug list per cell |
+| ALL_AGENTS | list | roboco/agents_config.py:220 | All agent slugs |
+| BOARD_MEMBERS | list | roboco/agents_config.py:223 | product-owner, head-marketing, auditor |
+| ALL_DOCS | list | roboco/agents_config.py:226 | Cross-cell documenter slugs for docs workspace perms |
+| TASK_CREATOR_ROLES | frozenset | roboco/agents_config.py:233 | Roles that can call task.create (cell_pm, main_pm, product_owner, head_marketing, ceo) |
+| ESCALATION_CHAIN | dict | roboco/agents_config.py:244 | slug -> escalation target slug (dev/qa/doc -> cell PM -> main-pm -> product-owner -> ceo) |
+| get_agent_role | function | roboco/agents_config.py:278 | Role string for an agent (UUID or slug); 'unknown' if missing |
+| get_agent_team | function | roboco/agents_config.py:284 | Team string for an agent or None |
+| get_agent_cell | function | roboco/agents_config.py:290 | Alias of get_agent_team |
+| get_cell_members | function | roboco/agents_config.py:295 | Slugs for a cell |
+| is_pm | function | roboco/agents_config.py:300 | cell_pm or main_pm predicate |
+| is_board_member | function | roboco/agents_config.py:306 | Board membership predicate by slug |
+| is_management | function | roboco/agents_config.py:311 | PM/Board/CEO predicate |
+| is_ceo | function | roboco/agents_config.py:324 | CEO predicate (full permission bypass) |
+| can_send_notifications | function | roboco/agents_config.py:329 | Role in foundation NOTIFY_SENDER_ROLES |
+| can_create_tasks | function | roboco/agents_config.py:337 | Role in TASK_CREATOR_ROLES |
+| can_assign_tasks | function | roboco/agents_config.py:343 | Same set as can_create_tasks |
+| _CANCEL_ROLES | set | roboco/agents_config.py:350 | Roles that may cancel (cell_pm/main_pm/product_owner/head_marketing — NOT ceo/auditor) |
+| can_cancel_tasks | function | roboco/agents_config.py:358 | Role in _CANCEL_ROLES |
+| get_escalation_target | function | roboco/agents_config.py:364 | Next escalation slug from ESCALATION_CHAIN |
+| get_pm_for_team | function | roboco/agents_config.py:369 | Cell PM slug for a team |
+| get_pm_for_agent | function | roboco/agents_config.py:379 | Responsible PM: cell PM for members, main-pm for cell PMs, product-owner for main PM |
+| ROLE_PERMISSION_LEVELS | dict | roboco/agents_config.py:408 | Single source of truth role->permission-level (CEO/BOARD/AUDITOR/MAIN_PM/CELL_PM/CELL_MEMBER) used by PermissionService |
+| VALID_NOTIFICATION_TYPES | frozenset | roboco/agents_config.py:430 | Valid NotificationType values |
+| VALID_NOTIFICATION_PRIORITIES | frozenset | roboco/agents_config.py:433 | Valid NotificationPriority values |
+| ROLE_SKILLS | dict | roboco/agents_config.py:443 | Role -> A2A skill descriptor list for Agent Cards |
+| get_agent_skills | function | roboco/agents_config.py:571 | A2A skills for an agent by role |
+| _BOARD_ROLES | frozenset | roboco/agents_config.py:589 | Foundation board roles (PO/HoM/Auditor; main_pm intentionally excluded) |
+| _MAIN_PM_TARGETS | frozenset | roboco/agents_config.py:590 | Roles a main PM may A2A directly |
+| _check_cell_pm_a2a | function | roboco/agents_config.py:595 | A2A permission for cell PM (own cell / other PMs / main-pm allowed; board escalated) |
+| _check_cell_member_a2a | function | roboco/agents_config.py:609 | A2A permission for cell members (same-cell allowed; cross-cell via PMs) |
+| _check_main_pm_a2a | function | roboco/agents_config.py:629 | A2A permission for main PM (_MAIN_PM_TARGETS allowed) |
+| can_a2a_direct | function | roboco/agents_config.py:696 | (allowed, error) for direct A2A from one agent to another; routes CEO via `_check_ceo_a2a`, `from_role == "auditor"` unconditionally refuses (silent peer observer — replies to a CEO-opened DM go through A2AService's stateful reply path instead, not this matrix), board/main_pm/cell-member via handlers |
+| _check_ceo_a2a | function | roboco/agents_config.py:637 | CEO-initiated A2A target check: refuses `to_role in NO_COMMS_ROLES` (prompter/secretary only — no `dm`/`read_a2a` on the manifest, so nothing on the other end could read or answer it), else allowed. auditor/pr_reviewer carry `dm`/`read_a2a` now (CEO-reachable, reply-only) so they're no longer in NO_COMMS_ROLES |
+| get_a2a_route_hint | function | roboco/agents_config.py:788 | Human-readable routing hint for an A2A message; a sender role's own route first (`_sender_role_route_hint`), then the cross-cell / management chains |
+| _sender_role_route_hint | function | roboco/agents_config.py:769 | Route a sender's role fixes: PR reviewer and DevOps reach only the owning PM; a Main or cell PM reaches another cell's member through that cell's PM (`_pm_route_hint`) |
+| _pm_route_hint | function | roboco/agents_config.py:753 | `Route: <PM>→<target's cell PM>→<target>`: a PM dms that cell's PM, which may dm the member about a task in its cell; replaces the `main-pm→None→main-pm→...` chain PM senders got |
 | A2A_ALLOWED_PAIRS | constant | roboco/agents_config.py | Statically-derived (via `_compute_a2a_allowed_pairs()`, calling `can_a2a_direct` for every pair) set of legal A2A pairs — sized 93 (`ceo` group 23) now that auditor + the 4 pr_reviewer slugs are CEO-reachable; the panel switchboard's section matrix reads off this same computation |
 | _PATTERNS | list | roboco/foundation/policy/injection_guard.py:44 | Five (regex, reason) injection patterns: ignore-previous, role-override, fake role prefix, control-token mimicry, fake executive-order |
 | detect_injection | function | roboco/foundation/policy/injection_guard.py:79 | Return deny reason if text matches an injection pattern (lowercased), else None; re-exported by `agent_sdk/prompt_guard.py` |

@@ -28,6 +28,7 @@ from uuid import UUID
 
 import structlog
 
+from roboco.agents_config import get_pm_for_team
 from roboco.config import settings
 from roboco.exceptions import GitError
 from roboco.foundation.identity import Role
@@ -484,6 +485,37 @@ def _claim_first_remediation(task_id: Any, claim_verbs: list[str]) -> str:
     )
 
 
+def _dm_to_its_assignee_remediation(task_id: Any, assignee_slug: str | None) -> str:
+    """Tell a cell PM that a dm about a task in its subtree goes to the
+    task's assignee and nobody else."""
+    if assignee_slug is None:
+        return (
+            f"a cell PM may dm about {task_id} only to its assignee, and "
+            f"{task_id} has none; dm on a task you hold instead"
+        )
+    return (
+        f"a cell PM may dm about {task_id} only to its assignee, while it sits "
+        f"under a task you are assigned: dm(recipient='{assignee_slug}', "
+        f"task_id='{task_id}', text=...)"
+    )
+
+
+def _dm_through_cell_pm_remediation(task_id: Any, cell_pm: str, team: str) -> str:
+    """Name the route for a PM writing about another cell's task: its PM."""
+    return (
+        f"dm {cell_pm}, the {team} cell's PM, about {task_id} instead, on a "
+        "task you hold (omit task_id when you hold exactly one); "
+        f"{cell_pm} may dm the task's assignee about it"
+    )
+
+
+def _team_value(team: Any) -> str | None:
+    """A task's or agent's team as its plain string value."""
+    if team is None:
+        return None
+    return str(getattr(team, "value", team))
+
+
 @dataclass(frozen=True)
 class ContentActionsDeps:
     """Service deps for ContentActions; bundled to keep init signature flat."""
@@ -867,6 +899,93 @@ class TaskAccessActions(_Base):
                 return True
             parent_id = parent.parent_task_id
         return False
+
+
+class DmAccessActions(_Base):
+    """Which task a ``dm`` may be about: the content-write gate, plus a cell
+    PM writing to the assignee of a task in its own subtree, and the route a
+    PM's refused dm names."""
+
+    async def _task_for_dm(
+        self,
+        agent_id: UUID,
+        recipient: str,
+        task_id: UUID | None,
+        taskless_refusal: Envelope,
+    ) -> UUID | Envelope | None:
+        """The task a dm is about, or its refusal.
+
+        On top of every content write's gate (``_task_for_content_write``),
+        a cell PM may dm about a task in its own subtree to that task's
+        assignee in its own cell (``_cell_pm_may_dm_assignee``). A PM's dm
+        the gate still refuses for not being the assignee names the route
+        that works (``_dm_route_for_unowned_task``).
+        """
+        task = await self.task.get(task_id) if task_id is not None else None
+        if task is not None and await self._cell_pm_may_dm_assignee(
+            agent_id, recipient, task
+        ):
+            return cast("UUID", task.id)
+        resolved = await self._task_for_content_write(
+            agent_id, task_id, "dm", taskless_refusal=taskless_refusal
+        )
+        if isinstance(resolved, Envelope) and task is not None:
+            route = await self._dm_route_for_unowned_task(agent_id, task)
+            resolved.remediate = route or resolved.remediate
+        return resolved
+
+    async def _cell_pm_may_dm_assignee(
+        self, agent_id: UUID, recipient: str, task: Any
+    ) -> bool:
+        """True when a cell PM writes to the assignee of a task in its subtree.
+
+        The CEO's rule (2026-11-01): a cell PM may dm about any task in its
+        own subtree to that task's assignee in its own cell. Without it fe-pm
+        could not tell fe-dev-1 why it unblocked 86ed0eab, fe-dev-1's leaf
+        under fe-pm's cell task (refused four times on 2026-10-28). Main PM
+        to a cell developer stays refused (cross-cell), and so does any
+        other recipient: the A2A policy still runs on the send.
+        """
+        if task.assigned_to is None or task.assigned_to == agent_id:
+            return False
+        return (
+            await self.task.agent_slug(task.assigned_to) == recipient
+            and await self._caller_is_cell_pm_of(agent_id, task.assigned_to)
+            and await self._caller_owns_an_ancestor(agent_id, task)
+        )
+
+    async def _caller_is_cell_pm_of(self, agent_id: UUID, member_id: UUID) -> bool:
+        """True when the caller is the cell PM of ``member_id``'s cell."""
+        caller = await self.task.agent_for(agent_id)
+        member = await self.task.agent_for(member_id)
+        return (
+            caller is not None
+            and member is not None
+            and caller.role == Role.CELL_PM.value
+            and caller.team == member.team
+        )
+
+    async def _dm_route_for_unowned_task(self, agent_id: UUID, task: Any) -> str | None:
+        """The route a PM's dm about a task it is not assigned should take.
+
+        Its own cell's task goes to the task's assignee; another cell's goes
+        through that cell's PM. None for a caller that is not a PM, a task
+        the caller is assigned, or a task with no cell PM, which keep the
+        refusal's own remediation.
+        """
+        if task.assigned_to is None or task.assigned_to == agent_id:
+            return None
+        caller = await self.task.agent_for(agent_id)
+        team = _team_value(task.team)
+        cell_pm = get_pm_for_team(team) if team else None
+        if caller is None or cell_pm is None:
+            return None
+        if caller.role == Role.CELL_PM.value and caller.team == team:
+            assignee = await self.task.agent_slug(task.assigned_to)
+            return _dm_to_its_assignee_remediation(task.id, assignee)
+        if caller.role in (Role.CELL_PM.value, Role.MAIN_PM.value):
+            return _dm_through_cell_pm_remediation(task.id, cell_pm, team or "")
+        return None
 
 
 class TaskReadActions(_Base):
@@ -1704,7 +1823,12 @@ class MessagingActions(_Base):
         task_id: UUID | None = None,
         skill: str | None = None,
     ) -> Envelope:
-        """A2A direct message. Requires task_id (active or explicit)."""
+        """A2A direct message. Requires task_id (active or explicit).
+
+        The writer must be the task's assignee holding its claim, or a cell
+        PM writing to the assignee of a task in its own subtree
+        (``_task_for_dm``); the A2A policy then decides who may reach whom.
+        """
         if rej := self._reject_soup(text, field="message", min_chars=2):
             return rej
         # Spec §5.5: no-comms roles — defense-in-depth runtime guard. dm() is
@@ -1726,11 +1850,11 @@ class MessagingActions(_Base):
                 context_briefing={},
             )
 
-        resolved = await self._task_for_content_write(
+        resolved = await self._task_for_dm(
             agent_id,
+            recipient,
             task_id,
-            "dm",
-            taskless_refusal=Envelope.invalid_state(
+            Envelope.invalid_state(
                 message="dm requires a task_id (no active task and none provided)",
                 remediate="provide task_id explicitly or claim a task first",
                 context_briefing={},
@@ -4338,6 +4462,7 @@ class ContentActions(
     CommitActions,
     CoronerActions,
     DecisionLaneActions,
+    DmAccessActions,
     DogfoodActions,
     FeatureSpotlightActions,
     LibrarianActions,

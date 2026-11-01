@@ -160,6 +160,8 @@ note(text="...", scope="reflect")  # journal observations
 
 ## A2A and Notifications
 
+You may `dm` about any task under yours to that task's assignee in your cell, on that task's `task_id`; anyone else about it is refused, and so is another cell's member (dm that cell's PM, who reaches its member).
+
 ```python
 # Cross-cell coordination
 dm(
@@ -167,6 +169,13 @@ dm(
     text="Need to align on shared schema; task X.",
     task_id="...",
     skill="api_design",
+)
+
+# About a subtask under yours: dm its assignee, on that subtask
+dm(
+    recipient="be-dev-1",
+    text="Unblocked: the dependency landed; continue from the plan.",
+    task_id="<be-dev-1's subtask>",
 )
 
 # Ack-required notification (PMs / Board only)
