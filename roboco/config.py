@@ -321,21 +321,37 @@ class Settings(BaseSettings):
         description="Embedding dimensions (1024 for qwen3-embedding)",
     )
 
-    # Local LLM for RAG answer synthesis
+    # Ollama side of the background LLM client (roboco/services/background_llm.py):
+    # RAG synthesis, distillation, drafting, validation, the Mentor, the eval judge.
     local_llm_model: str = Field(
-        default="glm-5.3:cloud",
-        description="Local LLM for RAG answer synthesis "
-        "(non-thinking models are faster)",
+        default="glm-5.3-flash:cloud",
+        description=(
+            "Ollama model the background LLM client tries first whenever Claude "
+            "is not the main driver. The flash tier: the full glm-5.3 spends "
+            "far more tokens on these short orchestrator-side calls."
+        ),
     )
     local_llm_base_url: str = Field(
         default="http://roboco-ollama:11434/v1",
         description="Base URL for local LLM (Ollama OpenAI-compat API)",
     )
+    background_llm_claude_home: str = Field(
+        default="",
+        description=(
+            "HOME of the background LLM client's Claude Haiku process: its "
+            "`.claude` is the Claude Code login, and the process runs as the "
+            "uid:gid that own that login, so nothing it writes there is "
+            "root-owned. The compose files mount the host login a second time "
+            "at /home/claude-login/.claude for this (the orchestrator's own "
+            "/root/.claude is behind /root, mode 0700, which that uid cannot "
+            "enter). Empty = this process's own home (local dev)."
+        ),
+    )
 
     @field_validator("local_llm_base_url")
     @classmethod
     def _local_llm_base_url_internal_only(cls, v: str) -> str:
-        # The fire-and-forget hot path (distillation, RAG synthesis, X/video
+        # The background LLM client (distillation, RAG synthesis, X/video
         # drafting) reads this verbatim. Reject non-internal hosts so a one-line
         # env mistake can't route quiet generation through a paid cloud LLM.
         host = (urlparse(v).hostname or "").lower()
