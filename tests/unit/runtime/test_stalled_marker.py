@@ -33,6 +33,18 @@ def _new_orchestrator() -> AgentOrchestrator:
     return orch
 
 
+async def _attempt_spawn(
+    orch: AgentOrchestrator, slug: str, task: dict[str, Any]
+) -> bool:
+    """One dispatch attempt: consult the breaker and, when it lets the spawn
+    through, launch it. ``_launch_spawn`` reports every container that really
+    started to the breaker, and only those attempts count as strikes."""
+    gated = await orch._pm_respawn_should_gate(slug, task)
+    if not gated:
+        orch._note_respawn_spawn_launched(slug, task["id"])
+    return gated
+
+
 def _quiet_audit() -> AsyncMock:
     audit = AsyncMock()
     audit.has_recent_tracing_gap = AsyncMock(return_value=False)
@@ -53,7 +65,7 @@ async def _drain_bg(orch: AgentOrchestrator) -> None:
 
 async def _trip(orch: AgentOrchestrator, slug: str, task: dict[str, Any]) -> None:
     for _ in range(orch._PM_RESPAWN_MAX_UNPRODUCTIVE + 1):
-        await orch._pm_respawn_should_gate(slug, task)
+        await _attempt_spawn(orch, slug, task)
 
 
 @pytest.mark.asyncio
@@ -97,14 +109,10 @@ async def test_genuine_progress_clears_stalled_marker() -> None:
         patch("roboco.services.task.TaskService", return_value=task_service),
     ):
         # First tick just seeds the tracker (no prior status to compare).
-        await orch._pm_respawn_should_gate(
-            "be-pm", {"id": task_id, "status": "pending"}
-        )
+        await _attempt_spawn(orch, "be-pm", {"id": task_id, "status": "pending"})
         task_service.clear_stalled_marker.assert_not_awaited()
         # Genuinely new status -> forward progress -> clear scheduled + drained.
-        await orch._pm_respawn_should_gate(
-            "be-pm", {"id": task_id, "status": "in_progress"}
-        )
+        await _attempt_spawn(orch, "be-pm", {"id": task_id, "status": "in_progress"})
         await _drain_bg(orch)
 
     task_service.clear_stalled_marker.assert_awaited_once_with(UUID(task_id))
@@ -124,18 +132,12 @@ async def test_revisited_status_does_not_clear_stalled_marker() -> None:
         patch("roboco.db.base.get_db_context", _fake_db_context),
         patch("roboco.services.task.TaskService", return_value=task_service),
     ):
-        await orch._pm_respawn_should_gate(
-            "be-pm", {"id": task_id, "status": "blocked"}
-        )
-        await orch._pm_respawn_should_gate(
-            "be-pm", {"id": task_id, "status": "in_progress"}
-        )
+        await _attempt_spawn(orch, "be-pm", {"id": task_id, "status": "blocked"})
+        await _attempt_spawn(orch, "be-pm", {"id": task_id, "status": "in_progress"})
         await _drain_bg(orch)
         task_service.clear_stalled_marker.reset_mock()
         # blocked was already seen -> a revisit, not genuine forward progress.
-        await orch._pm_respawn_should_gate(
-            "be-pm", {"id": task_id, "status": "blocked"}
-        )
+        await _attempt_spawn(orch, "be-pm", {"id": task_id, "status": "blocked"})
         await _drain_bg(orch)
 
     task_service.clear_stalled_marker.assert_not_awaited()
@@ -167,8 +169,8 @@ async def test_retrip_after_cooldown_is_one_shot_not_double_counted() -> None:
         assert notifier.send_stuck_agent_notification.await_count == 1
 
         # Still gated within the cooldown window — must NOT re-mark/re-notify.
-        assert await orch._pm_respawn_should_gate("be-dev-1", task) is True
-        assert await orch._pm_respawn_should_gate("be-dev-1", task) is True
+        assert await _attempt_spawn(orch, "be-dev-1", task) is True
+        assert await _attempt_spawn(orch, "be-dev-1", task) is True
         assert task_service.mark_stalled.await_count == 1
         assert notifier.send_stuck_agent_notification.await_count == 1
 
@@ -178,14 +180,14 @@ async def test_retrip_after_cooldown_is_one_shot_not_double_counted() -> None:
             seconds=orch._PM_RESPAWN_TRIP_COOLDOWN_SECONDS + 1
         )
         # Self-heal tick: cooldown elapsed, one spawn let through, not gated.
-        assert await orch._pm_respawn_should_gate("be-dev-1", task) is False
+        assert await _attempt_spawn(orch, "be-dev-1", task) is False
         assert task_service.mark_stalled.await_count == 1
         assert notifier.send_stuck_agent_notification.await_count == 1
 
         # Still wedged: re-trip after the threshold is a FRESH trip.
         gated = False
         for _ in range(orch._PM_RESPAWN_MAX_UNPRODUCTIVE + 1):
-            if await orch._pm_respawn_should_gate("be-dev-1", task):
+            if await _attempt_spawn(orch, "be-dev-1", task):
                 gated = True
                 break
         assert gated, "a still-wedged task must re-trip after the threshold"

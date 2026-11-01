@@ -355,6 +355,7 @@ class RespawnBreakerEngine(_Base):
                 "last_status": current_status,
                 "last_check": now,
                 "seen_statuses": [*seen, current_status],
+                "launched": False,
             }
             self._schedule_respawn_persist(
                 agent_slug, str(task_id), self._pm_respawn_tracker[key]
@@ -372,6 +373,7 @@ class RespawnBreakerEngine(_Base):
             record["count"] = 1
             record["last_check"] = now
             record["notified"] = False
+            record["launched"] = False
             self._schedule_respawn_persist(agent_slug, str(task_id), record)
             return True
         logger.warning(
@@ -397,6 +399,7 @@ class RespawnBreakerEngine(_Base):
             "last_status": current_status,
             "last_check": now,
             "seen_statuses": [current_status],
+            "launched": False,
         }
         self._schedule_respawn_persist(
             agent_slug, str(key[1]), self._pm_respawn_tracker[key]
@@ -480,6 +483,7 @@ class RespawnBreakerEngine(_Base):
             record["count"] = 1
             record["last_check"] = now
             record["notified"] = False
+            record["launched"] = False
             self._schedule_respawn_persist(agent_slug, str(task_id), record)
             return True
         logger.warning(
@@ -518,6 +522,7 @@ class RespawnBreakerEngine(_Base):
             record["count"] = 1
             record["last_check"] = now
             record["notified"] = False
+            record["launched"] = False
             self._schedule_respawn_persist(agent_slug, str(task_id), record)
         return not elapsed
 
@@ -548,10 +553,24 @@ class RespawnBreakerEngine(_Base):
 
         Audit lookup is best-effort: any failure falls through to the
         legacy strike behavior so audit problems don't break the gate.
+
+        Only launched spawns strike
+        ---------------------------
+        Each let-through attempt holds one strike, but an attempt that never
+        started a container (provider parked, at its concurrency cap, the
+        agent already running, a readiness refusal, a validation skip after
+        this gate) carries its strike over to the next attempt instead of
+        adding one: ``_count_respawn_strike`` only counts again once
+        ``_note_respawn_spawn_launched`` saw the previous attempt launch.
+        Live 2026-10-28 05:20-05:22: be-qa on 106f46e3 was parked three times
+        and then "tripped" with spawn_attempts 4 having never run once, one of
+        19 trips and 19 CEO stuck-agent pages in two minutes, most of them for
+        pairs never actually spawned.
         """
-        task_id = task.get("id")
-        if not task_id:
+        raw_task_id = task.get("id")
+        if not raw_task_id:
             return False
+        task_id = str(raw_task_id)
         key = (agent_slug, task_id)
         current_status = task.get("status")
         record = self._pm_respawn_tracker.get(key)
@@ -564,9 +583,7 @@ class RespawnBreakerEngine(_Base):
         )
         if verdict is not None:
             return verdict
-        record["count"] += 1
-        record["last_check"] = now
-        self._schedule_respawn_persist(agent_slug, str(task_id), record)
+        self._count_respawn_strike(agent_slug, task_id, record, now)
         tripped: bool = record["count"] > self._PM_RESPAWN_MAX_UNPRODUCTIVE
         # B37 respawn_verdict: a confident "productive respawn" verdict
         # overrides the trip (skipping the stall/notify below); None (hold,
@@ -581,6 +598,34 @@ class RespawnBreakerEngine(_Base):
                 agent_slug, task_id, current_status, record
             )
         return tripped and not spawn_anyway
+
+    def _count_respawn_strike(
+        self, agent_slug: str, task_id: str, record: dict[str, Any], now: datetime
+    ) -> None:
+        """Add a strike for this attempt, unless the last counted one never ran.
+
+        A record without ``launched`` (restored from the database, which does
+        not persist it) counts as launched: that keeps the restored count's
+        durability and can over-count by at most the one attempt in flight
+        when the previous process stopped.
+        """
+        if not record.get("launched", True):
+            return
+        record["count"] += 1
+        record["last_check"] = now
+        record["launched"] = False
+        self._schedule_respawn_persist(agent_slug, task_id, record)
+
+    def _note_respawn_spawn_launched(
+        self, agent_slug: str, task_id: str | None
+    ) -> None:
+        """Mark the breaker's pending strike on ``(agent_slug, task_id)`` as a
+        spawn that really started a container, so the next attempt counts."""
+        if task_id is None:
+            return
+        record = self._pm_respawn_tracker.get((agent_slug, str(task_id)))
+        if record is not None:
+            record["launched"] = True
 
     async def _respawn_pre_increment_verdict(
         self,

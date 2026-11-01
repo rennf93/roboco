@@ -38,6 +38,18 @@ def _new_orchestrator() -> AgentOrchestrator:
     return orch
 
 
+async def _attempt_spawn(
+    orch: AgentOrchestrator, slug: str, task: dict[str, Any]
+) -> bool:
+    """One dispatch attempt: consult the breaker and, when it lets the spawn
+    through, launch it. ``_launch_spawn`` reports every container that really
+    started to the breaker, and only those attempts count as strikes."""
+    gated = await orch._pm_respawn_should_gate(slug, task)
+    if not gated:
+        orch._note_respawn_spawn_launched(slug, task["id"])
+    return gated
+
+
 def _row(task_id: Any, **over: Any) -> SimpleNamespace:
     base = {
         "agent_slug": "be-pm",
@@ -225,8 +237,9 @@ async def test_new_entry_and_strike_schedule_persist() -> None:
             return_value=AsyncMock(),
         ),
     ):
-        await orch._pm_respawn_should_gate("be-pm", task)  # new entry
-        await orch._pm_respawn_should_gate("be-pm", task)  # strike -> count 2
+        # The first attempt opens the record, the second adds a strike.
+        await _attempt_spawn(orch, "be-pm", task)
+        await _attempt_spawn(orch, "be-pm", task)
     assert len(captured) >= _MIN_PERSISTS
     assert captured[0][0] == "be-pm" and captured[0][1] == task_id
     assert captured[0][2]["count"] == 1
@@ -249,7 +262,7 @@ async def test_notified_flip_schedules_persist_with_notified_true() -> None:
         ),
     ):
         for _ in range(4):  # 4th trips the gate + flips notified
-            await orch._pm_respawn_should_gate("be-pm", task)
+            await _attempt_spawn(orch, "be-pm", task)
     assert any(c[2].get("notified") for c in captured), (
         "the notified flip must schedule a persist with notified=True"
     )
@@ -264,8 +277,9 @@ async def test_tracing_reset_schedules_persist_with_reset_count() -> None:
     fake_audit = AsyncMock()
     fake_audit.has_recent_tracing_gap = AsyncMock(return_value=True)
     with patch("roboco.services.audit.get_audit_service", return_value=fake_audit):
-        await orch._pm_respawn_should_gate("be-pm", task)  # new entry
-        await orch._pm_respawn_should_gate("be-pm", task)  # tracing reset
+        # The first attempt opens the record, the second takes the tracing reset.
+        await _attempt_spawn(orch, "be-pm", task)
+        await _attempt_spawn(orch, "be-pm", task)
     assert captured[-1][2]["count"] == 1
     assert captured[-1][2]["tracing_resets"] == 1
 
@@ -359,7 +373,7 @@ async def test_restored_counter_trips_at_persisted_threshold_not_from_one() -> N
             return_value=AsyncMock(),
         ),
     ):
-        gated = await orch._pm_respawn_should_gate("be-pm", task)
+        gated = await _attempt_spawn(orch, "be-pm", task)
     assert gated is True  # fires on the next spawn, not re-counted from 1
     assert orch._pm_respawn_tracker[("be-pm", task_id)]["count"] == _TRIP_COUNT
 
@@ -400,7 +414,7 @@ async def test_restore_status_mismatch_does_not_reburn_threshold() -> None:
             return_value=AsyncMock(),
         ),
     ):
-        gated = await orch._pm_respawn_should_gate("be-pm", task)
+        gated = await _attempt_spawn(orch, "be-pm", task)
     assert gated is True  # count 3 -> 4 trips; NOT reset to 1 by the mismatch
     assert orch._pm_respawn_tracker[("be-pm", str(task_id))]["count"] == _TRIP_COUNT
 
@@ -427,7 +441,7 @@ async def test_restart_midloop_continues_identically_to_no_restart() -> None:
                 return_value=AsyncMock(),
             ),
         ):
-            return await orch._pm_respawn_should_gate("be-pm", task)
+            return await _attempt_spawn(orch, "be-pm", task)
 
     no_restart = _new_orchestrator()
     cast("Any", no_restart)._schedule_respawn_persist = MagicMock()

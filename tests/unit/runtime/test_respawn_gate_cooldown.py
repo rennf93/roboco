@@ -35,6 +35,18 @@ def _new_orchestrator() -> AgentOrchestrator:
     return orch
 
 
+async def _attempt_spawn(
+    orch: AgentOrchestrator, slug: str, task: dict[str, Any]
+) -> bool:
+    """One dispatch attempt: consult the breaker and, when it lets the spawn
+    through, launch it. ``_launch_spawn`` reports every container that really
+    started to the breaker, and only those attempts count as strikes."""
+    gated = await orch._pm_respawn_should_gate(slug, task)
+    if not gated:
+        orch._note_respawn_spawn_launched(slug, task["id"])
+    return gated
+
+
 def _quiet_audit() -> AsyncMock:
     audit = AsyncMock()
     audit.has_recent_tracing_gap = AsyncMock(return_value=False)
@@ -59,7 +71,7 @@ def _patches() -> Any:
 async def _trip(orch: AgentOrchestrator, slug: str, task: dict[str, Any]) -> None:
     """Drive same-status ticks until the breaker trips (count=threshold+1)."""
     for _ in range(orch._PM_RESPAWN_MAX_UNPRODUCTIVE + 1):
-        await orch._pm_respawn_should_gate(slug, task)
+        await _attempt_spawn(orch, slug, task)
 
 
 @pytest.mark.asyncio
@@ -70,7 +82,7 @@ async def test_tripped_breaker_self_heals_after_cooldown() -> None:
     task = {"id": task_id, "status": "pending"}
     with _patches():
         await _trip(orch, "pr-reviewer-1", task)
-        assert await orch._pm_respawn_should_gate("pr-reviewer-1", task) is True
+        assert await _attempt_spawn(orch, "pr-reviewer-1", task) is True
         key = ("pr-reviewer-1", task_id)
         assert (
             orch._pm_respawn_tracker[key]["count"] > orch._PM_RESPAWN_MAX_UNPRODUCTIVE
@@ -82,7 +94,7 @@ async def test_tripped_breaker_self_heals_after_cooldown() -> None:
             seconds=orch._PM_RESPAWN_TRIP_COOLDOWN_SECONDS + 60
         )
         # Cooldown elapsed -> reset count=1, allow the spawn (self-heal).
-        assert await orch._pm_respawn_should_gate("pr-reviewer-1", task) is False
+        assert await _attempt_spawn(orch, "pr-reviewer-1", task) is False
         assert orch._pm_respawn_tracker[key]["count"] == 1
         assert orch._pm_respawn_tracker[key]["notified"] is False
 
@@ -97,8 +109,8 @@ async def test_tripped_breaker_stays_gated_within_cooldown() -> None:
         await _trip(orch, "be-dev-1", task)
         frozen = orch._pm_respawn_tracker[("be-dev-1", task_id)]["count"]
         # Two more ticks while within the cooldown: both gate, count frozen.
-        assert await orch._pm_respawn_should_gate("be-dev-1", task) is True
-        assert await orch._pm_respawn_should_gate("be-dev-1", task) is True
+        assert await _attempt_spawn(orch, "be-dev-1", task) is True
+        assert await _attempt_spawn(orch, "be-dev-1", task) is True
         assert orch._pm_respawn_tracker[("be-dev-1", task_id)]["count"] == frozen, (
             "count must freeze once tripped, not climb every dispatch tick"
         )
@@ -118,11 +130,11 @@ async def test_cooldown_retrip_bounds_reburn() -> None:
         orch._pm_respawn_tracker[key]["last_check"] = datetime.now(UTC) - timedelta(
             seconds=orch._PM_RESPAWN_TRIP_COOLDOWN_SECONDS + 1
         )
-        assert await orch._pm_respawn_should_gate("be-dev-1", task) is False
+        assert await _attempt_spawn(orch, "be-dev-1", task) is False
         # Still wedged (status never changes): re-trip after threshold+1 ticks.
         gated = False
         for _ in range(orch._PM_RESPAWN_MAX_UNPRODUCTIVE + 1):
-            if await orch._pm_respawn_should_gate("be-dev-1", task):
+            if await _attempt_spawn(orch, "be-dev-1", task):
                 gated = True
                 break
         assert gated, "a still-wedged task must re-trip after the threshold"
@@ -145,6 +157,6 @@ async def test_freshly_restored_row_trips_immediately_not_cooldown_reset() -> No
         "notified": True,
     }
     with _patches():
-        gated = await orch._pm_respawn_should_gate("be-pm", task)
+        gated = await _attempt_spawn(orch, "be-pm", task)
     assert gated is True, "a freshly restored row must trip, not cooldown-reset"
     assert orch._pm_respawn_tracker[("be-pm", task_id)]["count"] == _WEDGED_COUNT
