@@ -78,6 +78,9 @@ class GitBranchesSurface(Protocol):
 class GitCheckoutPushSurface(Protocol):
     """``GitCheckoutPush``'s members that other classes reach."""
 
+    async def _fetch_branches_origin_has(
+        self, workspace: Path, branches: list[str]
+    ) -> None: ...
     async def checkout(self, workspace: Path, branch: str) -> None: ...
     async def push(
         self, workspace: Path, force: bool = ..., branch: str | None = ...

@@ -230,6 +230,10 @@ _GIT_EXECUTOR = ThreadPoolExecutor(
 # only a genuinely slow op (>5s) is worth a warning.
 _SLOW_GIT_OP_MS = 5000.0
 
+# git's message when a fetch names a ref origin does not have; it then
+# aborts the whole fetch, the other named refs included.
+_MISSING_REMOTE_REF = "couldn't find remote ref"
+
 # `prune_remote_best_effort` TTL, see its docstring. Process-wide, keyed by
 # workspace path, mirrors WorkspaceService's `_read_clone_synced` fetch-TTL
 # cache.
@@ -1360,13 +1364,9 @@ class GitBranches(_Base):
         # of stale branches (dependabot, feature, abandoned) is pure network
         # cost on every branch creation. check=False so a base that isn't on
         # the remote yet doesn't abort (the fallback below handles it).
-        fetch_refs = list(dict.fromkeys([base_branch, default_branch]))
-        await self._run_git(
-            workspace,
-            ["fetch", "origin", *fetch_refs],
-            check=False,
-            timeout=_network_git_timeout(),
-        )
+        # A base deleted on origin after the ls-remote above must not keep the
+        # default branch from refreshing (git aborts the whole fetch).
+        await self._fetch_branches_origin_has(workspace, [base_branch, default_branch])
 
         # --- F123: per-task worktree, not a shared-clone checkout. ---
         # The dev clone is one persistent checkout shared across this dev's
@@ -1596,6 +1596,54 @@ class GitBranches(_Base):
 class GitCheckoutPush(_Base):
     """Moving between branches and the remote: checkout and the branches an agent
     may check out, push, pull, fetch, rebase, and remote branch checks and pruning."""
+
+    async def _fetch_branches_origin_has(
+        self, workspace: Path, branches: list[str]
+    ) -> None:
+        """``git fetch origin <branches>``, leaving out any branch origin no
+        longer has. Best-effort, never raises.
+
+        git aborts a whole fetch when one named ref is missing on origin, so
+        one deleted branch (a child merged and pruned) used to leave every
+        other named branch at whatever this clone last saw. One fetch in the
+        common case; when it fails on a missing ref, ``ls-remote`` names the
+        branches that do exist and only those are fetched.
+        """
+        wanted = list(dict.fromkeys(branches))
+        fetched = await self._run_git(
+            workspace,
+            ["fetch", "origin", *wanted],
+            check=False,
+            timeout=_network_git_timeout(),
+        )
+        if fetched.returncode == 0 or _MISSING_REMOTE_REF not in fetched.stderr:
+            return
+        present = await self._branches_on_origin(workspace, wanted)
+        if present:
+            await self._run_git(
+                workspace,
+                ["fetch", "origin", *present],
+                check=False,
+                timeout=_network_git_timeout(),
+            )
+
+    async def _branches_on_origin(
+        self, workspace: Path, branches: list[str]
+    ) -> list[str]:
+        """The ``branches`` origin has, by exact ``refs/heads/<name>`` (an
+        ``ls-remote`` pattern also matches longer names ending the same)."""
+        listed = await self._run_git(
+            workspace,
+            ["ls-remote", "--heads", "origin", *branches],
+            check=False,
+            timeout=_network_git_timeout(),
+        )
+        heads = {
+            line.split("\t", 1)[1]
+            for line in listed.stdout.splitlines()
+            if "\t" in line
+        }
+        return [branch for branch in branches if f"refs/heads/{branch}" in heads]
 
     async def branch_exists_on_remote(
         self,
@@ -5846,12 +5894,9 @@ class GitBranchState(_Base):
         # fail later on origin's auth error.
         await self._get_project_token_or_raise(project.slug)
         refs = [str(task.branch_name)] + [str(c.branch_name) for c in candidates]
-        await self._run_git(
-            workspace,
-            ["fetch", "origin", *dict.fromkeys(refs)],
-            check=False,
-            timeout=_network_git_timeout(),
-        )
+        # A merged child's branch is usually deleted on origin; one combined
+        # fetch would then refresh nothing, the parent included.
+        await self._fetch_branches_origin_has(workspace, refs)
         missing: list[dict[str, Any]] = []
         for child in candidates:
             entry = await self._cherry_unmerged_entry(
