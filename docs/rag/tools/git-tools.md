@@ -17,7 +17,7 @@ You work in your task's worktree (`.worktrees/<task id[:8]>` in your clone), not
 # project_slug is optional — omit it and your own project is used
 # (from this agent's environment). Pass it explicitly only to inspect
 # a different project than the one you're assigned to.
-status = roboco_git_status()            # your active task's worktree
+status = roboco_git_status()  # your active task's worktree
 diff = roboco_git_diff()
 diff = roboco_git_diff(task_id="a1b2c3d4-...")  # a named task's worktree
 log = roboco_git_log(branch="feature/backend/a1b2c3d4")
