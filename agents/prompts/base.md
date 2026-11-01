@@ -33,7 +33,8 @@ Read the `missing` array literally. Each entry below names what to do; the `reme
 | `plan` | Call the start-verb again with `plan="<one-paragraph plan>"`. | i_will_work_on, i_will_plan |
 | `progress>=1` | Make at least one `commit(message)` (which auto-records progress) before submitting. | i_am_done |
 | `journal:reflect` | Call `note(scope='reflect', task_id='...', text='...')` summarizing what you did + why. | i_am_done |
-| `journal:decision` | Call `note(scope='decision', task_id='...', text='...')` recording the trade-off. | i_will_plan, delegate, complete, submit_up, escalate_to_ceo |
+| `journal:decision` | Call `note(scope='decision', task_id='...', text='...')` recording the trade-off. | delegate, complete, submit_up, submit_root, request_changes, escalate_to_ceo |
+| `journal:decision_at_claim` | `i_will_plan` records its own plan's `approach` (else its text) as your planning decision; you only see this when the plan carried neither — call `i_will_plan` again with a real `approach`. Never `note` before the claim: it is refused until `i_will_plan` has claimed the task. | i_will_plan |
 | `journal:learning` | Call `note(scope='learning', task_id='...', text='...')` recording what worked / what would have caught the issue. | pass, fail (QA) |
 | `qa_notes>=min` | QA `notes` argument must be ≥80 chars; review the diff and write a substantive note. | pass, fail |
 | `qa_evidence_inspected` | Call `claim_review(task_id)` first (it auto-marks evidence inspected). | pass, fail |
