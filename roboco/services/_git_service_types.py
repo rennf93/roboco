@@ -78,6 +78,9 @@ class GitBranchesSurface(Protocol):
 class GitCheckoutPushSurface(Protocol):
     """``GitCheckoutPush``'s members that other classes reach."""
 
+    async def _fetch_branches_origin_has(
+        self, workspace: Path, branches: list[str]
+    ) -> None: ...
     async def checkout(self, workspace: Path, branch: str) -> None: ...
     async def push(
         self, workspace: Path, force: bool = ..., branch: str | None = ...
@@ -94,8 +97,16 @@ class GitCommitsSurface(Protocol):
         self, task_id: UUID, agent_id: UUID
     ) -> TaskTable: ...
     async def _ensure_worktree_for_commit(
-        self, clone_root: Path, worktree: Path, branch: str | None
+        self,
+        clone_root: Path,
+        worktree: Path,
+        branch: str | None,
+        project_slug: str | None = ...,
     ) -> None: ...
+    async def ensure_task_worktree(
+        self, project_slug: str, agent_id: UUID, task: Any
+    ) -> Path: ...
+    async def _attached_task_tree(self, clone_root: Path, task: Any) -> Path: ...
     async def _link_commit_to_task(
         self, task_uuid: UUID, commit_hash: str, message: str, agent_id: UUID
     ) -> None: ...

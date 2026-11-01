@@ -1500,3 +1500,30 @@ async def test_b19_advisory_failure_leaves_description_clean(
     monkeypatch.setattr(engine.session, "flush", AsyncMock())
     await engine._originate(_report(bump="minor"), uuid4())
     assert "risk:" not in created["req"].description
+
+
+async def _distinct_delivery() -> bool:
+    return await pi.semantic_distinct_delivery(
+        cast("AsyncSession", None),
+        new_subject="Root d6a26717 needs review",
+        new_body="New CI failure on the root PR",
+        prior_subject="Root d6a26717 needs review",
+        prior_body="The root PR is waiting",
+        recipients=["main-pm"],
+        prior_recipients=["main-pm"],
+    )
+
+
+_CONFIDENTLY_DISTINCT = {"gate": {"type": "noul", "noul": 0.02, "confidence": 0.98}}
+
+
+@pytest.mark.asyncio
+async def test_notify_dedup_lifts_a_suppression_only_in_on_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The docstring's rule ("deviating from suppression requires ON mode")
+    was not enforced: a confident shadow verdict delivered too."""
+    _arm(monkeypatch, mode=PilotMode.SHADOW, answers=_CONFIDENTLY_DISTINCT)
+    assert await _distinct_delivery() is False
+    _arm(monkeypatch, mode=PilotMode.ON, answers=_CONFIDENTLY_DISTINCT)
+    assert await _distinct_delivery() is True

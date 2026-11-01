@@ -1,7 +1,7 @@
 # db-migrations slice
 
 ## Purpose
-The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for the in-house RAG engine. Schema evolution is owned by an Alembic chain (001→111) that runs on every boot via `init_db()`; `Base.metadata.create_all` is no longer the source of truth — migration 017 reconciled the drift the other way. The ORM tables live in one fat module `roboco/db/tables.py` (~3.1k lines, 56 table classes as of migration 110; `scripts/verify_codebase_map.py` keeps the chain range in this paragraph current, the table count is not checked).
+The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for the in-house RAG engine. Schema evolution is owned by an Alembic chain (001→112) that runs on every boot via `init_db()`; `Base.metadata.create_all` is no longer the source of truth — migration 017 reconciled the drift the other way. The ORM tables live in one fat module `roboco/db/tables.py` (~3.1k lines, 56 table classes as of migration 110; `scripts/verify_codebase_map.py` keeps the chain range in this paragraph current, the table count is not checked).
 
 ## Files
 
@@ -13,7 +13,7 @@ The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for 
 | `roboco/db/seed.py` | `bootstrap_database()` — runs `init_db` then seeds agents. |
 | `alembic/env.py` | Async Alembic env; imports `roboco.db.tables` to register metadata, overrides `sqlalchemy.url` from settings, `compare_type` + `compare_server_default` on. |
 | `alembic.ini` | Standard config; `script_location=alembic`, `prepend_sys_path=.`, no URL (set in env.py). |
-| `alembic/versions/` | 113 migration files 001..111 (two numbers are shared, 026 and 095; each pair is chained, not a collision). |
+| `alembic/versions/` | 114 migration files 001..112 (two numbers are shared, 026 and 095; each pair is chained, not a collision). |
 
 ## Key Symbols
 
@@ -165,6 +165,7 @@ The DB layer is async SQLAlchemy 2.0 over PostgreSQL+asyncpg, with pgvector for 
 | 109 | 109_memory_links.py | `memory_links` (`pilot`, `session_id`, `source`): links a memory-family decision row to the knowledge item it produced, for later grading. |
 | 110 | 110_entire_trails.py | Entire trails bridge: `projects.entire_trails_enabled` (Boolean, `server_default` false), `entire_credentials` (singleton Fernet-encrypted token), `entire_trails` (per tree top: Entire project, trail id/number/url, frozen `create_fields` JSONB, `synced_at`, `closed_at`), `entire_trail_changes` (repository+branch unique; `task_id` deliberately not a FK, so the inline link never share-locks a task row), `entire_trail_findings` (ledger id -> Entire finding id + repository/branch), `entire_trail_outbox` (BigInteger id order, op, payload JSONB, attempts, dead, last_error, next_attempt_at). Purely additive. |
 | 111 | 111_ci_runs_reading_key.py | `ci_runs.ux_ci_runs_reading` (the `ON CONFLICT` key `ci_history.record_runs` deduplicates on) rebuilt as a unique index with NULLS NOT DISTINCT. 108's plain unique constraint treated NULLs as distinct, and the ci-watch engine records `workflow=NULL`, so every sweep re-inserted the run it had already seen (and the ci_watch_route grader read one red run seen twice as a hard red). Deletes those duplicates first, keeping each reading's earliest row, and drops the old key in either shape with `IF EXISTS`. The downgrade restores 108's constraint; deleted duplicates stay deleted. |
+| 112 | 112_escalated_claim_lock.py | Data-only: gives each BLOCKED task whose single owner (`assigned_to = claimed_by`) does not hold the claim lock that lock (`active_claimant_id = claimed_by`). Before this release `apply_escalation` reassigned the task to the escalation target but left the lock on the escalator, so the target's note/dm/notify on its own blocked task were refused; the code now moves the lock with the task and this heals the rows escalated earlier. It also drops the lock from PENDING rows, which `unblock_with_restore` left on a branchless task it sent back to PENDING (every other way into PENDING leaves the task unclaimed). Downgrade is a no-op (the old values were stale locks). |
 
 ## Data Flow
 On boot, `init_db()` probes for application tables and `alembic_version`; if a pre-Alembic DB exists it stamps it at revision 001, then always runs `run_migrations()` → `alembic upgrade head` (in a thread via `asyncio.to_thread`). `env.py` imports `roboco.db.tables` so `Base.metadata` is fully populated, overrides `sqlalchemy.url` from `settings.database_url`, and runs online with an async NullPool engine. `compare_type` + `compare_server_default` are on so autogenerate drift is detectable. `tables.py` classes are the ORM mapping the migrations build; the domain layer reads them through `roboco/models/` dataclasses, not the tables directly.

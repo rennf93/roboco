@@ -18,7 +18,7 @@ The `roboco/mcp` package is the agent-side MCP gateway: a set of `MCPServer` (mc
 | `roboco/mcp/optimal_server.py` | `roboco-optimal` MCP server — RAG / KB / mentor / error / decision / standards / learnings / index-mgmt / proactive-context. Factory `create_optimal_mcp_server(agent_id)`; calls `/optimal/*`. | 1239 |
 | `roboco/mcp/docs_server.py` | `roboco-docs` MCP server — docs write/read/list/delete via `/docs/*`. Factory `create_docs_mcp_server(agent_id)`. RAG-based dedup on write. | 251 |
 | `roboco/services/docs.py` | `DocsService` — the `/docs/*` route handlers' backing service; refuses `write_doc(doc_type="user_facing")` with a message naming the deployer's docs-site project/URL | 785 |
-| `roboco/mcp/git_readonly.py` | `roboco-git-readonly` MCP server — four read-only git views (status/log/diff/branch list) via `/api/git/*`. No breaker, no manifest. | 209 |
+| `roboco/mcp/git_readonly.py` | `roboco-git-readonly` MCP server — four read-only git views (status/log/diff/branch list) via `/api/git/*`. No breaker, no manifest. | 236 |
 | `roboco/mcp/intake_server.py` | `roboco-intake` MCP server — grok intake path only: `propose_draft` / `propose_batch` POST directly to the prompter-live relay. | 295 |
 | `roboco/mcp/secretary_server.py` | `roboco-secretary` MCP server — grok secretary path only: `read_company_state` / `read_task` / `submit_directive`, delegating to `agent_sdk.secretary_driver`. | 89 |
 | `roboco/mcp/search_server.py` | `roboco-search` MCP server — `web_search` / `web_fetch` via `/research/*` (provider key stays server-side). Factory `create_search_mcp_server(agent_id)`. | 130 |
@@ -31,7 +31,7 @@ The `roboco/mcp` package is the agent-side MCP gateway: a set of `MCPServer` (mc
 |------|------|-----------|----------------|
 | `mcp` (flow) | `MCPServer` | `flow_server.py:276` | Server instance `roboco-flow`; tools registered onto it at import time. |
 | `mcp` (do) | `MCPServer` | `do_server.py:252` | Server instance `roboco-do`. |
-| `mcp` (git-readonly) | `MCPServer` | `git_readonly.py:60` | Server instance `roboco-git-readonly`. |
+| `mcp` (git-readonly) | `MCPServer` | `git_readonly.py:62` | Server instance `roboco-git-readonly`. |
 | `mcp` (intake) | `MCPServer` | `intake_server.py:39` | Server instance `roboco-intake`. |
 | `mcp` (secretary) | `MCPServer` | `secretary_server.py:39` | Server instance `roboco-secretary`. |
 | `StrList` | type alias | `flow_server.py:50` | `Annotated[list[str], BeforeValidator(coerce_str_list)]` — tolerates Claude SDK's nested XML-ish tool-input shapes before MCP validation rejects. |
@@ -48,11 +48,11 @@ The `roboco/mcp` package is the agent-side MCP gateway: a set of `MCPServer` (mc
 | `_record_and_check_circuit` | func | `flow_server.py:394`, `do_server.py:349` | Forward a rejection to `SDK_URL/verb/attempted`; if SDK says `open`, replace the payload with `circuit_envelope` (dict-copied, original nested as `inner`, task_id/correlation_id lifted to top level). Best-effort (fail-open). |
 | `_ROLE_TO_ROUTE_PREFIX` | dict | `flow_server.py:539` | Maps `product_owner`/`head_marketing` → `board` route segment; every other role passes through unchanged. |
 | `_role_path` | func | `flow_server.py:546` | Build `/api/v1/flow/<route>/<verb>` path. |
-| `_TOOLS` (flow) | dict | `flow_server.py:1142` | Verb name → Python impl map (27 verbs). `pass`/`fail` keys bridge the `pass_review`/`fail_review` IntentSpec names. |
-| `_INTENT_TO_PUBLIC` | dict | `flow_server.py:1199` | `pass_review`→`pass`, `fail_review`→`fail` — fixes the dogfood gap where QA tools were silently dropped. |
-| `_load_manifest_flow_tools` | func | `flow_server.py:1205` | Read `/app/tool-manifest.json` `flow_tools`; None if missing/unreadable. |
-| `_register_tools` (flow) | func | `flow_server.py:1235` | Raise `RuntimeError` if manifest missing and `ROBOCO_ALLOW_FULL_TOOLSET` not set; if set, registers full tool set as dev/test escape hatch. |
-| `_REGISTERED_TOOLS` (flow) | var | `flow_server.py:1294` | Import-time registration side effect. |
+| `_TOOLS` (flow) | dict | `flow_server.py:1156` | Verb name → Python impl map (27 verbs). `pass`/`fail` keys bridge the `pass_review`/`fail_review` IntentSpec names. |
+| `_INTENT_TO_PUBLIC` | dict | `flow_server.py:1213` | `pass_review`→`pass`, `fail_review`→`fail` — fixes the dogfood gap where QA tools were silently dropped. |
+| `_load_manifest_flow_tools` | func | `flow_server.py:1219` | Read `/app/tool-manifest.json` `flow_tools`; None if missing/unreadable. |
+| `_register_tools` (flow) | func | `flow_server.py:1249` | Raise `RuntimeError` if manifest missing and `ROBOCO_ALLOW_FULL_TOOLSET` not set; if set, registers full tool set as dev/test escape hatch. |
+| `_REGISTERED_TOOLS` (flow) | var | `flow_server.py:1308` | Import-time registration side effect. |
 | `_TOOLS` (do) | dict | `do_server.py:1420` | Tool name → impl map (21 content tools, incl. `propose_roadmap`). |
 | `_load_manifest_do_tools` | func | `do_server.py:1464` | Read manifest `do_tools` list. |
 | `_register_tools` (do) | func | `do_server.py:1494` | Manifest-scoped registration; raise `RuntimeError` if manifest missing (unless `ROBOCO_ALLOW_FULL_TOOLSET` set). |
@@ -65,21 +65,21 @@ The `roboco/mcp` package is the agent-side MCP gateway: a set of `MCPServer` (mc
 | `propose_roadmap` | verb func | `do_server.py:598` | Product Owner (board-roadmap-only, `_PRODUCT_OWNER_DO`): propose a themed roadmap cycle (goal + 3-7 item drafts) exactly once per exploration task. |
 | `draft_playbook` / `approve_playbook` / `reject_playbook` / `archive_playbook` | verb funcs | `do_server.py:1182–1226` | Playbook curation (delivery + Auditor). |
 | `progress` / `notify_list` / `notify_get` / `notify_ack` / `pr_update` / `read_messages` | verb funcs | `do_server.py:1238–1432` | Wave-1 parity content tools. |
-| `create_optimal_mcp_server` | factory | `optimal_server.py:1198` | Build `roboco-optimal-{agent_id}` server; registers 8 tool groups. |
+| `create_optimal_mcp_server` | factory | `optimal_server.py:1190` | Build `roboco-optimal-{agent_id}` server; registers 8 tool groups. |
 | `roboco_kb_search` / `roboco_rag_query` / `roboco_kb_stats` | tools | `optimal_server.py:70–213` | Search / RAG / stats. |
-| `roboco_ask_mentor` | tool | `optimal_server.py:457` | Primary conversational RAG tool (65s timeout). |
+| `roboco_ask_mentor` | tool | `optimal_server.py:459` | Primary conversational RAG tool (65s timeout). |
 | `roboco_search_error` / `roboco_record_error_solution` | tools | `optimal_server.py:439–535` | Error-pattern memory. |
 | `roboco_check_decision` / `roboco_record_decision` | tools | `optimal_server.py:631–714` | Decision memory (`RecordDecisionInput` pydantic model at L33). |
 | `roboco_get_standards` / `roboco_validate_action` / `roboco_review_code` | tools | `optimal_server.py:632–765` | Standards + validation. |
 | `roboco_record_learning` / `roboco_search_learnings` | tools | `optimal_server.py:772–875` | Learnings. |
 | `roboco_clear_index` / `roboco_reindex_all` / `roboco_index_status` | tools | `optimal_server.py:882–993` | Index admin. |
-| `roboco_get_proactive_context` | tool | `optimal_server.py:1104` | Stored-then-fresh proactive context for a task. |
-| `normalize_index_types` | func | `optimal_server.py:60` | Map legacy `docs` alias → `documentation` before route's `IndexType(...)` conversion. |
+| `roboco_get_proactive_context` | tool | `optimal_server.py:1096` | Stored-then-fresh proactive context for a task. |
+| `normalize_index_types` | func | `optimal_server.py:61` | Map legacy `docs` alias → `documentation` before route's `IndexType(...)` conversion. |
 | `create_docs_mcp_server` | factory | `docs_server.py:166` | Build `roboco-docs-{agent_id}` server (write/read/list/delete). |
-| `DocsService.write_doc` | method | `services/docs.py:415` | Refuses `doc_type="user_facing"` writes — normal tasks in the deployer's docs-site project (MDX) are the right home instead |
-| `_refused_doc_types` | func | `services/docs.py:90` | Builds the refusal-message dict fresh on every call from `settings.docs_site_project_slug`/`docs_site_public_url` (was a fixed `REFUSED_DOC_TYPES` module constant hardcoding "roboco-website"/"docs.roboco.tech"); falls back to generic "your docs-site project" / "ship on your docs site" text when either setting is left blank |
+| `DocsService.write_doc` | method | `services/docs.py:416` | Refuses `doc_type="user_facing"` writes — normal tasks in the deployer's docs-site project (MDX) are the right home instead |
+| `_refused_doc_types` | func | `services/docs.py:91` | Builds the refusal-message dict fresh on every call from `settings.docs_site_project_slug`/`docs_site_public_url` (was a fixed `REFUSED_DOC_TYPES` module constant hardcoding "roboco-website"/"docs.roboco.tech"); falls back to generic "your docs-site project" / "ship on your docs site" text when either setting is left blank |
 | `WriteDocInput` | pydantic | `schemas/__init__.py:12` | Docs write input (task_id, filename, doc_type, title, content). |
-| `roboco_git_status` / `roboco_git_log` / `roboco_git_diff` / `roboco_git_branch_list` | tools | `git_readonly.py:45–119` | Read-only git views via `/api/git/*`. |
+| `roboco_git_status` / `roboco_git_log` / `roboco_git_diff` / `roboco_git_branch_list` | tools | `git_readonly.py:123–197` | Read-only git views via `/api/git/*`; status and diff read the agent's task worktree (optional `task_id`, else the active task; the clone root only without a task) and name it in `task_id`. |
 | `propose_draft` / `propose_batch` | tools | `intake_server.py:104–215` | Grok intake: POST draft/batch to prompter-live relay; `propose_batch` drops malformed (no string `title` or `name`) entries via `_normalize_batch_drafts` and refuses empty batches. |
 | `post_draft` / `post_batch` / `_post_event` | funcs | `intake_server.py:41–102` | Relay POST helpers (never raise; unit-testable with `httpx.MockTransport`). `_post_event` now captures relay response body under `detail` on non-success so the grok agent sees the real reason (0d714b6c). |
 | `_draft_title` | func | `intake_server.py:211` | Extract a string title from a batch draft dict, accepting `title` or `name` key; returns None if neither is a string. |
@@ -340,7 +340,7 @@ No other commits in this slice since baseline.
 | Breaker substitution could mask a real, fixable rejection | `flow_server.py:394`, `do_server.py:349` | **Partially mitigated (536bbb64):** the circuit_open envelope is now a dict-copy of the SDK's envelope with the original rejection nested as `inner` (preserving its kind/message/remediate). The agent sees `circuit_open` at the top level but the underlying rejection survives for ops debugging. The core risk remains: if the breaker trips on a mis-counted storm, the agent stops instead of retrying. | medium |
 | Dict-error classification substring fallback → mis-routing risk for unknown codes | `flow_server.py:110`, `do_server.py:94` | **Partially mitigated (536bbb64):** `_classify_dict_error_code` now consults `_DICT_ERROR_CODE_MAP` first (exact match for all known RobocoError codes, closing the AUTHENTICATION_REQUIRED mis-routing bug #161). Only codes NOT in the map fall through to the substring branch. A novel code that accidentally contains `DENIED`/`AUTH`/`PERMISSION` but is semantically different would still mis-route. Risk is now confined to future unknown codes only. | low |
 | 404 synthesis assumptions | `flow_server.py:272`, `do_server.py:238` | **Partially mitigated (536bbb64 #61):** a third 404 case was added: a 404 with a *descriptive* `detail` string (not the bare FastAPI default `"Not Found"`) is now surfaced as `not_found`, not `invalid_state`. Residual risk: a future route that returns a bare 404 with no `detail`/`error` field for a real resource-not-found would still synthesize `invalid_state`. The two carve-outs (`error` field → as-is; descriptive `detail` → `not_found`) cover the known cases. | low |
-| `_register_tools` raises at import if manifest missing — local dev breakage | `flow_server.py:1235`, `do_server.py:1494` | **Mitigated (536bbb64):** `ROBOCO_ALLOW_FULL_TOOLSET` env var added as a dev/test escape hatch that bypasses the `RuntimeError` and registers the full tool set. Production behaviour is unchanged (ROBOCO_ALLOW_FULL_TOOLSET is not set in the orchestrator manifest). The mitigant must not leak into production containers. | low |
+| `_register_tools` raises at import if manifest missing — local dev breakage | `flow_server.py:1249`, `do_server.py:1494` | **Mitigated (536bbb64):** `ROBOCO_ALLOW_FULL_TOOLSET` env var added as a dev/test escape hatch that bypasses the `RuntimeError` and registers the full tool set. Production behaviour is unchanged (ROBOCO_ALLOW_FULL_TOOLSET is not set in the orchestrator manifest). The mitigant must not leak into production containers. | low |
 | `propose_batch` well-formed filter could silently drop intended drafts | `intake_server.py:245` | **Partially mitigated (536bbb64 #163):** `_draft_title` now accepts `name` as a fallback for `title`, and `_normalize_batch_drafts` normalizes `name`-only drafts onto `title` before posting. Residual risk: a draft using a different key (e.g. `label`) is still dropped silently; the `dropped` count is sent but the CEO may not notice. | low |
 | Breaker SDK timeout (2s) may be too tight under load | `flow_server.py:55`, `do_server.py:37` | `_SDK_TIMEOUT=2.0` for the loopback `/verb/attempted` POST. Under container CPU contention the SDK could exceed 2s and the breaker fails open (returns original payload) — re-introducing the unbounded-retry condition the breaker was added to stop. Fail-open is safe but defeats the protection. | low |
 | Circuit-breaker forwarding does not pass `task_id` for content tools that lack one | `do_server.py:379` | `body.get("task_id")` is sent to the SDK. Several do-tools (`read_messages`, `notify_list`) have no `task_id` — the breaker records `task_id=None`, so the per-verb (not per-task) breaker still works, but any future per-task breaker logic would mis-attribute these. | low |

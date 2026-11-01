@@ -38,7 +38,7 @@ from roboco.enforcement import (
     validate_task_transition,
 )
 from roboco.events import Event, EventType, get_event_bus
-from roboco.foundation.identity import Role
+from roboco.foundation.identity import AGENTS, Role
 from roboco.foundation.policy.batch import (
     is_batch_root_subtask,
     is_batch_umbrella,
@@ -1956,17 +1956,21 @@ class TaskAgentQueries(_Base):
         result = await self.session.execute(query)
         return result.scalar_one_or_none()
 
-    async def get_journal_context_task_for_agent(
+    async def list_journal_context_tasks_for_agent(
         self, agent_id: UUID
-    ) -> TaskTable | None:
-        """Most-recently-updated task the agent owns for journal/content context.
+    ) -> list[TaskTable]:
+        """Tasks assigned to the agent that a task-less write may be about.
 
-        Wider than ``get_active_task_for_agent`` — includes BLOCKED, PAUSED,
-        and NEEDS_REVISION so journal entries written while stuck still
-        get the task_id auto-attached. Dogfooding surfaced the bug: PMs
-        wrote decisions during blocked state, auto-injection returned
+        Most recently updated first. Wider than ``get_active_task_for_agent``
+        — includes BLOCKED, PAUSED, NEEDS_REVISION and PENDING, so a write
+        made while the agent is stuck, or on a board-program task worked
+        without a claim, still finds its task. Dogfooding surfaced the bug:
+        PMs wrote decisions during blocked state, auto-injection returned
         None, entries persisted with task_id=NULL, the C8 tracing gate
-        never saw them, agents spiraled forever.
+        never saw them, agents spiraled forever. The content tools no longer
+        pick the newest of several: a write that names no task_id attaches
+        only to the caller's one candidate (see
+        ``ContentActions._task_for_taskless_write``).
         """
         query = (
             select(TaskTable)
@@ -1975,10 +1979,28 @@ class TaskAgentQueries(_Base):
                 TaskTable.status.in_(self._JOURNAL_CONTEXT_STATUSES),
             )
             .order_by(TaskTable.updated_at.desc().nullslast())
-            .limit(1)
         )
         result = await self.session.execute(query)
-        return result.scalar_one_or_none()
+        return list(result.scalars().all())
+
+    async def list_tasks_claimed_by(self, agent_id: UUID) -> list[TaskTable]:
+        """Unfinished tasks whose claim lock the agent holds.
+
+        Most recently updated first. These are exactly the tasks the
+        content-write gate lets a claim-holding agent write on
+        (``active_claimant_id`` is the agent), so a write that names no
+        task_id may attach to one of them and to nothing else.
+        """
+        query = (
+            select(TaskTable)
+            .where(
+                TaskTable.active_claimant_id == agent_id,
+                TaskTable.status.not_in(_TERMINAL_STATES),
+            )
+            .order_by(TaskTable.updated_at.desc().nullslast())
+        )
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
 
     async def list_pending_for_agent(self, agent_id: UUID) -> list[TaskTable]:
         """Tasks assigned to this agent that are still in PENDING status.
@@ -2111,13 +2133,20 @@ class TaskAgentQueries(_Base):
         dispatcher's spawn/claim pre-filters and the PM ``reassign`` verb ask
         it, so none of them hands a developer work it would be refused.
         """
-        for held in await self.list_in_progress_for_agent(agent_id):
-            if held.id != task_id:
-                return held
-        for held in await self.list_paused_for_agent(agent_id):
+        for held in await self.list_held_for_agent(agent_id):
             if held.id != task_id:
                 return held
         return None
+
+    async def list_held_for_agent(self, agent_id: UUID) -> list[TaskTable]:
+        """Every unfinished task ``agent_id`` holds, in the order the
+        single-active-task rule names them: actively worked first (claimed,
+        in_progress, verifying, blocked, or blocked and escalated away from
+        it), then paused."""
+        return [
+            *await self.list_in_progress_for_agent(agent_id),
+            *await self.list_paused_for_agent(agent_id),
+        ]
 
 
 class TaskRoleLookup(_Base):
@@ -2143,6 +2172,14 @@ class TaskRoleLookup(_Base):
         if not agent_uuid:
             raise NotFoundError(resource_type="Agent", resource_id=agent_id_str)
         return UUID(str(agent_uuid))
+
+    async def agent_slug(self, agent_id: UUID) -> str | None:
+        """The slug of agent ``agent_id``, or None when there is no such agent."""
+        result = await self.session.execute(
+            select(AgentTable.slug).where(AgentTable.id == agent_id)
+        )
+        slug = result.scalar_one_or_none()
+        return str(slug) if slug else None
 
     async def agent_for(self, agent_id: UUID) -> GatewayAgentView | None:
         """Return a gateway-shaped view of the agent (DB + config derived).
@@ -7598,10 +7635,115 @@ class TaskWorkState(_Base):
         return task
 
 
+def _released_extra_claim_message(kept_label: str) -> str:
+    """The progress entry a released extra claim carries, for its PM."""
+    return (
+        "Released at startup by the held-work reconciliation: its assignee"
+        f" also holds {kept_label}, and a developer works one unfinished task"
+        " at a time. Still assigned to the same developer, which is dispatched"
+        " to it once that task is done; branch and worktree untouched."
+    )
+
+
+def _never_started_extra_claims(
+    held: list[TaskTable],
+) -> tuple[TaskTable | None, list[TaskTable]]:
+    """Split a work author's held tasks into the one it keeps and the
+    never-started claims beyond it.
+
+    A work author holds one unfinished task at a time. The task it keeps is
+    the first one it has started, in the order the single-active-task rule
+    names held work (active before paused), or its first claim when it has
+    started none. The extras returned are only ``claimed`` tasks, the claims
+    the doctrine releases ("a second never-started claim is released to the
+    pool"); started work beyond the kept task is not returned. ``(None, [])``
+    when the author holds at most one task.
+    """
+    if len(held) <= 1:
+        return None, []
+    started = [task for task in held if task.status != TaskStatus.CLAIMED]
+    kept = started[0] if started else held[0]
+    extras = [
+        task for task in held if task is not kept and task.status == TaskStatus.CLAIMED
+    ]
+    return kept, extras
+
+
 class TaskUnclaim(_Base):
     """Giving up a claim: the reaper's and the agent's unclaims, releasing a
-    dependency-blocked claim, and clearing the agent's current task and work
-    session."""
+    dependency-blocked claim or a work author's never-started extra claims, and
+    clearing the agent's current task and work session."""
+
+    async def release_never_started_extra_claims(
+        self, agent_id: UUID
+    ) -> list[TaskTable]:
+        """Release the never-started claims a work author holds beyond the one
+        task it may hold; returns the released tasks.
+
+        Each release is ``claimed -> pending`` with the owner kept on
+        ``assigned_to`` / ``claimed_by`` (``_force_unclaim_to_pending``, the
+        reaper's core), so the task stays in that author's queue and is
+        dispatched to it once its kept task is done. Its branch and its
+        worktree are left alone: a claim that never started holds no work of
+        its own, and nothing the author may have written is removed. Every
+        release is recorded on the task as a progress entry and an audit row.
+        Started work beyond the kept task (a second in_progress, paused,
+        verifying or blocked task) is not touched. Idempotent: a second call
+        finds no extra claim.
+        """
+        kept, extras = _never_started_extra_claims(
+            await self.list_held_for_agent(agent_id)
+        )
+        if kept is None:
+            return []
+        kept_label = f"{TaskStatus(kept.status).value} task {kept.id}"
+        released: list[TaskTable] = []
+        for task in extras:
+            if await self._release_extra_claim_keeping_owner(task, kept_label):
+                released.append(task)
+        return released
+
+    async def _release_extra_claim_keeping_owner(
+        self, task: TaskTable, kept_label: str
+    ) -> bool:
+        """Release one extra claim and record why, in a savepoint so a failure
+        leaves the shared session usable and the task exactly as it was."""
+        task_id = require_uuid(task.id)
+        try:
+            async with self.session.begin_nested():
+                if not await self._force_unclaim_to_pending(
+                    task_id, reason="held-work-reconcile"
+                ):
+                    return False
+                await self.add_progress(
+                    task_id,
+                    AGENTS["system"].uuid,
+                    _released_extra_claim_message(kept_label),
+                )
+                self._emit_extra_claim_release_audit(task_id, kept_label)
+        except Exception as exc:
+            self.log.warning(
+                "Extra claim release failed; task left as it was",
+                task_id=str(task_id),
+                error=str(exc),
+            )
+            return False
+        return True
+
+    def _emit_extra_claim_release_audit(self, task_id: UUID, kept_label: str) -> None:
+        """A ``task.extra_claim_released`` audit row in the caller's session."""
+        from roboco.db.tables import AuditLogTable
+
+        self.session.add(
+            AuditLogTable(
+                event_type="task.extra_claim_released",
+                agent_id=None,
+                target_type="task",
+                target_id=task_id,
+                severity="warning",
+                details={"reason": "held-work-reconcile", "assignee_keeps": kept_label},
+            )
+        )
 
     async def unclaim_for_reaper(self, task_id: UUID) -> None:
         """Reaper-only unclaim: skip role checks, force the row back to pending.
@@ -7675,6 +7817,27 @@ class TaskUnclaim(_Base):
                 task_id=str(task_id),
                 error=str(e),
             )
+
+    async def release_claim_keeping_worktree(self, task_id: UUID) -> bool:
+        """Release a claimed/in_progress task to pending for its owner to take
+        up again, leaving its worktree where it is; True when released.
+
+        The dispatcher's release of a claim whose owner is alive or unknown
+        (a second never-started claim of a work author, an agentless claim
+        with an unknown assignee) used ``unclaim_for_reaper``, whose
+        ``git worktree remove --force`` deletes every uncommitted edit and
+        untracked file in the task's worktree. Commits survive that removal,
+        uncommitted work does not, and the owner kept on the task is the
+        author who wrote it (be-dev-1 ran in claimed 106f46e3's worktree on
+        2026-10-28 and 2026-11-01). The workspace doctrine never discards an
+        author's dirty edits, and the re-claim re-attaches a present worktree
+        without resetting them. Only a release whose holder is dead (the
+        stale-claim reaper, a stopped agent's claim, the startup orphan
+        reconcile) goes through ``unclaim_for_reaper`` and removes it.
+        """
+        return await self._force_unclaim_to_pending(
+            task_id, reason="dispatcher-release"
+        )
 
     async def release_dependency_blocked_claim(self, task_id: UUID) -> None:
         """Release a claimed/in_progress task whose dependency is still unmet.
@@ -8113,6 +8276,22 @@ class TaskBlocking(_Base):
         if markers.is_oscillation_tripped(task):
             markers.clear_marker(task, markers.OSCILLATION_STRIKES)
 
+    @staticmethod
+    def _hand_claim_lock_to_unblocked_owner(task: TaskTable, owner: Any) -> None:
+        """Give the claim lock back with the task: the restored owner holds it.
+
+        An escalation moved the lock to its target together with the task
+        (``apply_escalation``), so an unblock that hands the task back must
+        hand the lock back too, or the owner's own notes and commits on its
+        resumed task bounce off the content-write gate. A task returned to
+        PENDING has no live claim; its owner takes the lock with a fresh
+        claim, exactly as on a first claim. Shared by the legacy ``unblock``
+        (IN_PROGRESS or a branchless PENDING) and the snapshot restore
+        (``_restore_block_ownership``, any pre-block status).
+        """
+        unclaimed = task.status == TaskStatus.PENDING
+        task.active_claimant_id = None if unclaimed else owner
+
     async def unblock(
         self, task_id: UUID, agent_role: str | None = None
     ) -> TaskTable | None:
@@ -8163,6 +8342,7 @@ class TaskBlocking(_Base):
         # claim gate then holds it cleanly if its dependency is still unmet.
         target = TaskStatus.IN_PROGRESS if task.branch_name else TaskStatus.PENDING
         self._validate_and_set_status(task, target, agent_role)
+        self._hand_claim_lock_to_unblocked_owner(task, owner)
         owner_id = to_python_uuid(owner)
         if target == TaskStatus.IN_PROGRESS and owner_id is not None:
             # A real resume of active work with no fresh claim() call in
@@ -12988,8 +13168,10 @@ class TaskAdminOverride(_Base):
         diverted_restored_status, restored_owner).
 
         A branchless in_progress diverts to pending (the dispatcher refuses a
-        branchless in_progress task and loops). Re-owns from the snapshot and
-        clears the pre-block snapshot fields.
+        branchless in_progress task and loops). Re-owns from the snapshot,
+        handing the claim lock to the restored owner unless the task went
+        back to pending (``_hand_claim_lock_to_unblocked_owner``), and clears
+        the pre-block snapshot fields.
         """
         if restored_status == TaskStatus.IN_PROGRESS and not task.branch_name:
             restored_status = TaskStatus.PENDING
@@ -13003,9 +13185,7 @@ class TaskAdminOverride(_Base):
         if task.pre_block_assignee:
             task.assigned_to = cast("Any", task.pre_block_assignee)
             task.claimed_by = cast("Any", task.pre_block_assignee)
-            # The claimant lock must follow the re-owning — a stale claimant
-            # bounces every content write from the restored owner.
-            task.active_claimant_id = cast("Any", task.pre_block_assignee)
+            self._hand_claim_lock_to_unblocked_owner(task, task.pre_block_assignee)
         task.pre_block_state = None
         task.pre_block_assignee = None
         task.pre_block_metadata = None
@@ -13300,6 +13480,13 @@ class TaskEscalation(_Base):
         self._snapshot_pre_block(task)
         task.assigned_to = cast("Any", target_agent_id)
         task.claimed_by = cast("Any", target_agent_id)
+        # The claim lock follows the hand-off. The target now owns the blocked
+        # task and must journal its decision on it, message about it and
+        # unblock it; the content-write gate admits only the active claimant,
+        # so a lock left on the escalator refused every note/dm/notify the
+        # target made on its own task (live 2026-10-28: be-pm on 11a83407,
+        # main-pm on 86ed0eab and d6a26717). Unblock hands the lock back.
+        task.active_claimant_id = cast("Any", target_agent_id)
         task.status = TaskStatus.BLOCKED
         # Record the escalation as a structured marker — NOT appended to
         # dev_notes (the developer's space). The old append polluted dev_notes

@@ -30,7 +30,7 @@ from roboco.config import settings
 from roboco.db.tables import ProviderConfigTable
 from roboco.models.base import ModelProvider
 from roboco.models.notification import CreateNotificationParams
-from roboco.services.decisions.client import DecisionsEndpoint
+from roboco.services.decisions.client import DecisionsEndpoint, get_decisions_client
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -71,7 +71,13 @@ async def resolve_endpoint(session: AsyncSession) -> DecisionsEndpoint | None:
     if not settings.decisions_enabled:
         return None
 
-    if settings.decisions_tier_clef_enabled and await _backend_healthy("clef"):
+    # A Clef circuit opened by consecutive failures hands calls to the next
+    # tier for its window instead of answering "no verdict" to all of them.
+    if (
+        settings.decisions_tier_clef_enabled
+        and get_decisions_client().accepts_calls("clef")
+        and await _backend_healthy("clef")
+    ):
         return _clef_endpoint()
 
     if settings.decisions_tier_laya_enabled and await _backend_healthy("laya"):

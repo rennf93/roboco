@@ -13,6 +13,7 @@ from roboco.agents_config import get_agent_role
 from roboco.config import settings
 from roboco.runtime.orchestrator import (
     _agent_api_headers,
+    _attempt_dispatch,
     _is_coordination_task,
     logger,
 )
@@ -458,4 +459,8 @@ class PMClosureEngine(_Base):
         for status in parent_statuses:
             tasks = await self._fetch_tasks(client, status)
             for task in tasks:
-                await self._maybe_spawn_pm_closure(client, task)
+                await _attempt_dispatch(
+                    "pm_closure_work",
+                    task.get("id"),
+                    self._maybe_spawn_pm_closure(client, task),
+                )

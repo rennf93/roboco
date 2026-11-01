@@ -10,7 +10,7 @@ it; local runs opt in the same way::
         uv run pytest tests/integration/test_decisions_sidecar_live.py -v
 
 Every decisions test routes to the LAYA tier (the model hint contains
-"laya"), which is what CI ships (CLEF_ENABLED=false, no 19GB clef GGUF on
+"laya"), which is what CI ships (CLEF_ENABLED=false, no Clef-Flash GGUF on
 a shared runner). The health test tolerates both postures: a full local
 stack reports "ok" with clef serving, the CI stack reports "degraded"
 with clef disabled.
@@ -54,7 +54,7 @@ _SINGLE_QUESTION_LATENCY_BOUND_S = 5.0
 # on the llama.cpp laya upstream regardless of the checkpoint id the
 # orchestrator's resolver would name.
 _LAYA_MODEL = "ggml-org/Laya-GGUF"
-_CLEF_MODEL = "ggml-org/Clef-GGUF:Q4_K_M"
+_CLEF_MODEL = "ggml-org/Clef-Flash-GGUF:Q4_K_M"
 
 
 @pytest.fixture

@@ -304,6 +304,26 @@ class E2EStack:
 
         return asyncio.run(run_then_close_db(_run()))
 
+    def note_contents_on_task(self, task_id: str) -> list[str]:
+        """The content of every note (``GENERAL``) journal entry on ``task_id``."""
+        from uuid import UUID as _UUID
+
+        from roboco.db.tables import JournalEntryTable
+        from roboco.models.base import JournalEntryType
+        from sqlalchemy import select
+
+        async def _read(session: Any) -> list[str]:
+            rows = await session.execute(
+                select(JournalEntryTable.content).where(
+                    JournalEntryTable.task_id == _UUID(task_id),
+                    JournalEntryTable.type == JournalEntryType.GENERAL,
+                )
+            )
+            return [str(content) for content in rows.scalars()]
+
+        result: list[str] = self.run_db(_read)
+        return result
+
 
 def _free_port() -> int:
     with socket.socket() as s:

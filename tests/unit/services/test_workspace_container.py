@@ -138,12 +138,14 @@ async def test_a_timeout_kills_the_container_and_reaps_the_cli(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     cli = _proc(-9)
+    killed = asyncio.Event()
 
-    async def _never() -> tuple[bytes, bytes]:
-        await asyncio.sleep(30)
-        return b"", b""
+    async def _until_killed() -> tuple[bytes, bytes]:
+        await killed.wait()
+        return b"", _started()
 
-    cli.communicate = _never
+    cli.communicate = _until_killed
+    cli.kill = MagicMock(side_effect=killed.set)
     killer = _proc(0)
     calls: list[tuple[Any, ...]] = []
 
@@ -204,14 +206,26 @@ async def test_an_outer_cancellation_kills_reaps_and_propagates(
 async def test_a_missing_exit_status_is_a_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An unknown exit status must never pass a gate."""
+    """An unknown exit status must never pass a gate: the command's failure
+    once it started, the container's before."""
     monkeypatch.setattr(
-        asyncio, "create_subprocess_exec", AsyncMock(return_value=_proc(None))
+        asyncio,
+        "create_subprocess_exec",
+        AsyncMock(return_value=_proc(None, b"", _started())),
     )
     result = await wc.run_in_workspace_container(
         Path("/data/workspaces/p/t/a"), wc.WorkspaceCommand(["true"], "gate"), timeout=5
     )
     assert result.returncode != 0
+    monkeypatch.setattr(
+        asyncio, "create_subprocess_exec", AsyncMock(return_value=_proc(None))
+    )
+    with pytest.raises(wc.WorkspaceContainerError):
+        await wc.run_in_workspace_container(
+            Path("/data/workspaces/p/t/a"),
+            wc.WorkspaceCommand(["true"], "gate"),
+            timeout=5,
+        )
 
 
 async def test_a_container_that_cannot_start_raises(
@@ -395,3 +409,185 @@ def test_name_segments_keep_only_what_docker_allows() -> None:
     _, _, owner_and_purpose = name.partition("roboco-wsx-")
     assert "agent-one-hook-pre-commit" in owner_and_purpose
     assert len(name) <= len("roboco-wsx--") + 2 * 40 + 1 + 8
+
+
+# --- why a run failed: the command's own failure vs. a container that never
+# ran it. Live 2026-11-01: `make panel-gate` and `make codegen` failed with no
+# output at all, and a dev-deps install logged `stderr: ''`: the docker CLI's
+# own error, the entry script's pre-exec failure and the exit status were
+# dropped, and a run that never started its command was judged as the
+# command's own failure.
+
+_COMMAND_NOT_RUN = 127
+_COMMAND_FAILED = 2
+
+
+def _started(stderr: bytes = b"") -> bytes:
+    """What the entry script prints on stderr right before it runs the command."""
+    return wc.STARTED_MARKER.encode() + b"\n" + stderr
+
+
+def test_the_entry_script_marks_the_moment_the_command_starts() -> None:
+    script = wc._entry_script(60, merge_stderr=True)
+    before_exec, _, _ = script.partition("exec timeout")
+    assert before_exec.endswith(f"echo {wc.STARTED_MARKER} >&2 && ")
+    # The mount checks and HOME come first: a failure there never prints it.
+    assert before_exec.index("ROBOCO_WORKSPACE_MOUNT_ID") < before_exec.index(
+        wc.STARTED_MARKER
+    )
+    assert before_exec.index('mkdir -p "$HOME"') < before_exec.index(wc.STARTED_MARKER)
+
+
+async def test_a_container_that_never_ran_the_command_says_why(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The docker CLI maps a start error naming a missing file to 127 (and
+    a permission error to 126): not the command's exit status."""
+    cli_error = (
+        b"docker: Error response from daemon: failed to create task for "
+        b"container: exec: /bin/sh: no such file or directory\n"
+    )
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        AsyncMock(return_value=_proc(_COMMAND_NOT_RUN, b"", cli_error)),
+    )
+    with pytest.raises(wc.WorkspaceContainerError) as raised:
+        await wc.run_in_workspace_container(
+            Path("/data/workspaces/p/t/a"),
+            wc.WorkspaceCommand(["make", "panel-gate"], "gate"),
+            timeout=5,
+            merge_stderr=True,
+        )
+    message = str(raised.value)
+    assert "did not run the command" in message
+    assert f"exit {_COMMAND_NOT_RUN}" in message
+    assert "no such file or directory" in message
+
+
+async def test_a_pre_exec_failure_is_the_containers_not_the_commands(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        AsyncMock(
+            return_value=_proc(
+                1,
+                b"",
+                b"mkdir: cannot create directory '/tmp/home': Permission denied\n",
+            )
+        ),
+    )
+    with pytest.raises(wc.WorkspaceContainerError, match="cannot create directory"):
+        await wc.run_in_workspace_container(
+            Path("/data/workspaces/p/t/a"),
+            wc.WorkspaceCommand(["make", "codegen"], "codegen"),
+            timeout=5,
+            merge_stderr=True,
+        )
+
+
+async def test_the_commands_own_failure_keeps_its_status_and_every_stream(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        AsyncMock(
+            return_value=_proc(
+                _COMMAND_FAILED,
+                b"lint: 3 errors\n",
+                _started(b"WARNING: the daemon said something\n"),
+            )
+        ),
+    )
+    result = await wc.run_in_workspace_container(
+        Path("/data/workspaces/p/t/a"),
+        wc.WorkspaceCommand(["make", "gate"], "gate"),
+        timeout=5,
+        merge_stderr=True,
+    )
+    assert result.returncode == _COMMAND_FAILED
+    assert result.stdout == "lint: 3 errors\n"
+    assert result.stderr == "WARNING: the daemon said something\n"
+    assert result.output == "lint: 3 errors\nWARNING: the daemon said something"
+
+
+async def test_a_command_that_itself_exits_125_is_not_a_container_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        asyncio,
+        "create_subprocess_exec",
+        AsyncMock(
+            return_value=_proc(wc._DOCKER_RUN_FAILED, b"bisect skip\n", _started())
+        ),
+    )
+    result = await wc.run_in_workspace_container(
+        Path("/data/workspaces/p/t/a"),
+        wc.WorkspaceCommand(["sh", "-c", "exit 125"], "gate"),
+        timeout=5,
+    )
+    assert result.returncode == wc._DOCKER_RUN_FAILED
+    assert result.output == "bisect skip"
+
+
+async def test_a_timeout_keeps_what_the_command_printed_before_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cli = _proc(-9)
+    killed = asyncio.Event()
+
+    async def _until_killed() -> tuple[bytes, bytes]:
+        await killed.wait()
+        return b"tests/test_slow.py::test_hangs ", _started()
+
+    cli.communicate = _until_killed
+    cli.kill = MagicMock(side_effect=killed.set)
+    killer = _proc(0)
+
+    async def _exec(*args: Any, **_kwargs: Any) -> MagicMock:
+        return killer if args[:2] == ("docker", "kill") else cli
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _exec)
+
+    result = await wc.run_in_workspace_container(
+        Path("/data/workspaces/p/t/a"),
+        wc.WorkspaceCommand(["make", "test"], "gate"),
+        timeout=0.01,
+        merge_stderr=True,
+    )
+
+    assert result.timed_out
+    assert result.returncode == _TIMEOUT_EXIT_CODE
+    assert "tests/test_slow.py::test_hangs" in result.output
+    assert "timed out after 0.01s" in result.output
+
+
+async def test_a_container_that_never_started_within_the_timeout_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A run killed before the command started (an image pull that never
+    ends, say) is the container's failure, not a timeout of the command."""
+    cli = _proc(-9)
+    killed = asyncio.Event()
+
+    async def _until_killed() -> tuple[bytes, bytes]:
+        await killed.wait()
+        return b"", b"Unable to find image 'x' locally\n"
+
+    cli.communicate = _until_killed
+    cli.kill = MagicMock(side_effect=killed.set)
+
+    async def _exec(*args: Any, **_kwargs: Any) -> MagicMock:
+        return _proc(0) if args[:2] == ("docker", "kill") else cli
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", _exec)
+
+    with pytest.raises(wc.WorkspaceContainerError, match="Unable to find image"):
+        await wc.run_in_workspace_container(
+            Path("/data/workspaces/p/t/a"),
+            wc.WorkspaceCommand(["make", "gate"], "gate"),
+            timeout=0.01,
+        )

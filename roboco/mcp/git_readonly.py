@@ -3,7 +3,9 @@
 Write operations (commit, push, branch, PR open/merge) go through the
 gateway intent verbs in roboco-flow. This server only exposes the four
 read-only views agents need to reason about workspace state: status,
-log, diff, and branch list.
+log, diff, and branch list. Status and diff read the agent's task
+worktree (its active task, or a named one), the clone root only when it
+has no task.
 
 Endpoint shapes mirror /api/git/* on the orchestrator. The panel uses
 the same endpoints, so they stay even though the agent-side write tools
@@ -112,21 +114,37 @@ def _cap_diff(result: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _with_task(params: dict[str, Any], task_id: str | None) -> dict[str, Any]:
+    """``params`` plus ``task_id`` when one is given."""
+    return params if task_id is None else {**params, "task_id": task_id}
+
+
 @mcp.tool()
-def roboco_git_status(project_slug: str | None = None) -> dict[str, Any]:
-    """Read-only: current git status of your workspace.
+def roboco_git_status(
+    project_slug: str | None = None, task_id: str | None = None
+) -> dict[str, Any]:
+    """Read-only: git status of your task's worktree.
+
+    You work in your task's worktree (``.worktrees/<task id[:8]>`` in your
+    clone), and that is what this reads: the task named by ``task_id``, else
+    your active task. Only with no task at all does it read your clone root.
+    The result's ``task_id`` names the task whose worktree was read (null:
+    the clone root).
 
     Args:
         project_slug: Optional — omit it and your own project is used
             (from this agent's environment).
+        task_id: Optional — the task whose worktree to read; omit it for
+            your active task.
 
     Returns:
-        Current branch, staged/unstaged/untracked files, ahead/behind counts.
+        Current branch, staged/unstaged/untracked files, ahead/behind counts,
+        and the task whose worktree was read.
     """
     slug = _resolve_project_slug(project_slug)
     if isinstance(slug, dict):
         return slug
-    return _get("/api/git/status", {"project_slug": slug})
+    return _get("/api/git/status", _with_task({"project_slug": slug}, task_id))
 
 
 @mcp.tool()
@@ -160,17 +178,26 @@ def roboco_git_diff(
     project_slug: str | None = None,
     staged: bool = False,
     file_path: str | None = None,
+    task_id: str | None = None,
 ) -> dict[str, Any]:
-    """Read-only: diff of your workspace against the index.
+    """Read-only: diff of your task's worktree against the index.
+
+    Reads the worktree of the task named by ``task_id``, else of your active
+    task; only with no task at all, your clone root. The result's
+    ``task_id`` names the task whose worktree was read (null: the clone
+    root).
 
     Args:
         project_slug: Optional — omit it and your own project is used
             (from this agent's environment).
         staged: If True, show staged changes; otherwise show unstaged.
         file_path: Optional path to scope the diff to a single file.
+        task_id: Optional — the task whose worktree to read; omit it for
+            your active task.
 
     Returns:
-        Diff text plus files_changed count.
+        Diff text plus files_changed count, and the task whose worktree was
+        read.
     """
     slug = _resolve_project_slug(project_slug)
     if isinstance(slug, dict):
@@ -178,7 +205,7 @@ def roboco_git_diff(
     params: dict[str, Any] = {"project_slug": slug, "staged": staged}
     if file_path is not None:
         params["file_path"] = file_path
-    return _cap_diff(_get("/api/git/diff", params))
+    return _cap_diff(_get("/api/git/diff", _with_task(params, task_id)))
 
 
 @mcp.tool()

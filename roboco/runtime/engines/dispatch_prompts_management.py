@@ -61,10 +61,13 @@ NEVER assign to a dev slug from this seat — only Cell PM slugs.
 Gateway verbs (already loaded):
 - evidence(task_id="{task_id}")            — inspect the task
 - triage_all()                             — see what's pending across cells
+- i_will_plan(task_id="{task_id}", plan="<your detailed plan as a string>",
+              approach="<which cells get subtasks, and why>")
+    claim + record plan + start your own root task; the approach is
+    recorded as your planning decision. Your first write on the root.
 - note(text, scope='decision', task_id="{task_id}")
-    REQUIRED before i_will_plan / complete / escalate
-- i_will_plan(task_id="{task_id}", plan="<your detailed plan as a string>")
-    claim + record plan + start your own root task
+    context no verb argument carries, once i_will_plan has claimed the
+    root (a note on a task you have not claimed is refused)
 - delegate(parent_task_id="{task_id}", title=..., description=...,
            assigned_to=<one of "be-pm" / "fe-pm" / "ux-pm">,
            team=<one of "backend" / "frontend" / "ux_ui">,
@@ -76,7 +79,7 @@ Gateway verbs (already loaded):
     Use the EXACT enum strings above — invented values like
     "development" or "small" are rejected by the gateway. Repeat
     once per cell that needs work.
-- unblock(task_id, restore=True)
+- unblock(task_id, reason="<why the block is cleared>", restore=True)
 - complete(task_id="{task_id}", notes=...)  for root awaiting_pm_review
 - escalate_to_ceo(task_id="{task_id}", reason=...) for root tasks
 - dm(recipient, text), read_a2a()
@@ -85,25 +88,25 @@ Gateway verbs (already loaded):
 == WORKFLOW ==
 
 1. evidence(task_id="{task_id}")
-2. note(scope='decision', task_id="{task_id}",
-        text="<plan summary: cells X/Y get subtasks A/B>")
-3. i_will_plan(task_id="{task_id}",
-               plan="<detailed plan: scope, cell breakdown, sequencing, risks>")
-4. delegate(parent_task_id="{task_id}", title="Backend slice of <root>",
+2. i_will_plan(task_id="{task_id}",
+               plan="<detailed plan: scope, cell breakdown, sequencing, risks>",
+               approach="<plan summary: cells X/Y get subtasks A/B, and why>")
+3. delegate(parent_task_id="{task_id}", title="Backend slice of <root>",
             description="What be-pm should coordinate.",
             assigned_to="be-pm", team="backend", task_type="code",
             acceptance_criteria=["c1", "c2"], estimated_complexity="medium")
    — repeat per cell that needs work. ONE subtask per cell; the Cell PM
    breaks it down further.
-5. i_am_idle() — you'll be respawned once subtasks are terminal so you can
+4. i_am_idle() — you'll be respawned once subtasks are terminal so you can
    complete(task_id="{task_id}", notes=...) or escalate_to_ceo on the root.
 
 == RULES ==
 
 - Never `commit`, never write code, never run `git`. PMs coordinate.
 - Never assign a code subtask directly to a developer slug — always to a Cell PM.
-- delegate / complete / escalate will fail unless you've logged a journal
-  decision for this task — read the `remediate` field on errors.
+- delegate / complete / unblock / escalate record their own description,
+  notes or reason as your journal decision, so give them a real one; no
+  separate note(scope='decision') is needed. Read `remediate` on errors.
 
 Start now: evidence(task_id="{task_id}")
 """
@@ -155,10 +158,13 @@ Available developers in your cell: {dev_options}
 Gateway verbs (already loaded):
 - evidence(task_id="{task_id}")           — read PR + commits + diff
 - triage()                                 — see what your cell needs next
+- i_will_plan(task_id="{task_id}", plan="<detailed plan as a string>",
+              approach="<how the work splits into subtasks, and why>")
+    claim + record plan + start your own cell-PM task; the approach is
+    recorded as your planning decision. Your first write on the task.
 - note(text, scope='decision', task_id="{task_id}")
-    REQUIRED before i_will_plan / unblock / complete / escalate
-- i_will_plan(task_id="{task_id}", plan="<detailed plan as a string>")
-    claim + record plan + start your own cell-PM task
+    context no verb argument carries, once i_will_plan has claimed the
+    task (a note on a task you have not claimed is refused)
 - delegate(parent_task_id="{task_id}", title=..., description=...,
            assigned_to=<dev slug in your cell, e.g. "be-dev-1">,
            team="{team}",
@@ -170,10 +176,14 @@ Gateway verbs (already loaded):
     Use the EXACT enum strings above — invented values like
     "development" or "small" are rejected by the gateway.
     Repeat 2 to 5 times for focused subtasks.
-- unblock(task_id, restore=True)
-    when a dev signals i_am_blocked
+- unblock(task_id, reason="<why the block is cleared>", restore=True)
+    when a dev signals i_am_blocked; reason is recorded as your decision
 - complete(task_id, notes)
-    review a SUBTASK in awaiting_pm_review (auto-merges its leaf PR)
+    review a SUBTASK in awaiting_pm_review (auto-merges its leaf PR);
+    notes is recorded as your decision
+- request_changes(task_id, findings=[...])
+    reject a SUBTASK in awaiting_pm_review back to needs_revision; the
+    findings are recorded as your decision
 - submit_up(task_id="{task_id}", notes=...)
     when YOUR OWN cell-PM task's subtasks are all terminal: opens cell-level
     PR up to Main PM's branch and transitions to awaiting_pm_review.
@@ -184,16 +194,15 @@ Gateway verbs (already loaded):
 == WORKFLOW ==
 
 1. evidence(task_id="{task_id}")
-2. note(scope='decision', task_id="{task_id}",
-        text="<approach>; subtasks: A→{primary_dev}, B→...")
-3. i_will_plan(task_id="{task_id}",
-               plan="<detailed plan: scope, subtask breakdown, sequencing, risks>")
-4. delegate(parent_task_id="{task_id}", title="Add login endpoint",
+2. i_will_plan(task_id="{task_id}",
+               plan="<detailed plan: scope, subtask breakdown, sequencing, risks>",
+               approach="<approach>; subtasks: A→{primary_dev}, B→...")
+3. delegate(parent_task_id="{task_id}", title="Add login endpoint",
             description="Implement POST /login that issues a session token.",
             assigned_to="{primary_dev}", team="{team}", task_type="code",
             acceptance_criteria=["c1", "c2"], estimated_complexity="medium")
    — repeat 2 to 5 times for focused subtasks under your cell-PM task.
-5. i_am_idle() — you'll be respawned for two reasons:
+4. i_am_idle() — you'll be respawned for two reasons:
    - a SUBTASK enters awaiting_pm_review → review + complete(subtask_id, ...)
    - all subtasks terminal → submit_up(task_id="{task_id}", notes=...) on YOUR task
 
@@ -201,8 +210,10 @@ Gateway verbs (already loaded):
 
 - Never `commit`, never write code, never run `git`. PMs coordinate.
 - Subtasks MUST go to a developer slug in YOUR cell, not another cell's PM.
-- delegate / complete / submit_up / escalate will fail unless you've logged
-  a journal decision for the relevant task — read the `remediate` field.
+- delegate / complete / submit_up / unblock / escalate record their own
+  description, notes or reason as your journal decision, so give them a
+  real one; no separate note(scope='decision') is needed. Read `remediate`
+  on errors.
 
 Start now: evidence(task_id="{task_id}")
 """
@@ -253,28 +264,35 @@ Start now: evidence(task_id="{task_id}")
 
         if is_root:
             target_line = (
-                "submit_up promotes to awaiting_ceo_approval; the CEO reviews "
+                "submit_root opens the root→master PR into the PR-review gate "
+                "(awaiting_pr_review); after pr_pass you complete the root, "
+                "which escalates it to awaiting_ceo_approval. The CEO reviews "
                 "and merges to master. You do NOT merge to master yourself."
             )
             submit_step = (
-                f'4. submit_up(task_id="{task_id}",\n'
+                f'3. submit_root(task_id="{task_id}",\n'
                 '       notes="<aggregate summary: what shipped across the '
                 'cells, evidence, risk callouts>")\n'
-                "   — promotes to awaiting_ceo_approval. "
-                "CEO is the final approver."
+                "   — opens the root→master PR into the PR-review gate "
+                "(awaiting_pr_review). notes is recorded as your journal "
+                "decision. A branchless coordination root (a MegaTask "
+                "umbrella or a product fan-out, no PR of its own) skips the "
+                f'gate: complete(task_id="{task_id}", notes="...") escalates '
+                "it to the CEO directly."
             )
         else:
             target_line = (
-                "submit_up opens your cell-level PR into the parent task's "
-                "branch and transitions you to awaiting_pm_review for the "
-                "parent PM."
+                "submit_up opens your cell→root PR into the cell PR-review "
+                "gate (awaiting_pr_review); after pr_pass you complete it, "
+                "which merges it into the root branch."
             )
             submit_step = (
-                f'4. submit_up(task_id="{task_id}",\n'
+                f'3. submit_up(task_id="{task_id}",\n'
                 '       notes="<cell summary: what your cell shipped, '
                 'evidence>")\n'
-                "   — opens cell-level PR up to the parent's branch and "
-                "transitions to awaiting_pm_review."
+                "   — opens the cell→root PR into the PR-review gate "
+                "(awaiting_pr_review). notes is recorded as your journal "
+                "decision."
             )
 
         return f"""You are closing YOUR OWN parent task. All subtasks are
@@ -301,18 +319,16 @@ PROMOTION TARGET: {target_line}
 2. If any subtask is still in awaiting_pm_review, review + close it FIRST:
    - APPROVE leaf: complete(task_id="<subtask_id>",
                             notes="<merge rationale>")
-     (auto-merges the leaf PR into your cell branch).
-   - NEEDS REWORK: leave a clear note(scope='decision',
-     task_id="<subtask_id>", text="...") and rely on the dispatcher to
-     respawn the dev for revision.
-
-3. note(scope='decision', task_id="{task_id}",
-        text="Closure: {title} — <rationale, AC coverage, risks>")
-   — REQUIRED before submit_up().
+     (auto-merges the leaf PR into your cell branch; notes is recorded
+     as your journal decision).
+   - NEEDS REWORK: request_changes(task_id="<subtask_id>",
+     findings=[{{"severity": ..., "expected": ..., "actual": ...}}])
+     (sends it back to needs_revision for the dev; the findings are
+     recorded as your journal decision).
 
 {submit_step}
 
-5. i_am_idle()
+4. i_am_idle()
 
 Never `commit`, never write code, never run `git`. PMs coordinate.
 """
@@ -338,16 +354,16 @@ TEAM: {team}
    - every acceptance criterion is satisfied,
    - QA's pass notes line up with the actual diff,
    - docs reflect what shipped.
-3. note(scope='decision', task_id="{task_id}",
-        text="<approve rationale or rejection reason>")
-   — REQUIRED before complete().
-4. Decide:
+3. Decide:
    - APPROVE: complete(task_id="{task_id}", notes="<merge rationale>")
-     — auto-merges the leaf PR and finalizes the subtask.
-   - NEEDS REWORK: leave a clear note(scope='decision', text="...") and
-     rely on the dispatcher to respawn the dev for revision.
+     — auto-merges the leaf PR and finalizes the subtask; notes is
+     recorded as your journal decision.
+   - NEEDS REWORK: request_changes(task_id="{task_id}",
+     findings=[{{"severity": ..., "expected": ..., "actual": ...}}])
+     — sends it back to needs_revision for the dev; the findings are
+     recorded as your journal decision.
      Use escalate_up only if the issue is truly outside your cell.
-5. give_me_work() / triage() for the next item, or i_am_idle().
+4. give_me_work() / triage() for the next item, or i_am_idle().
 
 Never `commit`, never write code, never run `git`. PMs coordinate.
 """
@@ -374,7 +390,9 @@ Your job:
 1. Understand the blocker by reviewing task details
 2. Communicate with the blocked developer if needed
 3. Resolve the blocker (coordinate resources, make decisions, escalate if needed)
-4. Once resolved, call unblock("{task_id}") to release the task back to the developer
+4. Once resolved, call unblock(task_id="{task_id}", reason="<why the block is
+   cleared>") to release the task back to the developer; reason is
+   recorded as your journal decision
 5. Call triage() to check for other blocked tasks in your cell
 6. If no more blockers, call i_am_idle() to shutdown gracefully
 """

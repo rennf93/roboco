@@ -23,6 +23,7 @@ from roboco.models.runtime import (
 )
 from roboco.runtime.orchestrator import (
     _PARENT_BRANCH_WAIT,
+    _attempt_dispatch,
     _branch_is_expected,
     _created_before,
     _is_coordination_task,
@@ -656,9 +657,11 @@ class DispatchClaimEngine(_Base):
     async def _release_claim_to_pending(self, task_id: str) -> None:
         """Release a stuck claim back to PENDING via the lifecycle-safe path.
 
-        Reuses ``TaskService.unclaim_for_reaper`` (claimed/in_progress ->
-        pending, clears assignee + work session) so the state machine records
-        the transition rather than a raw status PATCH. Opens its own short-lived
+        ``TaskService.release_claim_keeping_worktree`` (claimed/in_progress ->
+        pending, owner kept, work session abandoned) records the transition
+        through the state machine rather than a raw status PATCH, and leaves
+        the task's worktree in place: the owner comes back to it, and removing
+        it would delete its uncommitted edits. Opens its own short-lived
         session, mirroring ``_reap_stale_claims``.
         """
         from roboco.db.base import get_session_factory
@@ -669,10 +672,10 @@ class DispatchClaimEngine(_Base):
             factory = get_session_factory()
             async with factory() as db:
                 svc = TaskService(db)
-                await svc.unclaim_for_reaper(require_uuid(task_id))
+                await svc.release_claim_keeping_worktree(require_uuid(task_id))
                 await db.commit()
             logger.warning(
-                "Released agentless claim to pending for re-dispatch",
+                "Released claim to pending for re-dispatch (worktree kept)",
                 task_id=task_id,
             )
         except Exception as exc:
@@ -1013,12 +1016,16 @@ class ClaimBarrierEngine(_Base):
             task_id=task_id,
             agent=agent_slug,
         )
-        await self.spawn_agent(
-            agent_id=agent_slug,
-            task_id=task_id,
-            initial_prompt=await self._build_dev_prompt(task),
-            git_context=self._task_git_context(task),
-            spawned_by="_resume_paused_task_for_author",
+        await _attempt_dispatch(
+            "resume_paused_task_for_author",
+            task_id,
+            self.spawn_agent(
+                agent_id=agent_slug,
+                task_id=task_id,
+                initial_prompt=await self._build_dev_prompt(task),
+                git_context=self._task_git_context(task),
+                spawned_by="_resume_paused_task_for_author",
+            ),
         )
 
     async def _blocked_by_earlier_sibling(self, task: dict[str, Any]) -> bool:

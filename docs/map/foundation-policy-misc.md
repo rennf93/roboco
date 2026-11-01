@@ -8,8 +8,8 @@ The "misc" foundation-policy slice holds the pure, service-agnostic rule catalog
 | roboco/foundation/policy/communications.py | Notification sender allowlist (`NOTIFY_SENDER_ROLES`), `NO_COMMS_ROLES`, NotificationType→requires_ack map, A2A priority parser, and the unacked-notification re-escalation backoff (`reescalation_decision`) | 150 |
 | roboco/foundation/policy/journaling.py | Journal Scope enum, scope→JournalEntryType map, per-role journal ReadTier, protected-journal slugs | 84 |
 | roboco/foundation/policy/task_completeness.py | Task field completeness rules + placeholder denylist + auto-fill helpers (team/priority/parent) | 376 |
-| roboco/foundation/policy/tracing.py | Tracing-gate: Requirement enum, per-requirement checkers, VERB_REQUIREMENTS table, VERBS_WITHOUT_TRACING set, check_requirements entry | 481 |
-| roboco/foundation/policy/agent_loop.py | Per-agent budget/loop policy defaults, per-verb retry caps, unlimited-retry verb set, retry_limit_for lookup | 170 |
+| roboco/foundation/policy/tracing.py | Tracing-gate: Requirement enum, per-requirement checkers, VERB_REQUIREMENTS table, VERBS_WITHOUT_TRACING set, check_requirements entry | 490 |
+| roboco/foundation/policy/agent_loop.py | Per-agent budget/loop policy defaults, per-verb retry caps, unlimited-retry verb set, retry_limit_for lookup | 176 |
 | roboco/foundation/policy/content/__init__.py | Public surface re-export for the content schema package | 55 |
 | roboco/foundation/policy/content/enums.py | Severity + Verdict controlled vocabularies for PR-review/QA content | 35 |
 | roboco/foundation/policy/content/markers.py | Typed accessors for Task.orchestration_markers JSON column (original_developer, documenter, escalation, release report, transition notes, etc.) | 1086 |
@@ -60,14 +60,14 @@ The "misc" foundation-policy slice holds the pure, service-agnostic rule catalog
 | _CHECKERS | constant | roboco/foundation/policy/tracing.py:242 | Requirement→Checker function dispatch table |
 | check_requirements | function | roboco/foundation/policy/tracing.py:270 | Run a list of Requirements against task+ctx; return GateResult |
 | VERB_REQUIREMENTS | constant | roboco/foundation/policy/tracing.py:288 | Verb→frozenset[Requirement] single source of truth (i_will_work_on, i_am_done, pass_review, pr_pass, submit_root, complete, etc.) |
-| VERBS_WITHOUT_TRACING | constant | roboco/foundation/policy/tracing.py:433 | frozenset of verbs intentionally exempt from tracing (give_me_work, open_pr, sync_branch, claim_*, resume, unclaim, etc.) |
-| requirements_for | function | roboco/foundation/policy/tracing.py:467 | Lookup required-set for a verb; raises KeyError on unknown verb |
+| VERBS_WITHOUT_TRACING | constant | roboco/foundation/policy/tracing.py:434 | frozenset of verbs intentionally exempt from tracing (give_me_work, open_pr, sync_branch, claim_*, resume, unclaim, etc.) |
+| requirements_for | function | roboco/foundation/policy/tracing.py:476 | Lookup required-set for a verb; raises KeyError on unknown verb |
 | BudgetPolicy | dataclass | roboco/foundation/policy/agent_loop.py:31 | Per-agent runtime budget + loop policy defaults (tool call warn/halt, loop threshold/window/action, PM respawn caps, verb retry default) |
-| DEFAULT_BUDGET | constant | roboco/foundation/policy/agent_loop.py:77 | Canonical BudgetPolicy instance consumers fall back to |
-| VERB_RETRY_LIMITS | constant | roboco/foundation/policy/agent_loop.py:98 | Per-verb retry caps over 60s window keyed by MCP-exposed verb names (pass/fail, i_am_done, open_pr=5, etc.) |
-| UNLIMITED_RETRY_VERBS | constant | roboco/foundation/policy/agent_loop.py:124 | frozenset of verbs exempt from the per-verb circuit breaker (discovery/claim verbs) |
-| retry_limit_for | function | roboco/foundation/policy/agent_loop.py:141 | Return per-verb retry cap or None for unlimited; falls back to default for unknown |
-| effective_task_budget_usd | function | roboco/foundation/policy/agent_loop.py:80 | A task's $ cap: its own `budget_usd`, or `None` for no cap (the per-`TaskType` default table was removed on 2026-07-23 after it blocked a default-budget coordination root); the single resolver the orchestrator's budget sweep and the `unblock` re-check both call, skipping enforcement on `None` |
+| DEFAULT_BUDGET | constant | roboco/foundation/policy/agent_loop.py:82 | Canonical BudgetPolicy instance consumers fall back to |
+| VERB_RETRY_LIMITS | constant | roboco/foundation/policy/agent_loop.py:103 | Per-verb retry caps over 60s window keyed by MCP-exposed verb names (pass/fail, i_am_done, open_pr=5, etc.) |
+| UNLIMITED_RETRY_VERBS | constant | roboco/foundation/policy/agent_loop.py:129 | frozenset of verbs exempt from the per-verb circuit breaker (discovery/claim verbs) |
+| retry_limit_for | function | roboco/foundation/policy/agent_loop.py:147 | Return per-verb retry cap or None for unlimited; falls back to default for unknown |
+| effective_task_budget_usd | function | roboco/foundation/policy/agent_loop.py:85 | A task's $ cap: its own `budget_usd`, or `None` for no cap (the per-`TaskType` default table was removed on 2026-07-23 after it blocked a default-budget coordination root); the single resolver the orchestrator's budget sweep and the `unblock` re-check both call, skipping enforcement on `None` |
 | Severity | enum | roboco/foundation/policy/content/enums.py:14 | PR-review finding severity ladder (blocker/major/minor/nit) |
 | Verdict | enum | roboco/foundation/policy/content/enums.py:23 | Review outcome StrEnum (approved/changes_requested/passed/failed) |
 | HasMarkers | protocol | roboco/foundation/policy/content/markers.py:19 | Protocol for anything carrying orchestration_markers column |
@@ -230,9 +230,9 @@ foundation/policy (misc slice)
 |---|---|---|
 | check (task_completeness) | roboco/foundation/policy/task_completeness.py:283 | Called by TaskService.create / PrompterService.create_task_from_draft / choreographer.pm.SubtaskCreateMixin._create_subtask_from_inputs at task construction |
 | check_requirements (tracing) | roboco/foundation/policy/tracing.py:270 | Called by gateway choreographer (_impl/qa/doc/pr_gate/pr_review) before each gated verb's state transition |
-| requirements_for (tracing) | roboco/foundation/policy/tracing.py:467 | Called by choreographer to resolve a verb's required-set; parity test iterates every intent verb |
+| requirements_for (tracing) | roboco/foundation/policy/tracing.py:476 | Called by choreographer to resolve a verb's required-set; parity test iterates every intent verb |
 | validate_content | roboco/foundation/policy/content/models.py:614 | Called by gateway content_actions / choreographer / prompter / intake_driver / flow_server when an agent submits a structured-content payload |
-| retry_limit_for (agent_loop) | roboco/foundation/policy/agent_loop.py:141 | Called by agent_sdk/server per-verb circuit breaker on /verb/attempted |
+| retry_limit_for (agent_loop) | roboco/foundation/policy/agent_loop.py:147 | Called by agent_sdk/server per-verb circuit breaker on /verb/attempted |
 | parse_priority (communications) | roboco/foundation/policy/communications.py:26 | Called by services/a2a.py + notification_delivery on A2A urgency resolution |
 | markers accessors | roboco/foundation/policy/content/markers.py | Called by task.py, orchestrator, self_heal_engine, release_proposal, release_manager_engine whenever reading/writing orchestration_markers |
 

@@ -128,7 +128,7 @@ async def _run_entire(
             "entire hooks failed",
             step=step,
             returncode=result.returncode,
-            output=result.stdout.strip()[-500:],
+            output=result.output[-500:],
         )
 
 

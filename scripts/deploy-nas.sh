@@ -83,22 +83,23 @@ wait_healthy() { # wait_healthy <container> [exit0]
 
 COMPOSE=(docker compose -f docker-compose.yaml)
 
-# Redis runs with requirepass, and compose refuses to start without
-# ROBOCO_REDIS_PASSWORD (`:?`). The first deploy after that change generates
-# one into .env; it never replaces a value that is already set (in .env or
-# in the environment this script runs with).
-ensure_env_secret() { # ensure_env_secret <VAR>
-  local value="${!1:-}" generated
-  [ -n "$value" ] || value="$(grep -E "^$1=" .env 2>/dev/null | tail -n1 | cut -d= -f2- || true)"
-  [ -n "$value" ] && return 0
-  generated="$(python3 -c 'import secrets; print(secrets.token_hex(32))')" \
-    || { echo "[deploy] could not generate $1 (python3 failed); add it to .env by hand" >&2; exit 1; }
-  # Start on a fresh line even if .env does not end with a newline.
-  [ ! -s .env ] || [ -z "$(tail -c1 .env)" ] || echo >> .env
-  echo "$1=$generated" >> .env
-  echo "[deploy] generated $1 into .env (it did not have one)"
-}
+# The host's Intel iGPU serves the decisions sidecar (Clef-Flash) and
+# ollama's embedder when the host exposes it (docker-compose.igpu.yaml has
+# the measurements: ~5x and ~11x faster than the CPU on the NAS). A host
+# without the device keeps both on the CPU.
+if [ -c /dev/dri/renderD128 ]; then
+  ROBOCO_RENDER_GID="$(stat -c %g /dev/dri/renderD128)"
+  export ROBOCO_RENDER_GID
+  COMPOSE+=(-f docker-compose.igpu.yaml)
+  echo "[deploy] Intel iGPU found (/dev/dri/renderD128, group $ROBOCO_RENDER_GID): decisions and ollama run on it"
+fi
+
+# Host-specific .env values (ensure_env_secret, ensure_env_chain_peer): each
+# is written once and never replaces a value already declared.
+# shellcheck source=scripts/deploy-env.sh
+source "$STACK_DIR/scripts/deploy-env.sh"
 ensure_env_secret ROBOCO_REDIS_PASSWORD
+ensure_env_chain_peer roboco_default
 
 echo "[deploy] app/$COLOR: content-gated image builds..."
 # ---------------------------------------------------------------------------

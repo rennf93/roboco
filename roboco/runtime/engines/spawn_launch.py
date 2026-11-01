@@ -231,6 +231,9 @@ class SpawnAgentEngine(_Base):
             instance.state = AgentState.ACTIVE
             instance.started_at = datetime.now(UTC)
             instance.last_activity = datetime.now(UTC)
+            # Only a container that really started earns the respawn
+            # breaker's strike for this attempt (see _pm_respawn_should_gate).
+            self._note_respawn_spawn_launched(agent_slug, task_id)
 
             logger.info(
                 "Agent spawned",

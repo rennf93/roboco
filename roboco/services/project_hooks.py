@@ -141,7 +141,7 @@ async def run_project_hook(
     if result.timed_out:
         return _refused(name, f"{name} hook ({hook}) timed out after {timeout}s")
     if result.returncode != 0:
-        return _refused(name, f"{name} hook ({hook}) failed:\n{result.stdout.strip()}")
+        return _refused(name, f"{name} hook ({hook}) failed:\n{result.output}")
     return None
 
 

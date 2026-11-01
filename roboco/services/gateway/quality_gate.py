@@ -59,7 +59,8 @@ async def run_quality_commands(
 
     Every command runs (we don't stop at the first failure) so the developer
     sees all gate failures in one shot. A non-zero exit is a failure; its
-    combined stdout+stderr is captured for the remediate hint.
+    combined stdout+stderr and its exit status are captured for the
+    remediate hint.
     """
     if not commands:
         return GateResult(passed=True, skipped=True)
@@ -67,7 +68,7 @@ async def run_quality_commands(
     chunks: list[str] = []
     for name, command in commands:
         return_code, out = await _run_one(workspace, name, command)
-        chunks.append(f"$ {command}\n{out.strip()}")
+        chunks.append(_command_report(command, return_code, out))
         if return_code != 0:
             failures.append(name)
     return GateResult(
@@ -77,13 +78,22 @@ async def run_quality_commands(
     )
 
 
+def _command_report(command: str, return_code: int, output: str) -> str:
+    """``$ <command>``, what it printed, and its exit status when it failed."""
+    report = f"$ {command}\n{output.strip()}"
+    return report if return_code == 0 else f"{report}\n(exit {return_code})"
+
+
 async def _run_one(workspace: Path, name: str, command: str) -> tuple[int, str]:
     """Run one operator-configured command string in the workspace shell.
 
     The command executes the clone's own Makefile/tooling, which any agent
     can rewrite, so it runs in a throwaway container as the agent uid, never
-    here as root (``roboco.services.workspace_container``). A container that
-    cannot start raises ``WorkspaceContainerError``; the submit verb's gate
+    here as root (``roboco.services.workspace_container``). Its output is
+    everything the run printed (stdout and stderr merged in the container,
+    then whatever else reached stderr); a timeout keeps what it printed
+    before the deadline. A container that did not run the command raises
+    ``WorkspaceContainerError`` with the reason; the submit verb's gate
     caller treats that as an infrastructure error and fails open.
     """
     result = await run_in_workspace_container(
@@ -92,6 +102,4 @@ async def _run_one(workspace: Path, name: str, command: str) -> tuple[int, str]:
         timeout=_GATE_TIMEOUT_SECONDS,
         merge_stderr=True,
     )
-    if result.timed_out:
-        return result.returncode, f"command timed out after {_GATE_TIMEOUT_SECONDS}s"
-    return result.returncode, result.stdout
+    return result.returncode, result.output
