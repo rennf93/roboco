@@ -304,7 +304,8 @@ async def test_commit_allows_documenter_role() -> None:
 
     env = await ca.commit(agent_id=agent_id, message="docs: add migration notes")
 
-    assert env.error is None  # not rejected on role grounds
+    # not rejected on role grounds
+    assert env.error is None
 
 
 @pytest.mark.asyncio
@@ -722,7 +723,8 @@ async def test_notify_explicit_task_not_found_rejected() -> None:
     """Lines 365-366: explicit task_id with task missing → not_found."""
     task_svc = AsyncMock()
     task_svc.agent_for.return_value = MagicMock(role="cell_pm")
-    task_svc.get.return_value = None  # task lookup fails
+    # task lookup fails
+    task_svc.get.return_value = None
     deps = _make_deps(task=task_svc)
     ca = ContentActions(deps)
     agent_id = uuid4()
@@ -969,7 +971,8 @@ async def test_pr_update_placeholder_body_rejected() -> None:
 async def test_pr_update_substantive_body_passes_soup_guard() -> None:
     """A real body clears the soup guard and proceeds to the (missing) PR check."""
     task = AsyncMock()
-    task.get.return_value = None  # not_found short-circuits after the soup guard
+    # not_found short-circuits after the soup guard
+    task.get.return_value = None
     deps = _make_deps(task=task)
     ca = ContentActions(deps)
 
@@ -1127,7 +1130,8 @@ async def test_evidence_accepts_short_task_id_prefix() -> None:
 
     assert body["error"] is None
     assert body["task_id"] == str(task_id)
-    assert task_svc.session.execute.await_count >= 1  # resolver lookup ran
+    # resolver lookup ran
+    assert task_svc.session.execute.await_count >= 1
 
 
 @pytest.mark.asyncio

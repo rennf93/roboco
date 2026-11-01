@@ -433,17 +433,25 @@ VERB_REQUIREMENTS: dict[str, frozenset[Requirement]] = {
 # pure state moves). Each entry is a deliberate decision, not an oversight.
 VERBS_WITHOUT_TRACING: frozenset[str] = frozenset(
     {
-        "give_me_work",  # discovery — no state change
-        "triage",  # read-only listing
-        "triage_all",  # read-only listing
-        "evidence",  # read-only evidence dump
-        "i_am_idle",  # signal only
-        "unclaim",  # voluntary release; no rationale required
-        "reassign",  # mechanical intra-cell hand-off; branch/WIP preserved
+        # discovery — no state change
+        "give_me_work",
+        # read-only listing
+        "triage",
+        # read-only listing
+        "triage_all",
+        # read-only evidence dump
+        "evidence",
+        # signal only
+        "i_am_idle",
+        # voluntary release; no rationale required
+        "unclaim",
+        # mechanical intra-cell hand-off; branch/WIP preserved
+        "reassign",
         # declare_coverage is a mechanical AC-ref stamp + its own audit row
         # (task.coverage_declared) — no journal rationale required.
         "declare_coverage",
-        "resume",  # pure state move paused→in_progress
+        # pure state move paused→in_progress
+        "resume",
         # claim_review's tracing applies on pass_review / fail_review.
         "claim_review",
         # claim_pr_review's tracing applies on post_pr_review.

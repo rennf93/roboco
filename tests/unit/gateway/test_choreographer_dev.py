@@ -618,7 +618,8 @@ async def test_i_am_done_reflect_note_addresses_acceptance_criteria() -> None:
         self_verified=False,
         progress_updates=[{"message": "p"}],
         acceptance_criteria=["AC1", "AC2"],
-        acceptance_criteria_status=[],  # nothing cited explicitly
+        # nothing cited explicitly
+        acceptance_criteria_status=[],
         commits=[{"sha": "abc"}],
         pr_number=8,
         pr_url="https://x/pr/8",
@@ -686,7 +687,8 @@ async def test_i_am_done_blocks_when_journal_reflect_missing() -> None:
         id=agent_id, role="developer", team="backend", slug=None
     )
     journal_svc = AsyncMock()
-    journal_svc.has_reflect_for_task.return_value = False  # no reflect
+    # no reflect
+    journal_svc.has_reflect_for_task.return_value = False
     # Satisfy JOURNAL_DURING_WORK_AT_LEAST_ONE so journal:reflect is the
     # load-bearing gap surfaced to the assertion.
     journal_svc.has_decision_for_task.return_value = True
@@ -758,7 +760,8 @@ async def test_i_am_done_skill_resolution_picks_existing_skill() -> None:
 
     qa_with_neither = MagicMock(id=uuid4(), skills=[{"id": "other_skill"}])
     skill3 = c._resolve_skill(qa_with_neither, ["code_review", "qa_review"])
-    assert skill3 == "code_review"  # fallback to first
+    # fallback to first
+    assert skill3 == "code_review"
 
 
 @pytest.mark.asyncio

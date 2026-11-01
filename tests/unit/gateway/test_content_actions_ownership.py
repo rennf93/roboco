@@ -560,8 +560,10 @@ async def test_note_reaped_assignee_cannot_post_to_former_task() -> None:
     task_obj = MagicMock(
         id=task_id,
         status="in_progress",
-        assigned_to=agent_id,  # persists across the reap
-        active_claimant_id=None,  # cleared on release — the reaped window
+        # persists across the reap
+        assigned_to=agent_id,
+        # cleared on release — the reaped window
+        active_claimant_id=None,
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = task_obj
@@ -592,7 +594,8 @@ async def test_note_active_owner_can_still_post() -> None:
         id=task_id,
         status="in_progress",
         assigned_to=agent_id,
-        active_claimant_id=agent_id,  # active claim — the normal case
+        # active claim — the normal case
+        active_claimant_id=agent_id,
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = task_obj
