@@ -22,13 +22,14 @@ import shutil
 import sys
 import tempfile
 import time
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Callable
 
     from roboco.llm.providers import ProviderRegistry
     from roboco.services.uptime import UptimeLedger
@@ -231,6 +232,9 @@ _PM_DISPATCH_FETCH_LIMIT = 500
 # Validation reason suffix for a child whose parent is still cutting its
 # branch inside the provisioning grace: a healthy, recurring wait, not a fault.
 _PARENT_BRANCH_WAIT = "waiting for parent branch provisioning"
+# The roles the single-active-task rule holds to one unfinished task, mirroring
+# TaskService._SINGLE_ACTIVE_TASK_ROLES (the claim chokepoint's set).
+_SINGLE_ACTIVE_TASK_ROLES = frozenset({"developer", "devops"})
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_OK = 200
 # First non-2xx status; 2xx == [_HTTP_OK, this).
@@ -1078,6 +1082,33 @@ class AgentReadinessError(Exception):
     The pre-flight gate auto-blocks the offending task before raising, so the
     dispatcher doesn't keep retrying. Callers should log and move on.
     """
+
+
+async def _attempt_dispatch(
+    dispatcher: str, candidate_id: Any, attempt: Awaitable[object]
+) -> bool:
+    """Await one dispatch candidate's attempt; True when it completed, False
+    when ``spawn_agent`` refused it as not ready.
+
+    The refusal is that candidate's outcome (``AgentReadinessError``'s
+    contract: the readiness gate has already auto-blocked the task, callers
+    log and move on), so the dispatcher goes on with its next candidate
+    instead of the exception ending its tick for every candidate after it
+    (live 2026-10-28 06:40:08: fe-pm refused on d42e53ea ended pm_work).
+    Every per-candidate dispatcher loop awaits its spawn step through here;
+    one that spawns once per tick only spends that spawn on a True.
+    """
+    try:
+        await attempt
+    except AgentReadinessError as exc:
+        logger.info(
+            "Spawn refused, task not ready; dispatcher moves on",
+            dispatcher=dispatcher,
+            candidate_id=str(candidate_id),
+            reason=str(exc),
+        )
+        return False
+    return True
 
 
 class _SpawnAbortedDuringShutdown(Exception):
@@ -1933,6 +1964,12 @@ class AgentOrchestrator(
         # dispatcher/reaper loops launch below.
         await self._heal_stale_agent_tokens()
         await self._readopt_running_agents()
+
+        # A work author holds one unfinished task at a time: put the
+        # never-started extra claims left by older runs back in their author's
+        # queue. After the re-adopt, so an author with a live container is
+        # left alone.
+        await self._release_extra_claims_of_work_authors()
 
         # Close agent_spawn_sessions rows left open by a prior orchestrator
         # crash so usage/cost rollups (which filter ended_at IS NOT NULL) count

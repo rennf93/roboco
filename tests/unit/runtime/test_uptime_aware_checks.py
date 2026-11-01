@@ -126,6 +126,7 @@ async def test_start_calls_mark_running_and_beat_before_other_setup(
         "_reconcile_orphan_claims_on_startup",
         "_heal_stale_agent_tokens",
         "_readopt_running_agents",
+        "_release_extra_claims_of_work_authors",
         "_reconcile_orphan_spawn_sessions",
         "_sandbox_janitor_sweep",
     ):
