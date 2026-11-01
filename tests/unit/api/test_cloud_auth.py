@@ -31,6 +31,7 @@ from roboco.config import settings
 from roboco.db.tables import UserTable
 from roboco.models import AgentRole
 from sqlalchemy import select
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 
 if TYPE_CHECKING:
@@ -588,9 +589,20 @@ async def test_read_token_accepts_unrevoked_jti(
 _HTTP_400 = 400
 
 
+def _point_settings_at_database(monkeypatch: pytest.MonkeyPatch, url: str) -> None:
+    """Make ``settings.database_url`` (what the real router's session reads)
+    the given database, field by field."""
+    parsed = make_url(url)
+    monkeypatch.setattr(settings, "database_host", parsed.host)
+    monkeypatch.setattr(settings, "database_port", parsed.port)
+    monkeypatch.setattr(settings, "database_user", parsed.username)
+    monkeypatch.setattr(settings, "database_password", parsed.password or "")
+    monkeypatch.setattr(settings, "database_name", parsed.database)
+
+
 @pytest.mark.asyncio
 async def test_login_route_parses_oauth2_form_not_query_params(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, _test_database_url: str
 ) -> None:
     """Regression (caught live on the NAS, 2026-07-19): a TYPE_CHECKING-only
     AsyncSession import in auth.manager broke FastAPI's postponed-annotation
@@ -601,11 +613,13 @@ async def test_login_route_parses_oauth2_form_not_query_params(
     400 LOGIN_BAD_CREDENTIALS, never a 422 validation error.
     """
     monkeypatch.setattr(settings, "cloud_auth_enabled", True)
+    # The REAL router queries settings.database_url, whose defaults name
+    # localhost:5432/roboco: whatever Postgres that machine runs, a live one
+    # included. Point it at this session's throwaway test database instead,
+    # then bootstrap the one table the login flow reads.
+    _point_settings_at_database(monkeypatch, _test_database_url)
     app = FastAPI()
     mount_cloud_auth(app, "/api/auth")
-    # The REAL router queries settings.database_url; do not depend on
-    # machine-state drift (a pre-provisioned "roboco" DB on the default
-    # localhost) - bootstrap the one table the login flow reads.
     engine = create_async_engine(settings.database_url)
     async with engine.begin() as conn:
         await conn.run_sync(
