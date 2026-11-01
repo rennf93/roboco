@@ -15,6 +15,8 @@ paths:
 
 Migrated from the root CLAUDE.md so it loads only when the matching files are touched.
 
+Every per-task worktree's `.venv` is a symlink to the clone root's shared venv, whose editable install names the clone root's checkout; `_link_shared_venv` also writes a startup hook into that venv (`roboco/utils/worktree_imports.py`, as `_roboco_worktree_imports.py` + `zz_roboco_worktree_imports.pth`) that points those `sys.path` entries at the worktree the interpreter was started in, so code run in a worktree imports the worktree's source, never the clone root's parked branch.
+
 On a Python workspace, `WorkspaceService` runs `uv sync --extra dev` (not plain `uv sync`) so the clone's `.venv` carries the full gate toolchain (ruff/mypy/xenon/pytest) - the lint/type/complexity tools live in the `dev` **extra**, which plain `uv sync` skips. Without it an agent's `make quality` fails on `ruff: command not found` and the agent can't gate its own work.
 
 Because the clone is shared across a dev's tasks, a **fresh claim** git-resets the workspace to a clean tree (`git reset --hard`) before checking out the new task's branch - discarding abandoned uncommitted cruft from a finished task while preserving all commits and the gitignored `.venv`. A resume short-circuits before this, so committed work is never reset.
