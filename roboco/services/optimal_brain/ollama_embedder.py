@@ -38,14 +38,17 @@ logger = get_logger(__name__)
 
 # Retry configuration — ConnectError / Timeout (existing, unchanged)
 MAX_RETRIES = 3
-RETRY_DELAY_BASE = 0.5  # seconds, exponential backoff
+# Seconds, exponential backoff
+RETRY_DELAY_BASE = 0.5
 
 # Retry configuration — HTTP 429 / RateLimitError (new outer loop)
 RATE_LIMIT_MAX_RETRIES = 5
 
 # Parallel processing configuration
-MAX_CONCURRENT_BATCHES = 4  # Number of batches to process in parallel
-DEFAULT_BATCH_SIZE = 32  # default batch size for Ollama embedding requests
+# Number of batches to process in parallel
+MAX_CONCURRENT_BATCHES = 4
+# Default batch size for Ollama embedding requests
+DEFAULT_BATCH_SIZE = 32
 
 # Keep the embedding model resident in Ollama. It runs on CPU and Ollama's
 # default 5-min idle unload means a `dm` after an idle window pays a cold 2.4 GB
@@ -108,7 +111,8 @@ class EmbeddingCache:
         """Cache embedding for content."""
         key = self._hash_content(content)
         if key in self._cache:
-            return  # Already cached
+            # Already cached
+            return
 
         # Evict oldest if at capacity
         while len(self._cache) >= self._max_size:
@@ -780,7 +784,8 @@ class OllamaEmbedder(OllamaDocumentEmbeddings, OllamaEmbedResponses):
                             self._rl_backoff(last_rl_retry_after, rl_attempt),
                         )
                         got_429 = True
-                        break  # break inner loop; outer loop will sleep + retry
+                        # Break inner loop; outer loop will sleep + retry
+                        break
 
                     embeddings = self._handle_embed_response(response, input_count=1)
                     result = embeddings[0]

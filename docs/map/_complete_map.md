@@ -3696,7 +3696,7 @@ The organizational-memory + playbooks slice: captures cross-agent learnings and 
 | `roboco/services/optimal_brain/indexes/reviews.py` | `ReviewsIndexPlugin`: record code-review comments and fetch past reviews for a file, type or severity | 205 |
 | `roboco/services/optimal_brain/indexes/standards.py` | `StandardsIndexPlugin`: index standards (single entries or parsed markdown files) and return the ones relevant to a domain or to content being validated | 315 |
 | `roboco/services/optimal_brain/mentor.py` | `MentorService` singleton: agent-aware Q&A over the indexes with a per-agent profile and stored conversation history | 904 |
-| `roboco/services/optimal_brain/ollama_embedder.py` | `OllamaEmbedder`: Ollama native-API embeddings with an LRU content-hash cache, retry and rate-limit backoff, and parallel batch embedding | 867 |
+| `roboco/services/optimal_brain/ollama_embedder.py` | `OllamaEmbedder`: Ollama native-API embeddings with an LRU content-hash cache, retry and rate-limit backoff, and parallel batch embedding | 872 |
 | `roboco/services/optimal_brain/_ollama_embedder_types.py` | `OllamaEmbedderSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `OllamaEmbedder` mixins reach through `self`, plus its instance attributes; `tests/unit/services/optimal_brain/test_ollama_embedder_mixins.py` fails on a stray stub or a member defined twice | 72 |
 | `roboco/services/optimal_brain/reviewer.py` | `ReviewerService` singleton: automated code-review feedback (categories, severities) recorded into the reviews index | 623 |
 | `roboco/services/optimal_brain/shared_embedder.py` | Process-wide shared embedder singleton (`get_shared_embedder` / `set_shared_embedder` / `close_shared_embedder`) behind an `Embedder` protocol | 177 |
@@ -3777,9 +3777,9 @@ The organizational-memory + playbooks slice: captures cross-agent learnings and 
 | `enqueue_index_request` | function | `roboco/services/optimal_brain/indexer_worker.py:87` | Producer entry point: enqueue an index write, or run it inline when the stream is unavailable |
 | `run_indexer` | function | `roboco/services/optimal_brain/indexer_worker.py:417` | Consume `roboco:stream:index` and own all embedding work |
 | `reconcile_rag_indexes` | function | `roboco/services/optimal_brain/indexer_worker.py:383` | Boot-time RAG reconcile: playbooks, dead-letter reclaim, backfill |
-| `OllamaEmbedder` | class | `roboco/services/optimal_brain/ollama_embedder.py:598` | Embedding generator over Ollama's native API |
-| `OllamaEmbedResponses` | class | `roboco/services/optimal_brain/ollama_embedder.py:156` | Mixin of `OllamaEmbedder` (6 methods): What comes back from /api/embed and what to do when it fails: validating and extracting the embeddings, the 429 backoff and its log, mapping a request error to the embedder's own, and the connect-retry sleeps, sync and async. |
-| `OllamaDocumentEmbeddings` | class | `roboco/services/optimal_brain/ollama_embedder.py:252` | Mixin of `OllamaEmbedder` (11 methods): Embedding many documents: the cached and uncached split, sequential and semaphore-limited parallel batches, merging and caching the results, and chunk embedding with the default batch size. |
+| `OllamaEmbedder` | class | `roboco/services/optimal_brain/ollama_embedder.py:602` | Embedding generator over Ollama's native API |
+| `OllamaEmbedResponses` | class | `roboco/services/optimal_brain/ollama_embedder.py:160` | Mixin of `OllamaEmbedder` (6 methods): What comes back from /api/embed and what to do when it fails: validating and extracting the embeddings, the 429 backoff and its log, mapping a request error to the embedder's own, and the connect-retry sleeps, sync and async. |
+| `OllamaDocumentEmbeddings` | class | `roboco/services/optimal_brain/ollama_embedder.py:256` | Mixin of `OllamaEmbedder` (11 methods): Embedding many documents: the cached and uncached split, sequential and semaphore-limited parallel batches, merging and caching the results, and chunk embedding with the default batch size. |
 | `get_shared_embedder` | function | `roboco/services/optimal_brain/shared_embedder.py:73` | Get or create the shared embedder instance |
 | `TextChunker` | class | `roboco/services/optimal_brain/text_chunker.py:86` | Character-based sliding-window chunker |
 
