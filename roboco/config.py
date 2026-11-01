@@ -284,9 +284,18 @@ class Settings(BaseSettings):
         description="Max concurrent embed batches for the indexer's own embedder",
     )
     indexer_embed_batch_size: int = Field(
-        default=8,
+        default=1,
         ge=1,
-        description="Embed batch size for the indexer's own embedder",
+        description=(
+            "Embed batch size for the indexer's own embedder. ollama serves "
+            "one embed request at a time per model, so a query embed "
+            "(institutional memory, KB search) waits behind the whole batch "
+            "in flight. Measured on the NAS 2026-11-01 (qwen3-embedding:0.6b): "
+            "a query arriving during an 8-chunk batch waited 41.5 s on the "
+            "CPU, 5 s on the Iris Xe, against the 8 s memory-search deadline; "
+            "8 single-chunk requests take as long as one 8-chunk request, so "
+            "one chunk per request costs no throughput."
+        ),
     )
 
     @property
@@ -370,7 +379,7 @@ class Settings(BaseSettings):
     # score / noul) with calibrated confidence at decision points that would
     # otherwise be a full LLM call or a hardcoded heuristic. Three tiers behind
     # one wire format, all served by the roboco-decisions sidecar or the
-    # OpenRouter Decisions API: Clef (self-hosted 27B, built-in sweet-spot
+    # OpenRouter Decisions API: Clef (self-hosted Clef-Flash 9B, built-in
     # default, no key, no spend), Laya (self-hosted 421M, the cheap option,
     # fallback when the Clef backend is unhealthy) and Jev via OpenRouter
     # (opt-in, the expensive option). With the master flag off, every call
@@ -387,7 +396,7 @@ class Settings(BaseSettings):
         ),
     )
     decisions_model: str = Field(
-        default="ggml-org/Clef-GGUF:Q4_K_M",
+        default="ggml-org/Clef-Flash-GGUF:Q4_K_M",
         description=(
             "Model id reported to the Decisions backend for the default tier. "
             "For the self-hosted sidecar this doubles as the routing hint: "
@@ -418,7 +427,7 @@ class Settings(BaseSettings):
         default=True,
         description=(
             "Serve decisions from the self-hosted sidecar's Clef backend "
-            "(27B llama.cpp, the BUILT-IN sweet-spot default tier) when it "
+            "(Clef-Flash 9B on llama.cpp, the BUILT-IN default tier) when it "
             "is healthy. Inert until the roboco-decisions container exists "
             "and the master flag is on."
         ),
@@ -450,13 +459,65 @@ class Settings(BaseSettings):
         ),
     )
     decisions_clef_timeout_s: float = Field(
+        default=180.0,
+        gt=0,
+        description=(
+            "Upper bound on one call to the default self-hosted Clef tier "
+            "(single attempt, no retries). Each call carries its own, shorter "
+            "deadline (the decisions_*_deadline_s settings) and the sidecar "
+            "refuses at once, as busy, an input that cannot finish before it. "
+            "Measured on the NAS 2026-11-01, Clef-Flash on the Iris Xe: p50 "
+            "3.6 s, p95 22.9 s, max 51 s over 45 real pilot payloads."
+        ),
+    )
+    decisions_clef_max_input_tokens: int = Field(
+        default=8192,
+        gt=0,
+        description=(
+            "Largest input, in tokens, the Clef backend takes. Decision models "
+            "keep no KV cache, so the sidecar sizes llama.cpp's batch to it "
+            "(compose passes the same variable to both sides) and the client "
+            "trims every Clef state to two characters per token of it (real "
+            "pilot payloads ran 2.3 characters per token)."
+        ),
+    )
+    decisions_inline_deadline_s: float = Field(
+        default=20.0,
+        gt=0,
+        description=(
+            "How long an ON pilot inside an agent's verb waits for its verdict "
+            "before the verb carries on with its baseline (i_am_idle, "
+            "delegate, i_will_plan, claim_gate_review, give_me_work, ...)."
+        ),
+    )
+    decisions_agent_tool_deadline_s: float = Field(
+        default=25.0,
+        gt=0,
+        description=(
+            "Deadline for the verdict an agent asks for itself "
+            "(preflight_diff, triage_failure): under the agent's 30 s "
+            "/api/v1/do client timeout, so the server answers before the "
+            "agent gives up."
+        ),
+    )
+    decisions_long_verb_deadline_s: float = Field(
         default=60.0,
         gt=0,
         description=(
-            "Per-call timeout for the default self-hosted Clef tier (single "
-            "attempt, no retries). The 27B forward pass over a capped state "
-            "is CPU prefill-bound: seconds on typical pilot states, tens of "
-            "seconds worst case. Measure on the real deploy before tuning."
+            "Deadline for ON pilots inside the long submit verbs (i_am_done, "
+            "submit_up, submit_root: 900 s walls), whose inputs carry a diff."
+        ),
+    )
+    decisions_background_deadline_s: float = Field(
+        default=60.0,
+        gt=0,
+        description=(
+            "Deadline for pilots in an engine's own loop or a fire-and-forget "
+            "task, and for every SHADOW verdict (which runs in the background "
+            "and never makes its caller wait). A pilot call runs inside its "
+            "caller's transaction, so this bounds how long one stays open; "
+            "Clef-Flash on the NAS's Iris Xe answered 45 real payloads with "
+            "p95 22.9 s and max 51 s."
         ),
     )
     decisions_openrouter_timeout_s: float = Field(

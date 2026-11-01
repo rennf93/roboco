@@ -118,9 +118,9 @@ jobs:
             [roboco-panel]=docker/panel.Dockerfile
             [roboco-video-renderer]=docker/video-renderer.Dockerfile
             # Decisions sidecar (the self-hosted tiers of the Decisions
-            # service): CPU-only llama.cpp, two backends behind one proxy
-            # (Clef 27B sweet-spot default + Laya 421M cheap option). The
-            # Clef GGUF is 19GB, which is not CI-feasible (runner disk), so
+            # service): llama.cpp, two backends behind one proxy
+            # (Clef-Flash 9B default + Laya 421M cheap option). The
+            # Clef-Flash GGUF is ~6.7GB, kept off shared runners' disks, so
             # the published image bakes the LAYA tier only (FETCH_CLEF_WEIGHTS
             # carve-out in the build loop below): clef-routed decisions
             # degrade to the healthy Laya backend through /health. The
@@ -168,8 +168,8 @@ jobs:
           for name in "${!IMAGES[@]}"; do
             echo "::group::build ${name}"
             if [ "${name}" = "roboco-decisions" ]; then
-              # See the map comment above: the 19GB Clef GGUF is not
-              # CI-feasible; the published image bakes the Laya tier only.
+              # See the map comment above: the Clef-Flash GGUF stays off
+              # CI runners; the published image bakes the Laya tier only.
               docker build -f "${IMAGES[$name]}" \
                 --build-arg FETCH_CLEF_WEIGHTS=false $(regtags "${name}") .
             else

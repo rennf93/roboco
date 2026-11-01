@@ -5,9 +5,9 @@
 # POST /v1/systemone), waits for each /health, then runs the FastAPI proxy
 # (server.py) in the foreground:
 #
-#   - clef (default sweet spot): ggml-org/Clef-GGUF on 127.0.0.1:8110,
-#     ctx ${CLEF_CTX_SIZE:-16384} (the HF card's encode_record max_length);
-#   - laya (cheap option): ggml-org/Laya-GGUF on 127.0.0.1:8111,
+#   - clef tier: ggml-org/Clef-Flash-GGUF on 127.0.0.1:8110, on the GPU
+#     when /dev/dri is passed in (Vulkan), else on the CPU;
+#   - laya (cheap option): ggml-org/Laya-GGUF on 127.0.0.1:8111, CPU only,
 #     ctx ${LAYA_CTX_SIZE:-4096}.
 #
 # Either backend can be turned off with CLEF_ENABLED=false /
@@ -17,33 +17,37 @@
 # proxy's /health then reports that upstream unreachable. A backend that
 # starts but never gets healthy (or dies during startup) tears the whole
 # supervisor down so compose's restart policy recovers the pair.
-# --threads 0 means llama.cpp's default (nproc). TERM/INT kill every child.
-# The physical batch stays llama.cpp's default (512 tokens). Clef keeps no KV
-# cache, so llama-server must take a whole input in one physical batch and
-# refuses a longer one at once ("input (N tokens) is too large to process"),
-# which the orchestrator's client takes as no verdict (fail-open). Sizing
-# the batch to the context (b9361261) let those inputs in, and on the NAS
-# CPU Clef reads ~5 tokens/s (219 tokens 48 s, 598 tokens 118 s, measured
-# 2026-11-01): one 10k-token request held ~10 cores for over nine minutes,
-# could not be cancelled, and every request queued behind it timed out.
+# TERM/INT kill every child.
+#
+# Decision models keep no KV cache: llama-server must take a whole input in
+# ONE physical batch and refuses a longer one at once ("input (N tokens) is
+# too large to process"). So each backend's batch, micro-batch and context
+# equal its input cap (CLEF_MAX_INPUT_TOKENS, LAYA_CTX_SIZE), and the
+# proxy's admission control (server.py) never starts an input that cannot
+# finish before its caller's deadline: on 2026-11-01 one 10k-token input
+# held the CPU for nine minutes and every request queued behind it timed out.
+# One slot (--parallel 1): the proxy queues, llama-server serves one input.
+# Threads default to every CPU the container sees: llama.cpp's own default
+# ran Clef-Flash 2.4x slower on the NAS (6.6 vs 15.1 tok/s, measured).
 
 set -uo pipefail
 
 DECISIONS_PORT="${DECISIONS_PORT:-8100}"
 DECISIONS_HOST="${DECISIONS_HOST:-0.0.0.0}"
 LLAMA_SERVER_BIN="${LLAMA_SERVER_BIN:-/usr/local/bin/llama-server}"
-LLAMA_THREADS="${LLAMA_THREADS:-0}"
+LLAMA_THREADS="${LLAMA_THREADS:-$(nproc)}"
+LAYA_THREADS="${LAYA_THREADS:-4}"
 CLEF_ENABLED="${CLEF_ENABLED:-true}"
 LAYA_ENABLED="${LAYA_ENABLED:-true}"
 CLEF_UPSTREAM_URL="${CLEF_UPSTREAM_URL:-http://127.0.0.1:8110}"
 LAYA_UPSTREAM_URL="${LAYA_UPSTREAM_URL:-http://127.0.0.1:8111}"
 CLEF_PORT="${CLEF_PORT:-8110}"
 LAYA_PORT="${LAYA_PORT:-8111}"
-CLEF_CTX_SIZE="${CLEF_CTX_SIZE:-16384}"
+CLEF_MAX_INPUT_TOKENS="${CLEF_MAX_INPUT_TOKENS:-8192}"
 LAYA_CTX_SIZE="${LAYA_CTX_SIZE:-4096}"
-CLEF_GGUF_PATH="${CLEF_GGUF_PATH:-/models/Clef-Q4_K_M.gguf}"
+CLEF_GGUF_PATH="${CLEF_GGUF_PATH:-/models/Clef-Flash-Q4_K_M.gguf}"
 LAYA_GGUF_PATH="${LAYA_GGUF_PATH:-/models/Laya-Q8_0.gguf}"
-CLEF_MODEL_ID="${CLEF_MODEL_ID:-ggml-org/Clef-GGUF:Q4_K_M}"
+CLEF_MODEL_ID="${CLEF_MODEL_ID:-ggml-org/Clef-Flash-GGUF:Q4_K_M}"
 LAYA_MODEL_ID="${LAYA_MODEL_ID:-ggml-org/Laya-GGUF}"
 BACKEND_START_TIMEOUT_S="${BACKEND_START_TIMEOUT_S:-600}"
 
@@ -86,10 +90,40 @@ alias_of() {
 
 ctx_of() {
   case "$1" in
-    clef) echo "$CLEF_CTX_SIZE" ;;
+    clef) echo "$CLEF_MAX_INPUT_TOKENS" ;;
     *) echo "$LAYA_CTX_SIZE" ;;
   esac
 }
+
+# Both backends offload every layer to the GPU when one is present (with
+# none, the Vulkan backend reports "No devices found" and the CPU serves
+# them). Laya is 421M and thread-bound on the CPU: measured on the NAS
+# 2026-11-01, one call took 0.3 s on the Iris Xe, 2.5 s on 4 CPU threads
+# and 5.4 s on 12, so it runs on LAYA_THREADS (default 4) and Clef-Flash on
+# every CPU the container sees.
+gpu_layers_of() {
+  echo 99
+}
+
+threads_of() {
+  case "$1" in
+    clef) echo "$LLAMA_THREADS" ;;
+    *) echo "$LAYA_THREADS" ;;
+  esac
+}
+
+# The proxy's admission control starts from the throughput measured on the
+# NAS for the device this container got (2026-11-01, Clef-Flash Q4_K_M on
+# real pilot payloads: ~70 tok/s on the Iris Xe, ~15 on 12 CPU threads) and
+# then learns the real rate from every answered call.
+# Laya's call time is mostly fixed (0.3 s on the Iris Xe, ~2.5 s on 4 CPU
+# threads for 66-263 tokens), so it is seeded as a minimum call time.
+if [ -r /dev/dri/renderD128 ]; then
+  : "${CLEF_EXPECTED_TOKENS_PER_S:=70}" "${LAYA_MIN_CALL_S:=0.5}"
+else
+  : "${CLEF_EXPECTED_TOKENS_PER_S:=15}" "${LAYA_MIN_CALL_S:=2.6}"
+fi
+export CLEF_EXPECTED_TOKENS_PER_S LAYA_MIN_CALL_S
 
 start_backend() {
   local key="$1"
@@ -99,13 +133,17 @@ start_backend() {
     log "$key: GGUF missing or empty at $gguf - skipping this backend"
     return 1
   fi
-  log "$key: starting llama-server with $gguf on port $(port_of "$key") (ctx $(ctx_of "$key"), threads $LLAMA_THREADS, alias $(alias_of "$key"))"
+  log "$key: starting llama-server with $gguf on port $(port_of "$key") (input cap $(ctx_of "$key") tokens, gpu layers $(gpu_layers_of "$key"), threads $(threads_of "$key"), alias $(alias_of "$key"))"
   "$LLAMA_SERVER_BIN" \
     --model "$gguf" \
     --host 127.0.0.1 \
     --port "$(port_of "$key")" \
     --ctx-size "$(ctx_of "$key")" \
-    --threads "$LLAMA_THREADS" \
+    --batch-size "$(ctx_of "$key")" \
+    --ubatch-size "$(ctx_of "$key")" \
+    --parallel 1 \
+    --n-gpu-layers "$(gpu_layers_of "$key")" \
+    --threads "$(threads_of "$key")" \
     --alias "$(alias_of "$key")" \
     --no-webui \
     --metrics &

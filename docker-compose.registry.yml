@@ -92,6 +92,9 @@ x-orchestrator-env: &orchestrator-env
   ROBOCO_DECISIONS_TIER_CLEF_ENABLED: ${ROBOCO_DECISIONS_TIER_CLEF_ENABLED:-true}
   ROBOCO_DECISIONS_TIER_LAYA_ENABLED: ${ROBOCO_DECISIONS_TIER_LAYA_ENABLED:-true}
   ROBOCO_DECISIONS_TIER_OPENROUTER_ENABLED: ${ROBOCO_DECISIONS_TIER_OPENROUTER_ENABLED:-false}
+  # One knob for both sides: the client trims Clef states to fit it and the
+  # sidecar sizes llama.cpp's batch to it (decisions sidecar below).
+  ROBOCO_DECISIONS_CLEF_MAX_INPUT_TOKENS: ${ROBOCO_DECISIONS_CLEF_MAX_INPUT_TOKENS:-8192}
   # Spawn the PRE-BUILT agent images from the same registry instead of
   # building them from source (the orchestrator pulls any it lacks).
   ROBOCO_AGENT_IMAGE_REGISTRY: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}
@@ -511,8 +514,8 @@ services:
 
   # --------------------------------------------------------------------------
   # Decisions sidecar (the built-in self-hosted tiers of the Decisions
-  # service) - CPU-only typed decisions over llama.cpp: a 27B Clef backend
-  # (sweet-spot default) and a 421M Laya backend (cheap fallback), each a
+  # service) - typed decisions over llama.cpp: a 9B Clef-Flash backend
+  # (default) and a 421M Laya backend (cheap fallback), each a
   # llama-server speaking the System One protocol behind one proxy. Inert
   # until ROBOCO_DECISIONS_ENABLED goes on; shipping it changes nothing by
   # itself. No DB, no git, no credentials. NO `networks:` key: joins the
@@ -524,23 +527,26 @@ services:
     container_name: roboco-decisions
     restart: unless-stopped
     environment:
-      # Per-deploy RAM knobs. The 19GB Clef GGUF is the heavy tenant (mmap'd
-      # from the baked image, paged into RAM as the model touches it); the
-      # Laya backend is ~450MB. On a box that cannot hold Clef, set
-      # ROBOCO_SIDECAR_CLEF_ENABLED=false: the container serves the cheap
-      # Laya backend only and the orchestrator's tier ladder follows /health
-      # automatically (no config change above the sidecar). Both backends
-      # idle at ~zero CPU - llama.cpp is event-driven, inference only runs
-      # on a POST.
+      # Per-deploy knobs. The ~6.7GB Clef-Flash GGUF is the heavy tenant
+      # (mmap'd from the baked image); the Laya backend is ~450MB. On a box
+      # that cannot hold Clef-Flash, set ROBOCO_SIDECAR_CLEF_ENABLED=false:
+      # the container serves the cheap Laya backend only and the
+      # orchestrator's tier ladder follows /health automatically (no config
+      # change above the sidecar). Both backends idle at ~zero CPU -
+      # llama.cpp is event-driven, inference only runs on a POST. On a host
+      # with an Intel iGPU, scripts/deploy-nas.sh adds
+      # docker-compose.igpu.yaml, which passes /dev/dri in: Clef-Flash then
+      # runs on the GPU (~70 tok/s on the NAS's Iris Xe vs ~15 on its CPU).
       CLEF_ENABLED: ${ROBOCO_SIDECAR_CLEF_ENABLED:-true}
       LAYA_ENABLED: ${ROBOCO_SIDECAR_LAYA_ENABLED:-true}
+      CLEF_MAX_INPUT_TOKENS: ${ROBOCO_DECISIONS_CLEF_MAX_INPUT_TOKENS:-8192}
     healthcheck:
       test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=3).status == 200 else 1)"]
       interval: 15s
       timeout: 5s
       retries: 5
-      # The PUBLISHED image bakes the cheap Laya tier only (the 19GB Clef
-      # GGUF is not CI-feasible; see release.yml) and loads in seconds. The
+      # The PUBLISHED image bakes the cheap Laya tier only (the ~6.7GB
+      # Clef-Flash GGUF stays off CI; see release.yml) and loads in seconds. The
       # start period stays generous because a Clef-baked image (a NAS/Mac-
       # side docker build with FETCH_CLEF_WEIGHTS=true, the Dockerfile
       # default) legitimately needs the full window for the cold load.

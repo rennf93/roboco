@@ -68,9 +68,12 @@ def _arm(
 
 
 @pytest.mark.asyncio
-async def test_self_heal_high_noul_allows_origination(
+async def test_self_heal_confident_transient_skips_the_fix_task(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """CEO ruling 2026-11-01 (trail #55): a confidently transient failure is
+    a flake; originating a fix task for it is the repair churn spec 6.1
+    calls expensive, so this sweep skips it."""
     _arm(monkeypatch, payload=_payload({"gate": {"type": "noul", "noul": 0.9}}))
     verdict = await self_heal_transient(
         cast("AsyncSession", None),
@@ -81,11 +84,13 @@ async def test_self_heal_high_noul_allows_origination(
         attempt_number=1,
         run_id="run-1",
     )
-    assert verdict is SelfHealGate.ORIGINATE
+    assert verdict is SelfHealGate.SKIP
 
 
 @pytest.mark.asyncio
-async def test_self_heal_low_noul_skips(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_self_heal_regression_originates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     _arm(monkeypatch, payload=_payload({"gate": {"type": "noul", "noul": 0.3}}))
     verdict = await self_heal_transient(
         cast("AsyncSession", None),
@@ -96,13 +101,15 @@ async def test_self_heal_low_noul_skips(monkeypatch: pytest.MonkeyPatch) -> None
         attempt_number=1,
         run_id="run-2",
     )
-    assert verdict is SelfHealGate.SKIP
+    assert verdict is SelfHealGate.ORIGINATE
 
 
 @pytest.mark.asyncio
-async def test_self_heal_high_attempt_number_skips_even_when_confident(
+async def test_self_heal_a_recurring_flake_originates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """Past the attempt limit a "transient" failure keeps coming back, which
+    is not a flake: it originates like a regression."""
     _arm(monkeypatch, payload=_payload({"gate": {"type": "noul", "noul": 0.95}}))
     verdict = await self_heal_transient(
         cast("AsyncSession", None),
@@ -113,7 +120,7 @@ async def test_self_heal_high_attempt_number_skips_even_when_confident(
         attempt_number=3,
         run_id="run-3",
     )
-    assert verdict is SelfHealGate.SKIP
+    assert verdict is SelfHealGate.ORIGINATE
 
 
 @pytest.mark.asyncio
@@ -626,3 +633,107 @@ async def test_tool_spotlight_shadow_logs_but_renders_nothing(
         verbs=list(_SPOTLIGHT_VERBS),
     )
     assert verdict is None
+
+
+# ---------------------------------------------------------------------------
+# SHADOW never waits; ON waits at most its pilot's deadline (trail #55).
+# 2026-10-28: shadow pilots made the same blocking model call as ON ones
+# inside agents' verbs (lesson_prune in give_me_work, steer_gate in dm).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_shadow_verdict_never_blocks_its_caller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    from roboco.services.decisions.schemas import NoulQuestion
+
+    release = asyncio.Event()
+    seen: list[float | None] = []
+
+    async def slow_decide(*_args: object, **kwargs: object) -> None:
+        seen.append(cast("float | None", kwargs.get("deadline_s")))
+        await release.wait()
+
+    _arm(monkeypatch, mode=PilotMode.SHADOW)
+    client = AsyncMock()
+    client.decide = slow_decide
+    monkeypatch.setattr(pilots, "get_decisions_client", lambda: client)
+
+    mode, result = await asyncio.wait_for(
+        pilots.decide_for_pilot(
+            cast("AsyncSession", None),
+            "lesson_prune",
+            {"task": "t"},
+            {"gate": NoulQuestion(instructions="relevant?")},
+            session_id="t1",
+        ),
+        timeout=1.0,
+    )
+    assert (mode, result) == (PilotMode.SHADOW, None)
+    release.set()
+    await pilots.wait_for_shadow_verdicts()
+    assert seen == [cfg.settings.decisions_background_deadline_s]
+
+
+@pytest.mark.asyncio
+async def test_a_shadow_verdict_still_reaches_the_corpus(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from roboco.services.decisions.schemas import NoulQuestion
+
+    recorded: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "roboco.services.decisions.persist.record_decision",
+        lambda **row: recorded.append(row),
+    )
+    _arm(
+        monkeypatch,
+        mode=PilotMode.SHADOW,
+        payload=_payload({"gate": {"type": "noul", "noul": 0.8, "confidence": 0.8}}),
+    )
+    await pilots.decide_for_pilot(
+        cast("AsyncSession", None),
+        "steer_gate",
+        {"body": "hello"},
+        {"gate": NoulQuestion(instructions="steer?")},
+        session_id="m1",
+    )
+    await pilots.wait_for_shadow_verdicts()
+    assert len(recorded) == 1
+    assert recorded[0]["pilot"] == "steer_gate"
+    assert recorded[0]["mode"] == "shadow"
+    assert recorded[0]["action"] == "no-op (shadow)"
+
+
+@pytest.mark.asyncio
+async def test_an_on_verdict_carries_its_pilots_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from roboco.services.decisions.schemas import NoulQuestion
+
+    seen: list[object] = []
+
+    async def decide(*_args: object, **kwargs: object) -> None:
+        seen.append(kwargs.get("deadline_s"))
+
+    _arm(monkeypatch, mode=PilotMode.ON)
+    client = AsyncMock()
+    client.decide = decide
+    monkeypatch.setattr(pilots, "get_decisions_client", lambda: client)
+    for pilot in ("idle_legitimacy", "preflight_diff", "findings_mapping", "self_heal"):
+        await pilots.decide_for_pilot(
+            cast("AsyncSession", None),
+            pilot,
+            {"x": 1},
+            {"gate": NoulQuestion(instructions="?")},
+            session_id="s",
+        )
+    assert seen == [
+        cfg.settings.decisions_inline_deadline_s,
+        cfg.settings.decisions_agent_tool_deadline_s,
+        cfg.settings.decisions_long_verb_deadline_s,
+        cfg.settings.decisions_background_deadline_s,
+    ]
