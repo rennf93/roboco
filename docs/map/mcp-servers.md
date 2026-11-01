@@ -65,16 +65,16 @@ The `roboco/mcp` package is the agent-side MCP gateway: a set of `MCPServer` (mc
 | `propose_roadmap` | verb func | `do_server.py:598` | Product Owner (board-roadmap-only, `_PRODUCT_OWNER_DO`): propose a themed roadmap cycle (goal + 3-7 item drafts) exactly once per exploration task. |
 | `draft_playbook` / `approve_playbook` / `reject_playbook` / `archive_playbook` | verb funcs | `do_server.py:1182–1226` | Playbook curation (delivery + Auditor). |
 | `progress` / `notify_list` / `notify_get` / `notify_ack` / `pr_update` / `read_messages` | verb funcs | `do_server.py:1238–1432` | Wave-1 parity content tools. |
-| `create_optimal_mcp_server` | factory | `optimal_server.py:1198` | Build `roboco-optimal-{agent_id}` server; registers 8 tool groups. |
+| `create_optimal_mcp_server` | factory | `optimal_server.py:1190` | Build `roboco-optimal-{agent_id}` server; registers 8 tool groups. |
 | `roboco_kb_search` / `roboco_rag_query` / `roboco_kb_stats` | tools | `optimal_server.py:70–213` | Search / RAG / stats. |
-| `roboco_ask_mentor` | tool | `optimal_server.py:457` | Primary conversational RAG tool (65s timeout). |
+| `roboco_ask_mentor` | tool | `optimal_server.py:459` | Primary conversational RAG tool (65s timeout). |
 | `roboco_search_error` / `roboco_record_error_solution` | tools | `optimal_server.py:439–535` | Error-pattern memory. |
 | `roboco_check_decision` / `roboco_record_decision` | tools | `optimal_server.py:631–714` | Decision memory (`RecordDecisionInput` pydantic model at L33). |
 | `roboco_get_standards` / `roboco_validate_action` / `roboco_review_code` | tools | `optimal_server.py:632–765` | Standards + validation. |
 | `roboco_record_learning` / `roboco_search_learnings` | tools | `optimal_server.py:772–875` | Learnings. |
 | `roboco_clear_index` / `roboco_reindex_all` / `roboco_index_status` | tools | `optimal_server.py:882–993` | Index admin. |
-| `roboco_get_proactive_context` | tool | `optimal_server.py:1104` | Stored-then-fresh proactive context for a task. |
-| `normalize_index_types` | func | `optimal_server.py:60` | Map legacy `docs` alias → `documentation` before route's `IndexType(...)` conversion. |
+| `roboco_get_proactive_context` | tool | `optimal_server.py:1096` | Stored-then-fresh proactive context for a task. |
+| `normalize_index_types` | func | `optimal_server.py:61` | Map legacy `docs` alias → `documentation` before route's `IndexType(...)` conversion. |
 | `create_docs_mcp_server` | factory | `docs_server.py:166` | Build `roboco-docs-{agent_id}` server (write/read/list/delete). |
 | `DocsService.write_doc` | method | `services/docs.py:415` | Refuses `doc_type="user_facing"` writes — normal tasks in the deployer's docs-site project (MDX) are the right home instead |
 | `_refused_doc_types` | func | `services/docs.py:90` | Builds the refusal-message dict fresh on every call from `settings.docs_site_project_slug`/`docs_site_public_url` (was a fixed `REFUSED_DOC_TYPES` module constant hardcoding "roboco-website"/"docs.roboco.tech"); falls back to generic "your docs-site project" / "ship on your docs site" text when either setting is left blank |

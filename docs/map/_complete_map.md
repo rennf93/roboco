@@ -2481,7 +2481,7 @@ The support layer of the agent gateway: pure/cheap components the Choreographer 
 | roboco/services/gateway/claim_guards.py | Pre-mutation claim-time predicates: already_active, paused, unmet-dependency; first non-None short-circuits claim. | 215 |
 | roboco/services/gateway/claimant_lock.py | Pure single-claimant acquire decision + heartbeat staleness test; caller owns DB writes. | 48 |
 | roboco/services/gateway/commit_validator.py | Commit-message subject gate: length, banned single-words, conventional-commits soft hint. | 175 |
-| roboco/services/gateway/content_actions.py | ContentActions: the do-tools' content verbs, composed from mixins. Here: the core class (service deps, heartbeat, active-claim and soup guards, caller role) and the families `TaskAccessActions`, `TaskReadActions`, `CommitActions`, `NoteActions`, `MessagingActions`, `DecisionLaneActions`, `SandboxActions`, `SandboxTestsActions`, `RenderActions`, `VideoProposalActions` and the X-post programs (`BarflyActions`, `FeatureSpotlightActions`, `MegaphoneActions`, `WarRoomActions`); the proposal and report mixins come from `content_actions_proposals.py` and `content_actions_reports.py`. | 4349 |
+| roboco/services/gateway/content_actions.py | ContentActions: the do-tools' content verbs, composed from mixins. Here: the core class (service deps, heartbeat, active-claim and soup guards, caller role) and the families `TaskAccessActions`, `TaskReadActions`, `CommitActions`, `NoteActions`, `MessagingActions`, `DecisionLaneActions`, `SandboxActions`, `SandboxTestsActions`, `RenderActions`, `VideoProposalActions` and the X-post programs (`BarflyActions`, `FeatureSpotlightActions`, `MegaphoneActions`, `WarRoomActions`); the proposal and report mixins come from `content_actions_proposals.py` and `content_actions_reports.py`. | 4327 |
 | roboco/services/gateway/content_actions_proposals.py | Board Program proposals that become tasks, as ContentActions mixins: `BoardProposalActions` (the proposal trace, `nothing_to_propose`), `PitchActions`, `RoadmapActions`, `PestControlActions`, `ScalesActions`, `SpackleActions`, `MirrorActions`, `DogfoodActions`, with their role sets, field tables and item normalizers. | 1983 |
 | roboco/services/gateway/content_actions_reports.py | Filed reports and playbook curation, as ContentActions mixins: `PeriscopeActions` (market brief), `SentinelActions` (quality report), `CoronerActions` (postmortem), `LibrarianActions` (playbook drafts), `PlaybookActions` (draft/approve/reject/archive playbooks, the vault narrative), with their role sets, caps and normalizers. | 1610 |
 | roboco/services/gateway/_content_actions_types.py | `ContentActionsSelf`, a TYPE_CHECKING-only Protocol composed of one `<Name>Surface` per class the ContentActions mixins reach into (`ContentSurface` for ContentActions' own helpers and service properties), so mypy checks each mixin against the composed class. | 112 |
@@ -2520,43 +2520,43 @@ The support layer of the agent gateway: pure/cheap components the Choreographer 
 | validate_commit_message | function | roboco/services/gateway/commit_validator.py:61 | Validate commit subject: empty/length/banned-word/conventional-shape soft hint. |
 | ValidationResult | dataclass | roboco/services/gateway/commit_validator.py:49 | ok/reason/hint/remediate outcome of commit message validation. |
 | ContentActionsDeps | dataclass | roboco/services/gateway/content_actions.py:384 | Bundled service deps: task/git/a2a/journal/workspace/notifications + notification_delivery + evidence_repo. |
-| ContentActions | class | roboco/services/gateway/content_actions.py:4145 | Smart-wrapped do-tools; validates input, auto-injects task_id, calls service, returns Envelope. |
-| ContentActions.commit | method | roboco/services/gateway/content_actions.py:923 | Validate msg, RBAC (developer/documenter only), active-task + active-claimant gates, git commit, add progress, heartbeat. |
-| ContentActions.note | method | roboco/services/gateway/content_actions.py:1158 | Route scope=handoff to section write; else journal note with soup-guard + structured normalize + ownership. |
-| ContentActions._write_journal_note | method | roboco/services/gateway/content_actions.py:1257 | Validate+persist journal entry for note/decision/reflect/learning/struggle; tolerant of thin notes. |
-| ContentActions._record_section_handoff | method | roboco/services/gateway/content_actions.py:1315 | Write role-specific note SECTION (dev_notes/quick_context/etc.) via record_section_note + journal trail. |
+| ContentActions | class | roboco/services/gateway/content_actions.py:4123 | Smart-wrapped do-tools; validates input, auto-injects task_id, calls service, returns Envelope. |
+| ContentActions.commit | method | roboco/services/gateway/content_actions.py:901 | Validate msg, RBAC (developer/documenter only), active-task + active-claimant gates, git commit, add progress, heartbeat. |
+| ContentActions.note | method | roboco/services/gateway/content_actions.py:1136 | Route scope=handoff to section write; else journal note with soup-guard + structured normalize + ownership. |
+| ContentActions._write_journal_note | method | roboco/services/gateway/content_actions.py:1235 | Validate+persist journal entry for note/decision/reflect/learning/struggle; tolerant of thin notes. |
+| ContentActions._record_section_handoff | method | roboco/services/gateway/content_actions.py:1293 | Write role-specific note SECTION (dev_notes/quick_context/etc.) via record_section_note + journal trail. |
 | ContentActions.draft_playbook | method | roboco/services/gateway/content_actions_reports.py:1387 | Delivery roles draft a curated playbook; ConflictError -> invalid_state. |
 | ContentActions.approve_playbook | method | roboco/services/gateway/content_actions_reports.py:1436 | Auditor approves draft -> approved + indexed. |
 | ContentActions.reject_playbook | method | roboco/services/gateway/content_actions_reports.py:1442 | Auditor rejects playbook -> archived with reason. |
 | ContentActions.archive_playbook | method | roboco/services/gateway/content_actions_reports.py:1453 | Auditor archives an approved playbook -> retired. |
 | ContentActions._curate_playbook | method | roboco/services/gateway/content_actions_reports.py:1461 | Shared Auditor-only curation; commit status BEFORE RAG index/unindex; ConflictError->invalid_state. |
 | ContentActions.pitch | method | roboco/services/gateway/content_actions_proposals.py:482 | Board (PO/Head Marketing) proposes a product; validates cells, ConflictError/ValidationError->invalid_state. |
-| ContentActions.propose_feature_spotlight | method | roboco/services/gateway/content_actions.py:3650 | Head-of-Marketing-only (`_FEATURE_SPOTLIGHT_ROLES`); validates feature_slug/title/body, checks `XEngine.is_feature_seen`, calls `XEngine.materialize_feature_spotlight` (creates a held X-post draft + completes the caller's exploration task). |
-| ContentActions.dm | method | roboco/services/gateway/content_actions.py:1505 | A2A direct message; requires task_id; no-comms RBAC; A2AAccessDenied->not_authorized. |
-| ContentActions.notify | method | roboco/services/gateway/content_actions.py:1578 | Formal ack-required notification (PMs/Board only); rejects bad priority, no-comms sender, disallowed recipient. |
-| ContentActions._reject_disallowed_recipient | method | roboco/services/gateway/content_actions.py:1658 | Reject notify to prompter/secretary (no ack path) then defer to CEO-dependency-notify check. |
-| ContentActions._reject_ceo_dependency_notify | method | roboco/services/gateway/content_actions.py:1696 | Reject CEO notify about an open dependency block (noise). |
-| ContentActions._dependency_block_reason | method | roboco/services/gateway/content_actions.py:1722 | Return reason string if task_id waiting on unfinished deps, else None. |
-| ContentActions.evidence | method | roboco/services/gateway/content_actions.py:680 | Inspect task PR diff/commits/files; allowed for assignee/unassigned/board-co-review/dependency; builds EvidencePayload. |
-| ContentActions._is_caller_dependency | method | roboco/services/gateway/content_actions.py:549 | True when task is a dependency of a task the caller is assigned to (read-only evidence exemption). |
-| ContentActions.progress | method | roboco/services/gateway/content_actions.py:1429 | Append progress update; plan_step marks checklist; ownership+active-claim+active-status gate. |
-| ContentActions.notify_list | method | roboco/services/gateway/content_actions.py:1741 | Read agent notification inbox via NotificationDeliveryService. |
-| ContentActions.notify_get | method | roboco/services/gateway/content_actions.py:1783 | Read one notification + mark read. |
-| ContentActions.notify_ack | method | roboco/services/gateway/content_actions.py:1822 | Acknowledge a notification; non-recipient -> not_authorized. |
-| ContentActions.read_messages | method | roboco/services/gateway/content_actions.py:1856 | Mark all caller's unread A2A DMs as read (clears i_am_idle soft-block). |
-| ContentActions.read_a2a | method | roboco/services/gateway/content_actions.py:1873 | Return caller's unread incoming A2A message bodies (content, not just the counter), then clear them; excludes the caller's own sends. |
-| ContentActions.pr_update | method | roboco/services/gateway/content_actions.py:1064 | Update existing PR title/body/reviewers; authorized for assignee/main_pm/cell_pm on team. |
-| ContentActions._pr_update_is_authorized | staticmethod | roboco/services/gateway/content_actions.py:1046 | True iff caller is assignee, main_pm, or cell_pm on matching team. |
-| ContentActions._active_claim_violation | method | roboco/services/gateway/content_actions.py:4234 | Refuse write when caller is not active_claimant (board co-reviewer exempt). |
-| ContentActions._verify_explicit_task_ownership | method | roboco/services/gateway/content_actions.py:505 | Gate Set D: refuse content posts on tasks caller doesn't own; stale assigned_to falls through to active-claim check. |
-| ContentActions._board_may_co_review | method | roboco/services/gateway/content_actions.py:492 | True iff board role posting to a board/coordination task. |
-| ContentActions._touch_heartbeat | method | roboco/services/gateway/content_actions.py:4220 | Best-effort heartbeat refresh on content-write success (suppress exceptions). |
-| ContentActions._reject_soup | staticmethod | roboco/services/gateway/content_actions.py:4284 | Universal anti-soup guard; returns invalid_state Envelope (never raw 422, would trip circuit breaker). |
-| ContentActions._reject_structured_soup | classmethod | roboco/services/gateway/content_actions.py:4305 | Soup-guard scope's narrative sub-fields when agent filled them; omitted fields keep placeholder. |
-| _merge_resumption_fields | function | roboco/services/gateway/content_actions.py:97 | Fold top-level done/next/where_to_look into handoff section without overwriting supplied keys (fixes minimax section={} meltdown). |
-| _normalize_structured | function | roboco/services/gateway/content_actions.py:311 | Tolerant copy of structured for decision/reflect: scalar->list wrap, missing narrative fields default to placeholder. |
-| _render_journal_content | function | roboco/services/gateway/content_actions.py:253 | Build journal entry body with markdown sections for decision/reflect scopes. |
-| _strip_task_prefix | function | roboco/services/gateway/content_actions.py:4328 | Strip any [task-id] prefix the agent supplied; gateway re-adds canonical. |
+| ContentActions.propose_feature_spotlight | method | roboco/services/gateway/content_actions.py:3628 | Head-of-Marketing-only (`_FEATURE_SPOTLIGHT_ROLES`); validates feature_slug/title/body, checks `XEngine.is_feature_seen`, calls `XEngine.materialize_feature_spotlight` (creates a held X-post draft + completes the caller's exploration task). |
+| ContentActions.dm | method | roboco/services/gateway/content_actions.py:1483 | A2A direct message; requires task_id; no-comms RBAC; A2AAccessDenied->not_authorized. |
+| ContentActions.notify | method | roboco/services/gateway/content_actions.py:1556 | Formal ack-required notification (PMs/Board only); rejects bad priority, no-comms sender, disallowed recipient. |
+| ContentActions._reject_disallowed_recipient | method | roboco/services/gateway/content_actions.py:1636 | Reject notify to prompter/secretary (no ack path) then defer to CEO-dependency-notify check. |
+| ContentActions._reject_ceo_dependency_notify | method | roboco/services/gateway/content_actions.py:1674 | Reject CEO notify about an open dependency block (noise). |
+| ContentActions._dependency_block_reason | method | roboco/services/gateway/content_actions.py:1700 | Return reason string if task_id waiting on unfinished deps, else None. |
+| ContentActions.evidence | method | roboco/services/gateway/content_actions.py:658 | Inspect task PR diff/commits/files; allowed for assignee/unassigned/board-co-review/dependency; builds EvidencePayload. |
+| ContentActions._is_caller_dependency | method | roboco/services/gateway/content_actions.py:550 | True when task is a dependency of a task the caller is assigned to (read-only evidence exemption). |
+| ContentActions.progress | method | roboco/services/gateway/content_actions.py:1407 | Append progress update; plan_step marks checklist; ownership+active-claim+active-status gate. |
+| ContentActions.notify_list | method | roboco/services/gateway/content_actions.py:1719 | Read agent notification inbox via NotificationDeliveryService. |
+| ContentActions.notify_get | method | roboco/services/gateway/content_actions.py:1761 | Read one notification + mark read. |
+| ContentActions.notify_ack | method | roboco/services/gateway/content_actions.py:1800 | Acknowledge a notification; non-recipient -> not_authorized. |
+| ContentActions.read_messages | method | roboco/services/gateway/content_actions.py:1834 | Mark all caller's unread A2A DMs as read (clears i_am_idle soft-block). |
+| ContentActions.read_a2a | method | roboco/services/gateway/content_actions.py:1851 | Return caller's unread incoming A2A message bodies (content, not just the counter), then clear them; excludes the caller's own sends. |
+| ContentActions.pr_update | method | roboco/services/gateway/content_actions.py:1042 | Update existing PR title/body/reviewers; authorized for assignee/main_pm/cell_pm on team. |
+| ContentActions._pr_update_is_authorized | staticmethod | roboco/services/gateway/content_actions.py:1024 | True iff caller is assignee, main_pm, or cell_pm on matching team. |
+| ContentActions._active_claim_violation | method | roboco/services/gateway/content_actions.py:4212 | Refuse write when caller is not active_claimant (board co-reviewer exempt). |
+| ContentActions._verify_explicit_task_ownership | method | roboco/services/gateway/content_actions.py:506 | Gate Set D: refuse content posts on tasks caller doesn't own; stale assigned_to falls through to active-claim check. |
+| ContentActions._board_may_co_review | method | roboco/services/gateway/content_actions.py:493 | True iff board role posting to a board/coordination task. |
+| ContentActions._touch_heartbeat | method | roboco/services/gateway/content_actions.py:4198 | Best-effort heartbeat refresh on content-write success (suppress exceptions). |
+| ContentActions._reject_soup | staticmethod | roboco/services/gateway/content_actions.py:4262 | Universal anti-soup guard; returns invalid_state Envelope (never raw 422, would trip circuit breaker). |
+| ContentActions._reject_structured_soup | classmethod | roboco/services/gateway/content_actions.py:4283 | Soup-guard scope's narrative sub-fields when agent filled them; omitted fields keep placeholder. |
+| _merge_resumption_fields | function | roboco/services/gateway/content_actions.py:98 | Fold top-level done/next/where_to_look into handoff section without overwriting supplied keys (fixes minimax section={} meltdown). |
+| _normalize_structured | function | roboco/services/gateway/content_actions.py:312 | Tolerant copy of structured for decision/reflect: scalar->list wrap, missing narrative fields default to placeholder. |
+| _render_journal_content | function | roboco/services/gateway/content_actions.py:254 | Build journal entry body with markdown sections for decision/reflect scopes. |
+| _strip_task_prefix | function | roboco/services/gateway/content_actions.py:4306 | Strip any [task-id] prefix the agent supplied; gateway re-adds canonical. |
 | EvidencePayload | dataclass | roboco/services/gateway/evidence_builder.py:38 | Task-scoped evidence: pr/commits/files/dev_summary/journal/acceptance/convention_findings. |
 | BriefingInputs | dataclass | roboco/services/gateway/evidence_builder.py:97 | Agent-scoped briefing inputs (a2a/mentions/notifications/gaps/activity/blockers/handoff/goals). |
 | build_evidence_for_task | function | roboco/services/gateway/evidence_builder.py:179 | Compose EvidencePayload from Task model + supplemental data. |
@@ -2818,7 +2818,7 @@ gateway-support
 | ~~_curate_playbook explicit session.commit before index~~ **RESOLVED 536bbb64** | roboco/services/gateway/content_actions_reports.py:1461 | ~~New `await self.task.session.commit()` runs before svc.index_approved/unindex_playbook. If the caller's session is already in a PendingRollbackError state (e.g. a prior mid-verb failure poisoned it), this commit raises and the whole curation verb 500s instead of returning a clean envelope.~~ Fixed: PendingRollbackError is now caught; verb returns a clean invalid_state and skips the index. Double-commit (no-op) risk unchanged. | ~~medium~~ resolved |
 | notify to prompter/secretary now refused | roboco/services/gateway/content_actions.py:1251 | _reject_disallowed_recipient now hard-refuses notify() to prompter/secretary. If any existing PM/Board flow legitimately notified the prompter or secretary (e.g. a Board broadcast loop that iterates all roles), those sends now return not_authorized and the notification never lands. The CEO is explicitly excluded from this rule (acks via panel), but prompter/secretary are not. | medium |
 | quality_gate None-returncode now fails the gate | roboco/services/workspace_container.py:232 | (The check moved here when gate commands began running in a throwaway workspace container: `quality_gate._run_one` returns that result's returncode.) Previously `proc.returncode or 0` let an unknown exit status PASS the gate (false green). Now None -> return 1 (fail closed). A workspace where the process is terminated out-of-band (e.g. OOM killer, signal) will now BLOCK i_am_done where it previously passed. Correct, but if the dev environment has a flaky signal-delivery issue, submits that used to succeed will now fail with no clear remediation. | low |
-| _merge_resumption_fields nested-section-wins may surprise | roboco/services/gateway/content_actions.py:97 | If a model passes BOTH section={'done': X} AND done='Y', the nested section wins (X kept, Y ignored). A caller/test that expected the top-level done to override the nested section, or that passed both expecting union semantics, gets the section's value. The 'without overwriting' direction is documented but easy to misread. | low |
+| _merge_resumption_fields nested-section-wins may surprise | roboco/services/gateway/content_actions.py:98 | If a model passes BOTH section={'done': X} AND done='Y', the nested section wins (X kept, Y ignored). A caller/test that expected the top-level done to override the nested section, or that passed both expecting union semantics, gets the section's value. The 'without overwriting' direction is documented but easy to misread. | low |
 | ~~Lua increment vs activate race still exists~~ **RESOLVED 536bbb64** | roboco/services/gateway/rate_limit_tracker.py:68 | ~~increment/reset_probe_failures are atomic vs each other, but activate() is a plain SET that overwrites the whole blob. A probe-failure increment that races an activate (re-park) can still be overwritten by the fresh activate blob (probe_failures reset to 0).~~ Fixed: activate() now routes through _ACTIVATE_RATE_LIMIT Lua merge which carries over the previous probe_failures count; the race between increment and activate is closed. | ~~low~~ resolved |
 | evidence_builder pr_review surface adds a new prior-work trigger | roboco/services/gateway/evidence_builder.py:159 | _has_prior_work now returns True when pr_review is not None, so a task with only a prior pr_fail verdict (no commits/acceptance/PR) now produces a non-None handoff. A briefing consumer that assumed handoff non-None implied committable prior work may now render a handoff with only a pr_review block. Cosmetic, but changes the handoff-non-null invariant. | low |
 
@@ -5529,8 +5529,8 @@ The Pydantic/dataclass domain surface of RoboCo — the typed contract the API, 
 | `PermissionLevel` | IntEnum | permissions.py:15 | CEO=0/BOARD=1/MAIN_PM=2/CELL_PM=3/CELL_MEMBER=4/AUDITOR=99 |
 | `COMMUNICATION_MATRIX` | dict | permissions.py:83 | Who can directly communicate with whom (role→role set) |
 | `IndexType` | StrEnum | optimal.py:13 | code/documentation/conversations/journals/errors/standards/decisions/reviews/learnings/playbooks |
-| `SearchResult` | dataclass | optimal.py:34 | RAG hit (content/source/score/index_type/metadata) |
-| `RAGResponse` | dataclass | optimal.py:60 | RAG answer + citations + per-index stats |
+| `SearchResult` | dataclass | optimal.py:56 | RAG hit (content/source/score/index_type/metadata) |
+| `RAGResponse` | dataclass | optimal.py:82 | RAG answer + citations + per-index stats |
 | `BottleneckReport` | dataclass | metrics.py:166 | Cumulative dwell + parked-now per lifecycle stage |
 | `ReworkReport` | dataclass | metrics.py:220 | Bounce rate to needs_revision by team/agent + rework_cost_usd |
 | `Scorecard` | dataclass | metrics.py:377 | Fused per-agent/per-cell delivery scorecard |
@@ -6564,7 +6564,7 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | `_scrub_secrets` | fn | api/middleware.py:475 | Deep-redact known secret fields from logged 422 bodies. |
 | `StrList` | type | schemas/v1/flow.py:21 | `list[str]` with `coerce_str_list` BeforeValidator (XML-nested LLM lists). |
 | `Choreographer` | svc | services/gateway/choreographer/__init__.py:59 | Composes service intents behind every flow verb: the role mixins (developer, PM, QA, PR reviewer, PR gate, board, doc, and the ones every role shares) over `BaseChoreographer` in `choreographer/_impl.py`. |
-| `ContentActions` | svc | services/gateway/content_actions.py:4145 | Composes do-verb content actions (commit/note/dm/...). |
+| `ContentActions` | svc | services/gateway/content_actions.py:4123 | Composes do-verb content actions (commit/note/dm/...). |
 | `router` (do) | router | v1/do.py:67 | `/api/v1/do` router, `require_any_authenticated_agent` dep. |
 | `router` (flow_dev) | router | v1/flow_dev.py:29 | `/api/v1/flow/developer` router, `require_dev` dep. |
 | `get_release_certificate` | function | `roboco/api/routes/releases.py:23` | Governance certificate for one published release (leading `v` tolerated) |
@@ -6797,16 +6797,16 @@ The `roboco/mcp` package is the agent-side MCP gateway: a set of `MCPServer` (mc
 | `propose_roadmap` | verb func | `do_server.py:598` | Product Owner (board-roadmap-only, `_PRODUCT_OWNER_DO`): propose a themed roadmap cycle (goal + 3-7 item drafts) exactly once per exploration task. |
 | `draft_playbook` / `approve_playbook` / `reject_playbook` / `archive_playbook` | verb funcs | `do_server.py:1182–1226` | Playbook curation (delivery + Auditor). |
 | `progress` / `notify_list` / `notify_get` / `notify_ack` / `pr_update` / `read_messages` | verb funcs | `do_server.py:1238–1432` | Wave-1 parity content tools. |
-| `create_optimal_mcp_server` | factory | `optimal_server.py:1198` | Build `roboco-optimal-{agent_id}` server; registers 8 tool groups. |
+| `create_optimal_mcp_server` | factory | `optimal_server.py:1190` | Build `roboco-optimal-{agent_id}` server; registers 8 tool groups. |
 | `roboco_kb_search` / `roboco_rag_query` / `roboco_kb_stats` | tools | `optimal_server.py:70–213` | Search / RAG / stats. |
-| `roboco_ask_mentor` | tool | `optimal_server.py:457` | Primary conversational RAG tool (65s timeout). |
+| `roboco_ask_mentor` | tool | `optimal_server.py:459` | Primary conversational RAG tool (65s timeout). |
 | `roboco_search_error` / `roboco_record_error_solution` | tools | `optimal_server.py:439–535` | Error-pattern memory. |
 | `roboco_check_decision` / `roboco_record_decision` | tools | `optimal_server.py:631–714` | Decision memory (`RecordDecisionInput` pydantic model at L33). |
 | `roboco_get_standards` / `roboco_validate_action` / `roboco_review_code` | tools | `optimal_server.py:632–765` | Standards + validation. |
 | `roboco_record_learning` / `roboco_search_learnings` | tools | `optimal_server.py:772–875` | Learnings. |
 | `roboco_clear_index` / `roboco_reindex_all` / `roboco_index_status` | tools | `optimal_server.py:882–993` | Index admin. |
-| `roboco_get_proactive_context` | tool | `optimal_server.py:1104` | Stored-then-fresh proactive context for a task. |
-| `normalize_index_types` | func | `optimal_server.py:60` | Map legacy `docs` alias → `documentation` before route's `IndexType(...)` conversion. |
+| `roboco_get_proactive_context` | tool | `optimal_server.py:1096` | Stored-then-fresh proactive context for a task. |
+| `normalize_index_types` | func | `optimal_server.py:61` | Map legacy `docs` alias → `documentation` before route's `IndexType(...)` conversion. |
 | `create_docs_mcp_server` | factory | `docs_server.py:166` | Build `roboco-docs-{agent_id}` server (write/read/list/delete). |
 | `DocsService.write_doc` | method | `services/docs.py:415` | Refuses `doc_type="user_facing"` writes — normal tasks in the deployer's docs-site project (MDX) are the right home instead |
 | `_refused_doc_types` | func | `services/docs.py:90` | Builds the refusal-message dict fresh on every call from `settings.docs_site_project_slug`/`docs_site_public_url` (was a fixed `REFUSED_DOC_TYPES` module constant hardcoding "roboco-website"/"docs.roboco.tech"); falls back to generic "your docs-site project" / "ship on your docs site" text when either setting is left blank |
@@ -7290,6 +7290,7 @@ The slice is structurally sound: the SAVEPOINT boundary, intermediate-None INVAL
 | Path | Role |
 |------|------|
 | `roboco/services/task.py` | The 14k-line service module: `TaskService`, composed from 43 responsibility mixins defined above it in the same module (Key Symbols lists each), plus internal dataclass containers (`_CompletionSnapshot`, `SoftBlockInput`, `SoftBlockInfo`, `GatewayAgentView`). |
+| `roboco/services/task_ref.py` | `resolve_task_ref`: the one resolver of a task reference (a full UUID, or the 8+ char id prefix the cards and prompts show, optional leading `#`) to a task id, with a `TaskRefOutcome` of resolved / malformed / not_found / ambiguous. The agent gateway (`ContentActions._resolve_task_ref`, an Envelope) and `GET /api/tasks/{task_id}` (`resolve_task_ref_or_http_error`, 404 or 422) only translate its outcome. |
 | `roboco/services/_task_service_types.py` | `TaskServiceSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `TaskService` mixins reach through `self` (`TaskSurface` for `TaskService` itself): each stub keeps the method's decorators, parameters and return type, so no moved body changes. `tests/unit/services/test_task_service_mixins.py` fails on a stub its class doesn't define, and on a member two mixins, or a mixin and `TaskService`, both define. |
 
 ## Key Symbols
@@ -10933,7 +10934,7 @@ Two sequenced leaves built this: `roboco/services/attestation.py` (the assembly 
 | `render_attestation_markdown` | function | `attestation.py:442` | Renders a human-readable Markdown receipt from an ALREADY-assembled `TaskAttestation` — never a second computation over raw tables, so the Markdown can never drift from the JSON the route also returns. Each section (header/AC/findings/CI/conventions/reviewer-chain/work-sessions) is a small pure helper kept under the branch budget. |
 | `TaskAttestationResponse` | Pydantic model | `schemas/attestation.py:100` | Response schema mirroring `TaskAttestation` field-for-field. |
 | `attestation_to_response` | function | `schemas/attestation.py:142` | Converts the assembler's frozen-dataclass tree into its Pydantic twin. Lives in `roboco.api.schemas`, not the route and not the service — services must never import schemas (conventions map layering rule). |
-| `get_task_attestation` | async route | `roboco/api/routes/tasks.py:1031` | `GET /api/tasks/{id}/attestation`; 404 on an unknown task id; `format=json` (default) returns `TaskAttestationResponse`, `format=markdown` returns a `PlainTextResponse` of `render_attestation_markdown`'s output — both call sites pass the SAME `assemble_task_attestation` result, so JSON and Markdown can never diverge. |
+| `get_task_attestation` | async route | `roboco/api/routes/tasks.py:1038` | `GET /api/tasks/{id}/attestation`; 404 on an unknown task id; `format=json` (default) returns `TaskAttestationResponse`, `format=markdown` returns a `PlainTextResponse` of `render_attestation_markdown`'s output — both call sites pass the SAME `assemble_task_attestation` result, so JSON and Markdown can never diverge. |
 
 ## Response shape (cross-cell contract)
 

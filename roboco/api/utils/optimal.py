@@ -8,6 +8,7 @@ from fastapi import HTTPException, status
 from fastapi.responses import JSONResponse
 
 from roboco.api.deps import CurrentAgentContext, PermissionServiceDep
+from roboco.models.optimal import SEARCHABLE_INDEX_TYPES
 from roboco.services.gateway.kb_authz import authorize_kb_action
 from roboco.services.optimal import IndexType
 
@@ -36,13 +37,15 @@ def kb_denial_response(
 
 def parse_index_types(raw: list[str] | None) -> list[IndexType] | None:
     """Parse a request's ``index_types`` list into validated ``IndexType``
-    values, or ``None`` when unset. Raises 400 on an invalid type string."""
+    values, or ``None`` when unset. Raises 400 on an invalid type string,
+    naming the searchable indexes so the caller can correct itself."""
     if not raw:
         return None
     try:
         return [IndexType(t) for t in raw]
     except ValueError as e:
+        searchable = ", ".join(t.value for t in SEARCHABLE_INDEX_TYPES)
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid index type: {e}",
+            detail=f"Invalid index type: {e}; searchable indexes: {searchable}",
         ) from e
