@@ -10,11 +10,12 @@ import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from roboco.agents_config import get_agent_team
+from roboco.agents_config import get_agent_role, get_agent_team
 from roboco.foundation.policy.agent_loop import DEFAULT_BUDGET
 from roboco.models.runtime import AgentInstance, WaitingRecord
 from roboco.runtime.orchestrator import (
     _DOCKER_INSPECT_TIMEOUT_SECONDS,
+    _SINGLE_ACTIVE_TASK_ROLES,
     AGENT_IMAGES,
     AgentState,
     logger,
@@ -233,8 +234,64 @@ class StartupRestoreEngine(_Base):
 
 class StartupReconcileEngine(_Base):
     """Reconciling with the world at startup: mark this process running, roll
-    back orphan claims, close orphan spawn sessions, kill containers whose
-    agent token no longer verifies, and re-adopt the running ones."""
+    back orphan claims, release the never-started extra claims a work author
+    holds, close orphan spawn sessions, kill containers whose agent token no
+    longer verifies, and re-adopt the running ones."""
+
+    async def _release_extra_claims_of_work_authors(self) -> int:
+        """Release every work author's never-started extra claims; returns how
+        many were released.
+
+        A developer or devops agent holds one unfinished task at a time.
+        Before that rule covered every path that hands out work (c8879be9)
+        the dispatcher stacked claims on developers that already held work,
+        and those rows were never reconciled afterwards: live 2026-11-01
+        be-dev-1 still held claimed 106f46e3 next to its own f5d66db6 and was
+        respawned onto it, where every verb it tried was refused.
+        ``TaskService.release_never_started_extra_claims`` puts each extra
+        claim back in the author's queue (pending, still assigned to it) and
+        leaves started work alone. An author with a live container is skipped
+        this boot: what it is running on is not known here, and a claim must
+        not be released from under it.
+        """
+        released = 0
+        for slug, agent_uuid in AGENT_UUIDS.items():
+            if get_agent_role(slug) not in _SINGLE_ACTIVE_TASK_ROLES:
+                continue
+            if self._is_agent_active(slug):
+                continue
+            released += await self._release_extra_claims_of(slug, agent_uuid)
+        return released
+
+    async def _release_extra_claims_of(self, slug: str, agent_uuid: str) -> int:
+        """One work author's pass in its own session. Best-effort: a failure
+        is logged and leaves that author's rows as they were."""
+        from uuid import UUID
+
+        from roboco.db.base import get_session_factory
+        from roboco.services.task import TaskService
+
+        try:
+            async with get_session_factory()() as db:
+                released = await TaskService(db).release_never_started_extra_claims(
+                    UUID(agent_uuid)
+                )
+                released_ids = [str(task.id) for task in released]
+                await db.commit()
+        except Exception as exc:
+            logger.error(
+                "Held-work reconciliation failed for a work author; rows left as is",
+                agent=slug,
+                error=str(exc),
+            )
+            return 0
+        for task_id in released_ids:
+            logger.warning(
+                "Released a never-started extra claim back to its author's queue",
+                agent=slug,
+                task_id=task_id,
+            )
+        return len(released_ids)
 
     @staticmethod
     async def _resolve_container_id(container_name: str) -> str | None:

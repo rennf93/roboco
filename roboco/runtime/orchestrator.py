@@ -231,6 +231,9 @@ _PM_DISPATCH_FETCH_LIMIT = 500
 # Validation reason suffix for a child whose parent is still cutting its
 # branch inside the provisioning grace: a healthy, recurring wait, not a fault.
 _PARENT_BRANCH_WAIT = "waiting for parent branch provisioning"
+# The roles the single-active-task rule holds to one unfinished task, mirroring
+# TaskService._SINGLE_ACTIVE_TASK_ROLES (the claim chokepoint's set).
+_SINGLE_ACTIVE_TASK_ROLES = frozenset({"developer", "devops"})
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_OK = 200
 # First non-2xx status; 2xx == [_HTTP_OK, this).
@@ -1933,6 +1936,12 @@ class AgentOrchestrator(
         # dispatcher/reaper loops launch below.
         await self._heal_stale_agent_tokens()
         await self._readopt_running_agents()
+
+        # A work author holds one unfinished task at a time: put the
+        # never-started extra claims left by older runs back in their author's
+        # queue. After the re-adopt, so an author with a live container is
+        # left alone.
+        await self._release_extra_claims_of_work_authors()
 
         # Close agent_spawn_sessions rows left open by a prior orchestrator
         # crash so usage/cost rollups (which filter ended_at IS NOT NULL) count

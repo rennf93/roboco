@@ -38,7 +38,7 @@ from roboco.enforcement import (
     validate_task_transition,
 )
 from roboco.events import Event, EventType, get_event_bus
-from roboco.foundation.identity import Role
+from roboco.foundation.identity import AGENTS, Role
 from roboco.foundation.policy.batch import (
     is_batch_root_subtask,
     is_batch_umbrella,
@@ -2111,13 +2111,20 @@ class TaskAgentQueries(_Base):
         dispatcher's spawn/claim pre-filters and the PM ``reassign`` verb ask
         it, so none of them hands a developer work it would be refused.
         """
-        for held in await self.list_in_progress_for_agent(agent_id):
-            if held.id != task_id:
-                return held
-        for held in await self.list_paused_for_agent(agent_id):
+        for held in await self.list_held_for_agent(agent_id):
             if held.id != task_id:
                 return held
         return None
+
+    async def list_held_for_agent(self, agent_id: UUID) -> list[TaskTable]:
+        """Every unfinished task ``agent_id`` holds, in the order the
+        single-active-task rule names them: actively worked first (claimed,
+        in_progress, verifying, blocked, or blocked and escalated away from
+        it), then paused."""
+        return [
+            *await self.list_in_progress_for_agent(agent_id),
+            *await self.list_paused_for_agent(agent_id),
+        ]
 
 
 class TaskRoleLookup(_Base):
@@ -7598,10 +7605,115 @@ class TaskWorkState(_Base):
         return task
 
 
+def _released_extra_claim_message(kept_label: str) -> str:
+    """The progress entry a released extra claim carries, for its PM."""
+    return (
+        "Released at startup by the held-work reconciliation: its assignee"
+        f" also holds {kept_label}, and a developer works one unfinished task"
+        " at a time. Still assigned to the same developer, which is dispatched"
+        " to it once that task is done; branch and worktree untouched."
+    )
+
+
+def _never_started_extra_claims(
+    held: list[TaskTable],
+) -> tuple[TaskTable | None, list[TaskTable]]:
+    """Split a work author's held tasks into the one it keeps and the
+    never-started claims beyond it.
+
+    A work author holds one unfinished task at a time. The task it keeps is
+    the first one it has started, in the order the single-active-task rule
+    names held work (active before paused), or its first claim when it has
+    started none. The extras returned are only ``claimed`` tasks, the claims
+    the doctrine releases ("a second never-started claim is released to the
+    pool"); started work beyond the kept task is not returned. ``(None, [])``
+    when the author holds at most one task.
+    """
+    if len(held) <= 1:
+        return None, []
+    started = [task for task in held if task.status != TaskStatus.CLAIMED]
+    kept = started[0] if started else held[0]
+    extras = [
+        task for task in held if task is not kept and task.status == TaskStatus.CLAIMED
+    ]
+    return kept, extras
+
+
 class TaskUnclaim(_Base):
     """Giving up a claim: the reaper's and the agent's unclaims, releasing a
-    dependency-blocked claim, and clearing the agent's current task and work
-    session."""
+    dependency-blocked claim or a work author's never-started extra claims, and
+    clearing the agent's current task and work session."""
+
+    async def release_never_started_extra_claims(
+        self, agent_id: UUID
+    ) -> list[TaskTable]:
+        """Release the never-started claims a work author holds beyond the one
+        task it may hold; returns the released tasks.
+
+        Each release is ``claimed -> pending`` with the owner kept on
+        ``assigned_to`` / ``claimed_by`` (``_force_unclaim_to_pending``, the
+        reaper's core), so the task stays in that author's queue and is
+        dispatched to it once its kept task is done. Its branch and its
+        worktree are left alone: a claim that never started holds no work of
+        its own, and nothing the author may have written is removed. Every
+        release is recorded on the task as a progress entry and an audit row.
+        Started work beyond the kept task (a second in_progress, paused,
+        verifying or blocked task) is not touched. Idempotent: a second call
+        finds no extra claim.
+        """
+        kept, extras = _never_started_extra_claims(
+            await self.list_held_for_agent(agent_id)
+        )
+        if kept is None:
+            return []
+        kept_label = f"{TaskStatus(kept.status).value} task {kept.id}"
+        released: list[TaskTable] = []
+        for task in extras:
+            if await self._release_extra_claim_keeping_owner(task, kept_label):
+                released.append(task)
+        return released
+
+    async def _release_extra_claim_keeping_owner(
+        self, task: TaskTable, kept_label: str
+    ) -> bool:
+        """Release one extra claim and record why, in a savepoint so a failure
+        leaves the shared session usable and the task exactly as it was."""
+        task_id = require_uuid(task.id)
+        try:
+            async with self.session.begin_nested():
+                if not await self._force_unclaim_to_pending(
+                    task_id, reason="held-work-reconcile"
+                ):
+                    return False
+                await self.add_progress(
+                    task_id,
+                    AGENTS["system"].uuid,
+                    _released_extra_claim_message(kept_label),
+                )
+                self._emit_extra_claim_release_audit(task_id, kept_label)
+        except Exception as exc:
+            self.log.warning(
+                "Extra claim release failed; task left as it was",
+                task_id=str(task_id),
+                error=str(exc),
+            )
+            return False
+        return True
+
+    def _emit_extra_claim_release_audit(self, task_id: UUID, kept_label: str) -> None:
+        """A ``task.extra_claim_released`` audit row in the caller's session."""
+        from roboco.db.tables import AuditLogTable
+
+        self.session.add(
+            AuditLogTable(
+                event_type="task.extra_claim_released",
+                agent_id=None,
+                target_type="task",
+                target_id=task_id,
+                severity="warning",
+                details={"reason": "held-work-reconcile", "assignee_keeps": kept_label},
+            )
+        )
 
     async def unclaim_for_reaper(self, task_id: UUID) -> None:
         """Reaper-only unclaim: skip role checks, force the row back to pending.

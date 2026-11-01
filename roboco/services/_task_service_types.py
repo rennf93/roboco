@@ -80,6 +80,7 @@ class TaskAgentQueriesSurface(Protocol):
     async def held_task_blocking_claim(
         self, agent_id: UUID, task_id: UUID
     ) -> TaskTable | None: ...
+    async def list_held_for_agent(self, agent_id: UUID) -> list[TaskTable]: ...
 
 
 class TaskBlockingSurface(Protocol):

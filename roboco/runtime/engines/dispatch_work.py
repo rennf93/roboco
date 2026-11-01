@@ -24,6 +24,7 @@ from roboco.foundation.policy.content import markers as _markers
 from roboco.runtime.orchestrator import (
     _PARENT_BRANCH_WAIT,
     _PM_DISPATCH_FETCH_LIMIT,
+    _SINGLE_ACTIVE_TASK_ROLES,
     AgentReadinessError,
     AgentState,
     _agent_api_headers,
@@ -45,10 +46,6 @@ if TYPE_CHECKING:
 else:
     _Base = object
 
-
-# The roles the single-active-task rule holds to one unfinished task, mirroring
-# TaskService._SINGLE_ACTIVE_TASK_ROLES (the claim chokepoint's set).
-_SINGLE_ACTIVE_TASK_ROLES = frozenset({"developer", "devops"})
 
 # B35 review_queue_priority banding constants: unscored tasks sit at the
 # neutral priority band; depth 3 renders the forensic directive.
