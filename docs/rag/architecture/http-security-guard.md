@@ -2,7 +2,7 @@
 
 ## What It Is
 
-RoboCo's HTTP request layer is protected by `fastapi-guard` (8.0.0, on `guard-core` 4.0.1), implemented in `roboco/security.py` and wired into the app in `roboco/api/app.py`'s `create_app`.
+RoboCo's HTTP request layer is protected by `fastapi-guard` (8.1.2, on `guard-core` 4.4.0), implemented in `roboco/security.py` and wired into the app in `roboco/api/app.py`'s `create_app`.
 
 ## Enable/Disable
 
@@ -39,6 +39,12 @@ A blocked request gets a generic `400` or `403` response — no rule or signatur
 Agent traffic legitimately carries code, SQL, diffs, file paths, HTML snippets, and URLs — for example inside `note` / `commit` / `dm` bodies. To avoid false positives, the free-text body fields on those routes are excluded from WAF signature scanning via `excluded_detection_body_fields` in `build_security_config`, so normal code/SQL/diff/HTML payloads from agents are not flagged by the WAF layer.
 
 The three custom validators above are not covered by that exclusion — they scan those same bodies regardless of the WAF exclusion. See `docs/rag/troubleshooting/blocked-http-requests.md` for what this means in practice and what not to put in a request body.
+
+## WAF Scan Time Budget
+
+guard-core gives each signature pattern a scan budget, `detection_compiler_timeout`, and turns a pattern that runs out of it into a `pattern_timeout` threat that the fail-secure posture blocks ("Pattern exceeded scan time budget: '<pattern>'" in the guard log). The budget is wall time: the windowed patterns run on a 4-worker process-wide thread pool and are awaited with `asyncio.wait_for`, so every moment the scan waits for that pool or for the event loop counts, not only regex work. RoboCo sets it to guard-core's ceiling, 10 s (`_PATTERN_SCAN_WALL_BUDGET_SECONDS` in `roboco/security.py`; the default was 2 s).
+
+Why: the blocks the 2 s budget produced were scheduling stalls, not regex cost. `accept: */*` on an agent's `POST /api/v1/do/note` (2026-11-01 04:53:42) and seven tiny tailnet headers (2026-10-28 05:36) "exceeded" it, while a whole request scan costs about 0.1 s of CPU and the patterns run in microseconds on such values. The log shows the process itself stalling: two `/health` requests started 106 ms apart completed together 9.33 s and 9.44 s later with no log line in between, and the guard's Redis reads timed out right after. `tests/unit/test_security_scan_budget.py` reproduces the failure with the pool kept busy for 2.5 s. A pattern that still runs out of 10 s keeps blocking (CEO decision 2026-11-01). The per-request CPU cap, `detection_max_scan_seconds` (10 s of CPU), is unchanged. If stalls ever approach 10 s again, find what stalls the orchestrator (`docker compose exec orchestrator py-spy dump --pid 1`) rather than raising the budget further: guard-core will not accept more.
 
 ## Scanner Auto-Ban
 

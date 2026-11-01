@@ -1,4 +1,4 @@
-"""RoboCo HTTP security layer (fastapi-guard 8.0.0 / guard-core 4.0.1).
+"""RoboCo HTTP security layer (fastapi-guard 8.1.2 / guard-core 4.4.0).
 
 A ``SecurityMiddleware`` + per-route decorator layer, gated by
 ``settings.guard_enabled`` (default off). Importing this module is always safe:
@@ -56,10 +56,12 @@ logger = get_logger(__name__)
 # track_return_pattern call redis unguarded and raise GuardRedisError (not an
 # HTTPException) on a redis blip, so they fall through to roboco's generic
 # exception handler as a 500 instead of failing open like every pipeline check
-# does. Verified still required at guard-core 4.0.1 (redis_fail_open is
-# still not consulted on either seam). Wrap all three seams here rather than
-# fork/vendor guard-core; the durable fix belongs upstream (route these calls
-# through the pipeline's own GuardRedisError / redis_fail_open handling).
+# does. Verified still required at guard-core 4.4.0 (redis_fail_open is
+# still not consulted on either seam: guard/middleware.py dispatch calls
+# process_usage_rules straight after the pipeline). Wrap all three seams
+# here rather than fork/vendor guard-core; the durable fix belongs upstream
+# (route these calls through the pipeline's own GuardRedisError /
+# redis_fail_open handling).
 _orig_process_usage_rules = BehavioralProcessor.process_usage_rules
 
 
@@ -565,6 +567,30 @@ _BEHAVIOR_RULES: tuple[BehaviorRuleConfig, ...] = (
 )
 
 
+# Per-pattern WAF scan budget: guard-core's ``detection_compiler_timeout``
+# (default 2.0 s, ceiling 10.0 s). guard-core measures it in WALL time: a
+# windowed pattern's worker future is awaited with ``asyncio.wait_for`` on a
+# 4-worker, process-wide pool (guard_core/handlers/_suspatterns_regex.py
+# ``_check_windowed_pattern``, detection_engine/compiler.py
+# ``_await_regex_future``), and a pattern that runs out of it becomes a
+# ``pattern_timeout`` threat, which fail-secure blocks. So the budget also
+# spends every moment the scan waits for the pool or the event loop, not just
+# regex work. The false blocks in the log were exactly that: ``accept: */*``
+# on an agent's POST /api/v1/do/note (2026-11-01 04:53:42) and seven tiny
+# tailnet headers (``sec-fetch-dest: empty``, header names; 2026-10-28 05:36)
+# "exceeded" 2.0 s on values the patterns scan in microseconds (a whole
+# request scan costs ~0.1 s of CPU), while the process was stalled: on 11-01
+# two /health requests started 106 ms apart both completed 9.33 s and 9.44 s
+# later with no log line in between, and the guard's Redis reads timed out
+# right after. The budget has to outlast such a stall, so it is guard-core's
+# ceiling. A pattern that does run out still blocks (fail-secure, CEO
+# decision 2026-11-01). Cost: a genuine ReDoS holds its own request up to
+# 10 s instead of 2 s before that block; the worker thread was never freed
+# by the timeout anyway, and the per-request CPU cap
+# (``detection_max_scan_seconds``, 10 s of CPU) is unchanged.
+_PATTERN_SCAN_WALL_BUDGET_SECONDS = 10.0
+
+
 def _redis_url() -> str:
     """The guard's Redis (always db 0), authenticated like every other client."""
     return settings.redis_url_for_db(0)
@@ -950,6 +976,7 @@ def build_security_config() -> SecurityConfig:
         behavior_scan_response_body=settings.guard_scan_response_body,
         # Signature WAF on, but calibrated: free-text bodies excluded (below).
         enable_penetration_detection=True,
+        detection_compiler_timeout=_PATTERN_SCAN_WALL_BUDGET_SECONDS,
         excluded_detection_headers=_TRACING_HEADERS,
         excluded_detection_body_fields=_WAF_FREETEXT_BODY_FIELDS,
         # Extends (not replaces) guard-core's default redaction set.
