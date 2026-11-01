@@ -47,6 +47,8 @@ note(
 
 ## Decision Log
 
+The PM decision verbs write this entry for you: `delegate` records the subtask's title and description, `complete` / `submit_up` / `submit_root` their `notes`, `unblock` / `escalate_up` / `escalate_to_ceo` / `cancel_leaf` their `reason`, and `request_changes` its findings, as your `journal:decision`. Do not `note(scope="decision")` before them; put the rationale in that argument. A decision note is for context no verb argument carries, on a task you hold.
+
 ```python
 note(
     text="Chose Redis for session storage over PostgreSQL.",

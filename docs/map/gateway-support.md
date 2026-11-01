@@ -20,7 +20,7 @@ The support layer of the agent gateway: pure/cheap components the Choreographer 
 | roboco/services/gateway/merge_chain.py | Branch-depth + parent-branch resolution by string surgery and via the parent task's real branch_name (cross-team safe); `find_topology_issue` detects a stale/incoherent PR-base vs. parent-topology mismatch, reused at `open_pr` preflight and the `parent_task_id` re-parent write-through. | 242 |
 | roboco/services/gateway/quality_gate.py | run_quality_commands: execute project fast checks in workspace, fail-closed on real failure, fail-open on infra, reap timeout zombies. | 97 |
 | roboco/services/gateway/rate_limit_tracker.py | RateLimitStateTracker: Redis JSON blob per provider; atomic Lua activate-merge (preserves probe_failures), probe-failure increment/reset; list_rate_limited_providers scan. | 271 |
-| roboco/services/gateway/remediation.py | Concrete single-sentence remediation hint strings for tracing-gap/invalid-state rejections. | 149 |
+| roboco/services/gateway/remediation.py | Concrete single-sentence remediation hint strings for tracing-gap/invalid-state rejections. | 154 |
 | roboco/services/gateway/role_config.py | ROLE_CONFIGS: per-role flow_tools/do_tools/allows_write/allows_subagent/description; flow tools derived from lifecycle.intents_for_role. | 423 |
 
 ## Key Symbols
@@ -130,15 +130,15 @@ The support layer of the agent gateway: pure/cheap components the Choreographer 
 | hint_for_missing_reflect | function | roboco/services/gateway/remediation.py:18 | Hint: call note(scope='reflect',...). |
 | hint_for_unaddressed_acceptance_criteria | function | roboco/services/gateway/remediation.py:25 | Hint: every AC needs a referencing artifact. |
 | hint_for_missing_ac_coverage | function | roboco/services/gateway/remediation.py | #686: a `delegate` child draft rejected for a `covers_parent_criteria` ref that doesn't resolve now gets a copy-pasteable corrected skeleton with the parent's REAL criteria inlined (id when present, quoted exact text otherwise — never a bare `'<id>'` placeholder), instead of a rejection that named the field but never showed its shape. The coverage-reject path self-heals an empty/out-of-length id list on the parent before rendering so the skeleton always has real references; `cell_pm.md`/`main_pm.md` also show the field on every delegation-guidance child draft now. |
-| hint_for_missing_journal_decision | function | roboco/services/gateway/remediation.py:77 | Hint: call note(scope='decision',...) before complete. |
-| hint_for_missing_journal_learning | function | roboco/services/gateway/remediation.py:84 | Hint: call note(scope='learning',...) before pass/fail. |
-| hint_for_missing_qa_notes | function | roboco/services/gateway/remediation.py:91 | Hint: qa_notes must be >=80 chars. |
-| hint_for_evidence_not_inspected | function | roboco/services/gateway/remediation.py:98 | Hint: call evidence(task_id) before pass/fail. |
-| hint_for_short_doc_notes | function | roboco/services/gateway/remediation.py:102 | Hint: i_documented requires notes>=min_chars. |
-| hint_for_missing_doc_files | function | roboco/services/gateway/remediation.py:110 | Hint: i_documented(files=[...]) requires >=1 path. |
-| hint_for_short_dev_notes | function | roboco/services/gateway/remediation.py:117 | Hint: dev_notes under min_chars; use note(scope='handoff',...). |
-| hint_for_short_pr_reviewer_notes | function | roboco/services/gateway/remediation.py:126 | Hint: PR reviewer note must be >=min_chars. |
-| hint_for_short_quick_context | function | roboco/services/gateway/remediation.py:142 | Hint: quick_context under min_chars; pass done/next as top-level string args. |
+| hint_for_missing_journal_decision | function | roboco/services/gateway/remediation.py:77 | Hint: the verb records its own reason / notes / subtask / findings as the decision and got none; retry it with a substantive one (no separate note). |
+| hint_for_missing_journal_learning | function | roboco/services/gateway/remediation.py:89 | Hint: call note(scope='learning',...) before pass/fail. |
+| hint_for_missing_qa_notes | function | roboco/services/gateway/remediation.py:96 | Hint: qa_notes must be >=80 chars. |
+| hint_for_evidence_not_inspected | function | roboco/services/gateway/remediation.py:103 | Hint: call evidence(task_id) before pass/fail. |
+| hint_for_short_doc_notes | function | roboco/services/gateway/remediation.py:107 | Hint: i_documented requires notes>=min_chars. |
+| hint_for_missing_doc_files | function | roboco/services/gateway/remediation.py:115 | Hint: i_documented(files=[...]) requires >=1 path. |
+| hint_for_short_dev_notes | function | roboco/services/gateway/remediation.py:122 | Hint: dev_notes under min_chars; use note(scope='handoff',...). |
+| hint_for_short_pr_reviewer_notes | function | roboco/services/gateway/remediation.py:131 | Hint: PR reviewer note must be >=min_chars. |
+| hint_for_short_quick_context | function | roboco/services/gateway/remediation.py:147 | Hint: quick_context under min_chars; pass done/next as top-level string args. |
 | RoleConfig | dataclass | roboco/services/gateway/role_config.py:22 | Static per-role config: flow_tools/do_tools/allows_write/allows_subagent/description. |
 | ROLE_CONFIGS | dict | roboco/services/gateway/role_config.py:290 | Map of all 11 roles to their RoleConfig. |
 | get_role_config | function | roboco/services/gateway/role_config.py:403 | Lookup role config; KeyError on unknown role. |

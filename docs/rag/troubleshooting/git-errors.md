@@ -134,7 +134,7 @@ Some low-level git error messages still say "GitHub API" in their text regardles
 
 **Fix:** This currently surfaces as an error envelope from `complete`. The recovery path:
 
-1. PM `unblock(task_id, restore=False)` — frees the task back to the dev
+1. PM `unblock(task_id, reason='<why the block is cleared>', restore=False)` — frees the task back to the dev
 2. Dev re-claims, the choreographer rebuilds the branch off the latest parent, and they replay their commits
 3. Dev `open_pr` again
 4. QA re-runs `pass` (or `fail` if the rebase changed behaviour)

@@ -25,7 +25,7 @@ The revision-findings ledger: the structured replacement for prose-only QA/PR-ga
 | `roboco/services/task.py` | `ceo_reject` — ceo-origin producer + reason validation; `ceo_approve` — best-effort verify-stamp; `_audit_events_for` — `task.request_changes`/`task.ceo_reject`; `qa_fail`/`request_changes` dev_notes-append removal | (slice within an 8.7k-line file) |
 | `roboco/foundation/policy/tracing.py` | `Requirement.FINDINGS_ADDRESSED`, `GateContext.open_finding_ids`, `_check_findings_addressed` | (slice within a shared file) |
 | `roboco/services/gateway/evidence_builder.py` | `EvidencePayload.revision_findings`/`.prior_findings`, `build_task_handoff` findings, `render_findings`, `_extract_qa_review`/`_extract_pm_review` | 480 |
-| `roboco/services/gateway/remediation.py` | `hint_for_open_findings` | 149 |
+| `roboco/services/gateway/remediation.py` | `hint_for_open_findings` | 154 |
 | `roboco/runtime/orchestrator.py` | `REVISION_REQUIRED` prompt findings block, PM triage "bounced" block, `_open_findings_prompt_block`/`_revision_bounced_block` | (slice within a shared file) |
 | `roboco/mcp/flow_server.py` | MCP param wiring: `findings`/`resolved_findings` on the 6 affected tools | (slice within a shared file) |
 | `roboco/api/schemas/v1/flow.py` | `ResolvedFindingInput`; `findings`/`resolved_findings` fields on the flow request schemas | (slice within a shared file) |

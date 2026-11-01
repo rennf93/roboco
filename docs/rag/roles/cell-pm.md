@@ -52,7 +52,8 @@ delegate(parent_task_id=..., title=..., description=...,
                                 fork off yours when the dev claims it
 
 triage()                       → scan your cell's queue
-unblock(task_id, restore=True) → unblock + restore prior status
+unblock(task_id, reason)       → unblock + restore prior status;
+                                 reason is recorded as your decision
 cancel_leaf(task_id, reason)   → close a zero-diff leaf (no commits, no
                                  PR) a sibling already fixed
 reassign(task_id, new_assignee) → hand a claimed/in_progress task to
@@ -132,7 +133,6 @@ The choreographer:
 When a subtask lands in `awaiting_pm_review` and the work violates an acceptance criterion or its scope boundary (e.g. a commit touched files outside the task's declared scope), reject it instead of completing it:
 
 ```python
-note(scope="decision", text="Rejecting — commit touched files outside declared scope")
 request_changes(
     task_id="<subtask>",
     findings=[
@@ -147,7 +147,7 @@ request_changes(
 )
 ```
 
-Each finding is inserted onto the task's revision-findings ledger (`origin=pm`) and rendered into the new `pm_notes` note, then the subtask goes back to `needs_revision`, routed to whoever owns the revision. **Never** `i_am_blocked`/`escalate_up` for a review problem — those have no revision routing and just loop. The old `issues=[...]` (plain strings) form still works this release but is deprecated. See `docs/rag/architecture/review-findings.md`.
+Each finding is inserted onto the task's revision-findings ledger (`origin=pm`) and rendered into the new `pm_notes` note and recorded as your journal decision (no separate decision note), then the subtask goes back to `needs_revision`, routed to whoever owns the revision. **Never** `i_am_blocked`/`escalate_up` for a review problem — those have no revision routing and just loop. The old `issues=[...]` (plain strings) form still works this release but is deprecated. See `docs/rag/architecture/review-findings.md`.
 
 ## Monitoring Your Cell
 
