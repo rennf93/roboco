@@ -75,7 +75,7 @@ x-orchestrator-env: &orchestrator-env
   # private network with no untrusted reach to nginx.
   ROBOCO_AGENT_AUTH_REQUIRED: ${ROBOCO_AGENT_AUTH_REQUIRED:-true}
   ROBOCO_LOCAL_LLM_BASE_URL: http://roboco-ollama:11434/v1
-  ROBOCO_LOCAL_LLM_MODEL: glm-5.3:cloud
+  ROBOCO_LOCAL_LLM_MODEL: glm-5.3-flash:cloud
   ROBOCO_DEFAULT_EMBEDDING_MODEL: qwen3-embedding:0.6b
   ROBOCO_OLLAMA_BASE_URL: http://roboco-ollama:11434
   # Video renderer sidecar (use container name). The video engine
@@ -470,14 +470,17 @@ services:
           status=$$(echo "$$line" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
           [ -n "$$status" ] && echo "  $$status"
         done || echo "  (pull failed — relying on the cached model)"
-        echo "=== Pulling LLM model (glm-5.3:cloud) — best-effort ==="
-        curl -sN http://ollama:11434/api/pull -d '{"name":"glm-5.3:cloud"}' | while read -r line; do
+        echo "=== Pulling background LLM model (glm-5.3-flash:cloud) — best-effort ==="
+        curl -sN http://ollama:11434/api/pull -d '{"name":"glm-5.3-flash:cloud"}' | while read -r line; do
           status=$$(echo "$$line" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
           [ -n "$$status" ] && echo "  $$status"
         done || echo "  (pull failed — relying on the cached model)"
         echo "=== Verifying models are present (the real success gate) ==="
         curl -sf http://ollama:11434/api/tags | grep -q "qwen3-embedding" || { echo "FATAL: qwen3-embedding missing and could not be pulled"; exit 1; }
-        curl -sf http://ollama:11434/api/tags | grep -q "glm-5.3" || { echo "FATAL: glm-5.3 missing and could not be pulled"; exit 1; }
+        # Not fatal: the background LLM client falls back to Claude Haiku when
+        # Ollama cannot answer, so a missing chat model must not hold back the
+        # orchestrator the way a missing embedding model does.
+        curl -sf http://ollama:11434/api/tags | grep -q "glm-5.3-flash" || echo "WARNING: glm-5.3-flash missing; background LLM calls fall back to Claude Haiku"
         echo "=== All models ready! ==="
 
   # --------------------------------------------------------------------------
@@ -891,7 +894,7 @@ services:
       ROBOCO_REDIS_PASSWORD: ${ROBOCO_REDIS_PASSWORD:?ROBOCO_REDIS_PASSWORD is required (make quickstart generates one; see .env.example)}
       ROBOCO_ENCRYPTION_KEY: ${ROBOCO_ENCRYPTION_KEY:?ROBOCO_ENCRYPTION_KEY is required}
       ROBOCO_LOCAL_LLM_BASE_URL: http://roboco-ollama:11434/v1
-      ROBOCO_LOCAL_LLM_MODEL: glm-5.3:cloud
+      ROBOCO_LOCAL_LLM_MODEL: glm-5.3-flash:cloud
       ROBOCO_DEFAULT_EMBEDDING_MODEL: qwen3-embedding:0.6b
       ROBOCO_OLLAMA_BASE_URL: http://roboco-ollama:11434
       ROBOCO_ENVIRONMENT: production
