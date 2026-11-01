@@ -15,7 +15,8 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `roboco/services/_kanban_service_types.py` | `KanbanServiceSelf`, a TYPE_CHECKING-only Protocol declaring the attributes the `KanbanService` mixin reads through `self` (no moved body calls across classes, so it has no `<Class>Surface` yet); `tests/unit/services/test_kanban_service_mixins.py` fails on a stray stub or a member defined twice | 28 |
 | `roboco/services/company_goals.py` | CRUD for the singleton company charter (north star + objectives + constraints + policy + brand_voice + company_name); `resolve_product_name` is the shared product-name fallback chain `XEngine`/`VideoEngine` both call | 110 |
 | `roboco/services/strategy_engine.py` | Dormant "engine 2": assesses company state vs goals; `idle`→roadmap and `stranded_blocked`→Coroner both trigger a Board Program before the CEO notification | 337 |
-| `roboco/services/research.py` | Pluggable web-search/fetch — provider adapters (Tavily/Brave/Exa/Null) + clamping service | 570 |
+| `roboco/services/research.py` | Pluggable web-search/fetch - provider adapters (SearXNG/Tavily/Brave/Exa/Null) + clamping service | 570 |
+| `roboco/services/research_errors.py` | Research failures that name who refused a call and why: one `ResearchError` subclass per party (provider, target site, RoboCo's URL guard), messages built from the response (status, page title or first readable text, never markup) and bot-check detection from documented challenge headers and titles | 292 |
 | `roboco/services/research_quota.py` | Per-agent UTC-daily Redis quota counter for research calls (fail-open) | 78 |
 | `roboco/services/pitch.py` | Board pitch CRUD + CEO approve → provision repos/Projects(+Product) + seed Main-PM task | 274 |
 | `roboco/services/github_provisioning.py` | The only service that CREATES repos for pitch provisioning — now provider-aware (GitHub/Gitea/GitLab, Phase 4 forge parity), despite the GitHub-flavored name (kept for backward compatibility) | 232 |
@@ -95,14 +96,19 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `StrategyEngine.assess` | method | strategy_engine.py:90 | Pure read; emits `idle` + `stranded_blocked` observations |
 | `StrategyEngine.run_cycle` | method | strategy_engine.py:130 | No-op unless flag on; assess + notify CEO (notify-only, never spends/builds) |
 | `StrategyObservation` | dataclass | strategy_engine.py:44 | Frozen (kind, summary, detail) |
-| `ResearchService` | class | research.py:435 | Provider-agnostic entry point; clamps result/char caps |
-| `SearchProvider` | ABC | research.py:88 | Adapter base: shared/owned httpx client, `_request_json`, abstract `search`, default-unsupported `fetch` |
-| `TavilyProvider` / `BraveProvider` / `ExaProvider` | class | research.py:170 / 220 / 250 | Concrete adapters (Brave has no `fetch`) |
-| `NullProvider` | class | research.py:374 | Graceful stub — empty results, `configured=False`, never raises |
-| `build_provider` | func | research.py:403 | Select adapter by name; NullProvider when no key or unknown name |
-| `get_research_service` | factory | research.py:489 | Build service from settings (provider + caps) |
-| `SearchHit` / `SearchOutcome` / `FetchOutcome` | dataclass | research.py:54 / 64 / 74 | Normalised result shapes |
-| `ResearchError` / `ResearchUnsupportedError` | exception | research.py:40 / 44 | Provider failure vs unsupported-op (route maps 502 vs 501) |
+| `ResearchService` | class | research.py:483 | Provider-agnostic entry point; clamps result/char caps |
+| `SearchProvider` | ABC | research.py:90 | Adapter base: shared/owned httpx client, `_request_json`, abstract `search`, default-unsupported `fetch` |
+| `TavilyProvider` / `BraveProvider` / `ExaProvider` | class | research.py:180 / 230 / 260 | Concrete adapters (Brave has no `fetch`) |
+| `NullProvider` | class | research.py:422 | Graceful stub - empty results, `configured=False`, never raises |
+| `build_provider` | func | research.py:451 | Select adapter by name; NullProvider when no key or unknown name |
+| `get_research_service` | factory | research.py:537 | Build service from settings (provider + caps) |
+| `SearchHit` / `SearchOutcome` / `FetchOutcome` | dataclass | research.py:56 / 66 / 76 | Normalised result shapes |
+| `ResearchError` / `ResearchUnsupportedError` | exception | research_errors.py:30 / 34 | Base of every research failure / the provider has no such operation (route maps 501) |
+| `ResearchProviderError` / `ResearchSiteError` / `ResearchUrlRefusedError` | exception | research_errors.py:43 / 47 / 51 | The party that failed the call: the research provider, the target site of a direct page fetch, or RoboCo's URL guard |
+| `site_status_error` / `site_unreachable_error` | func | research_errors.py:214 / 226 | A site's error status or bot-check page / no answer from the site, named by host, URL, status and readable reason |
+| `provider_status_error` / `provider_body_error` / `provider_unreachable_error` | func | research_errors.py:248 / 259 / 272 | The provider's error status / a body that is not a JSON object / no answer, named by provider and endpoint |
+| `site_redirect_limit_error` | func | research_errors.py:236 | The site was still redirecting a page fetch after the most RoboCo follows (424) |
+| `carries_challenge_header` | func | research_errors.py:184 | True when a bot-mitigation layer marked the response as its challenge page (`cf-mitigated`, `x-amzn-waf-action`, `x-vercel-mitigated`) |
 | `ResearchQuotaTracker` | class | research_quota.py:34 | Per-agent/day Redis `INCR` counter, 24h expiry, fail-open |
 | `ResearchQuotaTracker.check_and_consume` | method | research_quota.py:51 | Atomic INCR-then-compare; over-limit still bumps counter |
 | `QuotaStatus` | dataclass | research_quota.py:24 | (allowed, used, limit, day) |
@@ -188,7 +194,7 @@ Two distinct flows originate work into the delivery lifecycle:
 
 **Strategy flow (dormant watcher).** `Orchestrator._strategy_engine_loop` (created at startup) returns immediately unless `strategy_engine_enabled`; otherwise each `strategy_engine_interval_seconds` it opens a DB context and calls `StrategyEngine.run_cycle` → `assess`. `assess` reads `TaskService.list_in_progress_or_claimed` and `list_long_running_blocked` against `CompanyGoalsService.get()`; if idle-with-goals or stranded-blocked, it sends the CEO an ack-notification via `NotificationService.send_ack_notification`. The engine itself never spends/builds/auto-approves, but each observation kind also triggers its own Board Program before the notification is sent: `idle` calls `_trigger_roadmap_cycle` (`BoardProgramEngine.open_program_cycle("roadmap")`), and `stranded_blocked` calls `_trigger_coroner_incident`, which re-queries `list_long_running_blocked` for the most-stale task and calls `CoronerEngine.open_for_incident(kind="stranded", extra_context={block_reason, time_blocked, escalation_history})` — both helpers are best-effort (any exception is caught and logged, degrading to an "attempted" line) and both fold their outcome string into the same CEO notification body instead of only describing the drift.
 
-**Research flow (on-demand agent capability).** A Board/PM agent calls the `roboco-search` MCP tool (mounted only when `research_enabled` and role is research-eligible, orchestrator line 2914) → `/api/research/{search,fetch}` route. The route enforces the per-agent daily quota via the module-level `ResearchQuotaTracker` singleton (Redis INCR, fail-open), then calls `get_research_service()` → `ResearchService.search/fetch` → selected provider adapter. Result count and char size are clamped to `research_max_results` / `research_fetch_max_chars`. The provider key lives only server-side; the agent never egresses.
+**Research flow (on-demand agent capability).** A Board/PM agent calls the `roboco-search` MCP tool (mounted only when `research_enabled` and role is research-eligible, orchestrator line 2914) → `/api/research/{search,fetch}` route. The route enforces the per-agent daily quota via the module-level `ResearchQuotaTracker` singleton (Redis INCR, fail-open), then calls `get_research_service()` → `ResearchService.search/fetch` → selected provider adapter. Result count and char size are clamped to `research_max_results` / `research_fetch_max_chars`. The provider key lives only server-side; the agent never egresses. A failure is a `ResearchError` subclass from `research_errors.py` that names the party that failed the call and why, and `research_error_to_http` (`api/utils/research.py`) answers with that party's status: 424 the target site of a SearXNG page fetch, 502 the research provider, 400 RoboCo's URL guard, 501 an unsupported operation. SearXNG's page fetch follows redirects itself, one hop at a time and at most `_MAX_PAGE_REDIRECTS` (5): the URL guard checks every hop before it is requested, and the outcome's `url` is the page the redirects ended on.
 
 **Routing flow (runtime keystone).** `ProductService.project_for(product_id, team)` is called from the gateway delegate path to resolve which Project a cell works on within a product; None falls back to the parent task's project.
 
@@ -236,8 +242,8 @@ flowchart TD
         Route --> Quota[ResearchQuotaTracker.check_and_consume]
         Quota --> Redis[(Redis INCR/day)]
         Route --> RS[ResearchService]
-        RS --> Prov2{"Tavily|Brave|Exa|Null"}
-        Prov2 -->|provider API| Web[(Web)]
+        RS --> Prov2{"SearXNG|Tavily|Brave|Exa|Null"}
+        Prov2 -->|provider API, or SearXNG's direct page GET| Web[(Web)]
     end
 
     subgraph RoadmapLoop[dormant — roadmap_engine_enabled]
@@ -322,10 +328,13 @@ product-strategy-research-pitch
 │   ├── assess (idle + stranded_blocked observations)
 │   └── run_cycle (flag-gated, notify-only)
 ├── research.py
-│   ├── SearchProvider ABC + Tavily/Brave/Exa/Null adapters
+│   ├── SearchProvider ABC + SearXNG/Tavily/Brave/Exa/Null adapters
 │   ├── ResearchService (clamping entry point)
 │   ├── build_provider / get_research_service
-│   └── helpers (_as_float / _truncated_fetch)
+│   └── helpers (_as_float / _truncated_fetch / _assert_public_http_url)
+├── research_errors.py - ResearchError tree, one subclass per failing party
+│   ├── site_* / provider_* / url_refused_error message builders
+│   └── readable reason (_page_text) + bot-check detection
 ├── research_quota.py — ResearchQuotaTracker (Redis, fail-open)
 │   └── check_and_consume (INCR-then-compare)
 ├── pitch.py — PitchService
@@ -479,7 +488,7 @@ product-strategy-research-pitch
 - **~~`ProjectService.update` skips None-set fields~~ — FIXED (536bbb64).** `git_token` semantics unchanged (empty string clears, `None` leaves unchanged). All other fields now use `model_dump(exclude_unset=True, exclude={"git_token"})` — `exclude_none=True` was removed (#197), so a field the caller explicitly sets to `None` now clears the stored value instead of being silently skipped.
 - **Strategy loop sleeps a full interval before the first cycle (`runtime/engines/strategy.py:39`).** `await asyncio.sleep(interval)` runs before the first `_strategy_engine_cycle`, so on startup there is a guaranteed `strategy_engine_interval_seconds` delay before the first assessment.
 - **`StrategyEngine.run_cycle` catches nothing itself; `_strategy_engine_cycle` (`runtime/engines/strategy.py:48`) wraps each pass.** A non-cancel failure is logged and counted; past `_STRATEGY_FAIL_CEO_NOTIFY_THRESHOLD` consecutive failures the CEO is notified once per failure episode (#193), and a later success resets the episode.
-- **`build_provider` returns `NullProvider` for an unknown provider name (research.py:326- 328).** A typo in `ROBOCO_RESEARCH_PROVIDER` (validated by pydantic pattern, so unlikely) would silently degrade to empty results rather than erroring.
+- **`build_provider` returns `NullProvider` for an unknown provider name (research.py:439-441).** A typo in `ROBOCO_RESEARCH_PROVIDER` (validated by pydantic pattern, so unlikely) would silently degrade to empty results rather than erroring.
 - **`GitHubProvisioningService.enabled` requires master + token + org (github_provisioning.py:64).** `provisioning_enabled` defaults `True`, so the flag alone is not enough — an operator who toggles the flag without setting token/org still gets `enabled=False` and `approve` raises `ProvisioningDisabledError`.
 - **`PitchService._seed_main_pm_task` requires a `main-pm` agent row (pitch.py:241-243).** If the agent slug is missing it raises `ValidationError` after provisioning has already happened — another partial-failure window (repos + Product created, no seed task).
 - **The Strategy Engine's `stranded_blocked` → Coroner fold shipped (closing a Phase 2 gap).** The internal design spec (`docs/internal/specs/2026-07-24-board-programs-design.md` §3) proposed both `StrategyEngine` signals becoming Board Program triggers — `idle` → Printer (roadmap) and `stranded_blocked` → Coroner. The `idle`→roadmap half shipped first (Phase 1); the `stranded_blocked`→Coroner half landed later via `StrategyEngine._trigger_coroner_incident` (strategy_engine.py:288), which re-queries `list_long_running_blocked` for the most-stale task and calls `CoronerEngine.open_for_incident(kind="stranded", extra_context=...)`. Coroner is now reachable through four chokepoints (bounce/cancel/budget-block/stranded); a long-stranded blocked task opens an autopsy on the next strategy-engine tick (subject to the usual one-open-autopsy dedup and `program_armed("coroner")` gate) instead of only notifying the CEO.
@@ -487,7 +496,7 @@ product-strategy-research-pitch
 
 ## Drift from CLAUDE.md
 
-- **Research provider set vs CLAUDE.md.** CLAUDE.md's "Technology Stack" / feature-flags section lists web research under `ROBOCO_RESEARCH_ENABLED` only; it does not enumerate the provider adapters (`tavily`/`brave`/`exa`/`null`) or the per-agent daily quota (`ROBOCO_RESEARCH_DAILY_QUOTA_PER_AGENT`, default 50). Code: config.py:252/286, research.py:310. Not a contradiction — an omission in the doc.
+- **Research provider set vs CLAUDE.md.** CLAUDE.md's "Technology Stack" / feature-flags section lists web research under `ROBOCO_RESEARCH_ENABLED` only; it does not enumerate the provider adapters (`searxng`/`tavily`/`brave`/`exa`/`null`) or the per-agent daily quota (`ROBOCO_RESEARCH_DAILY_QUOTA_PER_AGENT`, default 50). Code: config.py:873/920, research.py:411. Not a contradiction - an omission in the doc.
 - **CLAUDE.md says the strategy engine "never spends, builds, or auto-approves" and is default-OFF.** Code matches exactly (`strategy_engine_enabled` default `False`, config.py:348; `run_cycle` notify-only, strategy_engine.py:92-106). No drift.
 - **CLAUDE.md says pitch provisioning is gated by `ROBOCO_PROVISIONING_*`.** Code matches (`provisioning_enabled` + `_token` + `_org` + `_repo_private` + `_timeout_seconds`, config.py:309-336; `GitHubProvisioningService.enabled` requires all three, github_provisioning.py:64). No drift.
 - **CLAUDE.md does not mention `ProductService.project_for` as the per-cell routing keystone**, though it does describe product cell-routing as a feature. Code: product.py:87, called from the gateway delegate path. Doc omission, not contradiction.
@@ -523,6 +532,8 @@ product-strategy-research-pitch
 > **2026-10-31** (Planning trail #51, wave 3): `BoardProgramEngine` splits in place into 2 mixins in `board_programs.py`, every method body byte-identical: `BoardProgramDecisions` (6), `BoardProgramCycles` (6). `BoardProgramEngine` keeps its run loop (`enabled`, `run_due_programs`, the metric-predicate and per-program runs, the early-decision check, opening a cycle, the scope gate, opted-in projects, originating and recording), composes them, and is no longer a god class. Rows naming `BoardProgramEngine.<method>` still hold through inheritance. Each mixin's TYPE_CHECKING-only base is `BoardProgramEngineSelf` (`roboco/services/_board_program_engine_types.py`).
 
 > **2026-10-31** (Planning trail #51, wave 3): `KanbanService` splits in place into a mixin in `kanban.py`, every method body byte-identical: `KanbanBoardLayout` (9). `KanbanService` keeps the boards each role sees (developer, QA, documenter, PM, the Main PM's cross-cell board in lanes or flat, and the Board's roadmap) and the board stats, composes it, and is no longer a god class. Rows naming `KanbanService.<method>` still hold through inheritance. The mixin's TYPE_CHECKING-only base is `KanbanServiceSelf` (`roboco/services/_kanban_service_types.py`).
+
+> **2026-11-01** (Planning trail #56, item 2): research errors name who refused a call and why. On 2026-10-28 a target site's 403 (Vercel's Security Checkpoint page) reached the agent as `502 research provider error: searxng: HTTP 403: <html>...`, blaming SearXNG and showing raw markup. `research_errors.py` now holds one `ResearchError` subclass per party (`ResearchProviderError`, `ResearchSiteError`, `ResearchUrlRefusedError`) with messages built from the response (status, page title or first readable text, bot-check vendor), and the route answers 424 / 502 / 400 / 501 by party instead of 502 for all.
 
 ## Regression Risks
 

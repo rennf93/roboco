@@ -374,14 +374,17 @@ async def generic_exception_handler(request: Request, exc: Exception) -> JSONRes
     )
 
 
-# Map HTTP status codes to string error codes
+# Map HTTP status codes to string error codes. 409 (Conflict) and 422
+# (validation error) both read as invalid input. 424 (Failed Dependency) is a
+# third party failing the request, never an internal error.
 _HTTP_TO_ERROR_CODE: dict[int, str] = {
     400: ErrorCode.INVALID_INPUT,
     401: ErrorCode.NOT_AUTHORIZED,
     403: ErrorCode.ACCESS_DENIED,
     404: ErrorCode.NOT_FOUND,
-    409: ErrorCode.INVALID_INPUT,  # Conflict
-    422: ErrorCode.INVALID_INPUT,  # Validation error
+    409: ErrorCode.INVALID_INPUT,
+    422: ErrorCode.INVALID_INPUT,
+    424: ErrorCode.DEPENDENCY_FAILED,
     500: ErrorCode.INTERNAL_ERROR,
 }
 
@@ -773,7 +776,8 @@ async def _commit_shielded(session: Any) -> None:
             with suppress(BaseException):
                 await commit_task
         if not commit_task.cancelled() and commit_task.exception() is None:
-            raise  # committed despite the cancel — nothing to undo
+            # Committed despite the cancel: nothing to undo.
+            raise
         await session.invalidate()
         raise
     except Exception:
