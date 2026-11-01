@@ -166,6 +166,7 @@ engines-heal-ciwatch-depupdate
 
 ## Drift from CLAUDE.md
 - CLAUDE.md says ci_watch 'reuses the exact hardened per-project GitService.get_latest_ci_conclusion' — the engines themselves do not call GitService; they consume breaches via MultiProjectCITelemetrySource.fetch(projects) in roboco/services/telemetry/source.py. The GitService call is inside the telemetry source, not in ci_watch_engine.py. Minor framing drift, not a code bug.
+- MultiProjectCITelemetrySource.fetch resolves each project's CiRunQuery (`GitService.resolve_ci_query`, DB) one project at a time on the shared session, then gathers only the IO-only `get_latest_ci_conclusion_for` calls. Gathering the DB half failed every sweep on 2026-10-28 ("concurrent operations are not permitted"), so ci-watch never saw RoboCo's own repos.
 - CLAUDE.md says dep-update 'Detection is read-only ... WorkspaceService.dry_upgrade_changes_lockfile runs the project's dep_update_command in a throwaway clone of the read clone'. The engine calls self._workspace.dry_upgrade_changes_lockfile(project) but the engine file itself does not reference a 'read clone'; that detail lives in WorkspaceService. Accurate at the system level, not visible in this slice.
 - CLAUDE.md states self-heal 'terminates at awaiting_ceo_approval'. The engine itself only creates a PENDING confirmed_by_human=False task; the awaiting_ceo_approval terminal is reached later by the normal lifecycle, not by any code in self_heal_engine.py. Consistent but the engine does not enforce the terminal state itself.
 

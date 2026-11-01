@@ -480,7 +480,7 @@ def _select_ci_head_run(runs: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 @dataclass(frozen=True)
-class _CiRunQuery:
+class CiRunQuery:
     """Bundle of per-project inputs to a CI-run fetch (repo ref, branch, token,
     slug for logging) so ``_fetch_latest_ci_run`` stays under the arg-count gate —
     repo_ref alone was already bundled for the same reason."""
@@ -2382,7 +2382,7 @@ class GitPRQueries(_Base):
 
     async def resolve_ci_query(
         self, project_slug: str, *, branch: str | None = None
-    ) -> _CiRunQuery | None:
+    ) -> CiRunQuery | None:
         """DB-only resolve of the inputs ``get_latest_ci_conclusion`` needs.
 
         Split out for the same pool-release reason as ``resolve_repo_and_token``:
@@ -2404,7 +2404,7 @@ class GitPRQueries(_Base):
         # Default to the head rung (where dev work and the release gate look);
         # the release-commit CI wait overrides with the prod rung, where the
         # pushed release commit actually lives.
-        return _CiRunQuery(
+        return CiRunQuery(
             project_slug=project_slug,
             repo_ref=repo_ref,
             branch=branch or head_branch(project),
@@ -2444,7 +2444,7 @@ class GitPRQueries(_Base):
 
     async def get_latest_ci_conclusion_for(
         self,
-        query: _CiRunQuery,
+        query: CiRunQuery,
         *,
         workflow: str | None = None,
         head_sha: str | None = None,
@@ -2468,7 +2468,7 @@ class GitPRQueries(_Base):
 
     async def _fetch_latest_ci_run(
         self,
-        query: _CiRunQuery,
+        query: CiRunQuery,
         workflow: str | None = None,
         head_sha: str | None = None,
     ) -> dict[str, Any] | None:
