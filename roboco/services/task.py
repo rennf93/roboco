@@ -8113,6 +8113,20 @@ class TaskBlocking(_Base):
         if markers.is_oscillation_tripped(task):
             markers.clear_marker(task, markers.OSCILLATION_STRIKES)
 
+    @staticmethod
+    def _hand_claim_lock_to_unblocked_owner(task: TaskTable, owner: Any) -> None:
+        """Give the claim lock back with the task: the resumed owner holds it.
+
+        An escalation moved the lock to its target together with the task
+        (``apply_escalation``), so an unblock that hands the task back must
+        hand the lock back too, or the owner's own notes and commits on its
+        resumed task bounce off the content-write gate. A task returned to
+        PENDING has no live claim; its owner takes the lock with a fresh
+        claim, exactly as on a first claim.
+        """
+        resumed = task.status == TaskStatus.IN_PROGRESS
+        task.active_claimant_id = owner if resumed else None
+
     async def unblock(
         self, task_id: UUID, agent_role: str | None = None
     ) -> TaskTable | None:
@@ -8163,6 +8177,7 @@ class TaskBlocking(_Base):
         # claim gate then holds it cleanly if its dependency is still unmet.
         target = TaskStatus.IN_PROGRESS if task.branch_name else TaskStatus.PENDING
         self._validate_and_set_status(task, target, agent_role)
+        self._hand_claim_lock_to_unblocked_owner(task, owner)
         owner_id = to_python_uuid(owner)
         if target == TaskStatus.IN_PROGRESS and owner_id is not None:
             # A real resume of active work with no fresh claim() call in
@@ -13300,6 +13315,13 @@ class TaskEscalation(_Base):
         self._snapshot_pre_block(task)
         task.assigned_to = cast("Any", target_agent_id)
         task.claimed_by = cast("Any", target_agent_id)
+        # The claim lock follows the hand-off. The target now owns the blocked
+        # task and must journal its decision on it, message about it and
+        # unblock it; the content-write gate admits only the active claimant,
+        # so a lock left on the escalator refused every note/dm/notify the
+        # target made on its own task (live 2026-10-28: be-pm on 11a83407,
+        # main-pm on 86ed0eab and d6a26717). Unblock hands the lock back.
+        task.active_claimant_id = cast("Any", target_agent_id)
         task.status = TaskStatus.BLOCKED
         # Record the escalation as a structured marker — NOT appended to
         # dev_notes (the developer's space). The old append polluted dev_notes
