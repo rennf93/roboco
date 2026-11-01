@@ -22,39 +22,43 @@ Every fallback is logged with the call site's purpose, the backend, its model,
 the reason and the HTTP status. When every backend fails the reply carries no
 text and the call site keeps its own failure behavior.
 
-Haiku runs through ``claude-agent-sdk`` on the Claude Code login mounted at
-``~/.claude``, never a metered API key, locked down to one turn with no tools,
-no MCP servers, no hooks, plugins or settings from that directory, a scratch
-working directory and no session transcript (:func:`locked_down_haiku_options`).
+Haiku runs through ``claude-agent-sdk`` on the Claude Code login
+(``settings.background_llm_claude_home``/.claude), never a metered API key,
+locked down to one turn with no tools, no MCP servers, no hooks, plugins or
+settings from that directory, a scratch working directory and no session
+transcript (``roboco.agent_sdk.haiku_turn.locked_down_haiku_options``). The
+turn runs in a child process started as the uid:gid that own the login, with
+no supplementary groups and only an allowlisted environment, so nothing the
+CLI writes into the login (an OAuth refresh, a config backup, session
+entries) ever lands root-owned.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import json
 import os
+import signal
+import stat
+import sys
 import tempfile
 import time
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from http import HTTPStatus
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import Any, Protocol
 
 import httpx
 import structlog
 
+from roboco.agent_sdk.haiku_turn import HaikuTurnOutcome, HaikuTurnRequest
 from roboco.config import settings
 from roboco.db.base import get_db_context
 from roboco.models.runtime import MODEL_MAP
 from roboco.services.llm import get_model_routing_service
 
-if TYPE_CHECKING:
-    from claude_agent_sdk import ClaudeAgentOptions, ResultMessage
-
 logger = structlog.get_logger()
-
-# Process environment variables that would make the Claude Code CLI bill a
-# metered credential instead of the mounted subscription login.
-_METERED_ANTHROPIC_CREDENTIAL_VARS = ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
 
 _ERROR_DETAIL_MAX_CHARS = 300
 
@@ -269,95 +273,183 @@ class OllamaBackend:
         return _text_of_chat_completion(response)
 
 
-def _scratch_working_directory() -> Path:
-    """One fixed, empty directory for every Haiku call. Fixed rather than one
-    per call: the CLI keeps per-directory state in the container's
-    ``~/.claude.json``, which a fresh directory per call would grow forever."""
-    directory = Path(tempfile.gettempdir()) / "roboco-background-llm"
-    directory.mkdir(mode=0o700, exist_ok=True)
-    return directory
+# The child process that runs one Haiku turn (roboco/agent_sdk/haiku_turn.py).
+# ``-I``: no user site, no PYTHON* variables, no cwd on sys.path.
+_HAIKU_TURN_COMMAND: tuple[str, ...] = (
+    sys.executable,
+    "-I",
+    "-m",
+    "roboco.agent_sdk.haiku_turn",
+)
+
+# The variables the Haiku process keeps from the orchestrator's environment:
+# what the CLI needs to run and reach the API. The orchestrator's secrets
+# (database, Redis, encryption key, provider tokens) stay out of a process
+# running as another user, and a metered ANTHROPIC_API_KEY never reaches the
+# CLI, so it can only use the login.
+_HAIKU_PROCESS_ENV_VARS = (
+    "PATH",
+    "LANG",
+    "LC_ALL",
+    "LC_CTYPE",
+    "TZ",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+)
 
 
-def locked_down_haiku_options(prompt: BackgroundPrompt) -> ClaudeAgentOptions:
-    """The Claude Code options for one background Haiku call.
+@dataclass(frozen=True)
+class ClaudeLoginOwner:
+    """The Claude Code login a Haiku turn uses (``home/.claude``) and the
+    uid:gid that own it."""
 
-    One turn, no built-in tools, no MCP server from any source, no settings
-    file (so no hooks, plugins or permissions from the mounted ``~/.claude``),
-    and ``--safe-mode`` on top, which turns off every customization (CLAUDE.md,
-    skills, installed plugins, hooks, MCP servers) while auth works normally.
-    ``--no-session-persistence`` keeps the transcript out of
-    ``~/.claude/projects``. ``verbatim_prompts`` delivers the prompt as written,
-    so an ``@/path`` inside untrusted text (a vault note, an X mention) cannot
-    make the CLI read a local file into it.
+    home: Path
+    uid: int
+    gid: int
 
-    Haiku 5.5's thinking cannot be turned off (the CLI sends adaptive thinking
-    whatever it is asked), so effort is ``low``, and the output cap is the
-    call's answer budget plus :data:`_HAIKU_THINKING_HEADROOM_TOKENS`: thinking
-    tokens count against the cap, and a 5- or 200-token cap alone could be
-    spent before the answer starts.
-    """
-    from claude_agent_sdk import ClaudeAgentOptions
-
-    output_cap = prompt.max_tokens + _HAIKU_THINKING_HEADROOM_TOKENS
-    return ClaudeAgentOptions(
-        model=MODEL_MAP["haiku"],
-        system_prompt=prompt.system_prompt or "",
-        tools=[],
-        mcp_servers={},
-        strict_mcp_config=True,
-        setting_sources=[],
-        permission_mode="dontAsk",
-        max_turns=1,
-        cwd=_scratch_working_directory(),
-        verbatim_prompts=True,
-        effort="low",
-        env={
-            "CLAUDE_CODE_MAX_OUTPUT_TOKENS": str(output_cap),
-            "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
-        },
-        extra_args={"safe-mode": None, "no-session-persistence": None},
-    )
+    @property
+    def login(self) -> Path:
+        return self.home / ".claude"
 
 
-def _refuse_metered_anthropic_credentials() -> None:
-    present = [
-        name for name in _METERED_ANTHROPIC_CREDENTIAL_VARS if os.environ.get(name)
-    ]
-    if present:
+def _claude_login_owner() -> ClaudeLoginOwner:
+    """Stat the login now: whoever owns it is who the CLI runs as."""
+    home = Path(settings.background_llm_claude_home or Path.home())
+    try:
+        status = (home / ".claude").stat()
+    except OSError as exc:
         raise BackendUnavailableError(
-            f"{', '.join(present)} is set in this process's environment; the "
-            "Haiku fallback runs only on the mounted Claude Code login"
+            f"no Claude Code login at {home / '.claude'}: {exc.strerror}"
+        ) from exc
+    return ClaudeLoginOwner(home=home, uid=status.st_uid, gid=status.st_gid)
+
+
+def _identity_switch_for(owner: ClaudeLoginOwner) -> dict[str, Any]:
+    """The ``create_subprocess_exec`` arguments that start the Haiku process as
+    the login's owner, with no supplementary groups: none when this process
+    already is that user."""
+    effective_uid = os.geteuid()
+    if effective_uid == owner.uid:
+        return {}
+    if effective_uid != 0:
+        raise BackendUnavailableError(
+            f"the Claude Code login at {owner.login} belongs to uid {owner.uid}; "
+            f"this process (uid {effective_uid}) cannot run the CLI as that user"
+        )
+    return {"user": owner.uid, "group": owner.gid, "extra_groups": []}
+
+
+def _plain_directory_status(directory: Path) -> os.stat_result:
+    status = directory.lstat()
+    if not stat.S_ISDIR(status.st_mode):
+        raise BackendUnavailableError(f"{directory} is not a plain directory")
+    return status
+
+
+def _give_directory_to(directory: Path, owner: ClaudeLoginOwner) -> None:
+    """chown ``directory`` to the login's owner when it is not theirs yet;
+    only root may, and only root needs to."""
+    status = _plain_directory_status(directory)
+    if (status.st_uid, status.st_gid) == (owner.uid, owner.gid):
+        return
+    if os.geteuid() == 0:
+        os.chown(directory, owner.uid, owner.gid, follow_symlinks=False)
+    elif status.st_uid != owner.uid:
+        raise BackendUnavailableError(
+            f"{directory} belongs to uid {status.st_uid}, not the Claude Code "
+            f"login's owner (uid {owner.uid})"
         )
 
 
-async def _final_result_of_haiku_query(
-    prompt: BackgroundPrompt,
-) -> ResultMessage | None:
-    from claude_agent_sdk import ResultMessage, query
-
-    options = locked_down_haiku_options(prompt)
-    final: ResultMessage | None = None
-    try:
-        async with asyncio.timeout(prompt.timeout_seconds):
-            async for message in query(prompt=prompt.user_prompt, options=options):
-                if isinstance(message, ResultMessage):
-                    final = message
-    except TimeoutError as exc:
+def _hand_home_to_login_owner(owner: ClaudeLoginOwner) -> None:
+    """The CLI writes ``$HOME/.claude.json``, so the home must be the owner's.
+    Root hands it over only while it holds nothing but the login: the
+    directory Docker created for the bind mount, never a real user's home."""
+    status = _plain_directory_status(owner.home)
+    if status.st_uid == owner.uid:
+        return
+    if [entry.name for entry in owner.home.iterdir()] != [".claude"]:
         raise BackendUnavailableError(
-            f"timed out after {prompt.timeout_seconds:g}s"
+            f"{owner.home} belongs to uid {status.st_uid}, not the Claude Code "
+            f"login's owner (uid {owner.uid}), and holds more than the login"
+        )
+    _give_directory_to(owner.home, owner)
+
+
+def _scratch_directory_for(owner: ClaudeLoginOwner) -> Path:
+    """One fixed, empty working directory per login owner. Fixed rather than
+    one per call: the CLI keeps per-directory state in ``$HOME/.claude.json``,
+    which a fresh directory per call would grow forever."""
+    directory = Path(tempfile.gettempdir()) / f"roboco-background-llm-{owner.uid}"
+    directory.mkdir(mode=0o700, exist_ok=True)
+    _give_directory_to(directory, owner)
+    return directory
+
+
+def _haiku_process_environment(home: Path) -> dict[str, str]:
+    kept = {
+        name: os.environ[name] for name in _HAIKU_PROCESS_ENV_VARS if name in os.environ
+    }
+    return {**kept, "HOME": str(home)}
+
+
+def _stop_process_group_still_running(process: asyncio.subprocess.Process) -> None:
+    """Kill the Haiku process and the CLI it started (same process group)."""
+    if process.returncode is None:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+
+
+def _outcome_of_haiku_process(
+    returncode: int | None, stdout: bytes, stderr: bytes
+) -> HaikuTurnOutcome:
+    if returncode != 0:
+        tail = stderr.decode(errors="replace")[-_ERROR_DETAIL_MAX_CHARS:]
+        raise BackendUnavailableError(f"Haiku process exited {returncode}: {tail}")
+    try:
+        return HaikuTurnOutcome(**json.loads(stdout))
+    except (ValueError, TypeError) as exc:
+        raise BackendUnavailableError(
+            f"Haiku process wrote no outcome: {type(exc).__name__}"
         ) from exc
-    except Exception as exc:
-        raise BackendUnavailableError(f"{type(exc).__name__}: {exc}") from exc
-    return final
 
 
-def _describe_error_result(result: ResultMessage) -> str:
-    detail = "; ".join(result.errors or []) or (result.result or "")
-    return f"{result.subtype}: {detail}"[:_ERROR_DETAIL_MAX_CHARS]
+async def _haiku_turn_in_login_owner_process(
+    owner: ClaudeLoginOwner, request: HaikuTurnRequest, timeout_seconds: float
+) -> HaikuTurnOutcome:
+    """Run one turn in a child process started as the login's owner, in a
+    process group of its own so a timeout or a cancel kills the CLI too."""
+    process = await asyncio.create_subprocess_exec(
+        *_HAIKU_TURN_COMMAND,
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=request.cwd,
+        env=_haiku_process_environment(owner.home),
+        start_new_session=True,
+        **_identity_switch_for(owner),
+    )
+    try:
+        async with asyncio.timeout(timeout_seconds):
+            stdout, stderr = await process.communicate(
+                json.dumps(asdict(request)).encode()
+            )
+    except TimeoutError as exc:
+        raise BackendUnavailableError(f"timed out after {timeout_seconds:g}s") from exc
+    finally:
+        _stop_process_group_still_running(process)
+    return _outcome_of_haiku_process(process.returncode, stdout, stderr)
 
 
 class ClaudeHaikuBackend:
-    """Claude Haiku through the Claude Code CLI on the mounted login."""
+    """Claude Haiku through the Claude Code CLI on the mounted login, run as
+    the login's owner."""
 
     name = "claude"
 
@@ -366,15 +458,23 @@ class ClaudeHaikuBackend:
         return MODEL_MAP["haiku"]
 
     async def generate(self, prompt: BackgroundPrompt) -> str:
-        _refuse_metered_anthropic_credentials()
-        result = await _final_result_of_haiku_query(prompt)
-        if result is None:
-            raise BackendUnavailableError("no result message")
-        if result.is_error:
+        owner = _claude_login_owner()
+        _hand_home_to_login_owner(owner)
+        request = HaikuTurnRequest(
+            model=MODEL_MAP["haiku"],
+            user_prompt=prompt.user_prompt,
+            system_prompt=prompt.system_prompt or "",
+            output_cap_tokens=prompt.max_tokens + _HAIKU_THINKING_HEADROOM_TOKENS,
+            cwd=str(_scratch_directory_for(owner)),
+        )
+        outcome = await _haiku_turn_in_login_owner_process(
+            owner, request, prompt.timeout_seconds
+        )
+        if outcome.error_detail is not None:
             raise BackendUnavailableError(
-                _describe_error_result(result), status=result.api_error_status
+                outcome.error_detail, status=outcome.api_error_status
             )
-        return _require_text(result.result)
+        return _require_text(outcome.text)
 
 
 class _TextBackend(Protocol):

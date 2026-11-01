@@ -1,9 +1,12 @@
 """Fakes at the background LLM client's seams.
 
-Only the network and the routing table are faked: Ollama's HTTP endpoint
-(an ``httpx.MockTransport`` behind the real ``httpx.AsyncClient``) and
-``claude_agent_sdk.query`` (the Claude Code CLI subprocess). Everything in
-``roboco.services.background_llm`` between them runs for real.
+Only the network, the Haiku child process and the routing table are faked:
+Ollama's HTTP endpoint (an ``httpx.MockTransport`` behind the real
+``httpx.AsyncClient``), and for Haiku the child process is replaced by the
+same ``roboco.agent_sdk.haiku_turn.run_haiku_turn`` run in-process against a
+fake ``claude_agent_sdk.query`` (the Claude Code CLI subprocess). Everything
+in ``roboco.services.background_llm`` and ``haiku_turn`` around them runs for
+real, against a real login directory under the test's ``tmp_path``.
 """
 
 from __future__ import annotations
@@ -17,13 +20,17 @@ from typing import TYPE_CHECKING, Any
 import claude_agent_sdk
 import httpx
 from claude_agent_sdk import ResultMessage
+from roboco.agent_sdk import haiku_turn
+from roboco.config import settings
 from roboco.services import background_llm
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
+    from pathlib import Path
 
     import pytest
     from claude_agent_sdk import ClaudeAgentOptions
+    from roboco.agent_sdk.haiku_turn import HaikuTurnOutcome, HaikuTurnRequest
 
 _REAL_ASYNC_CLIENT = httpx.AsyncClient
 
@@ -106,8 +113,33 @@ def serve_fake_ollama(monkeypatch: pytest.MonkeyPatch, fake: FakeOllama) -> None
     monkeypatch.setattr(httpx, "AsyncClient", _client_with_fake_transport)
 
 
-def serve_fake_haiku(monkeypatch: pytest.MonkeyPatch, fake: FakeHaiku) -> None:
+async def _haiku_turn_in_this_process(
+    _owner: background_llm.ClaudeLoginOwner,
+    request: HaikuTurnRequest,
+    timeout_seconds: float,
+) -> HaikuTurnOutcome:
+    """The child process's work, done here: same request in, same outcome
+    out, same timeout contract."""
+    try:
+        async with asyncio.timeout(timeout_seconds):
+            return await haiku_turn.run_haiku_turn(request)
+    except TimeoutError as exc:
+        raise background_llm.BackendUnavailableError(
+            f"timed out after {timeout_seconds:g}s"
+        ) from exc
+
+
+def serve_fake_haiku(
+    monkeypatch: pytest.MonkeyPatch, fake: FakeHaiku, login_home: Path
+) -> None:
+    (login_home / ".claude").mkdir(exist_ok=True)
+    monkeypatch.setattr(settings, "background_llm_claude_home", str(login_home))
     monkeypatch.setattr(claude_agent_sdk, "query", fake.query)
+    monkeypatch.setattr(
+        background_llm,
+        "_haiku_turn_in_login_owner_process",
+        _haiku_turn_in_this_process,
+    )
 
 
 def follow_routing_mode(monkeypatch: pytest.MonkeyPatch, mode: str) -> None:

@@ -189,11 +189,14 @@ def _no_live_redis(monkeypatch: pytest.MonkeyPatch) -> None:
 def _no_live_background_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep the background LLM client off live Claude and off the routing table.
 
-    Its Claude Haiku fallback runs ``claude_agent_sdk.query``, which spawns
-    the bundled Claude Code CLI on the developer's own ``~/.claude`` login: a
-    real, billed call. ``query`` is replaced with a refusal, so a test that
-    reaches the fallback sees Haiku fail like any unavailable backend. The
-    routing-mode read opens a database session of its own; it fails here
+    Its Claude Haiku fallback starts ``python -m roboco.agent_sdk.haiku_turn``,
+    which runs ``claude_agent_sdk.query`` and the bundled Claude Code CLI on
+    the developer's own ``~/.claude`` login: a real, billed call. The login
+    home points at a path that does not exist, starting that process is
+    refused, and ``query`` (which haiku_turn's own tests run in-process) is
+    refused too, so a test that reaches the fallback sees Haiku fail like any
+    unavailable backend. The routing-mode read opens a database session of
+    its own; it fails here
     (the client then tries Ollama, then Haiku), so no test opens an engine for
     it. The mode cache and the Ollama no-credit cooldown are module state, so
     every test starts with fresh ones. A test exercising any of these
@@ -209,9 +212,20 @@ def _no_live_background_llm(monkeypatch: pytest.MonkeyPatch) -> None:
     def _refuse_live_claude_query(**_kwargs: object) -> NoReturn:
         raise RuntimeError("live Claude Code query refused in tests")
 
+    async def _refuse_live_haiku_process(*_args: object) -> NoReturn:
+        raise background_llm.BackendUnavailableError(
+            "live Claude Code process refused in tests"
+        )
+
     async def _routing_mode_unreadable_in_tests() -> str:
         raise RuntimeError("no routing table in unit tests")
 
+    monkeypatch.setattr(
+        _settings, "background_llm_claude_home", "/nonexistent/roboco-test-claude-home"
+    )
+    monkeypatch.setattr(
+        background_llm, "_haiku_turn_in_login_owner_process", _refuse_live_haiku_process
+    )
     monkeypatch.setattr(claude_agent_sdk, "query", _refuse_live_claude_query)
     monkeypatch.setattr(
         background_llm, "read_routing_mode", _routing_mode_unreadable_in_tests

@@ -51,12 +51,12 @@ _HEALTH_TIMEOUT_SECONDS = 5.0
 
 
 @pytest.fixture
-def haiku(monkeypatch: pytest.MonkeyPatch) -> FakeHaiku:
+def haiku(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> FakeHaiku:
     """Ollama mode, Ollama out of credit, Haiku answering."""
     follow_routing_mode(monkeypatch, "ollama")
     serve_fake_ollama(monkeypatch, FakeOllama(status=HTTPStatus.PAYMENT_REQUIRED))
     fake = FakeHaiku(answer="Problem: x. Approach: y. Gotcha: z.")
-    serve_fake_haiku(monkeypatch, fake)
+    serve_fake_haiku(monkeypatch, fake, tmp_path)
     return fake
 
 
@@ -108,10 +108,10 @@ async def test_rag_synthesis(haiku: FakeHaiku, logs: LogRecorder) -> None:
 
 
 async def test_rag_synthesis_with_no_backend_returns_the_citation_extract(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     follow_routing_mode(monkeypatch, "anthropic")
-    serve_fake_haiku(monkeypatch, FakeHaiku(answer=None))
+    serve_fake_haiku(monkeypatch, FakeHaiku(answer=None), tmp_path)
 
     answer = await OptimalService()._synthesize_from_citations(
         "How do I stop a flaky connect?", [_citation()]
@@ -174,12 +174,12 @@ async def test_video_engine_script(haiku: FakeHaiku, logs: LogRecorder) -> None:
 
 
 async def test_validator_standards(
-    monkeypatch: pytest.MonkeyPatch, logs: LogRecorder
+    monkeypatch: pytest.MonkeyPatch, logs: LogRecorder, tmp_path: Path
 ) -> None:
     follow_routing_mode(monkeypatch, "ollama")
     serve_fake_ollama(monkeypatch, FakeOllama(status=HTTPStatus.PAYMENT_REQUIRED))
     haiku = FakeHaiku(answer='{"violations": [], "summary": "ok"}')
-    serve_fake_haiku(monkeypatch, haiku)
+    serve_fake_haiku(monkeypatch, haiku, tmp_path)
 
     violations, warnings = await ValidatorService()._validate_with_llm(
         action_type="create_endpoint",
@@ -194,10 +194,10 @@ async def test_validator_standards(
 
 
 async def test_validator_with_no_backend_raises_so_validate_uses_heuristics(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     follow_routing_mode(monkeypatch, "anthropic")
-    serve_fake_haiku(monkeypatch, FakeHaiku(answer=None))
+    serve_fake_haiku(monkeypatch, FakeHaiku(answer=None), tmp_path)
 
     with pytest.raises(RuntimeError, match="no background-LLM backend answered"):
         await ValidatorService()._validate_with_llm(

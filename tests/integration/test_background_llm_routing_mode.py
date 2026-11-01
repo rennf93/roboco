@@ -29,6 +29,8 @@ from tests.unit.services.background_llm_fakes import (
 )
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
 pytestmark = pytest.mark.usefixtures("app_settings_on_test_db")
@@ -74,12 +76,12 @@ async def test_a_global_ollama_assignment_reads_as_ollama(
 
 @pytest.mark.usefixtures("db_session")
 async def test_claude_as_main_driver_never_calls_ollama(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setattr(background_llm, "read_routing_mode", read_routing_mode)
     ollama = FakeOllama()
     serve_fake_ollama(monkeypatch, ollama)
-    serve_fake_haiku(monkeypatch, FakeHaiku())
+    serve_fake_haiku(monkeypatch, FakeHaiku(), tmp_path)
 
     reply = await generate_background_reply(_PROMPT)
 
@@ -88,13 +90,13 @@ async def test_claude_as_main_driver_never_calls_ollama(
 
 
 async def test_ollama_as_main_driver_tries_ollama_first(
-    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     await _route_everything_to_ollama(db_session)
     monkeypatch.setattr(background_llm, "read_routing_mode", read_routing_mode)
     ollama = FakeOllama(status=HTTPStatus.PAYMENT_REQUIRED)
     serve_fake_ollama(monkeypatch, ollama)
-    serve_fake_haiku(monkeypatch, FakeHaiku())
+    serve_fake_haiku(monkeypatch, FakeHaiku(), tmp_path)
 
     reply = await generate_background_reply(_PROMPT)
 

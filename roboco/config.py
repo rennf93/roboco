@@ -358,6 +358,18 @@ class Settings(BaseSettings):
             "of a top-up."
         ),
     )
+    background_llm_claude_home: str = Field(
+        default="",
+        description=(
+            "HOME of the background LLM client's Claude Haiku process: its "
+            "`.claude` is the Claude Code login, and the process runs as the "
+            "uid:gid that own that login, so nothing it writes there is "
+            "root-owned. The compose files mount the host login a second time "
+            "at /home/claude-login/.claude for this (the orchestrator's own "
+            "/root/.claude is behind /root, mode 0700, which that uid cannot "
+            "enter). Empty = this process's own home (local dev)."
+        ),
+    )
 
     @field_validator("local_llm_base_url")
     @classmethod
