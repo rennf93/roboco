@@ -192,8 +192,8 @@ jobs:
       - name: Build & start the panel (headless browser verification target)
         working-directory: panel
         env:
-          # pnpm 11 prompts for confirmation on modules-purge unless CI=true
-          # (matches docker/panel.Dockerfile's build stage).
+          # pnpm's CI mode, as in docker/panel.Dockerfile's build stage
+          # (GitHub Actions also sets CI=true for every step).
           CI: 'true'
         run: |
           pnpm install --frozen-lockfile --shamefully-hoist

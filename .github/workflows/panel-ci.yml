@@ -82,8 +82,9 @@ jobs:
         if: steps.paths.outputs.relevant == 'true'
         uses: actions/setup-node@v7
         with:
-          # pnpm 11 (pinned in panel/package.json via packageManager) requires
-          # Node >=22.13; Node 20 makes `pnpm install` fail the engines check.
+          # vitest 5 declares Node ^22.12.0 and @testing-library/jest-dom 7
+          # Node >=22. pnpm 12 (pinned in panel/package.json via
+          # packageManager) itself runs on Node >=18.
           node-version: '22'
 
       - name: Enable corepack (pnpm)
