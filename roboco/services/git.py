@@ -1417,8 +1417,10 @@ class GitBranches(_Base):
             await self._run_git(
                 worktree_path, ["reset", "--hard", base_ref], check=False
             )
+        # From the worktree: git runs a project's pre-push where the push
+        # starts, and the clone root holds another branch's tree.
         await self._run_git(
-            workspace,
+            worktree_path,
             ["push", "-u", "origin", branch_name],
             timeout=_network_git_timeout(),
         )
