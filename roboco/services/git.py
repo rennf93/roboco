@@ -947,6 +947,27 @@ class GitCommits(_Base):
         )
         return worktree
 
+    async def _push_tree_for_task(self, clone_root: Path, task: Any) -> Path:
+        """Where a push of ``task``'s branch starts: its worktree when that is
+        attached in ``clone_root`` on the task branch, else the clone root.
+
+        git runs ``pre-push`` where the push starts, so a push started in the
+        clone root ran the clone root's hook against the clone root's tree,
+        not the commits being pushed. A push never re-adds a pruned worktree
+        (a missing local branch would be cut from ``origin/HEAD`` there); it
+        keeps the clone root and its push-by-name recovery instead.
+        """
+        worktree = self._worktree_for_task(clone_root, require_uuid(task.id))
+        listed = await self._run_git(
+            clone_root, ["worktree", "list", "--porcelain"], check=False
+        )
+        record = f"worktree {worktree}\n"
+        branch = f"branch refs/heads/{task.branch_name}\n"
+        for entry in listed.stdout.split("\n\n"):
+            if entry.startswith(record) and branch in f"{entry}\n":
+                return worktree
+        return clone_root
+
     async def _assert_on_task_branch(
         self, workspace: Path, task_branch: str | None
     ) -> None:
@@ -1874,7 +1895,8 @@ class GitCheckoutPush(_Base):
             workspace = await self.get_workspace(data.project_slug, agent_id)
             # Push the task's branch BY NAME, not the current checkout — the
             # shared clone is often parked on a later task's branch by now.
-            return await self.push(workspace, force, branch=str(task.branch_name))
+            tree = await self._push_tree_for_task(workspace, task)
+            return await self.push(tree, force, branch=str(task.branch_name))
         workspace = await self.get_workspace(data.project_slug, agent_id)
         return await self.push(workspace, force)
 
@@ -1906,7 +1928,8 @@ class GitCheckoutPush(_Base):
         # the locally-committed work never reached origin → open_pr then saw
         # "No commits between" (origin branch empty/missing). The local task
         # branch ref carries the commits; push it by name.
-        _branch, pushed = await self.push(workspace, branch=str(task.branch_name))
+        tree = await self._push_tree_for_task(workspace, task)
+        _branch, pushed = await self.push(tree, branch=str(task.branch_name))
         return pushed
 
     # =========================================================================
@@ -4912,7 +4935,13 @@ class GitAgentWorkspace(_Base):
         # forced into i_am_blocked — stranded work the PM's unblock can't fix
         # (it only flips status, not git state). Push-by-name also survives a
         # clone parked on a LATER task's branch.
-        return await self.push(workspace, branch=branch_name)
+        task = await self._task_for_branch(branch_name)
+        tree = (
+            workspace
+            if task is None
+            else await self._push_tree_for_task(workspace, task)
+        )
+        return await self.push(tree, branch=branch_name)
 
     async def _ensure_base_on_remote(
         self,
