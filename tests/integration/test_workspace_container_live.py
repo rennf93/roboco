@@ -16,6 +16,7 @@ import pytest
 from roboco.config import settings
 from roboco.services import workspace_container
 from roboco.services.workspace_container import (
+    WorkspaceCommand,
     WorkspaceContainerError,
     run_in_workspace_container,
 )
@@ -33,6 +34,7 @@ pytestmark = pytest.mark.skipif(
 _AGENT_UID = 1000
 _GROUP_WRITABLE = 0o020
 _TIMEOUT_EXIT_CODE = 124
+_PURPOSE = "live-contract"
 
 
 @pytest.fixture
@@ -57,7 +59,10 @@ def clone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 async def _sh(clone: Path, script: str, *, timeout: float = 120) -> str:
     result = await run_in_workspace_container(
-        clone, ["sh", "-c", script], timeout=timeout, merge_stderr=True
+        clone,
+        WorkspaceCommand(["sh", "-c", script], _PURPOSE),
+        timeout=timeout,
+        merge_stderr=True,
     )
     assert result.returncode == 0, result.stdout
     return result.stdout
@@ -97,7 +102,9 @@ async def test_only_the_clone_is_visible(clone: Path) -> None:
 
 
 async def test_a_runaway_command_is_killed_at_the_deadline(clone: Path) -> None:
-    result = await run_in_workspace_container(clone, ["sleep", "60"], timeout=3)
+    result = await run_in_workspace_container(
+        clone, WorkspaceCommand(["sleep", "60"], _PURPOSE), timeout=3
+    )
     assert result.timed_out or result.returncode == _TIMEOUT_EXIT_CODE
 
 
@@ -108,7 +115,9 @@ async def test_an_unstartable_image_raises_instead_of_running_here(
         settings, "workspace_container_image", "roboco-no-such-image:never"
     )
     with pytest.raises(WorkspaceContainerError):
-        await run_in_workspace_container(clone, ["true"], timeout=60)
+        await run_in_workspace_container(
+            clone, WorkspaceCommand(["true"], _PURPOSE), timeout=60
+        )
 
 
 async def test_a_mount_that_is_not_the_clone_never_runs_the_command(
@@ -120,5 +129,7 @@ async def test_a_mount_that_is_not_the_clone_never_runs_the_command(
         workspace_container, "workspace_dir_identity", lambda _p: (0, 0)
     )
     with pytest.raises(WorkspaceContainerError, match="not the expected directory"):
-        await run_in_workspace_container(clone, ["touch", "ran"], timeout=120)
+        await run_in_workspace_container(
+            clone, WorkspaceCommand(["touch", "ran"], _PURPOSE), timeout=120
+        )
     assert not (clone / "ran").exists()

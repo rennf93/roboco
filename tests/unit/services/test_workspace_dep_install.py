@@ -25,6 +25,7 @@ from roboco.services.workspace import (
     _lockfile_digest,
 )
 from roboco.services.workspace_container import (
+    WorkspaceCommand,
     WorkspaceContainerError,
     WorkspaceContainerResult,
 )
@@ -171,7 +172,10 @@ async def test_install_runs_detected_command(tmp_path: Path) -> None:
         ran = await _service().install_dev_deps(ws)
 
     assert ran is True
-    assert runner.call_args.args == (ws, ["uv", "sync", "--extra", "dev"])
+    assert runner.call_args.args == (
+        ws,
+        WorkspaceCommand(["uv", "sync", "--extra", "dev"], "dev-deps"),
+    )
     assert (ws / _DEP_INSTALL_MARKER).is_file()
 
 
@@ -314,7 +318,7 @@ async def test_install_never_runs_the_clone_code_in_this_process(
         ran = await _service().install_dev_deps(ws)
 
     assert ran is True
-    assert [call.args[1] for call in runner.await_args_list] == [
+    assert [call.args[1].argv for call in runner.await_args_list] == [
         ["uv", "sync", "--extra", "dev"],
         ["pnpm", "install", "--frozen-lockfile"],
     ]

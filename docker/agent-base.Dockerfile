@@ -92,7 +92,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Split from the apt layer above: this churns with every claude-code CLI
 # release, while the OS/node layer above stays stable across those bumps. The
 # version lives in docker/npm/agent-base/package.json, which Dependabot bumps.
-COPY docker/npm/agent-base/package.json /tmp/npm-pins/package.json
+COPY --chmod=0644 docker/npm/agent-base/package.json /tmp/npm-pins/package.json
 RUN version="$(node -p "require('/tmp/npm-pins/package.json').dependencies['@anthropic-ai/claude-code']")" \
     && npm install -g "@anthropic-ai/claude-code@${version}" \
     && npm cache clean --force \
@@ -147,25 +147,25 @@ COPY --from=builder --chown=agent:agent /app/roboco /app/roboco
 
 # Hook scripts: 0755 so the `agent` user (not root) can read+execute them.
 # SessionStart hook runs these as agent; stricter perms break the hook with
-# "Permission denied" (exit 126).
-COPY docker/scripts/hooks/sdk-startup-hook.sh /app/scripts/hooks/sdk-startup-hook.sh
-COPY docker/scripts/hooks/a2a-check-hook.sh /app/scripts/hooks/a2a-check-hook.sh
-COPY docker/scripts/hooks/bash-guard-hook.sh /app/scripts/hooks/bash-guard-hook.sh
-COPY docker/scripts/hooks/post-tool-budget-hook.sh /app/scripts/hooks/post-tool-budget-hook.sh
-COPY docker/scripts/hooks/usage-report-hook.sh /app/scripts/hooks/usage-report-hook.sh
-COPY docker/scripts/hooks/stop-hook.sh /app/scripts/hooks/stop-hook.sh
-COPY docker/scripts/hooks/user-prompt-hook.sh /app/scripts/hooks/user-prompt-hook.sh
-COPY docker/scripts/hooks/pre-compact-hook.sh /app/scripts/hooks/pre-compact-hook.sh
-COPY docker/scripts/hooks/session-end-hook.sh /app/scripts/hooks/session-end-hook.sh
-COPY docker/scripts/hooks/fable-stop-gate-hook.sh /app/scripts/hooks/fable-stop-gate-hook.sh
-COPY docker/scripts/hooks/fable-bash-discipline-hook.sh /app/scripts/hooks/fable-bash-discipline-hook.sh
-COPY docker/scripts/hooks/fable-honesty-nudge-hook.sh /app/scripts/hooks/fable-honesty-nudge-hook.sh
-COPY docker/scripts/hooks/fable-prompt-nudge-hook.sh /app/scripts/hooks/fable-prompt-nudge-hook.sh
-COPY docker/scripts/hooks/fable-precompact-hook.sh /app/scripts/hooks/fable-precompact-hook.sh
+# "Permission denied" (exit 126). Set by --chmod, never left to the build
+# folder (the NAS deploy copy is owner-only, 0600).
+COPY --chmod=0755 docker/scripts/hooks/sdk-startup-hook.sh /app/scripts/hooks/sdk-startup-hook.sh
+COPY --chmod=0755 docker/scripts/hooks/a2a-check-hook.sh /app/scripts/hooks/a2a-check-hook.sh
+COPY --chmod=0755 docker/scripts/hooks/bash-guard-hook.sh /app/scripts/hooks/bash-guard-hook.sh
+COPY --chmod=0755 docker/scripts/hooks/post-tool-budget-hook.sh /app/scripts/hooks/post-tool-budget-hook.sh
+COPY --chmod=0755 docker/scripts/hooks/usage-report-hook.sh /app/scripts/hooks/usage-report-hook.sh
+COPY --chmod=0755 docker/scripts/hooks/stop-hook.sh /app/scripts/hooks/stop-hook.sh
+COPY --chmod=0755 docker/scripts/hooks/user-prompt-hook.sh /app/scripts/hooks/user-prompt-hook.sh
+COPY --chmod=0755 docker/scripts/hooks/pre-compact-hook.sh /app/scripts/hooks/pre-compact-hook.sh
+COPY --chmod=0755 docker/scripts/hooks/session-end-hook.sh /app/scripts/hooks/session-end-hook.sh
+COPY --chmod=0755 docker/scripts/hooks/fable-stop-gate-hook.sh /app/scripts/hooks/fable-stop-gate-hook.sh
+COPY --chmod=0755 docker/scripts/hooks/fable-bash-discipline-hook.sh /app/scripts/hooks/fable-bash-discipline-hook.sh
+COPY --chmod=0755 docker/scripts/hooks/fable-honesty-nudge-hook.sh /app/scripts/hooks/fable-honesty-nudge-hook.sh
+COPY --chmod=0755 docker/scripts/hooks/fable-prompt-nudge-hook.sh /app/scripts/hooks/fable-prompt-nudge-hook.sh
+COPY --chmod=0755 docker/scripts/hooks/fable-precompact-hook.sh /app/scripts/hooks/fable-precompact-hook.sh
 # This image copies ONLY hooks (entrypoint scripts live in the role images),
 # plus the umask prefix the binary entrypoints below run through.
-COPY docker/scripts/umask-exec.sh /app/scripts/umask-exec.sh
-RUN chmod 0755 /app/scripts/hooks/*.sh /app/scripts/umask-exec.sh
+COPY --chmod=0755 docker/scripts/umask-exec.sh /app/scripts/umask-exec.sh
 
 # Numeric, so a runtime that cannot read this image's /etc/passwd (or that
 # must prove the user is not root before starting it) still resolves it.

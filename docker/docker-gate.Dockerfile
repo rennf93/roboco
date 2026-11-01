@@ -18,7 +18,9 @@ FROM python:3.12-slim-bookworm
 # h11 is the gate's only dependency, at the version uv.lock pins.
 RUN pip install --no-cache-dir 'h11==0.16.0'
 
-COPY docker/docker-gate/gate.py /app/gate.py
+# --chmod: the files keep the build folder's own modes otherwise, and the NAS
+# deploy copy is owner-only (0600), unreadable to this image's non-root user.
+COPY --chmod=0644 docker/docker-gate/gate.py /app/gate.py
 
 USER 65534:65534
 

@@ -16,7 +16,10 @@ from roboco.services.workspace import (
     WorkspaceService,
     _detect_dep_commands,
 )
-from roboco.services.workspace_container import WorkspaceContainerResult
+from roboco.services.workspace_container import (
+    WorkspaceCommand,
+    WorkspaceContainerResult,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -57,10 +60,10 @@ def _fake_container_factory(
     """Stands in for the throwaway workspace container the install + smoke use."""
 
     async def _fake_container(
-        _cwd: Path, argv: list[str], **_kw: object
+        _cwd: Path, command: WorkspaceCommand, **_kw: object
     ) -> WorkspaceContainerResult:
-        captured.append(list(argv))
-        rc = collect_rc if "--collect-only" in argv else 0
+        captured.append(list(command.argv))
+        rc = collect_rc if "--collect-only" in command.argv else 0
         return WorkspaceContainerResult(rc, "", "")
 
     return _fake_container

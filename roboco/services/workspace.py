@@ -53,6 +53,7 @@ from roboco.services.git_relay import (
 )
 from roboco.services.toolchain import resolve_target_python
 from roboco.services.workspace_container import (
+    WorkspaceCommand,
     WorkspaceContainerError,
     run_in_workspace_container,
 )
@@ -65,6 +66,7 @@ from roboco.services.workspace_git import (
     run_workspace_git,
     write_workspace_file,
 )
+from roboco.utils import worktree_imports
 from roboco.utils.workspace_paths import clone_root_of as _resolve_clone_root
 from roboco.utils.workspace_paths import worktree_path_of
 
@@ -203,6 +205,12 @@ def _safe_segment(value: str, label: str) -> str:
 # against. Lives under .git/ so it never shows up in `git status` (the agent's
 # clean-tree checks would otherwise trip on it) and is wiped with the clone.
 _DEP_INSTALL_MARKER = ".git/.roboco-dep-install"
+
+# roboco/utils/worktree_imports.py as installed into a clone's shared venv,
+# imported by a .pth that sorts after the project's editable install's own
+# (`_<name>.pth`, `__editable__...`), whose paths it rewrites.
+_WORKTREE_IMPORTS_MODULE = "_roboco_worktree_imports"
+_WORKTREE_IMPORTS_PTH = "zz_roboco_worktree_imports.pth"
 # Records the interpreter the workspace was provisioned with + whether the
 # project's suite can run there. Lives inside .git/ so it never lands in the
 # target repo's tracked tree. JSON: {"python": "3.14", "status": "ok"}.
@@ -381,22 +389,59 @@ class WorkspaceWorktrees(_Base):
         lexists guard then can't replace. install_dev_deps provisions
         clone_root/.venv before the first worktree add on the fresh-claim path,
         so a later ensure (resume) self-heals the link.
+
+        Every call also (re)writes the worktree import hook into the shared
+        venv (``_install_worktree_import_hook``), so a venv rebuilt since the
+        last call gets it back before the worktree is used.
         """
-        link = worktree / ".venv"
-        if os.path.lexists(link):
-            return
         if not (clone_root / ".venv").exists():
             return
-        # As the git user: the worktree is agent-writable, so a root mkdir or
-        # symlink here could be steered anywhere by a planted link.
-        run_as_workspace_user(
+        if not os.path.lexists(worktree / ".venv"):
+            # As the git user: the worktree is agent-writable, so a root mkdir
+            # or symlink here could be steered anywhere by a planted link.
+            run_as_workspace_user(
+                "sh",
+                "-c",
+                'mkdir -p -- "$1" && ln -s ../../.venv "$1/.venv"',
+                "sh",
+                str(worktree),
+                timeout=settings.git_command_timeout_seconds,
+            )
+        WorkspaceService._install_worktree_import_hook(clone_root)
+
+    @staticmethod
+    def _install_worktree_import_hook(clone_root: Path) -> None:
+        """Write ``roboco.utils.worktree_imports`` into the clone's shared venv.
+
+        The venv's editable install points at the clone root's checkout, so a
+        worktree's interpreter imported the clone root's code; the hook points
+        those paths at the worktree the interpreter was started in. Written as
+        the git user (the venv is agent-writable) into every
+        ``lib/python*/site-packages`` of ``clone_root/.venv``; a failure is
+        logged and the worktree keeps the old behavior.
+        """
+        source = Path(worktree_imports.__file__).read_text(encoding="utf-8")
+        result = run_as_workspace_user(
             "sh",
             "-c",
-            'mkdir -p -- "$1" && ln -s ../../.venv "$1/.venv"',
+            'for d in "$1"/.venv/lib/python*/site-packages; do '
+            '[ -d "$d" ] || continue; '
+            'printf "import %s\\n" "$2" > "$d/$3" '
+            '&& printf "%s" "$4" > "$d/$2.py" || exit 1; '
+            "done",
             "sh",
-            str(worktree),
+            str(clone_root),
+            _WORKTREE_IMPORTS_MODULE,
+            _WORKTREE_IMPORTS_PTH,
+            source,
             timeout=settings.git_command_timeout_seconds,
         )
+        if result.returncode != 0:
+            logger.warning(
+                "worktree import hook not written; worktrees import the clone root",
+                clone_root=str(clone_root),
+                stderr=(result.stderr or "").strip()[:500],
+            )
 
     async def ensure_worktree(
         self, clone_root: Path, worktree: Path, branch: str, base: str
@@ -1456,7 +1501,7 @@ class WorkspaceReadClones(_Base):
         timeout = settings.workspace_dep_install_timeout_seconds
         upgrade = await run_in_workspace_container(
             clone_dir,
-            shlex.split(command),
+            WorkspaceCommand(shlex.split(command), "dep-update-probe"),
             timeout=timeout,
             env=_uv_container_env(clone_dir),
         )
@@ -1470,7 +1515,9 @@ class WorkspaceReadClones(_Base):
             return False
         status = await run_in_workspace_container(
             clone_dir,
-            ["git", "status", "--porcelain", "--", *lock_paths],
+            WorkspaceCommand(
+                ["git", "status", "--porcelain", "--", *lock_paths], "dep-update-probe"
+            ),
             timeout=timeout,
         )
         return bool(status.stdout.strip())
@@ -1594,7 +1641,7 @@ class WorkspaceToolchain(_Base):
         try:
             result = await run_in_workspace_container(
                 workspace,
-                argv,
+                WorkspaceCommand(argv, "toolchain-smoke"),
                 timeout=settings.workspace_dep_install_timeout_seconds,
                 env=_uv_container_env(workspace),
             )
@@ -1654,7 +1701,7 @@ class WorkspaceToolchain(_Base):
         try:
             result = await run_in_workspace_container(
                 workspace,
-                argv,
+                WorkspaceCommand(argv, "dev-deps"),
                 timeout=settings.workspace_dep_install_timeout_seconds,
                 env=_uv_container_env(workspace),
             )

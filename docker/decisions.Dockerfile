@@ -146,13 +146,15 @@ ENV CLEF_MODEL_ID=ggml-org/Clef-GGUF:Q4_K_M \
     PYTHONUNBUFFERED=1
 
 WORKDIR /app
-COPY docker/decisions/server.py /app/server.py
-COPY docker/decisions/entrypoint.sh /app/entrypoint.sh
+# --chmod: the files keep the build folder's own modes otherwise, and the NAS
+# deploy copy is owner-only (0600), unreadable to this image's non-root user.
+COPY --chmod=0644 docker/decisions/server.py /app/server.py
+COPY --chmod=0755 docker/decisions/entrypoint.sh /app/entrypoint.sh
 # Nothing here needs root: the proxy and both llama-servers bind ports above
 # 1024 and only read the weights, the binary and the proxy source, which stay
 # root-owned so the served process cannot alter them. A dedicated system user
 # with a fixed, numeric uid:gid.
-RUN chmod 0755 /app/entrypoint.sh /usr/local/bin/llama-server \
+RUN chmod 0755 /usr/local/bin/llama-server \
     && groupadd --system --gid 10001 decisions \
     && useradd --system --uid 10001 --gid 10001 --no-create-home \
         --home-dir /nonexistent --shell /usr/sbin/nologin decisions

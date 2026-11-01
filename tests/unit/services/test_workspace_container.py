@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -48,7 +49,10 @@ async def test_the_command_runs_unprivileged_with_only_its_clone_mounted(
     worktree = Path("/data/workspaces/roboco-api/backend/be-dev-1/.worktrees/abc")
 
     result = await wc.run_in_workspace_container(
-        worktree, ["make", "gate"], timeout=60, env={"UV_PYTHON_INSTALL_DIR": "/x"}
+        worktree,
+        wc.WorkspaceCommand(["make", "gate"], "gate"),
+        timeout=60,
+        env={"UV_PYTHON_INSTALL_DIR": "/x"},
     )
 
     assert result == wc.WorkspaceContainerResult(0, "done\n", "")
@@ -101,7 +105,10 @@ async def test_merge_stderr_folds_stderr_into_stdout(
     monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_mock)
 
     await wc.run_in_workspace_container(
-        Path("/data/workspaces/p/t/a"), ["true"], timeout=5, merge_stderr=True
+        Path("/data/workspaces/p/t/a"),
+        wc.WorkspaceCommand(["true"], "gate"),
+        timeout=5,
+        merge_stderr=True,
     )
 
     argv = list(exec_mock.call_args.args)
@@ -147,7 +154,9 @@ async def test_a_timeout_kills_the_container_and_reaps_the_cli(
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _exec)
 
     result = await wc.run_in_workspace_container(
-        Path("/data/workspaces/p/t/a"), ["sleep", "60"], timeout=0.01
+        Path("/data/workspaces/p/t/a"),
+        wc.WorkspaceCommand(["sleep", "60"], "gate"),
+        timeout=0.01,
     )
 
     assert result.timed_out
@@ -178,7 +187,11 @@ async def test_an_outer_cancellation_kills_reaps_and_propagates(
     monkeypatch.setattr(asyncio, "create_subprocess_exec", _exec)
 
     task = asyncio.ensure_future(
-        wc.run_in_workspace_container(Path("/data/workspaces/p/t/a"), ["x"], timeout=60)
+        wc.run_in_workspace_container(
+            Path("/data/workspaces/p/t/a"),
+            wc.WorkspaceCommand(["x"], "gate"),
+            timeout=60,
+        )
     )
     await started.wait()
     task.cancel()
@@ -196,7 +209,7 @@ async def test_a_missing_exit_status_is_a_failure(
         asyncio, "create_subprocess_exec", AsyncMock(return_value=_proc(None))
     )
     result = await wc.run_in_workspace_container(
-        Path("/data/workspaces/p/t/a"), ["true"], timeout=5
+        Path("/data/workspaces/p/t/a"), wc.WorkspaceCommand(["true"], "gate"), timeout=5
     )
     assert result.returncode != 0
 
@@ -211,7 +224,9 @@ async def test_a_container_that_cannot_start_raises(
     )
     with pytest.raises(wc.WorkspaceContainerError, match="Unable to find image"):
         await wc.run_in_workspace_container(
-            Path("/data/workspaces/p/t/a"), ["true"], timeout=5
+            Path("/data/workspaces/p/t/a"),
+            wc.WorkspaceCommand(["true"], "gate"),
+            timeout=5,
         )
 
 
@@ -275,7 +290,7 @@ async def test_a_clone_reached_through_a_symlink_is_never_mounted(
     with pytest.raises(wc.WorkspaceContainerError, match="cannot be mounted"):
         await wc.run_in_workspace_container(
             tmp_path / "workspaces" / "proj" / "backend" / "be-dev-1",
-            ["make", "gate"],
+            wc.WorkspaceCommand(["make", "gate"], "gate"),
             timeout=60,
         )
     exec_mock.assert_not_called()
@@ -301,7 +316,7 @@ async def test_an_offline_run_has_no_network_and_one_checked_read_only_mount(
 
     result = await wc.run_offline_in_workspace_container(
         Path("/data/workspaces/p/backend/a"),
-        ["sh", "-c", "true"],
+        wc.WorkspaceCommand(["sh", "-c", "true"], "gate"),
         timeout=60,
         read_only_mount=mount,
     )
@@ -334,8 +349,49 @@ async def test_a_read_only_mount_reached_through_a_symlink_is_refused(
     with pytest.raises(wc.WorkspaceContainerError, match="cannot be mounted"):
         await wc.run_offline_in_workspace_container(
             Path("/data/workspaces/p/backend/a"),
-            ["true"],
+            wc.WorkspaceCommand(["true"], "gate"),
             timeout=60,
             read_only_mount=mount,
         )
     exec_mock.assert_not_called()
+
+
+async def test_the_container_name_says_whose_workspace_and_what_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    exec_mock = AsyncMock(return_value=_proc(0, b""))
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", exec_mock)
+    worktree = Path("/data/workspaces/roboco-api/backend/be-dev-1/.worktrees/abc")
+
+    await wc.run_in_workspace_container(
+        worktree, wc.WorkspaceCommand(["make", "codegen"], "codegen"), timeout=60
+    )
+
+    argv = list(exec_mock.call_args.args)
+    name = argv[argv.index("--name") + 1]
+    assert re.fullmatch(r"roboco-wsx-be-dev-1-codegen-[0-9a-f]{8}", name), name
+
+
+@pytest.mark.parametrize(
+    ("cwd", "owner"),
+    [
+        ("/data/workspaces/roboco-api/backend/be-dev-1", "be-dev-1"),
+        ("/data/workspaces/roboco-api/backend/be-dev-1/.worktrees/abc", "be-dev-1"),
+        ("/data/workspaces/roboco-api/frontend", "frontend"),
+        ("/data/private/dep-probe/roboco-api", "private"),
+        ("/srv/elsewhere", "workspace"),
+    ],
+)
+def test_the_owner_segment_follows_the_workspace_layout(cwd: str, owner: str) -> None:
+    name = wc.workspace_container_name(Path(cwd), "dev-deps")
+    assert name.startswith(f"roboco-wsx-{owner}-dev-deps-"), name
+
+
+def test_name_segments_keep_only_what_docker_allows() -> None:
+    name = wc.workspace_container_name(
+        Path("/data/workspaces/p/t/Agent One"), "Hook: pre/commit" + "x" * 60
+    )
+    assert re.fullmatch(r"roboco-wsx-[a-z0-9_.-]+-[0-9a-f]{8}", name), name
+    _, _, owner_and_purpose = name.partition("roboco-wsx-")
+    assert "agent-one-hook-pre-commit" in owner_and_purpose
+    assert len(name) <= len("roboco-wsx--") + 2 * 40 + 1 + 8

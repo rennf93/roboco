@@ -68,14 +68,16 @@ ENV CI=true \
 # pnpm-workspace.yaml carries the `allowBuilds: esbuild: true` approval —
 # without it pnpm 11 hard-errors with [ERR_PNPM_IGNORED_BUILDS] (exit 1)
 # because esbuild's postinstall is unapproved, breaking the image build.
-COPY video-renderer/package.json video-renderer/pnpm-lock.yaml video-renderer/pnpm-workspace.yaml ./
+# --chmod: the files keep the build folder's own modes otherwise, and the NAS
+# deploy copy is owner-only (0600), unreadable to this image's non-root user.
+COPY --chmod=0644 video-renderer/package.json video-renderer/pnpm-lock.yaml video-renderer/pnpm-workspace.yaml ./
 RUN pnpm install --frozen-lockfile
 
 # Pre-warm Chrome Headless Shell at build time so the container's first
 # real render isn't also the first time it downloads a browser. The
 # browser, node_modules and server stay root-owned (the server cannot
 # rewrite them); renders write only to os.tmpdir().
-COPY video-renderer/ensure-browser.mjs ./
+COPY --chmod=0644 video-renderer/ensure-browser.mjs ./
 
 # The base image's `node` user, numeric. Chrome runs with --no-sandbox
 # (@hyperframes/engine's launch flags) either way; this takes root away from
@@ -84,7 +86,7 @@ COPY video-renderer/ensure-browser.mjs ./
 USER 1000:1000
 RUN node ensure-browser.mjs
 
-COPY video-renderer/server.js video-renderer/render.js ./
+COPY --chmod=0644 video-renderer/server.js video-renderer/render.js ./
 
 EXPOSE 3001
 ENV PORT=3001
