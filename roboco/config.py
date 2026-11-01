@@ -335,29 +335,6 @@ class Settings(BaseSettings):
         default="http://roboco-ollama:11434/v1",
         description="Base URL for local LLM (Ollama OpenAI-compat API)",
     )
-    background_llm_mode_cache_seconds: float = Field(
-        default=30.0,
-        ge=0,
-        description=(
-            "How long the background LLM client reuses the routing mode it read "
-            "(ModelRoutingService.derive_mode) before reading it again. The mode "
-            "changes only on an operator action, and the api, dispatcher and "
-            "indexer are separate processes, so this bounds how long any of "
-            "them keeps following the previous mode after a switch."
-        ),
-    )
-    background_llm_ollama_no_credit_cooldown_seconds: float = Field(
-        default=600.0,
-        ge=0,
-        description=(
-            "After Ollama answers HTTP 402 (no credit), the background LLM "
-            "client skips Ollama for this long and goes straight to Claude "
-            "Haiku. Only a top-up ends a 402, so asking on every call only adds "
-            "a failed round trip to each one; ten minutes holds that to six "
-            "probes an hour per process and resumes Ollama within ten minutes "
-            "of a top-up."
-        ),
-    )
     background_llm_claude_home: str = Field(
         default="",
         description=(

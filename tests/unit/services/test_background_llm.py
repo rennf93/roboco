@@ -299,9 +299,7 @@ async def test_a_402_skips_ollama_for_the_cooldown_then_tries_it_again(
 ) -> None:
     follow_routing_mode(monkeypatch, "ollama")
     monkeypatch.setattr(
-        settings,
-        "background_llm_ollama_no_credit_cooldown_seconds",
-        _TEST_COOLDOWN_SECONDS,
+        background_llm, "_OLLAMA_NO_CREDIT_COOLDOWN_SECONDS", _TEST_COOLDOWN_SECONDS
     )
     ollama = FakeOllama(status=HTTPStatus.PAYMENT_REQUIRED)
     serve_fake_ollama(monkeypatch, ollama)
@@ -354,7 +352,7 @@ async def test_the_routing_mode_is_read_once_per_cache_window(
     await generate_background_text(_prompt())
     assert len(reads) == 1
 
-    monkeypatch.setattr(settings, "background_llm_mode_cache_seconds", 0.0)
+    monkeypatch.setattr(background_llm, "_ROUTING_MODE_REREAD_SECONDS", 0.0)
     await generate_background_text(_prompt())
     assert len(reads) == _TWO_CALLS
 
@@ -370,7 +368,7 @@ async def test_a_failed_mode_read_keeps_the_last_mode_known(
         raise ConnectionRefusedError("database down")
 
     monkeypatch.setattr(background_llm, "read_routing_mode", _database_down)
-    monkeypatch.setattr(settings, "background_llm_mode_cache_seconds", 0.0)
+    monkeypatch.setattr(background_llm, "_ROUTING_MODE_REREAD_SECONDS", 0.0)
     reply = await generate_background_reply(_prompt())
 
     assert reply.backend == "claude"

@@ -926,7 +926,7 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | docker-compose.registry.yml | Pull-and-run compose using pre-built GHCR/Docker Hub images (ROBOCO_REGISTRY + ROBOCO_VERSION); infra services byte-identical to build compose (incl. `backup` + vault defaults), agent-* services are one-shot pre-pulls, own `roboco_data` network; one `docker-gate` (builds refused, since every image is pulled; `GATE_REGISTRY` from `ROBOCO_REGISTRY`; the same read-only bind roots as the build file's gates) serves the orchestrator and dispatcher | 990 |
 | Makefile | Ops + quality targets: infra, dev/run/orchestrator, quality gate (ruff/mypy/pytest/xenon/radon/vulture/bandit/pip-audit/deptry/lint-imports/alembic/foundation-check), fast pre-submit `gate` target (ruff format/check, mypy, xenon, lint-imports), per-Python test matrix, docs, lifecycle regen | 628 |
 | pyproject.toml | Project + dependency manifest: requires-python >=3.13,<3.15, deps, dev/docs extras, console scripts, ruff/mypy/pytest/coverage/vulture/bandit/radon/xenon/deptry/importlinter config | 717 |
-| roboco/config.py | Pydantic Settings (env prefix ROBOCO_, cached via lru_cache); every tunable: DB, Redis, RAG, LLM/Ollama, workspaces, agent guardrails, gateway thresholds, autonomy-engine flags | 3412 |
+| roboco/config.py | Pydantic Settings (env prefix ROBOCO_, cached via lru_cache); every tunable: DB, Redis, RAG, LLM/Ollama, workspaces, agent guardrails, gateway thresholds, autonomy-engine flags | 3389 |
 | roboco/__init__.py | Package root: __version__ + re-exports settings, exceptions, logging helpers | 36 |
 | roboco/bootstrap.py | Async bootstrap: git-user drop self-test (every role but indexer; SystemExit(1) on failure), a warning when an api or dispatcher has the host Docker socket and no `DOCKER_HOST` (a compose file from before the Docker gate), DB init, Redis event bus, websocket bridge, orchestrator construction, uvicorn API server task, wait-for-ready poll, optional agent spawn, graceful shutdown | 259 |
 | roboco/cli.py | argparse CLI wrapper around bootstrap.main / db-only; the ENTRYPOINT invoked by `python -m roboco.cli` | 67 |
@@ -1020,7 +1020,7 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | Name | Kind | File:Line | Responsibility |
 |---|---|---|---|
 | Settings | class | roboco/config.py:26 | Pydantic BaseSettings; all ROBOCO_ env-backed tunables + derived URL properties (database_url, redis_url, internal_api_url, rag_store_url) |
-| get_settings | function | roboco/config.py:3406 | lru_cache-backed singleton factory returning the cached Settings instance |
+| get_settings | function | roboco/config.py:3383 | lru_cache-backed singleton factory returning the cached Settings instance |
 | internal_api_url | property | roboco/config.py:139 | service-to-service API base URL (api_url override or http://host:port/api, maps 0.0.0.0 to 127.0.0.1) |
 | database_url | property | roboco/config.py:214 | asyncpg connection URL |
 | database_url_sync | property | roboco/config.py:222 | sync psycopg URL for Alembic |
@@ -7946,16 +7946,16 @@ External:
 | Flag / setting | Source | Used for |
 |----------------|--------|----------|
 | `ROBOCO_GIT_EXECUTOR_WORKERS` (env, default 16) | `os.environ` at git.py:222 | Dedicated git subprocess pool size |
-| `settings.git_command_timeout_seconds` | config.py:2329 | Default `_run_git` timeout |
-| `settings.git_commit_timeout_seconds` | config.py:2380 | Staging/commit large changeset timeout |
-| `settings.git_network_timeout_seconds` | config.py:2402 | fetch/pull/push/ls-remote timeout |
-| `settings.git_diff_timeout_seconds` | config.py:2413 | `GET /api/git/diff`'s outer "diff" stage bound (default 60s) around the paired `git diff` + `git diff --stat` calls, layered on top of (not instead of) `git_command_timeout_seconds` bounding each call individually |
-| `settings.workspaces_root` | config.py:2093 | Workspace path root (token derivation) |
-| `settings.workspace_auto_clone` | config.py:2097 | `get_workspace` auto-clone branch |
-| `settings.public_base_url` | config.py:2522 | Commit/PR template link base (`+ /api`) |
+| `settings.git_command_timeout_seconds` | config.py:2306 | Default `_run_git` timeout |
+| `settings.git_commit_timeout_seconds` | config.py:2357 | Staging/commit large changeset timeout |
+| `settings.git_network_timeout_seconds` | config.py:2379 | fetch/pull/push/ls-remote timeout |
+| `settings.git_diff_timeout_seconds` | config.py:2390 | `GET /api/git/diff`'s outer "diff" stage bound (default 60s) around the paired `git diff` + `git diff --stat` calls, layered on top of (not instead of) `git_command_timeout_seconds` bounding each call individually |
+| `settings.workspaces_root` | config.py:2070 | Workspace path root (token derivation) |
+| `settings.workspace_auto_clone` | config.py:2074 | `get_workspace` auto-clone branch |
+| `settings.public_base_url` | config.py:2499 | Commit/PR template link base (`+ /api`) |
 | `settings.internal_api_url` | config.py:139 | Internal PR body link base |
-| `settings.github_api_base_url` | config.py:1161 | GitHub REST API base (PR/CI/review) |
-| `settings.release_ci_workflow` | config.py:1637 | Named workflow file (e.g. `ci.yml`) used by the release CI gate in `get_latest_ci_conclusion`; always resolves a named workflow so the gate never degrades to the imprecise all-workflows mode |
+| `settings.github_api_base_url` | config.py:1138 | GitHub REST API base (PR/CI/review) |
+| `settings.release_ci_workflow` | config.py:1614 | Named workflow file (e.g. `ci.yml`) used by the release CI gate in `get_latest_ci_conclusion`; always resolves a named workflow so the gate never degrades to the imprecise all-workflows mode |
 
 Module-level tunables (not env): `_SLOW_GIT_OP_MS=5000`, `_CI_RUN_WINDOW=20`, `_CI_FETCH_ATTEMPTS=3`, `_CI_FETCH_BACKOFF_SECONDS=0.5`, `_CI_RETRYABLE_STATUS`, `_CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS=120`, `_GH_UNPROCESSABLE=422`, `_HTTP_NOT_FOUND=404`, `_HTTP_CONFLICT=409`.
 
@@ -8479,17 +8479,17 @@ Cross-cutting support layer beneath the delivery services: the service-base/erro
 | `apply_mode` | method | `services/llm.py:972` | Dispatches a mode to its `_apply_*` handler (unknown mode: `ValueError`). anthropic/grok/codex/gemini/kimi/openrouter/nebius/hummin/ollama/self_hosted first run `_wipe_mode_switch_assignments` (deletes plain ROLE/GLOBAL rows, sparing AGENT_SLUG pins and compound `role:complexity` overrides), enable the provider where needed, then set the GLOBAL default; hummin also seeds the `_HUMMIN_ROLE_TIERS` ROLE rows. `zai` refuses without a saved key and upserts the GLOBAL row WITHOUT the wipe, despite its docstring. `mix` replaces every AGENT_SLUG pin with the per-agent map (an empty map clears all pins, `None` raises). `cost_tiered` additively upserts `_COST_TIERED_SEED`, retired to an empty tuple (#680, 2026-07-24: haiku cannot emit the structured envelopes and the capability floor would upgrade it anyway), so the mode is currently inert but stays wired for a future above-floor re-seed |
 | `_below_capability_floor` / `_floor_below_capability` | functions | `services/llm.py:480,543` | Structured-verb capability floor (#680): any Anthropic assignment that resolves to a haiku-class model — from a pin, a plain ROLE row, or the now-empty cost-tiered seed — is upgraded to `sonnet` at resolution, in both the assignment and legacy paths. Non-Anthropic providers are untouched (an Anthropic-tier floor, not a provider policy); `pr_reviewer`/`auditor` stay on opus regardless. |
 | `derive_mode` | method | `services/llm.py:732` | Settings UI label from current assignments; also the background LLM client's provider signal (`read_routing_mode`) |
-| `generate_background_reply` | func | `services/background_llm.py:539` | Tries the active mode's backend chain in order (`_BACKEND_CHAIN_BY_MODE`, default Ollama then Haiku), logs every fallback with purpose/mode/backend/model/reason/status, returns `BackgroundReply` (text + which backend answered + per-backend `BackendFailure`s; `text=None` when every backend failed) |
-| `generate_background_text` | func | `services/background_llm.py:559` | The reply text only, `None` when every backend failed (what nine of the ten call sites use) |
-| `BackgroundPrompt` | dataclass | `services/background_llm.py:73` | One request: `purpose` (call-site label in logs), user/system prompt, `max_tokens`, per-backend `timeout_seconds`, Ollama-only `temperature` / `ollama_num_ctx` |
-| `read_routing_mode` | func | `services/background_llm.py:126` | `derive_mode()` over a short `get_db_context()` session of its own (most callers hold none) |
-| `RoutingModeCache` | class | `services/background_llm.py:133` | Per-process mode cache, re-read every `background_llm_mode_cache_seconds`; a failed read keeps the last mode known |
-| `NoCreditCooldown` | class | `services/background_llm.py:164` | After an Ollama HTTP 402, Ollama is skipped for `background_llm_ollama_no_credit_cooldown_seconds` |
-| `OllamaBackend` | class | `services/background_llm.py:254` | POSTs `{local_llm_base_url}/chat/completions` with `local_llm_model`; any non-2xx, connection error, timeout, malformed or empty reply raises `BackendUnavailableError` |
-| `ClaudeHaikuBackend` | class | `services/background_llm.py:450` | Stats the login, hands its home and the scratch cwd to the login's owner, and runs the turn in `_haiku_turn_in_login_owner_process`; an outcome with `error_detail` or empty text is a failure |
-| `ClaudeLoginOwner` | dataclass | `services/background_llm.py:308` | The login's home (`settings.background_llm_claude_home`, empty = own home) and the uid:gid `stat` finds on `home/.claude` at call time |
-| `_identity_switch_for` | func | `services/background_llm.py:333` | `{user, group, extra_groups: []}` for `create_subprocess_exec` when root must become the login's owner; `{}` when this process already is; refuses a non-root process running someone else's login |
-| `_haiku_turn_in_login_owner_process` | func | `services/background_llm.py:423` | Starts `python -I -m roboco.agent_sdk.haiku_turn` as the login's owner with `HOME` on its home, an allowlisted env and its own process group; a timeout or cancel kills the group (the CLI too) |
+| `generate_background_reply` | func | `services/background_llm.py:546` | Tries the active mode's backend chain in order (`_BACKEND_CHAIN_BY_MODE`, default Ollama then Haiku), logs every fallback with purpose/mode/backend/model/reason/status, returns `BackgroundReply` (text + which backend answered + per-backend `BackendFailure`s; `text=None` when every backend failed) |
+| `generate_background_text` | func | `services/background_llm.py:566` | The reply text only, `None` when every backend failed (what nine of the ten call sites use) |
+| `BackgroundPrompt` | dataclass | `services/background_llm.py:81` | One request: `purpose` (call-site label in logs), user/system prompt, `max_tokens`, per-backend `timeout_seconds`, Ollama-only `temperature` / `ollama_num_ctx` |
+| `read_routing_mode` | func | `services/background_llm.py:134` | `derive_mode()` over a short `get_db_context()` session of its own (most callers hold none) |
+| `RoutingModeCache` | class | `services/background_llm.py:141` | Per-process mode cache, re-read every `_ROUTING_MODE_REREAD_SECONDS` (30 s); a failed read keeps the last mode known |
+| `NoCreditCooldown` | class | `services/background_llm.py:172` | After an Ollama HTTP 402, Ollama is skipped for `_OLLAMA_NO_CREDIT_COOLDOWN_SECONDS` (600 s) |
+| `OllamaBackend` | class | `services/background_llm.py:261` | POSTs `{local_llm_base_url}/chat/completions` with `local_llm_model`; any non-2xx, connection error, timeout, malformed or empty reply raises `BackendUnavailableError` |
+| `ClaudeHaikuBackend` | class | `services/background_llm.py:457` | Stats the login, hands its home and the scratch cwd to the login's owner, and runs the turn in `_haiku_turn_in_login_owner_process`; an outcome with `error_detail` or empty text is a failure |
+| `ClaudeLoginOwner` | dataclass | `services/background_llm.py:315` | The login's home (`settings.background_llm_claude_home`, empty = own home) and the uid:gid `stat` finds on `home/.claude` at call time |
+| `_identity_switch_for` | func | `services/background_llm.py:340` | `{user, group, extra_groups: []}` for `create_subprocess_exec` when root must become the login's owner; `{}` when this process already is; refuses a non-root process running someone else's login |
+| `_haiku_turn_in_login_owner_process` | func | `services/background_llm.py:430` | Starts `python -I -m roboco.agent_sdk.haiku_turn` as the login's owner with `HOME` on its home, an allowlisted env and its own process group; a timeout or cancel kills the group (the CLI too) |
 | `locked_down_haiku_options` | func | `agent_sdk/haiku_turn.py:56` | `request.model` (`MODEL_MAP["haiku"]`), one turn, `tools=[]`, no MCP (`strict_mcp_config`), `setting_sources=[]`, `--safe-mode`, `--no-session-persistence`, `verbatim_prompts`, effort low, output cap = `max_tokens` + 2048 thinking headroom |
 | `set_ollama_api_key` / `set_grok_api_key` | methods | `services/llm.py:839,859` | Encrypt+enable / clear+disable on the seeded provider row; `set_openrouter_api_key`, `set_nebius_api_key`, `set_zai_api_key` and `set_hummin_api_key` are the same shape for their providers |
 | `_interactive_exempt` | func | `services/llm.py:489` | True only when `agent_slug` is in `INTERACTIVE_AGENT_SLUGS` (`intake-1`/`secretary-1`), the resolved provider is in `INTERACTIVE_UNSUPPORTED_PROVIDERS`, and the row is a GLOBAL/ROLE row (an AGENT_SLUG pin never exempts); `resolve_for_agent` then returns the legacy Anthropic route. `INTERACTIVE_UNSUPPORTED_PROVIDERS` was retired to an empty tuple (2026-09-17, every provider now has an interactive path), so this currently never fires and the interactive agents follow the fleet-wide provider; the orchestrator's `_reject_interactive_unsupported_provider` spawn guard mirrors the same empty tuple |
@@ -8723,7 +8723,7 @@ Panel-tunable flags defined in `services/settings.py:46` `FEATURE_FLAGS` (stored
 
 Cloud auth (`ROBOCO_CLOUD_AUTH_ENABLED`) and DB network isolation (`ROBOCO_DB_NETWORK_ISOLATED`) are deliberately **not** in `FEATURE_FLAGS` — both are compose/env-coupled (cookie/TLS posture and the `networks:` topology respectively) and unsafe for a runtime toggle to flip mid-session; they stay pure env vars, not panel-tunable settings. `ROBOCO_TELEGRAM_MINIAPP_ENABLED` (Telegram Mini App sign-in) joins them for the same reason — security/TLS-coupled, and `Settings` fails loud at startup if it's armed without `cloud_auth_enabled`; its sibling `telegram_initdata_max_age_seconds` (default 600) is likewise env-only.
 
-`background_llm.py` reads `local_llm_model` / `local_llm_base_url` (Ollama side), `background_llm_mode_cache_seconds` (30), `background_llm_ollama_no_credit_cooldown_seconds` (600) and `background_llm_claude_home` (compose: `/home/claude-login`, a second mount of the host login), all env-only.
+`background_llm.py` reads `local_llm_model` / `local_llm_base_url` (Ollama side), and `background_llm_claude_home` (compose: `/home/claude-login`, a second mount of the host login), all env-only.
 
 Other settings read here: `transcript_retention_days` (int, ≥1; read by the orchestrator's `_sweep_transcript_retention` at `runtime/engines/sweeps.py:1447`). Non-flag config consumed: `settings.redis_url` (`health`, `stream_bus`), `settings.encryption_key` (`crypto`).
 
@@ -10057,32 +10057,32 @@ product-strategy-research-pitch
 
 | Flag | Default | File:Line | Effect |
 |------|---------|-----------|--------|
-| `ROBOCO_CONVENTIONS_ENABLED` | `False` | config.py:799 | `ProjectService.create` best-effort scaffolds `.roboco/conventions.yml` PR; inert when off |
-| `ROBOCO_RESEARCH_ENABLED` | `True` | config.py:905 | Mounts `roboco-search` MCP into Board/PM containers (orchestrator:2914) |
-| `ROBOCO_RESEARCH_PROVIDER` | `tavily` | config.py:912 | `tavily`/`brave`/`exa`/`null` adapter selection |
-| `ROBOCO_RESEARCH_API_KEY` | `None` | config.py:925 | Server-side only; unset → `NullProvider` |
-| `ROBOCO_RESEARCH_MAX_RESULTS` | `5` | config.py:943 | Hard cap on `web_search` results (1-20) |
-| `ROBOCO_RESEARCH_FETCH_MAX_CHARS` | `20000` | config.py:949 | Hard cap on `web_fetch` extracted chars |
-| `ROBOCO_RESEARCH_TIMEOUT_SECONDS` | `15.0` | config.py:954 | Outbound provider HTTP timeout |
-| `ROBOCO_RESEARCH_DAILY_QUOTA_PER_AGENT` | `50` | config.py:959 | Per-agent/day call ceiling (Redis, fail-open) |
-| `ROBOCO_PROVISIONING_ENABLED` | `True` | config.py:1143 | Pitch auto-provisioning master switch (still inert without token+org) |
-| `ROBOCO_PROVISIONING_TOKEN` | `""` | config.py:1150 | GitHub PAT for repo creation (server-side only) |
-| `ROBOCO_PROVISIONING_ORG` | `""` | config.py:1157 | GitHub org where repos are provisioned |
-| `ROBOCO_GITHUB_API_BASE_URL` | `https://api.github.com` | config.py:1161 | Override for GitHub Enterprise |
-| `ROBOCO_PROVISIONING_TIMEOUT_SECONDS` | `30.0` | config.py:1165 | Outbound GitHub provisioning timeout |
-| `ROBOCO_PROVISIONING_REPO_PRIVATE` | `True` | config.py:1170 | Whether provisioned repos are private |
-| `ROBOCO_PROVISIONING_PROVIDER` | `github` | config.py:1174 | Phase 4 forge parity: `github`/`gitlab`/`gitea` selects the concrete provisioning target via `_build_provider` |
-| `ROBOCO_PROVISIONING_HOST` | `""` | config.py:1183 | Self-hosted forge host (e.g. `gitlab.example.com`); `.enabled` additionally requires this when `provisioning_provider` is gitlab/gitea (ignored for github/gitlab.com) |
-| `ROBOCO_STRATEGY_ENGINE_ENABLED` | `False` | config.py:1199 | Master switch: loop never starts when off |
-| `ROBOCO_STRATEGY_ENGINE_INTERVAL_SECONDS` | `1800` | config.py:1206 | Seconds between strategy assessment passes |
-| `ROBOCO_STRATEGY_STRANDED_BLOCKED_MINUTES` | `120` | config.py:1211 | Blocked-task threshold for "stranded" observation |
-| `ROBOCO_PROTECTED_GIT_URLS` | `[]` | config.py:2453 | Denylist: `ProjectService` rejects `git_url` containing any entry |
-| `ROBOCO_ENCRYPTION_KEY` | `""` | config.py:971 | Fernet key for git-token encrypt/decrypt |
-| `ROBOCO_ROADMAP_ENGINE_ENABLED` | `False` | config.py:1990 | Master switch: `_roadmap_engine_loop` never opens an exploration cycle when off |
-| `ROBOCO_ROADMAP_INTERVAL_SECONDS` | `604800` | config.py:2000 | Seconds between roadmap-exploration cycles (default weekly) |
-| `ROBOCO_ROADMAP_MIN_ITEMS_PER_CYCLE` | `3` | config.py:2005 | Minimum item drafts `propose_roadmap` must submit for a themed cycle |
-| `ROBOCO_ROADMAP_MAX_ITEMS_PER_CYCLE` | `7` | config.py:2010 | Maximum item drafts per cycle |
-| `ROBOCO_PEST_REWORK_THRESHOLD` | `0.3` | config.py:2023 | 7-day rework rate above which Pest Control's metric predicate opens a cycle off-schedule, on top of its weekly cron. The ONLY env-settable knob among the twelve new Board Programs: every other one arms exclusively via its own settings-store row (`board_program.{key}.enabled`, no `ROBOCO_*_ENABLED` flag exists for them) |
+| `ROBOCO_CONVENTIONS_ENABLED` | `False` | config.py:776 | `ProjectService.create` best-effort scaffolds `.roboco/conventions.yml` PR; inert when off |
+| `ROBOCO_RESEARCH_ENABLED` | `True` | config.py:882 | Mounts `roboco-search` MCP into Board/PM containers (orchestrator:2914) |
+| `ROBOCO_RESEARCH_PROVIDER` | `tavily` | config.py:889 | `tavily`/`brave`/`exa`/`null` adapter selection |
+| `ROBOCO_RESEARCH_API_KEY` | `None` | config.py:902 | Server-side only; unset → `NullProvider` |
+| `ROBOCO_RESEARCH_MAX_RESULTS` | `5` | config.py:920 | Hard cap on `web_search` results (1-20) |
+| `ROBOCO_RESEARCH_FETCH_MAX_CHARS` | `20000` | config.py:926 | Hard cap on `web_fetch` extracted chars |
+| `ROBOCO_RESEARCH_TIMEOUT_SECONDS` | `15.0` | config.py:931 | Outbound provider HTTP timeout |
+| `ROBOCO_RESEARCH_DAILY_QUOTA_PER_AGENT` | `50` | config.py:936 | Per-agent/day call ceiling (Redis, fail-open) |
+| `ROBOCO_PROVISIONING_ENABLED` | `True` | config.py:1120 | Pitch auto-provisioning master switch (still inert without token+org) |
+| `ROBOCO_PROVISIONING_TOKEN` | `""` | config.py:1127 | GitHub PAT for repo creation (server-side only) |
+| `ROBOCO_PROVISIONING_ORG` | `""` | config.py:1134 | GitHub org where repos are provisioned |
+| `ROBOCO_GITHUB_API_BASE_URL` | `https://api.github.com` | config.py:1138 | Override for GitHub Enterprise |
+| `ROBOCO_PROVISIONING_TIMEOUT_SECONDS` | `30.0` | config.py:1142 | Outbound GitHub provisioning timeout |
+| `ROBOCO_PROVISIONING_REPO_PRIVATE` | `True` | config.py:1147 | Whether provisioned repos are private |
+| `ROBOCO_PROVISIONING_PROVIDER` | `github` | config.py:1151 | Phase 4 forge parity: `github`/`gitlab`/`gitea` selects the concrete provisioning target via `_build_provider` |
+| `ROBOCO_PROVISIONING_HOST` | `""` | config.py:1160 | Self-hosted forge host (e.g. `gitlab.example.com`); `.enabled` additionally requires this when `provisioning_provider` is gitlab/gitea (ignored for github/gitlab.com) |
+| `ROBOCO_STRATEGY_ENGINE_ENABLED` | `False` | config.py:1176 | Master switch: loop never starts when off |
+| `ROBOCO_STRATEGY_ENGINE_INTERVAL_SECONDS` | `1800` | config.py:1183 | Seconds between strategy assessment passes |
+| `ROBOCO_STRATEGY_STRANDED_BLOCKED_MINUTES` | `120` | config.py:1188 | Blocked-task threshold for "stranded" observation |
+| `ROBOCO_PROTECTED_GIT_URLS` | `[]` | config.py:2430 | Denylist: `ProjectService` rejects `git_url` containing any entry |
+| `ROBOCO_ENCRYPTION_KEY` | `""` | config.py:948 | Fernet key for git-token encrypt/decrypt |
+| `ROBOCO_ROADMAP_ENGINE_ENABLED` | `False` | config.py:1967 | Master switch: `_roadmap_engine_loop` never opens an exploration cycle when off |
+| `ROBOCO_ROADMAP_INTERVAL_SECONDS` | `604800` | config.py:1977 | Seconds between roadmap-exploration cycles (default weekly) |
+| `ROBOCO_ROADMAP_MIN_ITEMS_PER_CYCLE` | `3` | config.py:1982 | Minimum item drafts `propose_roadmap` must submit for a themed cycle |
+| `ROBOCO_ROADMAP_MAX_ITEMS_PER_CYCLE` | `7` | config.py:1987 | Maximum item drafts per cycle |
+| `ROBOCO_PEST_REWORK_THRESHOLD` | `0.3` | config.py:2000 | 7-day rework rate above which Pest Control's metric predicate opens a cycle off-schedule, on top of its weekly cron. The ONLY env-settable knob among the twelve new Board Programs: every other one arms exclusively via its own settings-store row (`board_program.{key}.enabled`, no `ROBOCO_*_ENABLED` flag exists for them) |
 
 ## Gotchas
 

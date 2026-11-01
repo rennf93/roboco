@@ -16,7 +16,7 @@ follows the active AI provider (``ModelRoutingService.derive_mode``):
 * any other mode: Ollama's flash model (``settings.local_llm_model``) first,
   then Claude Haiku when Ollama cannot answer (an HTTP error, a connection
   error, a timeout, a malformed or empty reply). An HTTP 402 also skips Ollama
-  for ``settings.background_llm_ollama_no_credit_cooldown_seconds``.
+  for ``_OLLAMA_NO_CREDIT_COOLDOWN_SECONDS``.
 
 Every fallback is logged with the call site's purpose, the backend, its model,
 the reason and the HTTP status. When every backend fails the reply carries no
@@ -67,6 +67,14 @@ _ERROR_DETAIL_MAX_CHARS = 300
 # thinking budget the Claude Code CLI itself grants (1024): an allowance chosen
 # from that floor, not a measurement of what low-effort thinking uses.
 _HAIKU_THINKING_HEADROOM_TOKENS = 2048
+
+# The mode changes only on an operator action; the api, dispatcher and indexer
+# each re-read it after at most this long.
+_ROUTING_MODE_REREAD_SECONDS = 30.0
+
+# Only a top-up ends a 402: six probes an hour per process, and Ollama is back
+# within ten minutes of a top-up.
+_OLLAMA_NO_CREDIT_COOLDOWN_SECONDS = 600.0
 
 
 @dataclass(frozen=True)
@@ -132,7 +140,7 @@ async def read_routing_mode() -> str:
 
 class RoutingModeCache:
     """The routing mode, re-read at most once per
-    ``settings.background_llm_mode_cache_seconds``. A failed read keeps the
+    ``_ROUTING_MODE_REREAD_SECONDS``. A failed read keeps the
     last mode known (``None`` before the first successful read)."""
 
     def __init__(self) -> None:
@@ -158,7 +166,7 @@ class RoutingModeCache:
         if self._read_at is None:
             return False
         age = time.monotonic() - self._read_at
-        return age < settings.background_llm_mode_cache_seconds
+        return age < _ROUTING_MODE_REREAD_SECONDS
 
 
 class NoCreditCooldown:
@@ -168,8 +176,7 @@ class NoCreditCooldown:
         self._ends_at = 0.0
 
     def start(self) -> None:
-        cooldown = settings.background_llm_ollama_no_credit_cooldown_seconds
-        self._ends_at = time.monotonic() + cooldown
+        self._ends_at = time.monotonic() + _OLLAMA_NO_CREDIT_COOLDOWN_SECONDS
 
     def seconds_left(self) -> float:
         return max(0.0, self._ends_at - time.monotonic())
