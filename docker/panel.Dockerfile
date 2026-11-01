@@ -35,14 +35,16 @@ ENV CI=true
 # requires.
 COPY panel/package.json panel/pnpm-lock.yaml panel/pnpm-workspace.yaml ./
 
-# Install dependencies with shamefully-hoist to flatten node_modules
-# (prevents symlink issues with styled-jsx and other peer deps). With the
-# allowBuilds approval in pnpm-workspace.yaml, unrs-resolver runs its
-# postinstall, which checks its platform-specific binary (sharp 0.35 has no
-# install script) — no strictDepBuilds downgrade needed.
-RUN pnpm install \
-    --frozen-lockfile \
-    --shamefully-hoist
+# Install dependencies with the settings `pnpm build` runs with. Before a
+# script pnpm checks node_modules against the current settings
+# (verifyDepsBeforeRun) and reinstalls when they differ, so an install with
+# --shamefully-hoist was recreated unhoisted by `pnpm build` (pnpm 11 and 12
+# alike): next build never saw a hoisted tree, and the second install took
+# 10 minutes on the NAS with pnpm 11 and 27 with pnpm 12. With the allowBuilds
+# approval in pnpm-workspace.yaml, unrs-resolver runs its postinstall, which
+# checks its platform-specific binary (sharp 0.35 has no install script) — no
+# strictDepBuilds downgrade needed.
+RUN pnpm install --frozen-lockfile
 
 # Copy panel source code
 COPY panel/ ./

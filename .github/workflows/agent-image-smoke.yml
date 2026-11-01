@@ -196,7 +196,7 @@ jobs:
           # (GitHub Actions also sets CI=true for every step).
           CI: 'true'
         run: |
-          pnpm install --frozen-lockfile --shamefully-hoist
+          pnpm install --frozen-lockfile
           pnpm build
           nohup pnpm start -p 3000 > /tmp/panel.log 2>&1 &
           npx --yes wait-on http://localhost:3000/login -t 60000
