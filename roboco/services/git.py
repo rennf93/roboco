@@ -396,6 +396,12 @@ _CONVENTIONS_VALIDATOR_REAP_SECONDS = 10
 _FAILING_CHECK_CONCLUSIONS = frozenset(
     {"failure", "cancelled", "timed_out", "action_required"}
 )
+# Check-run apps that are approval gates, not CI. Entire's "Entire Gates"
+# fails (or sits in progress) until the CEO approves the trail, which a fleet
+# PR into a cell/root branch never gets, so counting it refused every
+# assembled PR (PR #1324, 2026-11-01). pr_pass judges CI; Entire still gates
+# the CEO's own merges by itself.
+_APPROVAL_GATE_CHECK_APPS = frozenset({"entire"})
 # A 404 resolving a PR's head SHA means the repo/PR is unreachable or doesn't
 # exist — classified as no_ci_configured, distinct from any other non-2xx
 # (a genuine API failure on a real, reachable repo) which is `error`.
@@ -429,6 +435,20 @@ def _cap_pr_body(body: str) -> str:
 def _cap_pr_title(title: str) -> str:
     """Truncate an oversized PR title to GitHub's 256-char limit."""
     return title[:_GH_PR_TITLE_LIMIT] if len(title) > _GH_PR_TITLE_LIMIT else title
+
+
+def _ci_check_runs_only(check_runs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """``check_runs`` without the runs of approval-gate apps (see
+    ``_APPROVAL_GATE_CHECK_APPS``)."""
+    return [
+        cr for cr in check_runs if _check_run_app(cr) not in _APPROVAL_GATE_CHECK_APPS
+    ]
+
+
+def _check_run_app(check_run: dict[str, Any]) -> str | None:
+    """The slug of the app that reported ``check_run``, when the forge says."""
+    app = check_run.get("app")
+    return app.get("slug") if isinstance(app, dict) else None
 
 
 def _latest_check_runs_by_name(
@@ -3407,6 +3427,7 @@ class GitPRReviewAndCI(_Base):
         )
         if isinstance(check_runs, dict):
             return check_runs
+        check_runs = _ci_check_runs_only(check_runs)
         if check_runs:
             return self._classify_check_runs(check_runs, head_sha)
         return await self._classify_zero_check_runs(
