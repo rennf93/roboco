@@ -133,7 +133,7 @@ def _seed_task(
     setup: dict, *, status: TaskStatus = TaskStatus.PENDING, **kw: Any
 ) -> TaskTable:
     task = TaskTable(
-        id=uuid4(),
+        id=kw.pop("id", None) or uuid4(),
         title=kw.pop("title", "t"),
         description=kw.pop("description", "d"),
         acceptance_criteria=["ac"],
@@ -277,6 +277,60 @@ async def test_get_task_by_id(task_client: dict) -> None:
     await task_client["db"].flush()
     response = await client.get(f"/api/tasks/{task.id}", headers=_HDR)
     assert response.status_code == HTTPStatus.OK
+
+
+@pytest.mark.asyncio
+async def test_get_task_by_short_ref_returns_the_task(task_client: dict) -> None:
+    """The 8-char prefix the cards show resolves (2026-10-28: GET
+    /api/tasks/d38d6910 answered 422 'Input should be a valid UUID')."""
+    client = task_client["client"]
+    task = _seed_task(task_client)
+    await task_client["db"].flush()
+    response = await client.get(f"/api/tasks/{str(task.id)[:8]}", headers=_HDR)
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()["id"] == str(task.id)
+
+
+@pytest.mark.asyncio
+async def test_get_task_by_hash_prefixed_short_ref_returns_the_task(
+    task_client: dict,
+) -> None:
+    client = task_client["client"]
+    task = _seed_task(task_client)
+    await task_client["db"].flush()
+    response = await client.get(
+        f"/api/tasks/%23{str(task.id)[:8].upper()}", headers=_HDR
+    )
+    assert response.status_code == HTTPStatus.OK
+    assert response.json()["id"] == str(task.id)
+
+
+@pytest.mark.asyncio
+async def test_get_task_by_unknown_short_ref_is_not_found(task_client: dict) -> None:
+    client = task_client["client"]
+    response = await client.get("/api/tasks/0000dead", headers=_HDR)
+    assert response.status_code == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_get_task_by_ambiguous_short_ref_names_the_ambiguity(
+    task_client: dict,
+) -> None:
+    client = task_client["client"]
+    _seed_task(task_client, id=UUID("feedface-0000-4000-8000-000000000001"))
+    _seed_task(task_client, id=UUID("feedface-0000-4000-8000-000000000002"))
+    await task_client["db"].flush()
+    response = await client.get("/api/tasks/feedface", headers=_HDR)
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert "more than one task" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_get_task_by_too_short_ref_is_rejected(task_client: dict) -> None:
+    client = task_client["client"]
+    response = await client.get("/api/tasks/d38d", headers=_HDR)
+    assert response.status_code == HTTPStatus.UNPROCESSABLE_ENTITY
+    assert "hex prefix" in response.json()["detail"]
 
 
 @pytest.mark.asyncio

@@ -91,8 +91,8 @@ The Pydantic/dataclass domain surface of RoboCo — the typed contract the API, 
 | `PermissionLevel` | IntEnum | permissions.py:15 | CEO=0/BOARD=1/MAIN_PM=2/CELL_PM=3/CELL_MEMBER=4/AUDITOR=99 |
 | `COMMUNICATION_MATRIX` | dict | permissions.py:83 | Who can directly communicate with whom (role→role set) |
 | `IndexType` | StrEnum | optimal.py:13 | code/documentation/conversations/journals/errors/standards/decisions/reviews/learnings/playbooks |
-| `SearchResult` | dataclass | optimal.py:34 | RAG hit (content/source/score/index_type/metadata) |
-| `RAGResponse` | dataclass | optimal.py:60 | RAG answer + citations + per-index stats |
+| `SearchResult` | dataclass | optimal.py:56 | RAG hit (content/source/score/index_type/metadata) |
+| `RAGResponse` | dataclass | optimal.py:82 | RAG answer + citations + per-index stats |
 | `BottleneckReport` | dataclass | metrics.py:166 | Cumulative dwell + parked-now per lifecycle stage |
 | `ReworkReport` | dataclass | metrics.py:220 | Bounce rate to needs_revision by team/agent + rework_cost_usd |
 | `Scorecard` | dataclass | metrics.py:377 | Fused per-agent/per-cell delivery scorecard |

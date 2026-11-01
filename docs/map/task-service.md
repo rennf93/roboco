@@ -8,6 +8,7 @@
 | Path | Role |
 |------|------|
 | `roboco/services/task.py` | The 14k-line service module: `TaskService`, composed from 43 responsibility mixins defined above it in the same module (Key Symbols lists each), plus internal dataclass containers (`_CompletionSnapshot`, `SoftBlockInput`, `SoftBlockInfo`, `GatewayAgentView`). |
+| `roboco/services/task_ref.py` | `resolve_task_ref`: the one resolver of a task reference (a full UUID, or the 8+ char id prefix the cards and prompts show, optional leading `#`) to a task id, with a `TaskRefOutcome` of resolved / malformed / not_found / ambiguous. The agent gateway (`ContentActions._resolve_task_ref`, an Envelope) and `GET /api/tasks/{task_id}` (`resolve_task_ref_or_http_error`, 404 or 422) only translate its outcome. |
 | `roboco/services/_task_service_types.py` | `TaskServiceSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `TaskService` mixins reach through `self` (`TaskSurface` for `TaskService` itself): each stub keeps the method's decorators, parameters and return type, so no moved body changes. `tests/unit/services/test_task_service_mixins.py` fails on a stub its class doesn't define, and on a member two mixins, or a mixin and `TaskService`, both define. |
 
 ## Key Symbols

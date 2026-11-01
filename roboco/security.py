@@ -1,4 +1,4 @@
-"""RoboCo HTTP security layer (fastapi-guard 8.0.0 / guard-core 4.0.1).
+"""RoboCo HTTP security layer (fastapi-guard 8.1.2 / guard-core 4.4.0).
 
 A ``SecurityMiddleware`` + per-route decorator layer, gated by
 ``settings.guard_enabled`` (default off). Importing this module is always safe:
@@ -56,10 +56,12 @@ logger = get_logger(__name__)
 # track_return_pattern call redis unguarded and raise GuardRedisError (not an
 # HTTPException) on a redis blip, so they fall through to roboco's generic
 # exception handler as a 500 instead of failing open like every pipeline check
-# does. Verified still required at guard-core 4.0.1 (redis_fail_open is
-# still not consulted on either seam). Wrap all three seams here rather than
-# fork/vendor guard-core; the durable fix belongs upstream (route these calls
-# through the pipeline's own GuardRedisError / redis_fail_open handling).
+# does. Verified still required at guard-core 4.4.0 (redis_fail_open is
+# still not consulted on either seam: guard/middleware.py dispatch calls
+# process_usage_rules straight after the pipeline). Wrap all three seams
+# here rather than fork/vendor guard-core; the durable fix belongs upstream
+# (route these calls through the pipeline's own GuardRedisError /
+# redis_fail_open handling).
 _orig_process_usage_rules = BehavioralProcessor.process_usage_rules
 
 
@@ -565,6 +567,30 @@ _BEHAVIOR_RULES: tuple[BehaviorRuleConfig, ...] = (
 )
 
 
+# Per-pattern WAF scan budget: guard-core's ``detection_compiler_timeout``
+# (default 2.0 s, ceiling 10.0 s). guard-core measures it in WALL time: a
+# windowed pattern's worker future is awaited with ``asyncio.wait_for`` on a
+# 4-worker, process-wide pool (guard_core/handlers/_suspatterns_regex.py
+# ``_check_windowed_pattern``, detection_engine/compiler.py
+# ``_await_regex_future``), and a pattern that runs out of it becomes a
+# ``pattern_timeout`` threat, which fail-secure blocks. So the budget also
+# spends every moment the scan waits for the pool or the event loop, not just
+# regex work. The false blocks in the log were exactly that: ``accept: */*``
+# on an agent's POST /api/v1/do/note (2026-11-01 04:53:42) and seven tiny
+# tailnet headers (``sec-fetch-dest: empty``, header names; 2026-10-28 05:36)
+# "exceeded" 2.0 s on values the patterns scan in microseconds (a whole
+# request scan costs ~0.1 s of CPU), while the process was stalled: on 11-01
+# two /health requests started 106 ms apart both completed 9.33 s and 9.44 s
+# later with no log line in between, and the guard's Redis reads timed out
+# right after. The budget has to outlast such a stall, so it is guard-core's
+# ceiling. A pattern that does run out still blocks (fail-secure, CEO
+# decision 2026-11-01). Cost: a genuine ReDoS holds its own request up to
+# 10 s instead of 2 s before that block; the worker thread was never freed
+# by the timeout anyway, and the per-request CPU cap
+# (``detection_max_scan_seconds``, 10 s of CPU) is unchanged.
+_PATTERN_SCAN_WALL_BUDGET_SECONDS = 10.0
+
+
 def _redis_url() -> str:
     """The guard's Redis (always db 0), authenticated like every other client."""
     return settings.redis_url_for_db(0)
@@ -908,6 +934,9 @@ def build_security_config() -> SecurityConfig:
         # outage with no way in but ROBOCO_GUARD_EMERGENCY plus a restart. Open
         # here means a redis blip degrades rate-limit and ban state to allow,
         # while the WAF, IP lists and every stateless check keep enforcing.
+        # The IP lists only keep enforcing because of the ban-lookup patch
+        # (`_is_ip_banned_fail_open`): guard-core alone skips the whole
+        # ip_security check, allowlist included, when the ban store is down.
         redis_fail_open=True,
         # Baseline throttling; per-endpoint overrides tighten sensitive routes.
         rate_limit=120,
@@ -950,6 +979,7 @@ def build_security_config() -> SecurityConfig:
         behavior_scan_response_body=settings.guard_scan_response_body,
         # Signature WAF on, but calibrated: free-text bodies excluded (below).
         enable_penetration_detection=True,
+        detection_compiler_timeout=_PATTERN_SCAN_WALL_BUDGET_SECONDS,
         excluded_detection_headers=_TRACING_HEADERS,
         excluded_detection_body_fields=_WAF_FREETEXT_BODY_FIELDS,
         # Extends (not replaces) guard-core's default redaction set.
@@ -1101,6 +1131,42 @@ async def _ban_ip_mesh_safe(
 
 
 setattr(IPBanManager, "ban_ip", _ban_ip_mesh_safe)
+
+# Ban-lookup redis fail-open. ``IpSecurityCheck.check`` reads the ban store
+# FIRST (``_check_banned_ip`` -> ``IPBanManager.is_ip_banned``, local cache then
+# redis), and a GuardRedisError there makes ``SecurityCheckPipeline.
+# _handle_check_error`` skip the WHOLE check under redis_fail_open
+# (guard_core/core/checks/pipeline.py). That skips far more than the ban
+# lookup: the stateless allowlist decision and the ``is_whitelisted`` /
+# ``is_exempt`` stamps live in the same check. 2026-10-28 05:35-05:36, while
+# the guard's Redis client hit "Too many connections": "Skipping check
+# ip_security" 192 times, and in exactly those minutes the CEO's tailnet panel
+# (whitelisted bridge IP 172.23.0.1) was rate-limited 48 times by the
+# in-memory fallback and WAF-scanned 7 times, while every non-member IP was
+# admitted. guard-core's own WebSocket gate already reads the ban store this
+# way (guard/websocket.py ``_guarded_redis_call(..., default=False)``): an
+# unreadable ban store means "not banned", and the allowlist still decides.
+# Bans this process already knows (its local cache) still apply. Same
+# upstream note as the behavioral patches above.
+_orig_is_ip_banned = IPBanManager.is_ip_banned
+
+
+async def _is_ip_banned_fail_open(self: IPBanManager, ip: str) -> bool:
+    try:
+        return await _orig_is_ip_banned(self, ip)
+    except GuardRedisError as exc:
+        if not getattr(self.config, "redis_fail_open", False):
+            raise
+        logger.warning(
+            "ban lookup skipped: redis unavailable, treating the IP as not "
+            "banned (redis_fail_open=True); the IP allowlist still applies",
+            ip=ip,
+            error=str(exc),
+        )
+        return False
+
+
+setattr(IPBanManager, "is_ip_banned", _is_ip_banned_fail_open)
 
 
 def apply_guard(app: FastAPI) -> None:

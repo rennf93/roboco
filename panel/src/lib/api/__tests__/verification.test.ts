@@ -1,10 +1,14 @@
 import { describe, it, expect } from "vitest";
 import {
   buildReviewerChain,
+  ciVerdictsByTask,
   groupFindingsByRound,
+  memberCiVerdict,
+  memberVerificationFromReceipt,
   parseAcVerificationStamps,
   prCiVerdictFromAttestation,
   PR_CI_VERDICT_NOT_AVAILABLE,
+  PR_CI_VERDICT_UNREADABLE,
   RELEASE_NO_MEMBER_TASKS_MESSAGE,
   type ReviewerChainEntry,
 } from "../verification";
@@ -270,6 +274,72 @@ describe("RELEASE_NO_MEMBER_TASKS_MESSAGE", () => {
     expect(RELEASE_NO_MEMBER_TASKS_MESSAGE.length).toBeGreaterThan(0);
     expect(RELEASE_NO_MEMBER_TASKS_MESSAGE).not.toMatch(
       /available yet|endpoint|escalate/i,
+    );
+  });
+});
+
+describe("memberVerificationFromReceipt", () => {
+  it("applies the task-detail derivations to one bulk-read receipt", () => {
+    const member = memberVerificationFromReceipt({
+      task_id: "t1",
+      title: "Thin routes",
+      acceptance_criteria: ["Criterion A", "Criterion B"],
+      qa_notes: "[AC] Criterion A — verified: file.ts:10",
+      findings: [
+        finding({ id: "f2", round: 2 }),
+        finding({ id: "f1", round: 1, status: "addressed" }),
+      ],
+      conventions_findings: [],
+      reviewer_chain: [
+        {
+          round: 2,
+          role: "pr_reviewer",
+          agent_slug: "pr-1",
+          model: "m",
+          started_at: "2026-09-02T00:00:00Z",
+        },
+        {
+          round: 1,
+          role: "qa",
+          agent_slug: "qa-1",
+          model: "m",
+          started_at: "2026-09-01T00:00:00Z",
+        },
+      ],
+    });
+    expect(member.taskId).toBe("t1");
+    expect(member.ac.map((a) => a.verified)).toEqual([true, false]);
+    expect(member.findings.map((r) => r.round)).toEqual([2, 1]);
+    expect(member.reviewers.map((r) => r.round)).toEqual([1, 2]);
+  });
+});
+
+describe("ciVerdictsByTask / memberCiVerdict", () => {
+  const verdicts = ciVerdictsByTask([
+    {
+      task_id: "t1",
+      ci: { state: "success", head_sha: "abc", failing_checks: [] },
+    },
+  ]);
+
+  it("keys each member's verdict by its task id", () => {
+    expect(memberCiVerdict(verdicts, false, "t1")).toEqual({
+      available: true,
+      state: "success",
+      headSha: "abc",
+      failingChecks: [],
+    });
+  });
+
+  it("reads a member missing from the bulk read as not available", () => {
+    expect(memberCiVerdict(verdicts, false, "t2")).toBe(
+      PR_CI_VERDICT_NOT_AVAILABLE,
+    );
+  });
+
+  it("reads every member as unreadable when the bulk read failed", () => {
+    expect(memberCiVerdict(undefined, true, "t1")).toBe(
+      PR_CI_VERDICT_UNREADABLE,
     );
   });
 });

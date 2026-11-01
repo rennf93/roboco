@@ -29,7 +29,7 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | roboco/api/routes/prompter_live.py | Live Intake chat (start/stream/messages/confirm/confirm-batch). |
 | roboco/api/routes/secretary.py | Company state + CEO directives confirm/reject. |
 | roboco/api/routes/secretary_live.py | Live Secretary chat (start/stream/messages/stop/events). |
-| roboco/api/routes/release.py | CEO-only release proposal approve/reject. |
+| roboco/api/routes/release.py | CEO-only release proposal read/approve/reject, plus the verification rollup's two bulk reads (`/proposal/verification`, `/proposal/ci-verdicts`). |
 | roboco/api/routes/playbooks.py | Playbook approve/reject/archive (Auditor/CEO). |
 | roboco/api/routes/pitch.py | Pitch create/list/approve/reject. |
 | roboco/api/routes/provider.py | Provider catalog + ollama/grok/self-hosted key + mode + routing presets (`/presets` list/save/apply/delete). |
@@ -93,7 +93,7 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | GET | /api/prompter/live/{id}/search-tasks | prompter_live.py | session-aliveness check (no agent identity) — intake's `search_past_tasks` tool (wave 1, `d1cf6ecb`) |
 | POST | /api/secretary/live, /live/{id}/{stream,messages,stop,events} ; /api/secretary/{state,directives} | secretary*.py | panel token / agent ctx |
 | GET | /api/secretary/tasks?q= (search_tasks) | secretary.py | agent ctx, Secretary or CEO role — resolve a task NAME to id(s) for a directive (wave 1, `d1cf6ecb`) |
-| GET/POST | /api/release/proposal, /proposal/approve, /proposal/reject | release.py | `_require_ceo` (agent.role==CEO) |
+| GET/POST | /api/release/proposal, /proposal/verification, /proposal/ci-verdicts, /proposal/approve, /proposal/reject | release.py | `_require_ceo` (agent.role==CEO) |
 | GET/POST | /api/playbooks, /{id}/{approve,reject,archive} | playbooks.py | agent context (Auditor/CEO) |
 | GET/POST | /api/x/posts, /posts/{id}/{approve,reject}, /credentials | x.py | `require_ceo_role` (agent context) |
 | GET/POST | /api/roadmap/cycles, /cycles/{id}/items/{id}/{approve,reject} | roadmap.py | `require_ceo_role` (agent context) |
@@ -137,7 +137,7 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | `_scrub_secrets` | fn | api/middleware.py:475 | Deep-redact known secret fields from logged 422 bodies. |
 | `StrList` | type | schemas/v1/flow.py:21 | `list[str]` with `coerce_str_list` BeforeValidator (XML-nested LLM lists). |
 | `Choreographer` | svc | services/gateway/choreographer/__init__.py:59 | Composes service intents behind every flow verb: the role mixins (developer, PM, QA, PR reviewer, PR gate, board, doc, and the ones every role shares) over `BaseChoreographer` in `choreographer/_impl.py`. |
-| `ContentActions` | svc | services/gateway/content_actions.py:4145 | Composes do-verb content actions (commit/note/dm/...). |
+| `ContentActions` | svc | services/gateway/content_actions.py:4123 | Composes do-verb content actions (commit/note/dm/...). |
 | `router` (do) | router | v1/do.py:67 | `/api/v1/do` router, `require_any_authenticated_agent` dep. |
 | `router` (flow_dev) | router | v1/flow_dev.py:29 | `/api/v1/flow/developer` router, `require_dev` dep. |
 | `get_release_certificate` | function | `roboco/api/routes/releases.py:23` | Governance certificate for one published release (leading `v` tolerated) |

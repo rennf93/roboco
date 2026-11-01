@@ -24,7 +24,6 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
-from uuid import UUID
 
 import structlog
 
@@ -65,6 +64,11 @@ from roboco.services.gateway.content_actions_reports import (
 )
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
+from roboco.services.task_ref import (
+    MIN_TASK_REF_HEX_CHARS,
+    TaskRefOutcome,
+    resolve_task_ref,
+)
 from roboco.services.uptime import UptimeLedger
 from roboco.services.workspace_git import (
     UnsafeWorkspaceGitConfigError,
@@ -75,6 +79,7 @@ from roboco.services.x_client import MAX_TWEET_CHARS
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from uuid import UUID
 
     from roboco.db.tables import TaskTable
     from roboco.foundation.identity import Team
@@ -88,10 +93,6 @@ else:
 
 
 logger = structlog.get_logger()
-
-# Shortest task reference the DO tools resolve (task cards render 8-char
-# prefixes); anything shorter is not identifiable.
-_MIN_TASK_REF_HEX_CHARS = 8
 
 
 def _merge_resumption_fields(
@@ -567,52 +568,29 @@ class TaskAccessActions(_Base):
         (795 evidence errors, verdict never fired) was exactly this. Full
         UUIDs pass through; a hex prefix of at least 8 chars resolves by
         lookup; ambiguity and misses return the error Envelope the caller
-        must propagate.
+        must propagate. The resolution itself is ``resolve_task_ref``'s, the
+        one the REST task routes share; this only renders its outcome.
         """
-        ref = str(task_ref).strip()
-        try:
-            return UUID(ref)
-        except ValueError:
-            pass
-        hex_prefix = ref.removeprefix("#").strip()
-        if len(hex_prefix) < _MIN_TASK_REF_HEX_CHARS or any(
-            c not in "0123456789abcdefABCDEF" for c in hex_prefix
-        ):
-            return Envelope.incomplete_input(
-                missing=["task_id"],
-                field_hints={
-                    "task_id": (
-                        "pass the full UUID or the 8+ char hex prefix shown "
-                        "on the task card"
-                    )
-                },
-                remediate="retry with the full task UUID from the envelope",
-            )
-        from sqlalchemy import String, select
-
-        from roboco.db.tables import TaskTable
-
-        result = await self.task.session.execute(
-            select(TaskTable.id).where(
-                TaskTable.id.cast(String).ilike(f"{hex_prefix}%")
-            )
-        )
-        matches = [row[0] for row in result.all()]
-        if not matches:
+        resolution = await resolve_task_ref(self.task.session, str(task_ref))
+        if resolution.task_id is not None:
+            return resolution.task_id
+        if resolution.outcome is TaskRefOutcome.NOT_FOUND:
             return Envelope.not_found(message=f"no task matches {task_ref!r}")
-        if len(matches) > 1:
-            return Envelope.incomplete_input(
-                missing=["task_id"],
-                field_hints={
-                    "task_id": (
-                        f"{task_ref!r} is ambiguous: {len(matches)} tasks "
-                        "share this prefix - pass more characters or the "
-                        "full UUID"
-                    )
-                },
-                remediate="retry with the full task UUID from the envelope",
+        if resolution.outcome is TaskRefOutcome.AMBIGUOUS:
+            hint = (
+                f"{task_ref!r} is ambiguous: more than one task shares this "
+                "prefix - pass more characters or the full UUID"
             )
-        return cast("UUID", matches[0])
+        else:
+            hint = (
+                "pass the full UUID or the "
+                f"{MIN_TASK_REF_HEX_CHARS}+ char hex prefix shown on the task card"
+            )
+        return Envelope.incomplete_input(
+            missing=["task_id"],
+            field_hints={"task_id": hint},
+            remediate="retry with the full task UUID from the envelope",
+        )
 
     async def _evidence_task_or_error(
         self, task_id: UUID | str, agent_id: UUID
