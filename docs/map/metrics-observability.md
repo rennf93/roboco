@@ -16,7 +16,7 @@ The metrics & observability slice is the read-only measurement layer of RoboCo: 
 | `roboco/services/usage.py` | `UsageService` — token usage summary, time-series, by-agent/team/model, projection, cache efficiency, today summary, recent sessions | 595 |
 | `roboco/services/usage_events.py` | `UsageSnapshot` dataclass + `publish_usage_snapshot` — publishes USAGE_SNAPSHOT to the StreamEventBus | 52 |
 | `roboco/services/telemetry/__init__.py` | Re-export of CI telemetry source symbols | 18 |
-| `roboco/services/telemetry/source.py` | `TelemetrySample` + `TelemetrySource` protocol + `GitHubCITelemetrySource` (self-heal) + `MultiProjectCITelemetrySource` (CI-watch) | 212 |
+| `roboco/services/telemetry/source.py` | `TelemetrySample` + `TelemetrySource` protocol + `GitHubCITelemetrySource` (self-heal) + `MultiProjectCITelemetrySource` (CI-watch) | 261 |
 | `roboco/billing/__init__.py` | Re-export `calculate_cost`, `CostResult`, `calculate_cost_result` | 8 |
 | `roboco/billing/pricing.py` | `calculate_cost` / `calculate_cost_result` / `CostResult` — provider-aware per-token USD pricing (Anthropic + Grok priced; local/Ollama $0); `CostResult` exposes `unpriced` flag for unpriced-Anthropic detection | 320 |
 | `roboco/api/middleware.py` | `RequestLoggingMiddleware` — the single timing seam for every HTTP request; now also the per-verb latency telemetry persistence point via `_extract_flow_verb_role` + `_persist_verb_latency` (fire-and-forget `asyncio.create_task` on a separate session). `FlowVerbTimeoutMiddleware` owns the 504-timeout path whose status code the telemetry classifies as `outcome="timeout"`. | ~781 |
@@ -105,10 +105,10 @@ The metrics & observability slice is the read-only measurement layer of RoboCo: 
 | `TelemetrySample` | dataclass | telemetry/source.py:41 | Normalized health reading; `is_breach` = value ≥ threshold |
 | `TelemetrySource` | protocol | telemetry/source.py:65 | Pull-based read-only `fetch()` contract |
 | `GitHubCITelemetrySource` | class | telemetry/source.py:71 | Self-heal: latest CI run for `self_heal_project_slug` |
-| `MultiProjectCITelemetrySource` | class | telemetry/source.py:131 | CI-watch: per-project samples, isolated failures |
-| `MultiProjectCITelemetrySource._sample_for` | method | telemetry/source.py:167 | One project's sample, None on unreadable signal |
+| `MultiProjectCITelemetrySource` | class | telemetry/source.py:140 | CI-watch: per-project samples, isolated failures |
+| `MultiProjectCITelemetrySource._sample_for` | method | telemetry/source.py:213 | One project's sample, None on unreadable signal |
 | `FAILURE_CONCLUSIONS` | const | telemetry/source.py:37 | `{failure, timed_out, startup_failure}` |
-| `get_ci_telemetry_source` / `get_multi_ci_telemetry_source` | func | telemetry/source.py:126/208 | Factory constructors |
+| `get_ci_telemetry_source` / `get_multi_ci_telemetry_source` | func | telemetry/source.py:126/257 | Factory constructors |
 | `CostResult` | dataclass | billing/pricing.py:209 | Frozen result carrying `cost_usd`, `unpriced` (True when Anthropic model has no pricing entry), `is_anthropic`; lets callers distinguish intentional-$0 (local) from missed-pricing (Anthropic) |
 | `calculate_cost` | func | billing/pricing.py:228 | Thin float wrapper over `calculate_cost_result` — returns `cost_usd` only; kept for existing callers (orchestrator, grok_cli_usage) |
 | `calculate_cost_result` | func | billing/pricing.py:250 | Full provider-aware cost calculation returning `CostResult`; authoritative for `unpriced` attribution |

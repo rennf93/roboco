@@ -782,6 +782,7 @@ class NotificationReviewNotices(_Base):
         from_agent: str | None = None,
         to_ceo: str = "ceo",
         task_title: str | None = None,
+        post_error: str | None = None,
     ) -> None:
         """Tell the CEO an inbound external PR has been reviewed — their call.
 
@@ -800,11 +801,11 @@ class NotificationReviewNotices(_Base):
             to_ceo=to_ceo,
         )
         display = task_display(task_title, task_id)
+        subject, outcome = _external_pr_review_outcome(pr_number, pr_url, post_error)
         body = (
-            f"External PR #{pr_number} on {display} has been reviewed and a "
-            f"change-request posted ({pr_url}).\n\nYour call: supersede it (the "
-            "org takes the contribution over and finishes it to our standards) "
-            "or dismiss it."
+            f"External PR #{pr_number} on {display} {outcome}\n\nYour call: "
+            "supersede it (the org takes the contribution over and finishes it to "
+            "our standards) or dismiss it."
         )
         await self._create_notification(
             CreateNotificationParams(
@@ -812,7 +813,7 @@ class NotificationReviewNotices(_Base):
                 priority=NotificationPriority.HIGH,
                 from_agent=from_agent or "system",
                 to_agents=[to_ceo],
-                subject=f"External PR #{pr_number} reviewed — your decision",
+                subject=subject,
                 body=body,
                 related_task_id=task_id,
             )
@@ -961,6 +962,24 @@ class NotificationReviewNotices(_Base):
                 requires_ack=requires_ack,
             )
         )
+
+
+def _external_pr_review_outcome(
+    pr_number: int, pr_url: str, post_error: str | None
+) -> tuple[str, str]:
+    """The notification subject and the sentence saying where the review is."""
+    if post_error is None:
+        return (
+            f"External PR #{pr_number} reviewed — your decision",
+            f"has been reviewed and a change-request posted ({pr_url}).",
+        )
+    return (
+        f"External PR #{pr_number} reviewed — NOT posted to GitHub",
+        f"has been reviewed, but GitHub refused the review, so the contributor "
+        f"has not seen it ({pr_url}): {post_error}. The full review is saved on "
+        "the task; fix the cause (for example a token without pull-request "
+        "write, or a locked PR) and post it.",
+    )
 
 
 class NotificationService(NotificationReviewNotices, NotificationTaskNotices):
