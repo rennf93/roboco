@@ -926,7 +926,7 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | docker-compose.registry.yml | Pull-and-run compose using pre-built GHCR/Docker Hub images (ROBOCO_REGISTRY + ROBOCO_VERSION); infra services byte-identical to build compose (incl. `backup` + vault defaults), agent-* services are one-shot pre-pulls, own `roboco_data` network; one `docker-gate` (builds refused, since every image is pulled; `GATE_REGISTRY` from `ROBOCO_REGISTRY`; the same read-only bind roots as the build file's gates) serves the orchestrator and dispatcher | 979 |
 | Makefile | Ops + quality targets: infra, dev/run/orchestrator, quality gate (ruff/mypy/pytest/xenon/radon/vulture/bandit/pip-audit/deptry/lint-imports/alembic/foundation-check), fast pre-submit `gate` target (ruff format/check, mypy, xenon, lint-imports), per-Python test matrix, docs, lifecycle regen | 628 |
 | pyproject.toml | Project + dependency manifest: requires-python >=3.13,<3.15, deps, dev/docs extras, console scripts, ruff/mypy/pytest/coverage/vulture/bandit/radon/xenon/deptry/importlinter config | 717 |
-| roboco/config.py | Pydantic Settings (env prefix ROBOCO_, cached via lru_cache); every tunable: DB, Redis, RAG, LLM/Ollama, workspaces, agent guardrails, gateway thresholds, autonomy-engine flags | 3373 |
+| roboco/config.py | Pydantic Settings (env prefix ROBOCO_, cached via lru_cache); every tunable: DB, Redis, RAG, LLM/Ollama, workspaces, agent guardrails, gateway thresholds, autonomy-engine flags | 3400 |
 | roboco/__init__.py | Package root: __version__ + re-exports settings, exceptions, logging helpers | 36 |
 | roboco/bootstrap.py | Async bootstrap: git-user drop self-test (every role but indexer; SystemExit(1) on failure), a warning when an api or dispatcher has the host Docker socket and no `DOCKER_HOST` (a compose file from before the Docker gate), DB init, Redis event bus, websocket bridge, orchestrator construction, uvicorn API server task, wait-for-ready poll, optional agent spawn, graceful shutdown | 259 |
 | roboco/cli.py | argparse CLI wrapper around bootstrap.main / db-only; the ENTRYPOINT invoked by `python -m roboco.cli` | 67 |
@@ -1020,7 +1020,7 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | Name | Kind | File:Line | Responsibility |
 |---|---|---|---|
 | Settings | class | roboco/config.py:26 | Pydantic BaseSettings; all ROBOCO_ env-backed tunables + derived URL properties (database_url, redis_url, internal_api_url, rag_store_url) |
-| get_settings | function | roboco/config.py:3367 | lru_cache-backed singleton factory returning the cached Settings instance |
+| get_settings | function | roboco/config.py:3394 | lru_cache-backed singleton factory returning the cached Settings instance |
 | internal_api_url | property | roboco/config.py:139 | service-to-service API base URL (api_url override or http://host:port/api, maps 0.0.0.0 to 127.0.0.1) |
 | database_url | property | roboco/config.py:214 | asyncpg connection URL |
 | database_url_sync | property | roboco/config.py:222 | sync psycopg URL for Alembic |
@@ -7945,16 +7945,16 @@ External:
 | Flag / setting | Source | Used for |
 |----------------|--------|----------|
 | `ROBOCO_GIT_EXECUTOR_WORKERS` (env, default 16) | `os.environ` at git.py:222 | Dedicated git subprocess pool size |
-| `settings.git_command_timeout_seconds` | config.py:2290 | Default `_run_git` timeout |
-| `settings.git_commit_timeout_seconds` | config.py:2341 | Staging/commit large changeset timeout |
-| `settings.git_network_timeout_seconds` | config.py:2363 | fetch/pull/push/ls-remote timeout |
-| `settings.git_diff_timeout_seconds` | config.py:2374 | `GET /api/git/diff`'s outer "diff" stage bound (default 60s) around the paired `git diff` + `git diff --stat` calls — on top of, not instead of, `git_command_timeout_seconds` bounding each call individually |
-| `settings.workspaces_root` | config.py:2054 | Workspace path root (token derivation) |
-| `settings.workspace_auto_clone` | config.py:2058 | `get_workspace` auto-clone branch |
-| `settings.public_base_url` | config.py:2483 | Commit/PR template link base (`+ /api`) |
+| `settings.git_command_timeout_seconds` | config.py:2317 | Default `_run_git` timeout |
+| `settings.git_commit_timeout_seconds` | config.py:2368 | Staging/commit large changeset timeout |
+| `settings.git_network_timeout_seconds` | config.py:2390 | fetch/pull/push/ls-remote timeout |
+| `settings.git_diff_timeout_seconds` | config.py:2401 | `GET /api/git/diff`'s outer "diff" stage bound (default 60s) around the paired `git diff` + `git diff --stat` calls — on top of, not instead of, `git_command_timeout_seconds` bounding each call individually |
+| `settings.workspaces_root` | config.py:2081 | Workspace path root (token derivation) |
+| `settings.workspace_auto_clone` | config.py:2085 | `get_workspace` auto-clone branch |
+| `settings.public_base_url` | config.py:2510 | Commit/PR template link base (`+ /api`) |
 | `settings.internal_api_url` | config.py:139 | Internal PR body link base |
-| `settings.github_api_base_url` | config.py:1122 | GitHub REST API base (PR/CI/review) |
-| `settings.release_ci_workflow` | config.py:1598 | Named workflow file (e.g. `ci.yml`) used by the release CI gate in `get_latest_ci_conclusion`; always resolves a named workflow so the gate never degrades to the imprecise all-workflows mode |
+| `settings.github_api_base_url` | config.py:1149 | GitHub REST API base (PR/CI/review) |
+| `settings.release_ci_workflow` | config.py:1625 | Named workflow file (e.g. `ci.yml`) used by the release CI gate in `get_latest_ci_conclusion`; always resolves a named workflow so the gate never degrades to the imprecise all-workflows mode |
 
 Module-level tunables (not env): `_SLOW_GIT_OP_MS=5000`, `_CI_RUN_WINDOW=20`, `_CI_FETCH_ATTEMPTS=3`, `_CI_FETCH_BACKOFF_SECONDS=0.5`, `_CI_RETRYABLE_STATUS`, `_CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS=120`, `_GH_UNPROCESSABLE=422`, `_HTTP_NOT_FOUND=404`, `_HTTP_CONFLICT=409`.
 
@@ -8409,6 +8409,7 @@ Cross-cutting support layer beneath the delivery services: the service-base/erro
 | `roboco/services/toolchain.py` | Pure resolver: target project's Python interpreter from `pyproject.toml` / `.python-version` | 117 |
 | `roboco/services/provider.py` | `ProviderService` CRUD for `provider_configs` rows + Fernet-encrypted token tri-state updates | 229 |
 | `roboco/services/llm.py` | `ModelRoutingService`: resolve (provider, model) per agent spawn; assignment CRUD; mode apply (anthropic/grok/ollama/self_hosted/mix); Ollama probe | 1742 |
+| `roboco/services/background_llm.py` | The one client every orchestrator-side text-LLM call goes through (RAG synthesis + health ping, index `ask`, Mentor, validator, distiller, vault intake, X/video drafting, eval judge): follows `derive_mode()` — `anthropic` → Claude Haiku only; any other mode → Ollama flash model, Claude Haiku on any Ollama failure; HTTP 402 cooldown; locked-down Haiku via `claude-agent-sdk` on the mounted login | 461 |
 | `roboco/services/_model_routing_types.py` | `ModelRoutingServiceSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `ModelRoutingService` mixins reach through `self`, plus its instance attributes; `tests/unit/services/test_model_routing_service_mixins.py` fails on a stray stub or a member defined twice | 115 |
 | `roboco/services/proactive.py` | `ProactiveKnowledgeService`: assemble RAG context packages on task-claim / session-start | 542 |
 | `roboco/services/_proactive_knowledge_types.py` | `ProactiveKnowledgeServiceSelf`, a TYPE_CHECKING-only Protocol declaring the attributes the `ProactiveKnowledgeService` mixins read through `self` (no moved body calls across classes, so it has no `<Class>Surface` yet); `tests/unit/services/test_proactive_knowledge_service_mixins.py` fails on a stray stub or a member defined twice | 24 |
@@ -8476,7 +8477,16 @@ Cross-cutting support layer beneath the delivery services: the service-base/erro
 | `upsert_assignment` | method | `services/llm.py:643` | Insert-or-update by `(scope, scope_value)`; provider comes from `provider_type_override` or the `MODEL_CATALOG_BY_NAME` entry, and a non-catalog name routes to the LOCAL provider (`ValueError` when none is seeded); auto-enables the LOCAL/GEMINI/OPENAI/KIMI/OPENROUTER/NEBIUS/HUMMIN provider row (GROK is excluded) |
 | `apply_mode` | method | `services/llm.py:972` | Dispatches a mode to its `_apply_*` handler (unknown mode: `ValueError`). anthropic/grok/codex/gemini/kimi/openrouter/nebius/hummin/ollama/self_hosted first run `_wipe_mode_switch_assignments` (deletes plain ROLE/GLOBAL rows, sparing AGENT_SLUG pins and compound `role:complexity` overrides), enable the provider where needed, then set the GLOBAL default; hummin also seeds the `_HUMMIN_ROLE_TIERS` ROLE rows. `zai` refuses without a saved key and upserts the GLOBAL row WITHOUT the wipe, despite its docstring. `mix` replaces every AGENT_SLUG pin with the per-agent map (an empty map clears all pins, `None` raises). `cost_tiered` additively upserts `_COST_TIERED_SEED`, retired to an empty tuple (#680, 2026-07-24: haiku cannot emit the structured envelopes and the capability floor would upgrade it anyway), so the mode is currently inert but stays wired for a future above-floor re-seed |
 | `_below_capability_floor` / `_floor_below_capability` | functions | `services/llm.py:480,543` | Structured-verb capability floor (#680): any Anthropic assignment that resolves to a haiku-class model — from a pin, a plain ROLE row, or the now-empty cost-tiered seed — is upgraded to `sonnet` at resolution, in both the assignment and legacy paths. Non-Anthropic providers are untouched (an Anthropic-tier floor, not a provider policy); `pr_reviewer`/`auditor` stay on opus regardless. |
-| `derive_mode` | method | `services/llm.py:732` | Settings UI label from current assignments |
+| `derive_mode` | method | `services/llm.py:732` | Settings UI label from current assignments; also the background LLM client's provider signal (`read_routing_mode`) |
+| `generate_background_reply` | func | `services/background_llm.py:439` | Tries the active mode's backend chain in order (`_BACKEND_CHAIN_BY_MODE`, default Ollama then Haiku), logs every fallback with purpose/mode/backend/model/reason/status, returns `BackgroundReply` (text + which backend answered + per-backend `BackendFailure`s; `text=None` when every backend failed) |
+| `generate_background_text` | func | `services/background_llm.py:459` | The reply text only, `None` when every backend failed — what nine of the ten call sites use |
+| `BackgroundPrompt` | dataclass | `services/background_llm.py:69` | One request: `purpose` (call-site label in logs), user/system prompt, `max_tokens`, per-backend `timeout_seconds`, Ollama-only `temperature` / `ollama_num_ctx` |
+| `read_routing_mode` | func | `services/background_llm.py:122` | `derive_mode()` over a short `get_db_context()` session of its own (most callers hold none) |
+| `RoutingModeCache` | class | `services/background_llm.py:129` | Per-process mode cache, re-read every `background_llm_mode_cache_seconds`; a failed read keeps the last mode known |
+| `NoCreditCooldown` | class | `services/background_llm.py:160` | After an Ollama HTTP 402, Ollama is skipped for `background_llm_ollama_no_credit_cooldown_seconds` |
+| `OllamaBackend` | class | `services/background_llm.py:250` | POSTs `{local_llm_base_url}/chat/completions` with `local_llm_model`; any non-2xx, connection error, timeout, malformed or empty reply raises `BackendUnavailableError` |
+| `ClaudeHaikuBackend` | class | `services/background_llm.py:359` | `claude_agent_sdk.query` with `locked_down_haiku_options`; refuses while `ANTHROPIC_API_KEY`/`ANTHROPIC_AUTH_TOKEN` is set; an `is_error` result or empty text is a failure |
+| `locked_down_haiku_options` | func | `services/background_llm.py:281` | `MODEL_MAP["haiku"]`, one turn, `tools=[]`, no MCP (`strict_mcp_config`), `setting_sources=[]`, `--safe-mode`, `--no-session-persistence`, `verbatim_prompts`, fixed scratch cwd, effort low, output cap = `max_tokens` + 2048 thinking headroom |
 | `set_ollama_api_key` / `set_grok_api_key` | methods | `services/llm.py:839,859` | Encrypt+enable / clear+disable on the seeded provider row; `set_openrouter_api_key`, `set_nebius_api_key`, `set_zai_api_key` and `set_hummin_api_key` are the same shape for their providers |
 | `_interactive_exempt` | func | `services/llm.py:489` | True only when `agent_slug` is in `INTERACTIVE_AGENT_SLUGS` (`intake-1`/`secretary-1`), the resolved provider is in `INTERACTIVE_UNSUPPORTED_PROVIDERS`, and the row is a GLOBAL/ROLE row (an AGENT_SLUG pin never exempts); `resolve_for_agent` then returns the legacy Anthropic route. `INTERACTIVE_UNSUPPORTED_PROVIDERS` was retired to an empty tuple (2026-09-17, every provider now has an interactive path), so this currently never fires and the interactive agents follow the fleet-wide provider; the orchestrator's `_reject_interactive_unsupported_provider` spawn guard mirrors the same empty tuple |
 | `list_routing_presets` / `get_routing_preset` | methods | `services/llm.py:1481,1489` | List / fetch one saved `RoutingPresetTable` row |
@@ -8615,6 +8625,7 @@ support-services
 │   ├── toolchain.py       # resolve_target_python (pure)
 │   ├── provider.py        # ProviderService (provider_configs CRUD + Fernet tokens)
 │   ├── llm.py             # ModelRoutingService (spawn routing + modes + Ollama probe)
+│   ├── background_llm.py  # the one orchestrator-side text-LLM client (Ollama flash / Claude Haiku)
 │   ├── proactive.py       # ProactiveKnowledgeService (RAG context packages)
 │   ├── transcription.py   # TranscriptionService (stream buffering)
 │   └── second_review.py   # SecondReviewSelection / resolve_second_review_provider / SecondReviewService
@@ -8708,12 +8719,15 @@ Panel-tunable flags defined in `services/settings.py:46` `FEATURE_FLAGS` (stored
 
 Cloud auth (`ROBOCO_CLOUD_AUTH_ENABLED`) and DB network isolation (`ROBOCO_DB_NETWORK_ISOLATED`) are deliberately **not** in `FEATURE_FLAGS` — both are compose/env-coupled (cookie/TLS posture and the `networks:` topology respectively) and unsafe for a runtime toggle to flip mid-session; they stay pure env vars, not panel-tunable settings. `ROBOCO_TELEGRAM_MINIAPP_ENABLED` (Telegram Mini App sign-in) joins them for the same reason — security/TLS-coupled, and `Settings` fails loud at startup if it's armed without `cloud_auth_enabled`; its sibling `telegram_initdata_max_age_seconds` (default 600) is likewise env-only.
 
+`background_llm.py` reads `local_llm_model` / `local_llm_base_url` (Ollama side), `background_llm_mode_cache_seconds` (30) and `background_llm_ollama_no_credit_cooldown_seconds` (600), all env-only.
+
 Other settings read here: `transcript_retention_days` (int, ≥1; read by the orchestrator's `_sweep_transcript_retention` at `runtime/engines/sweeps.py:1447`). Non-flag config consumed: `settings.redis_url` (`health`, `stream_bus`), `settings.encryption_key` (`crypto`).
 
 `second_review.py` reads a dedicated settings block, not part of `FEATURE_FLAGS` (env-only, not panel-tunable): `cross_vendor_review_enabled` (master switch, default `False`), `cross_vendor_review_max_priority` (int 0-3, default `1` — P0/P1 qualify), `cross_vendor_review_flag_migrations` / `_flag_protected_surface` / `_flag_security` (each default `True`, gating whether `Task.adds_migration` / `Task.touches_shared` / a security-keyword match respectively counts toward high-stakes once the master switch is on), and `cross_vendor_review_security_keywords` (tuple of substrings matched case-insensitively against a task's title+description).
 
 ## Gotchas
 
+- **A background-LLM call can take twice its timeout** (`background_llm.py`) — `timeout_seconds` bounds each backend attempt, so an Ollama timeout followed by a Haiku answer spends up to 2× the call site's budget. The Haiku CLI also writes into the mounted `~/.claude` (a one-time `backups/.claude.json.backup.<ts>`, a built-in plugin record under `plugins/store/`, transient `sessions/` entries) even though hooks, plugins, settings and transcripts are locked out.
 - **`resolve_for_agent` never raises for a normal agent** (`llm.py:124`) — decrypt failures, unreachable LOCAL servers, and missing agents all downgrade to the legacy Anthropic path. A misconfigured provider therefore silently spawns against Anthropic instead of erroring; check orchestrator logs for "falling back to legacy path" / "Self-hosted server unreachable".
 - **Mix-mode self-hosted models auto-enable the LOCAL provider** (`llm.py:285`) — `upsert_assignment` flips the LOCAL provider row to `enabled=True` whenever an assignment resolves to LOCAL. A prior observation (47392) flagged that this enabling only happens on upsert, not on a bare GLOBAL assignment path — verify the LOCAL row is enabled before relying on self-hosted routing.
 - **`probe_ollama_tags` leaks raw exception text** into the returned error string (`llm.py:92`, observation 47334) — the generic `except Exception` branch puts `str(exc)` in the user-facing message. Minor info-disclosure surface.
@@ -10039,32 +10053,32 @@ product-strategy-research-pitch
 
 | Flag | Default | File:Line | Effect |
 |------|---------|-----------|--------|
-| `ROBOCO_CONVENTIONS_ENABLED` | `False` | config.py:760 | `ProjectService.create` best-effort scaffolds `.roboco/conventions.yml` PR; inert when off |
-| `ROBOCO_RESEARCH_ENABLED` | `True` | config.py:866 | Mounts `roboco-search` MCP into Board/PM containers (orchestrator:2914) |
-| `ROBOCO_RESEARCH_PROVIDER` | `tavily` | config.py:873 | `tavily`/`brave`/`exa`/`null` adapter selection |
-| `ROBOCO_RESEARCH_API_KEY` | `None` | config.py:886 | Server-side only; unset → `NullProvider` |
-| `ROBOCO_RESEARCH_MAX_RESULTS` | `5` | config.py:904 | Hard cap on `web_search` results (1–20) |
-| `ROBOCO_RESEARCH_FETCH_MAX_CHARS` | `20000` | config.py:910 | Hard cap on `web_fetch` extracted chars |
-| `ROBOCO_RESEARCH_TIMEOUT_SECONDS` | `15.0` | config.py:915 | Outbound provider HTTP timeout |
-| `ROBOCO_RESEARCH_DAILY_QUOTA_PER_AGENT` | `50` | config.py:920 | Per-agent/day call ceiling (Redis, fail-open) |
-| `ROBOCO_PROVISIONING_ENABLED` | `True` | config.py:1104 | Pitch auto-provisioning master switch (still inert without token+org) |
-| `ROBOCO_PROVISIONING_TOKEN` | `""` | config.py:1111 | GitHub PAT for repo creation (server-side only) |
-| `ROBOCO_PROVISIONING_ORG` | `""` | config.py:1118 | GitHub org where repos are provisioned |
-| `ROBOCO_GITHUB_API_BASE_URL` | `https://api.github.com` | config.py:1122 | Override for GitHub Enterprise |
-| `ROBOCO_PROVISIONING_TIMEOUT_SECONDS` | `30.0` | config.py:1126 | Outbound GitHub provisioning timeout |
-| `ROBOCO_PROVISIONING_REPO_PRIVATE` | `True` | config.py:1131 | Whether provisioned repos are private |
-| `ROBOCO_PROVISIONING_PROVIDER` | `github` | config.py:1135 | Phase 4 forge parity: `github`/`gitlab`/`gitea` selects the concrete provisioning target via `_build_provider` |
-| `ROBOCO_PROVISIONING_HOST` | `""` | config.py:1144 | Self-hosted forge host (e.g. `gitlab.example.com`); `.enabled` additionally requires this when `provisioning_provider` is gitlab/gitea (ignored for github/gitlab.com) |
-| `ROBOCO_STRATEGY_ENGINE_ENABLED` | `False` | config.py:1160 | Master switch — loop never starts when off |
-| `ROBOCO_STRATEGY_ENGINE_INTERVAL_SECONDS` | `1800` | config.py:1167 | Seconds between strategy assessment passes |
-| `ROBOCO_STRATEGY_STRANDED_BLOCKED_MINUTES` | `120` | config.py:1172 | Blocked-task threshold for "stranded" observation |
-| `ROBOCO_PROTECTED_GIT_URLS` | `[]` | config.py:2414 | Denylist — `ProjectService` rejects `git_url` containing any entry |
-| `ROBOCO_ENCRYPTION_KEY` | `""` | config.py:932 | Fernet key for git-token encrypt/decrypt |
-| `ROBOCO_ROADMAP_ENGINE_ENABLED` | `False` | config.py:1951 | Master switch — `_roadmap_engine_loop` never opens an exploration cycle when off |
-| `ROBOCO_ROADMAP_INTERVAL_SECONDS` | `604800` | config.py:1961 | Seconds between roadmap-exploration cycles (default weekly) |
-| `ROBOCO_ROADMAP_MIN_ITEMS_PER_CYCLE` | `3` | config.py:1966 | Minimum item drafts `propose_roadmap` must submit for a themed cycle |
-| `ROBOCO_ROADMAP_MAX_ITEMS_PER_CYCLE` | `7` | config.py:1971 | Maximum item drafts per cycle |
-| `ROBOCO_PEST_REWORK_THRESHOLD` | `0.3` | config.py:1984 | 7-day rework rate above which Pest Control's metric predicate opens a cycle off-schedule, on top of its weekly cron. The ONLY env-settable knob among the twelve new Board Programs — every other one arms exclusively via its own settings-store row (`board_program.{key}.enabled`, no `ROBOCO_*_ENABLED` flag exists for them) |
+| `ROBOCO_CONVENTIONS_ENABLED` | `False` | config.py:787 | `ProjectService.create` best-effort scaffolds `.roboco/conventions.yml` PR; inert when off |
+| `ROBOCO_RESEARCH_ENABLED` | `True` | config.py:893 | Mounts `roboco-search` MCP into Board/PM containers (orchestrator:2914) |
+| `ROBOCO_RESEARCH_PROVIDER` | `tavily` | config.py:900 | `tavily`/`brave`/`exa`/`null` adapter selection |
+| `ROBOCO_RESEARCH_API_KEY` | `None` | config.py:913 | Server-side only; unset → `NullProvider` |
+| `ROBOCO_RESEARCH_MAX_RESULTS` | `5` | config.py:931 | Hard cap on `web_search` results (1–20) |
+| `ROBOCO_RESEARCH_FETCH_MAX_CHARS` | `20000` | config.py:937 | Hard cap on `web_fetch` extracted chars |
+| `ROBOCO_RESEARCH_TIMEOUT_SECONDS` | `15.0` | config.py:942 | Outbound provider HTTP timeout |
+| `ROBOCO_RESEARCH_DAILY_QUOTA_PER_AGENT` | `50` | config.py:947 | Per-agent/day call ceiling (Redis, fail-open) |
+| `ROBOCO_PROVISIONING_ENABLED` | `True` | config.py:1131 | Pitch auto-provisioning master switch (still inert without token+org) |
+| `ROBOCO_PROVISIONING_TOKEN` | `""` | config.py:1138 | GitHub PAT for repo creation (server-side only) |
+| `ROBOCO_PROVISIONING_ORG` | `""` | config.py:1145 | GitHub org where repos are provisioned |
+| `ROBOCO_GITHUB_API_BASE_URL` | `https://api.github.com` | config.py:1149 | Override for GitHub Enterprise |
+| `ROBOCO_PROVISIONING_TIMEOUT_SECONDS` | `30.0` | config.py:1153 | Outbound GitHub provisioning timeout |
+| `ROBOCO_PROVISIONING_REPO_PRIVATE` | `True` | config.py:1158 | Whether provisioned repos are private |
+| `ROBOCO_PROVISIONING_PROVIDER` | `github` | config.py:1162 | Phase 4 forge parity: `github`/`gitlab`/`gitea` selects the concrete provisioning target via `_build_provider` |
+| `ROBOCO_PROVISIONING_HOST` | `""` | config.py:1171 | Self-hosted forge host (e.g. `gitlab.example.com`); `.enabled` additionally requires this when `provisioning_provider` is gitlab/gitea (ignored for github/gitlab.com) |
+| `ROBOCO_STRATEGY_ENGINE_ENABLED` | `False` | config.py:1187 | Master switch — loop never starts when off |
+| `ROBOCO_STRATEGY_ENGINE_INTERVAL_SECONDS` | `1800` | config.py:1194 | Seconds between strategy assessment passes |
+| `ROBOCO_STRATEGY_STRANDED_BLOCKED_MINUTES` | `120` | config.py:1199 | Blocked-task threshold for "stranded" observation |
+| `ROBOCO_PROTECTED_GIT_URLS` | `[]` | config.py:2441 | Denylist — `ProjectService` rejects `git_url` containing any entry |
+| `ROBOCO_ENCRYPTION_KEY` | `""` | config.py:959 | Fernet key for git-token encrypt/decrypt |
+| `ROBOCO_ROADMAP_ENGINE_ENABLED` | `False` | config.py:1978 | Master switch — `_roadmap_engine_loop` never opens an exploration cycle when off |
+| `ROBOCO_ROADMAP_INTERVAL_SECONDS` | `604800` | config.py:1988 | Seconds between roadmap-exploration cycles (default weekly) |
+| `ROBOCO_ROADMAP_MIN_ITEMS_PER_CYCLE` | `3` | config.py:1993 | Minimum item drafts `propose_roadmap` must submit for a themed cycle |
+| `ROBOCO_ROADMAP_MAX_ITEMS_PER_CYCLE` | `7` | config.py:1998 | Maximum item drafts per cycle |
+| `ROBOCO_PEST_REWORK_THRESHOLD` | `0.3` | config.py:2011 | 7-day rework rate above which Pest Control's metric predicate opens a cycle off-schedule, on top of its weekly cron. The ONLY env-settable knob among the twelve new Board Programs — every other one arms exclusively via its own settings-store row (`board_program.{key}.enabled`, no `ROBOCO_*_ENABLED` flag exists for them) |
 
 ## Gotchas
 
@@ -10696,7 +10710,7 @@ The pytest test suite for RoboCo: 571 test_*.py files across tests/foundation, t
 
 | Path | Role | LOC |
 |---|---|---|
-| tests/conftest.py | Top-level conftest: provisions ephemeral Postgres+pgvector test DB, db_session + smoke_test_batch fixtures, skip-when-PG-unreachable hook | 692 |
+| tests/conftest.py | Top-level conftest: provisions ephemeral Postgres+pgvector test DB, db_session + smoke_test_batch fixtures, skip-when-PG-unreachable hook | 733 |
 | tests/unit/services/optimal_brain/conftest.py | Single-line docstring conftest for optimal_brain unit tests (no fixtures) | 1 |
 | tests/__init__.py | Empty package marker (all 14 tests/*/__init__.py are empty) | 0 |
 | tests/fixtures/2026-05-08-smoke-trace.json | Synthesized 11-bug smoke trace fixture consumed by test_lifecycle_smoke_replay; pins (verb,role,task setup,expected envelope) per bug with a replay_kind taxonomy | 194 |
@@ -10735,21 +10749,21 @@ Recent harness hardening for the auditor-revival slice (PR #498, task `8323cd50`
 
 | Name | Kind | File:Line | Responsibility |
 |---|---|---|---|
-| _nothing_left_open_on_an_ended_loop | fixture (function, autouse) | tests/conftest.py:102 | Fails a test that leaves a DB engine or RAG service on an event loop that has ended, naming it, and drops them so the next test doesn't fail too; defined first so it checks after pytest-asyncio closes the test's loop |
-| _close_this_loops_db_and_rag | fixture (function, autouse, async) | tests/conftest.py:132 | Closes the RAG service and DB engines the test's own loop opened (`close_optimal_service`, `close_db`) before pytest-asyncio closes the loop |
+| _nothing_left_open_on_an_ended_loop | fixture (function, autouse) | tests/conftest.py:104 | Fails a test that leaves a DB engine or RAG service on an event loop that has ended, naming it, and drops them so the next test doesn't fail too; defined first so it checks after pytest-asyncio closes the test's loop |
+| _close_this_loops_db_and_rag | fixture (function, autouse, async) | tests/conftest.py:134 | Closes the RAG service and DB engines the test's own loop opened (`close_optimal_service`, `close_db`) before pytest-asyncio closes the loop |
 | _TEST_DB_HOST/_TEST_DB_PORT/_TEST_DB_USER/_TEST_DB_PASSWORD/_TEST_DB_ADMIN_DB | module constants | tests/conftest.py:84 | Env-overridable Postgres test endpoint discovery; defaults host=localhost port=15432 user=roboco password=roboco admin-db=postgres (changed from :5432/$USER since baseline) |
-| _postgres_reachable | function | tests/conftest.py:231 | TCP-probe the configured Postgres endpoint with a 1s timeout; returns False on OSError |
+| _postgres_reachable | function | tests/conftest.py:272 | TCP-probe the configured Postgres endpoint with a 1s timeout; returns False on OSError |
 | _PG_AVAILABLE | module constant | tests/conftest.py:114 | Module-level liveness flag computed once at import; gates fixture self-skip + collection-time skip marking |
-| _pg_unreachable_notice | function | tests/conftest.py:240 | Counts the run's skips whose reason is `Postgres unreachable at host:port` and returns the terminal-summary notice, or None when no test needed PG; replaced 536bbb64's import-time `warnings.warn`, which the suite's warnings-as-errors filter turned into a conftest ImportError on every run without PG (the in-image suites, the decisions-sidecar suite); tested by tests/unit/test_conftest_db_unreachable_notice.py |
-| _TEST_ENVIRONMENT_NOTICES | stash key | tests/conftest.py:262 | Notices about the machine the run is on (a missing pgvector), appended by fixtures to `config.stash` and printed by `pytest_terminal_summary`; not `warnings`, since the suite fails on any warning |
-| _build_url | function | tests/conftest.py:272 | Build a postgresql+asyncpg:// URL with optional password for a given database name |
-| _test_database_url | fixture (session, async) | tests/conftest.py:283 | Session-scoped: CREATE DATABASE roboco_test_<pid>_<rand>, enable pgvector, Base.metadata.create_all (kept equal to `alembic upgrade head` by `tests/integration/test_migrations_match_models.py`), yield URL, DROP DATABASE on teardown (force-terminate stragglers first); self-skips if PG unreachable |
-| _no_live_database | fixture (function, autouse) | tests/conftest.py:191 | Points `settings.database_url` (what `get_engine()` / `get_db_context()` / the cloud-auth router open) at 127.0.0.1:1 for every test, as `_no_live_redis` does for Redis, unless it already names a `roboco_test_*` database (the e2e harness); no test reaches a developer's or the live database |
-| app_settings_on_test_db | fixture (function) | tests/conftest.py:363 | Points the app's settings at the throwaway test database `_test_database_url` built and returns its URL, for a test that drives the app's own engine machinery (the cloud-auth login router, the background-pool claims) |
-| db_session | fixture (function, async) | tests/conftest.py:381 | Per-test AsyncSession bound to the ephemeral DB; no pool_pre_ping (avoids un-awaited cancel RuntimeWarning); rollback + dispose on teardown |
-| smoke_test_batch | fixture (function, async) | tests/conftest.py:425 | Seeds 1 project + system agent + dev/qa/pm agents + 1 COMPLETED task + 3 audit_log rows + 3 journals/entries (reflect/learning/decision) + sets the task's acceptance_criteria_status/qa_evidence_inspected; the only fixture that COMMITs; yields [task_id] |
-| pytest_collection_modifyitems | hook | tests/conftest.py:654 | Collection-time skip marker for any item whose fixturenames intersect {db_session, smoke_test_batch} when _PG_AVAILABLE is False — does NOT cover _test_database_url direct requesters |
-| pytest_terminal_summary | hook | tests/conftest.py:677 | Prints a red "test environment" section with the stashed `_TEST_ENVIRONMENT_NOTICES` and `_pg_unreachable_notice`'s count of PG skips; prints nothing when both are empty |
+| _pg_unreachable_notice | function | tests/conftest.py:281 | Counts the run's skips whose reason is `Postgres unreachable at host:port` and returns the terminal-summary notice, or None when no test needed PG; replaced 536bbb64's import-time `warnings.warn`, which the suite's warnings-as-errors filter turned into a conftest ImportError on every run without PG (the in-image suites, the decisions-sidecar suite); tested by tests/unit/test_conftest_db_unreachable_notice.py |
+| _TEST_ENVIRONMENT_NOTICES | stash key | tests/conftest.py:303 | Notices about the machine the run is on (a missing pgvector), appended by fixtures to `config.stash` and printed by `pytest_terminal_summary`; not `warnings`, since the suite fails on any warning |
+| _build_url | function | tests/conftest.py:313 | Build a postgresql+asyncpg:// URL with optional password for a given database name |
+| _test_database_url | fixture (session, async) | tests/conftest.py:324 | Session-scoped: CREATE DATABASE roboco_test_<pid>_<rand>, enable pgvector, Base.metadata.create_all (kept equal to `alembic upgrade head` by `tests/integration/test_migrations_match_models.py`), yield URL, DROP DATABASE on teardown (force-terminate stragglers first); self-skips if PG unreachable |
+| _no_live_database | fixture (function, autouse) | tests/conftest.py:232 | Points `settings.database_url` (what `get_engine()` / `get_db_context()` / the cloud-auth router open) at 127.0.0.1:1 for every test, as `_no_live_redis` does for Redis, unless it already names a `roboco_test_*` database (the e2e harness); no test reaches a developer's or the live database |
+| app_settings_on_test_db | fixture (function) | tests/conftest.py:404 | Points the app's settings at the throwaway test database `_test_database_url` built and returns its URL, for a test that drives the app's own engine machinery (the cloud-auth login router, the background-pool claims) |
+| db_session | fixture (function, async) | tests/conftest.py:422 | Per-test AsyncSession bound to the ephemeral DB; no pool_pre_ping (avoids un-awaited cancel RuntimeWarning); rollback + dispose on teardown |
+| smoke_test_batch | fixture (function, async) | tests/conftest.py:466 | Seeds 1 project + system agent + dev/qa/pm agents + 1 COMPLETED task + 3 audit_log rows + 3 journals/entries (reflect/learning/decision) + sets the task's acceptance_criteria_status/qa_evidence_inspected; the only fixture that COMMITs; yields [task_id] |
+| pytest_collection_modifyitems | hook | tests/conftest.py:695 | Collection-time skip marker for any item whose fixturenames intersect {db_session, smoke_test_batch} when _PG_AVAILABLE is False — does NOT cover _test_database_url direct requesters |
+| pytest_terminal_summary | hook | tests/conftest.py:718 | Prints a red "test environment" section with the stashed `_TEST_ENVIRONMENT_NOTICES` and `_pg_unreachable_notice`'s count of PG skips; prints nothing when both are empty |
 
 ## Data Flow
 pytest invocation (make quality/make test/uv run pytest) reads [tool.pytest.ini_options] in pyproject.toml: asyncio_mode=auto makes every async def test_ run on the asyncio loop, testpaths=["tests"] scopes collection, addopts="--cov=roboco --cov-report=term-missing" attaches coverage with core=sysmon. At import time tests/conftest.py probes Postgres via _postgres_reachable() and sets _PG_AVAILABLE. The session fixture _test_database_url opens an asyncpg admin connection, CREATEs an ephemeral DB roboco_test_<pid>_<rand>, enables pgvector, builds schema via Base.metadata.create_all (NOT alembic: faster and free of migration seed rows; `tests/integration/test_migrations_match_models.py` fails CI when the two schemas differ), yields the URL, and DROPs the DB on session teardown. Per-test, db_session builds a fresh engine+AsyncSession against that URL, yields it, rolls back + disposes. smoke_test_batch seeds a full tracing-contract-compliant completed task (committing). pytest_collection_modifyitems marks db_session/smoke_test_batch requesters as skipped when PG is down. Coverage flows: sys.monitoring core counts async-aware line coverage, the omit list excludes infra-bound modules (orchestrator.py, git.py, workspace.py, mcp/*, agents/*, optimal.py, etc.) from the 80% --cov-fail-under gate, deferring their coverage to NAS smoke runs. The shell scripts are NOT invoked by pytest — they are standalone smoke scripts run manually/CI against docker/scripts/*.sh. The JSON fixture is loaded by tests/foundation/test_lifecycle_smoke_replay.py via _load_fixture() and dispatched per record by replay_kind into spec.Decision assertions.
@@ -10949,7 +10963,7 @@ tests/
 | Title | File:Line | Claim | Severity |
 |---|---|---|---|
 | conftest DB-default change silently skips all DB tests on non-Docker dev boxes | tests/conftest.py:85 | Default port changed 5432->15432 (Docker roboco-postgres). On a bare-metal dev box without Docker, _postgres_reachable() returns False and EVERY db_session/smoke_test_batch test skips — a developer can see a green run with zero real-DB coverage and not notice. **Partially mitigated in 536bbb64**: the terminal summary's red "test environment" section (`pytest_terminal_summary`, `_pg_unreachable_notice`) counts the tests skipped because PG is unreachable, so an all-skips run says so at the end. (536bbb64 used an import-time `warnings.warn`; under the warnings-as-errors filter that failed every run without PG before it started.) The per-test skip itself is unchanged. Previously (5432/$USER) it errored loudly with InvalidPasswordError, surfacing the misconfiguration. | medium |
-| _test_database_url direct requesters bypass the collection-time skip (pytest_collection_modifyitems) | tests/conftest.py:283 | pytest_collection_modifyitems only adds the skip marker for fixturenames in {db_session, smoke_test_batch}. test_claim_lock_serialization and test_board_review_gate_timeline_real_db request _test_database_url directly; they skip only because the fixture self-skips (the `pytest.skip` inside `_test_database_url`). If a refactor removes that internal skip (e.g. moving provisioning into a different fixture), these tests will hard-fail with connection errors instead of skipping when PG is unreachable. | low |
+| _test_database_url direct requesters bypass the collection-time skip (pytest_collection_modifyitems) | tests/conftest.py:324 | pytest_collection_modifyitems only adds the skip marker for fixturenames in {db_session, smoke_test_batch}. test_claim_lock_serialization and test_board_review_gate_timeline_real_db request _test_database_url directly; they skip only because the fixture self-skips (the `pytest.skip` inside `_test_database_url`). If a refactor removes that internal skip (e.g. moving provisioning into a different fixture), these tests will hard-fail with connection errors instead of skipping when PG is unreachable. | low |
 | create_all vs migration drift | tests/conftest.py | The suite's schema is built via Base.metadata.create_all, not alembic, so a model and its migration could disagree unseen (trail #32 found 9 index/key differences, 106 server defaults, 3 foreign-key names and a partial-index predicate). Now guarded by `tests/integration/test_migrations_match_models.py`, which runs in `make quality`. | low |
 | smoke_test_batch commits but db_session teardown only rolls back — cross-test leakage within a session | tests/conftest.py:477 | smoke_test_batch calls db_session.commit() (the only fixture that commits). db_session teardown does session.rollback() which is a no-op against already-committed rows. Because the DB is session-scoped and dropped at end, this is safe ONLY if no other test in the same session re-uses the committed rows expecting a clean state. A test that requests db_session AFTER smoke_test_batch in the same session could see residual committed rows if the seeding fixture ran in the same DB. Function-scoped fixtures re-seed each call, but the commit breaks the per-test isolation invariant the rollback teardown assumes. | medium |
 | Coverage omit list hides orchestrator/git/workspace regressions from the 80% gate | pyproject.toml:259 | [tool.coverage.run].omit excludes roboco/runtime/orchestrator.py, services/git.py, services/workspace.py, mcp/*, agents/*, optimal.py, websocket.py, stream_bus.py, cli.py. A regression in any of these (e.g. the respawn-tracker upsert race, the pr_merge cross-repo scoping, the worktree routing) will NOT fail make quality's --cov-fail-under=80 gate. The 141-gaps and Close-gaps commits added many runtime/git tests, but the modules remain omitted, so coverage is measured only on the non-omitted surface. | medium |
@@ -11053,7 +11067,7 @@ Every verdict is buffered into `decision_log` (migrations 105 to 107). The traje
 | `roboco/services/decisions/export.py` | Exports labelled `decision_log` rows as the JSONL fine-tune corpus (`python -m roboco.services.decisions.export`) | 290 |
 | `roboco/services/decisions/spend_guard.py` | Per-tier spend accounting from `usage.cost`; alerts the CEO on two HTTP 402s in a rolling hour or when the OpenRouter total crosses `decisions_cost_alert_usd` | 194 |
 | `roboco/services/decisions_audit_engine.py` | Decisions Audit Board Program (Auditor): daily cycle prunes `decision_log` past retention, originates one held review task, and injects the previous day's per-pilot aggregates into the Auditor's prompt | 275 |
-| `docker/decisions.Dockerfile` | `roboco-decisions` sidecar image (Debian trixie): llama.cpp b11371 built with the Vulkan and CPU backends, Clef-Flash Q4_K_M and Laya Q8_0 weights pinned by hash, behind the FastAPI proxy | 190 |
+| `docker/decisions.Dockerfile` | `roboco-decisions` sidecar image (Debian trixie): llama.cpp b11371 built with the Vulkan and CPU backends, Clef-Flash Q4_K_M and Laya Q8_0 weights pinned by hash, behind the FastAPI proxy | 193 |
 | `docker/decisions/entrypoint.sh` | Sidecar supervisor: starts the Clef (127.0.0.1:8110) and Laya (127.0.0.1:8111) llama-servers with batch = context = input cap, one slot and every layer on the GPU when present, seeds the proxy's throughput from the device found, waits for each `/health`, then runs the proxy in the foreground | 224 |
 | `docker/decisions/server.py` | Sidecar FastAPI proxy serving the OpenRouter Decisions wire shape at `POST /api/alpha/decisions`, admitting one input at a time per backend only when it can finish before the caller's `x-decisions-deadline-s` (else 503 `busy:` at once), forwarding to the routed llama.cpp backend and normalizing answers; `GET /health` returns 503 while Clef is unreachable so traffic moves to a fallback tier, and reports each backend's queue | 687 |
 | `docker-compose.igpu.yaml` | Override `scripts/deploy-nas.sh` adds when the host has `/dev/dri/renderD128`: passes the Intel iGPU to the decisions sidecar (with the host's render group) and to ollama (Vulkan, integrated-GPU opt-in) | 31 |

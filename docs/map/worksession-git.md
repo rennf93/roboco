@@ -382,16 +382,16 @@ External:
 | Flag / setting | Source | Used for |
 |----------------|--------|----------|
 | `ROBOCO_GIT_EXECUTOR_WORKERS` (env, default 16) | `os.environ` at git.py:222 | Dedicated git subprocess pool size |
-| `settings.git_command_timeout_seconds` | config.py:2290 | Default `_run_git` timeout |
-| `settings.git_commit_timeout_seconds` | config.py:2341 | Staging/commit large changeset timeout |
-| `settings.git_network_timeout_seconds` | config.py:2363 | fetch/pull/push/ls-remote timeout |
-| `settings.git_diff_timeout_seconds` | config.py:2374 | `GET /api/git/diff`'s outer "diff" stage bound (default 60s) around the paired `git diff` + `git diff --stat` calls — on top of, not instead of, `git_command_timeout_seconds` bounding each call individually |
-| `settings.workspaces_root` | config.py:2054 | Workspace path root (token derivation) |
-| `settings.workspace_auto_clone` | config.py:2058 | `get_workspace` auto-clone branch |
-| `settings.public_base_url` | config.py:2483 | Commit/PR template link base (`+ /api`) |
+| `settings.git_command_timeout_seconds` | config.py:2317 | Default `_run_git` timeout |
+| `settings.git_commit_timeout_seconds` | config.py:2368 | Staging/commit large changeset timeout |
+| `settings.git_network_timeout_seconds` | config.py:2390 | fetch/pull/push/ls-remote timeout |
+| `settings.git_diff_timeout_seconds` | config.py:2401 | `GET /api/git/diff`'s outer "diff" stage bound (default 60s) around the paired `git diff` + `git diff --stat` calls — on top of, not instead of, `git_command_timeout_seconds` bounding each call individually |
+| `settings.workspaces_root` | config.py:2081 | Workspace path root (token derivation) |
+| `settings.workspace_auto_clone` | config.py:2085 | `get_workspace` auto-clone branch |
+| `settings.public_base_url` | config.py:2510 | Commit/PR template link base (`+ /api`) |
 | `settings.internal_api_url` | config.py:139 | Internal PR body link base |
-| `settings.github_api_base_url` | config.py:1122 | GitHub REST API base (PR/CI/review) |
-| `settings.release_ci_workflow` | config.py:1598 | Named workflow file (e.g. `ci.yml`) used by the release CI gate in `get_latest_ci_conclusion`; always resolves a named workflow so the gate never degrades to the imprecise all-workflows mode |
+| `settings.github_api_base_url` | config.py:1149 | GitHub REST API base (PR/CI/review) |
+| `settings.release_ci_workflow` | config.py:1625 | Named workflow file (e.g. `ci.yml`) used by the release CI gate in `get_latest_ci_conclusion`; always resolves a named workflow so the gate never degrades to the imprecise all-workflows mode |
 
 Module-level tunables (not env): `_SLOW_GIT_OP_MS=5000`, `_CI_RUN_WINDOW=20`, `_CI_FETCH_ATTEMPTS=3`, `_CI_FETCH_BACKOFF_SECONDS=0.5`, `_CI_RETRYABLE_STATUS`, `_CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS=120`, `_GH_UNPROCESSABLE=422`, `_HTTP_NOT_FOUND=404`, `_HTTP_CONFLICT=409`.
 

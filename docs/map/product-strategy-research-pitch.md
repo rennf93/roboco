@@ -441,32 +441,32 @@ product-strategy-research-pitch
 
 | Flag | Default | File:Line | Effect |
 |------|---------|-----------|--------|
-| `ROBOCO_CONVENTIONS_ENABLED` | `False` | config.py:760 | `ProjectService.create` best-effort scaffolds `.roboco/conventions.yml` PR; inert when off |
-| `ROBOCO_RESEARCH_ENABLED` | `True` | config.py:866 | Mounts `roboco-search` MCP into Board/PM containers (orchestrator:2914) |
-| `ROBOCO_RESEARCH_PROVIDER` | `tavily` | config.py:873 | `tavily`/`brave`/`exa`/`null` adapter selection |
-| `ROBOCO_RESEARCH_API_KEY` | `None` | config.py:886 | Server-side only; unset → `NullProvider` |
-| `ROBOCO_RESEARCH_MAX_RESULTS` | `5` | config.py:904 | Hard cap on `web_search` results (1–20) |
-| `ROBOCO_RESEARCH_FETCH_MAX_CHARS` | `20000` | config.py:910 | Hard cap on `web_fetch` extracted chars |
-| `ROBOCO_RESEARCH_TIMEOUT_SECONDS` | `15.0` | config.py:915 | Outbound provider HTTP timeout |
-| `ROBOCO_RESEARCH_DAILY_QUOTA_PER_AGENT` | `50` | config.py:920 | Per-agent/day call ceiling (Redis, fail-open) |
-| `ROBOCO_PROVISIONING_ENABLED` | `True` | config.py:1104 | Pitch auto-provisioning master switch (still inert without token+org) |
-| `ROBOCO_PROVISIONING_TOKEN` | `""` | config.py:1111 | GitHub PAT for repo creation (server-side only) |
-| `ROBOCO_PROVISIONING_ORG` | `""` | config.py:1118 | GitHub org where repos are provisioned |
-| `ROBOCO_GITHUB_API_BASE_URL` | `https://api.github.com` | config.py:1122 | Override for GitHub Enterprise |
-| `ROBOCO_PROVISIONING_TIMEOUT_SECONDS` | `30.0` | config.py:1126 | Outbound GitHub provisioning timeout |
-| `ROBOCO_PROVISIONING_REPO_PRIVATE` | `True` | config.py:1131 | Whether provisioned repos are private |
-| `ROBOCO_PROVISIONING_PROVIDER` | `github` | config.py:1135 | Phase 4 forge parity: `github`/`gitlab`/`gitea` selects the concrete provisioning target via `_build_provider` |
-| `ROBOCO_PROVISIONING_HOST` | `""` | config.py:1144 | Self-hosted forge host (e.g. `gitlab.example.com`); `.enabled` additionally requires this when `provisioning_provider` is gitlab/gitea (ignored for github/gitlab.com) |
-| `ROBOCO_STRATEGY_ENGINE_ENABLED` | `False` | config.py:1160 | Master switch — loop never starts when off |
-| `ROBOCO_STRATEGY_ENGINE_INTERVAL_SECONDS` | `1800` | config.py:1167 | Seconds between strategy assessment passes |
-| `ROBOCO_STRATEGY_STRANDED_BLOCKED_MINUTES` | `120` | config.py:1172 | Blocked-task threshold for "stranded" observation |
-| `ROBOCO_PROTECTED_GIT_URLS` | `[]` | config.py:2414 | Denylist — `ProjectService` rejects `git_url` containing any entry |
-| `ROBOCO_ENCRYPTION_KEY` | `""` | config.py:932 | Fernet key for git-token encrypt/decrypt |
-| `ROBOCO_ROADMAP_ENGINE_ENABLED` | `False` | config.py:1951 | Master switch — `_roadmap_engine_loop` never opens an exploration cycle when off |
-| `ROBOCO_ROADMAP_INTERVAL_SECONDS` | `604800` | config.py:1961 | Seconds between roadmap-exploration cycles (default weekly) |
-| `ROBOCO_ROADMAP_MIN_ITEMS_PER_CYCLE` | `3` | config.py:1966 | Minimum item drafts `propose_roadmap` must submit for a themed cycle |
-| `ROBOCO_ROADMAP_MAX_ITEMS_PER_CYCLE` | `7` | config.py:1971 | Maximum item drafts per cycle |
-| `ROBOCO_PEST_REWORK_THRESHOLD` | `0.3` | config.py:1984 | 7-day rework rate above which Pest Control's metric predicate opens a cycle off-schedule, on top of its weekly cron. The ONLY env-settable knob among the twelve new Board Programs — every other one arms exclusively via its own settings-store row (`board_program.{key}.enabled`, no `ROBOCO_*_ENABLED` flag exists for them) |
+| `ROBOCO_CONVENTIONS_ENABLED` | `False` | config.py:787 | `ProjectService.create` best-effort scaffolds `.roboco/conventions.yml` PR; inert when off |
+| `ROBOCO_RESEARCH_ENABLED` | `True` | config.py:893 | Mounts `roboco-search` MCP into Board/PM containers (orchestrator:2914) |
+| `ROBOCO_RESEARCH_PROVIDER` | `tavily` | config.py:900 | `tavily`/`brave`/`exa`/`null` adapter selection |
+| `ROBOCO_RESEARCH_API_KEY` | `None` | config.py:913 | Server-side only; unset → `NullProvider` |
+| `ROBOCO_RESEARCH_MAX_RESULTS` | `5` | config.py:931 | Hard cap on `web_search` results (1–20) |
+| `ROBOCO_RESEARCH_FETCH_MAX_CHARS` | `20000` | config.py:937 | Hard cap on `web_fetch` extracted chars |
+| `ROBOCO_RESEARCH_TIMEOUT_SECONDS` | `15.0` | config.py:942 | Outbound provider HTTP timeout |
+| `ROBOCO_RESEARCH_DAILY_QUOTA_PER_AGENT` | `50` | config.py:947 | Per-agent/day call ceiling (Redis, fail-open) |
+| `ROBOCO_PROVISIONING_ENABLED` | `True` | config.py:1131 | Pitch auto-provisioning master switch (still inert without token+org) |
+| `ROBOCO_PROVISIONING_TOKEN` | `""` | config.py:1138 | GitHub PAT for repo creation (server-side only) |
+| `ROBOCO_PROVISIONING_ORG` | `""` | config.py:1145 | GitHub org where repos are provisioned |
+| `ROBOCO_GITHUB_API_BASE_URL` | `https://api.github.com` | config.py:1149 | Override for GitHub Enterprise |
+| `ROBOCO_PROVISIONING_TIMEOUT_SECONDS` | `30.0` | config.py:1153 | Outbound GitHub provisioning timeout |
+| `ROBOCO_PROVISIONING_REPO_PRIVATE` | `True` | config.py:1158 | Whether provisioned repos are private |
+| `ROBOCO_PROVISIONING_PROVIDER` | `github` | config.py:1162 | Phase 4 forge parity: `github`/`gitlab`/`gitea` selects the concrete provisioning target via `_build_provider` |
+| `ROBOCO_PROVISIONING_HOST` | `""` | config.py:1171 | Self-hosted forge host (e.g. `gitlab.example.com`); `.enabled` additionally requires this when `provisioning_provider` is gitlab/gitea (ignored for github/gitlab.com) |
+| `ROBOCO_STRATEGY_ENGINE_ENABLED` | `False` | config.py:1187 | Master switch — loop never starts when off |
+| `ROBOCO_STRATEGY_ENGINE_INTERVAL_SECONDS` | `1800` | config.py:1194 | Seconds between strategy assessment passes |
+| `ROBOCO_STRATEGY_STRANDED_BLOCKED_MINUTES` | `120` | config.py:1199 | Blocked-task threshold for "stranded" observation |
+| `ROBOCO_PROTECTED_GIT_URLS` | `[]` | config.py:2441 | Denylist — `ProjectService` rejects `git_url` containing any entry |
+| `ROBOCO_ENCRYPTION_KEY` | `""` | config.py:959 | Fernet key for git-token encrypt/decrypt |
+| `ROBOCO_ROADMAP_ENGINE_ENABLED` | `False` | config.py:1978 | Master switch — `_roadmap_engine_loop` never opens an exploration cycle when off |
+| `ROBOCO_ROADMAP_INTERVAL_SECONDS` | `604800` | config.py:1988 | Seconds between roadmap-exploration cycles (default weekly) |
+| `ROBOCO_ROADMAP_MIN_ITEMS_PER_CYCLE` | `3` | config.py:1993 | Minimum item drafts `propose_roadmap` must submit for a themed cycle |
+| `ROBOCO_ROADMAP_MAX_ITEMS_PER_CYCLE` | `7` | config.py:1998 | Maximum item drafts per cycle |
+| `ROBOCO_PEST_REWORK_THRESHOLD` | `0.3` | config.py:2011 | 7-day rework rate above which Pest Control's metric predicate opens a cycle off-schedule, on top of its weekly cron. The ONLY env-settable knob among the twelve new Board Programs — every other one arms exclusively via its own settings-store row (`board_program.{key}.enabled`, no `ROBOCO_*_ENABLED` flag exists for them) |
 
 ## Gotchas
 

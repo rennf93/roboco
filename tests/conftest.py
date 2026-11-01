@@ -45,10 +45,11 @@ from __future__ import annotations
 
 import os
 import socket
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NoReturn
 from uuid import UUID, uuid4
 
 import asyncpg
+import claude_agent_sdk
 import pytest
 import pytest_asyncio
 from cryptography.fernet import Fernet
@@ -74,6 +75,7 @@ from roboco.models.base import (
     TaskType,
     Team,
 )
+from roboco.services import background_llm
 from roboco.services import optimal as optimal_module
 from roboco.services.optimal import close_optimal_service
 from sqlalchemy import text
@@ -181,6 +183,45 @@ def _no_live_redis(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     monkeypatch.setattr(_settings, "redis_host", "127.0.0.1")
     monkeypatch.setattr(_settings, "redis_port", 1)
+
+
+@pytest.fixture(autouse=True)
+def _no_live_background_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the background LLM client off live Claude and off the routing table.
+
+    Its Claude Haiku fallback runs ``claude_agent_sdk.query``, which spawns
+    the bundled Claude Code CLI on the developer's own ``~/.claude`` login: a
+    real, billed call. ``query`` is replaced with a refusal, so a test that
+    reaches the fallback sees Haiku fail like any unavailable backend. The
+    routing-mode read opens a database session of its own; it fails here
+    (the client then tries Ollama, then Haiku), so no test opens an engine for
+    it. The mode cache and the Ollama no-credit cooldown are module state, so
+    every test starts with fresh ones. A test exercising any of these
+    monkeypatches it again.
+
+    The name must sort after ``_close_this_loops_db_and_rag``: pytest sets up
+    a conftest's autouse fixtures in name order, and ``monkeypatch`` has to be
+    set up after that fixture so its undo runs before ``close_db()``
+    (tests/integration/test_db_base.py swaps the engine registries through
+    ``monkeypatch``; undone later, ``close_db()`` disposes its mock engine).
+    """
+
+    def _refuse_live_claude_query(**_kwargs: object) -> NoReturn:
+        raise RuntimeError("live Claude Code query refused in tests")
+
+    async def _routing_mode_unreadable_in_tests() -> str:
+        raise RuntimeError("no routing table in unit tests")
+
+    monkeypatch.setattr(claude_agent_sdk, "query", _refuse_live_claude_query)
+    monkeypatch.setattr(
+        background_llm, "read_routing_mode", _routing_mode_unreadable_in_tests
+    )
+    monkeypatch.setattr(
+        background_llm, "_ROUTING_MODE_CACHE", background_llm.RoutingModeCache()
+    )
+    monkeypatch.setattr(
+        background_llm, "_OLLAMA_NO_CREDIT_COOLDOWN", background_llm.NoCreditCooldown()
+    )
 
 
 # Every database ``_test_database_url`` creates is named with this prefix.

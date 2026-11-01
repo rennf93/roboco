@@ -321,21 +321,48 @@ class Settings(BaseSettings):
         description="Embedding dimensions (1024 for qwen3-embedding)",
     )
 
-    # Local LLM for RAG answer synthesis
+    # Ollama side of the background LLM client (roboco/services/background_llm.py):
+    # RAG synthesis, distillation, drafting, validation, the Mentor, the eval judge.
     local_llm_model: str = Field(
-        default="glm-5.3:cloud",
-        description="Local LLM for RAG answer synthesis "
-        "(non-thinking models are faster)",
+        default="glm-5.3-flash:cloud",
+        description=(
+            "Ollama model the background LLM client tries first whenever Claude "
+            "is not the main driver. The flash tier: the full glm-5.3 spends "
+            "far more tokens on these short orchestrator-side calls."
+        ),
     )
     local_llm_base_url: str = Field(
         default="http://roboco-ollama:11434/v1",
         description="Base URL for local LLM (Ollama OpenAI-compat API)",
     )
+    background_llm_mode_cache_seconds: float = Field(
+        default=30.0,
+        ge=0,
+        description=(
+            "How long the background LLM client reuses the routing mode it read "
+            "(ModelRoutingService.derive_mode) before reading it again. The mode "
+            "changes only on an operator action, and the api, dispatcher and "
+            "indexer are separate processes, so this bounds how long any of "
+            "them keeps following the previous mode after a switch."
+        ),
+    )
+    background_llm_ollama_no_credit_cooldown_seconds: float = Field(
+        default=600.0,
+        ge=0,
+        description=(
+            "After Ollama answers HTTP 402 (no credit), the background LLM "
+            "client skips Ollama for this long and goes straight to Claude "
+            "Haiku. Only a top-up ends a 402, so asking on every call only adds "
+            "a failed round trip to each one; ten minutes holds that to six "
+            "probes an hour per process and resumes Ollama within ten minutes "
+            "of a top-up."
+        ),
+    )
 
     @field_validator("local_llm_base_url")
     @classmethod
     def _local_llm_base_url_internal_only(cls, v: str) -> str:
-        # The fire-and-forget hot path (distillation, RAG synthesis, X/video
+        # The background LLM client (distillation, RAG synthesis, X/video
         # drafting) reads this verbatim. Reject non-internal hosts so a one-line
         # env mistake can't route quiet generation through a paid cloud LLM.
         host = (urlparse(v).hostname or "").lower()
