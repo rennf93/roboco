@@ -161,6 +161,7 @@ async def test_push_task_branch_pushes_task_branch_by_name() -> None:
     _bind(svc, "_assert_task_owned_with_branch", AsyncMock(return_value=task))
     _bind(svc, "_project_for_task", AsyncMock(return_value=project))
     _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
+    _bind(svc, "_attached_task_tree", AsyncMock(return_value=Path("/tmp/ws")))
     assert_branch = AsyncMock()
     _bind(svc, "_assert_on_task_branch", assert_branch)
     push_mock = AsyncMock(return_value=("feature/backend/abc", _PUSHED_COMMIT_COUNT))
@@ -183,6 +184,7 @@ async def test_push_task_branch_runs_codegen_before_push() -> None:
     _bind(svc, "_assert_task_owned_with_branch", AsyncMock(return_value=task))
     _bind(svc, "_project_for_task", AsyncMock(return_value=project))
     _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
+    _bind(svc, "_attached_task_tree", AsyncMock(return_value=Path("/tmp/ws")))
     codegen_mock = AsyncMock()
     _bind(svc, "_run_codegen_and_commit", codegen_mock)
     push_mock = AsyncMock(return_value=("feature/backend/abc", _PUSHED_COMMIT_COUNT))
@@ -213,6 +215,7 @@ async def test_push_branch_pushes_named_branch_not_current_checkout() -> None:
     branch_name = "feature/backend/fb836f80--03f80432--d3dab0fc--b04afcb5"
     svc = _service()
     _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
+    _bind(svc, "_task_for_branch", AsyncMock(return_value=None))
     push_mock = AsyncMock(return_value=(branch_name, _PUSHED_COMMIT_COUNT))
     _bind(svc, "push", push_mock)
 
@@ -232,6 +235,7 @@ async def test_push_branch_runs_codegen_before_push() -> None:
     branch_name = "feature/backend/abc"
     svc = _service()
     _bind(svc, "_workspace_for_branch", AsyncMock(return_value=Path("/tmp/ws")))
+    _bind(svc, "_task_for_branch", AsyncMock(return_value=None))
     codegen_mock = AsyncMock()
     _bind(svc, "_run_codegen_and_commit", codegen_mock)
     push_mock = AsyncMock(return_value=(branch_name, _PUSHED_COMMIT_COUNT))

@@ -18,7 +18,7 @@ The `roboco/mcp` package is the agent-side MCP gateway: a set of `MCPServer` (mc
 | `roboco/mcp/optimal_server.py` | `roboco-optimal` MCP server — RAG / KB / mentor / error / decision / standards / learnings / index-mgmt / proactive-context. Factory `create_optimal_mcp_server(agent_id)`; calls `/optimal/*`. | 1239 |
 | `roboco/mcp/docs_server.py` | `roboco-docs` MCP server — docs write/read/list/delete via `/docs/*`. Factory `create_docs_mcp_server(agent_id)`. RAG-based dedup on write. | 251 |
 | `roboco/services/docs.py` | `DocsService` — the `/docs/*` route handlers' backing service; refuses `write_doc(doc_type="user_facing")` with a message naming the deployer's docs-site project/URL | 785 |
-| `roboco/mcp/git_readonly.py` | `roboco-git-readonly` MCP server — four read-only git views (status/log/diff/branch list) via `/api/git/*`. No breaker, no manifest. | 209 |
+| `roboco/mcp/git_readonly.py` | `roboco-git-readonly` MCP server — four read-only git views (status/log/diff/branch list) via `/api/git/*`. No breaker, no manifest. | 236 |
 | `roboco/mcp/intake_server.py` | `roboco-intake` MCP server — grok intake path only: `propose_draft` / `propose_batch` POST directly to the prompter-live relay. | 295 |
 | `roboco/mcp/secretary_server.py` | `roboco-secretary` MCP server — grok secretary path only: `read_company_state` / `read_task` / `submit_directive`, delegating to `agent_sdk.secretary_driver`. | 89 |
 | `roboco/mcp/search_server.py` | `roboco-search` MCP server — `web_search` / `web_fetch` via `/research/*` (provider key stays server-side). Factory `create_search_mcp_server(agent_id)`. | 130 |
@@ -31,7 +31,7 @@ The `roboco/mcp` package is the agent-side MCP gateway: a set of `MCPServer` (mc
 |------|------|-----------|----------------|
 | `mcp` (flow) | `MCPServer` | `flow_server.py:276` | Server instance `roboco-flow`; tools registered onto it at import time. |
 | `mcp` (do) | `MCPServer` | `do_server.py:252` | Server instance `roboco-do`. |
-| `mcp` (git-readonly) | `MCPServer` | `git_readonly.py:60` | Server instance `roboco-git-readonly`. |
+| `mcp` (git-readonly) | `MCPServer` | `git_readonly.py:62` | Server instance `roboco-git-readonly`. |
 | `mcp` (intake) | `MCPServer` | `intake_server.py:39` | Server instance `roboco-intake`. |
 | `mcp` (secretary) | `MCPServer` | `secretary_server.py:39` | Server instance `roboco-secretary`. |
 | `StrList` | type alias | `flow_server.py:50` | `Annotated[list[str], BeforeValidator(coerce_str_list)]` — tolerates Claude SDK's nested XML-ish tool-input shapes before MCP validation rejects. |
@@ -76,10 +76,10 @@ The `roboco/mcp` package is the agent-side MCP gateway: a set of `MCPServer` (mc
 | `roboco_get_proactive_context` | tool | `optimal_server.py:1104` | Stored-then-fresh proactive context for a task. |
 | `normalize_index_types` | func | `optimal_server.py:60` | Map legacy `docs` alias → `documentation` before route's `IndexType(...)` conversion. |
 | `create_docs_mcp_server` | factory | `docs_server.py:166` | Build `roboco-docs-{agent_id}` server (write/read/list/delete). |
-| `DocsService.write_doc` | method | `services/docs.py:415` | Refuses `doc_type="user_facing"` writes — normal tasks in the deployer's docs-site project (MDX) are the right home instead |
-| `_refused_doc_types` | func | `services/docs.py:90` | Builds the refusal-message dict fresh on every call from `settings.docs_site_project_slug`/`docs_site_public_url` (was a fixed `REFUSED_DOC_TYPES` module constant hardcoding "roboco-website"/"docs.roboco.tech"); falls back to generic "your docs-site project" / "ship on your docs site" text when either setting is left blank |
+| `DocsService.write_doc` | method | `services/docs.py:416` | Refuses `doc_type="user_facing"` writes — normal tasks in the deployer's docs-site project (MDX) are the right home instead |
+| `_refused_doc_types` | func | `services/docs.py:91` | Builds the refusal-message dict fresh on every call from `settings.docs_site_project_slug`/`docs_site_public_url` (was a fixed `REFUSED_DOC_TYPES` module constant hardcoding "roboco-website"/"docs.roboco.tech"); falls back to generic "your docs-site project" / "ship on your docs site" text when either setting is left blank |
 | `WriteDocInput` | pydantic | `schemas/__init__.py:12` | Docs write input (task_id, filename, doc_type, title, content). |
-| `roboco_git_status` / `roboco_git_log` / `roboco_git_diff` / `roboco_git_branch_list` | tools | `git_readonly.py:45–119` | Read-only git views via `/api/git/*`. |
+| `roboco_git_status` / `roboco_git_log` / `roboco_git_diff` / `roboco_git_branch_list` | tools | `git_readonly.py:123–197` | Read-only git views via `/api/git/*`; status and diff read the agent's task worktree (optional `task_id`, else the active task; the clone root only without a task) and name it in `task_id`. |
 | `propose_draft` / `propose_batch` | tools | `intake_server.py:104–215` | Grok intake: POST draft/batch to prompter-live relay; `propose_batch` drops malformed (no string `title` or `name`) entries via `_normalize_batch_drafts` and refuses empty batches. |
 | `post_draft` / `post_batch` / `_post_event` | funcs | `intake_server.py:41–102` | Relay POST helpers (never raise; unit-testable with `httpx.MockTransport`). `_post_event` now captures relay response body under `detail` on non-success so the grok agent sees the real reason (0d714b6c). |
 | `_draft_title` | func | `intake_server.py:211` | Extract a string title from a batch draft dict, accepting `title` or `name` key; returns None if neither is a string. |

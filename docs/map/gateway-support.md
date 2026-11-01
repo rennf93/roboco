@@ -18,7 +18,7 @@ The support layer of the agent gateway: pure/cheap components the Choreographer 
 | roboco/services/gateway/evidence_repo.py | Capped DB queries for context_briefing: unread a2a/mentions/notifications, team activity, blockers, journal highlights, company goals, similar_memory. | 530 |
 | roboco/services/gateway/kb_authz.py | KB/docs authorization -> Envelope.not_authorized with role-list remediate hint. | 90 |
 | roboco/services/gateway/merge_chain.py | Branch-depth + parent-branch resolution by string surgery and via the parent task's real branch_name (cross-team safe); `find_topology_issue` detects a stale/incoherent PR-base vs. parent-topology mismatch, reused at `open_pr` preflight and the `parent_task_id` re-parent write-through. | 242 |
-| roboco/services/gateway/quality_gate.py | run_quality_commands: execute project fast checks in workspace, fail-closed on real failure, fail-open on infra, reap timeout zombies. | 97 |
+| roboco/services/gateway/quality_gate.py | run_quality_commands: execute project fast checks in workspace, fail-closed on real failure, fail-open on infra, reap timeout zombies. | 105 |
 | roboco/services/gateway/rate_limit_tracker.py | RateLimitStateTracker: Redis JSON blob per provider; atomic Lua activate-merge (preserves probe_failures), probe-failure increment/reset; list_rate_limited_providers scan. | 271 |
 | roboco/services/gateway/remediation.py | Concrete single-sentence remediation hint strings for tracing-gap/invalid-state rejections. | 149 |
 | roboco/services/gateway/role_config.py | ROLE_CONFIGS: per-role flow_tools/do_tools/allows_write/allows_subagent/description; flow tools derived from lifecycle.intents_for_role. | 423 |
@@ -115,7 +115,8 @@ The support layer of the agent gateway: pure/cheap components the Choreographer 
 | _parentless_topology_issue | coroutine | roboco/services/gateway/merge_chain.py:209 | Shape (b): flags a parentless root whose `branch_depth` > 1 — detached from a coordination ancestor during a restructure. A genuinely standalone root's branch is always depth 1 and never fires. |
 | GateResult | dataclass | roboco/services/gateway/quality_gate.py:33 | passed/skipped/failures/output + summary + output_excerpt properties. |
 | run_quality_commands | coroutine | roboco/services/gateway/quality_gate.py:55 | Run each (name,command) in workspace, aggregate; runs all (no short-circuit). |
-| _run_one | coroutine | roboco/services/gateway/quality_gate.py:80 | Run one command via shell; timeout kills+reaps zombie, returns 124; None returncode fails closed (1). |
+| _run_one | coroutine | roboco/services/gateway/quality_gate.py:87 | Run one command in the throwaway container; returns its exit status and everything it printed (`WorkspaceContainerResult.output`, partial output on a timeout); a container that did not run it raises. |
+| _command_report | function | roboco/services/gateway/quality_gate.py:81 | `$ <command>`, its output, and `(exit N)` when it failed. |
 | RateLimitStateTracker | class | roboco/services/gateway/rate_limit_tracker.py:88 | Per-provider Redis JSON state: rate_limited/kind/activated_at/retry_after/affected_agents/probe_failures. |
 | RateLimitStateTracker.activate | coroutine | roboco/services/gateway/rate_limit_tracker.py:134 | Mark provider parked (rate_limited/overloaded); Lua atomic merge (_ACTIVATE_RATE_LIMIT) carries over previous probe_failures count so a re-park cannot reset the give-up counter. |
 | RateLimitStateTracker.clear | coroutine | roboco/services/gateway/rate_limit_tracker.py:165 | Delete provider state key. |

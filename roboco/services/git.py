@@ -230,6 +230,20 @@ _GIT_EXECUTOR = ThreadPoolExecutor(
 # only a genuinely slow op (>5s) is worth a warning.
 _SLOW_GIT_OP_MS = 5000.0
 
+
+def _task_uuid(task_ref: str) -> UUID:
+    """A task id given to a route as text; ``ValidationError`` when it is
+    not a UUID."""
+    try:
+        return UUID(task_ref)
+    except ValueError as exc:
+        raise ValidationError(f"task_id {task_ref!r} is not a task UUID") from exc
+
+
+# git's message when a fetch names a ref origin does not have; it then
+# aborts the whole fetch, the other named refs included.
+_MISSING_REMOTE_REF = "couldn't find remote ref"
+
 # `prune_remote_best_effort` TTL, see its docstring. Process-wide, keyed by
 # workspace path, mirrors WorkspaceService's `_read_clone_synced` fetch-TTL
 # cache.
@@ -930,7 +944,11 @@ class GitCommits(_Base):
         return worktree_path_of(clone_root, str(task_id)[:8])
 
     async def _ensure_worktree_for_commit(
-        self, clone_root: Path, worktree: Path, branch: str | None
+        self,
+        clone_root: Path,
+        worktree: Path,
+        branch: str | None,
+        project_slug: str | None = None,
     ) -> None:
         """Ensure a task's worktree is attached before a cwd-dependent git op.
 
@@ -938,11 +956,124 @@ class GitCommits(_Base):
         mid-task (disk pressure, manual cleanup); a commit/checkout against a
         missing dir fails opaquely. Idempotent — no-op when the worktree is
         present, re-adds (no ``-b``) from the surviving branch ref when pruned.
+        With ``project_slug`` a missing local branch ref is first recovered
+        from origin through the relay (a clone that never held the branch,
+        e.g. a documenter's); without it the re-add can only cut the branch
+        from ``origin/HEAD``.
         """
         if not branch:
             return
         workspace_service = get_workspace_service(self.session)
-        await workspace_service.ensure_worktree_for_resume(clone_root, worktree, branch)
+        await workspace_service.ensure_worktree_for_resume(
+            clone_root, worktree, branch, project_slug
+        )
+
+    async def ensure_task_worktree(
+        self, project_slug: str, agent_id: UUID, task: Any
+    ) -> Path:
+        """The task's per-task worktree in ``agent_id``'s clone, attached.
+
+        Under F123 a task's code lives only there: the clone root is parked on
+        whatever branch it last held, so anything that reads, writes or runs
+        a task's files (the pre-QA gate, a documenter's repo write) must use
+        this path. A pruned worktree is re-added from the task branch, as the
+        commit path does (recovered from origin when this clone never held
+        it). A task without a branch has no worktree:
+        ``ValidationError`` (``NO_BRANCH``), never the clone root instead.
+        """
+        if not task.branch_name:
+            raise ValidationError(
+                f"NO_BRANCH: task {task.id} has no branch, so it has no worktree."
+            )
+        clone_root = await self.get_workspace(project_slug, agent_id)
+        worktree = self._worktree_for_task(clone_root, require_uuid(task.id))
+        await self._ensure_worktree_for_commit(
+            clone_root, worktree, str(task.branch_name), project_slug
+        )
+        return worktree
+
+    async def tree_for_agent_read(
+        self,
+        project_slug: str,
+        agent_id: UUID,
+        task_ref: str | None,
+        *,
+        skip_refresh: bool = False,
+    ) -> tuple[Path, UUID | None]:
+        """The tree an agent's read of "its workspace" shows (``/api/git/status``,
+        ``/api/git/diff``), and the task whose worktree it is (None: the clone
+        root).
+
+        Under F123 the agent's work is in a task worktree, not the clone
+        root. The task is ``task_ref`` when given, else the caller's active
+        task (``TaskService.get_active_task_for_agent``, as the gateway's
+        ``commit`` resolves it); with neither, or a task without a branch,
+        the clone root. The caller's own task gets its worktree re-attached
+        when pruned, as the commit path does; anyone else's is read only if
+        this clone already has it attached (a read adds no worktree).
+        """
+        clone_root = await self.get_workspace(
+            project_slug, agent_id, skip_refresh=skip_refresh
+        )
+        task = await self._task_for_agent_read(project_slug, agent_id, task_ref)
+        if task is None:
+            return clone_root, None
+        if task.assigned_to == agent_id:
+            worktree = self._worktree_for_task(clone_root, require_uuid(task.id))
+            await self._ensure_worktree_for_commit(
+                clone_root, worktree, str(task.branch_name), project_slug
+            )
+            return worktree, require_uuid(task.id)
+        tree = await self._attached_task_tree(clone_root, task)
+        return tree, (require_uuid(task.id) if tree != clone_root else None)
+
+    async def _task_for_agent_read(
+        self, project_slug: str, agent_id: UUID, task_ref: str | None
+    ) -> Any | None:
+        """The named task (``NotFoundError`` when missing, ``ValidationError``
+        when it is not a task UUID or belongs to another project), else the
+        caller's active task in this project; None without a branch."""
+        task_service = get_task_service(self.session)
+        if task_ref:
+            task = await task_service.get(_task_uuid(task_ref))
+            if task is None:
+                raise NotFoundError(resource_type="Task", resource_id=task_ref)
+        else:
+            task = await task_service.get_active_task_for_agent(agent_id)
+        if task is None or not task.branch_name:
+            return None
+        project = await self._project_for_task(task)
+        if project is not None and project.slug == project_slug:
+            return task
+        if task_ref:
+            raise ValidationError(
+                f"task {task_ref} does not belong to project {project_slug!r}"
+            )
+        return None
+
+    async def _attached_task_tree(self, clone_root: Path, task: Any) -> Path:
+        """``task``'s worktree when ``git worktree list`` shows it attached in
+        ``clone_root`` on the task branch, else the clone root. No side
+        effect: nothing is added or re-added.
+
+        A push of the task's branch starts there (git runs ``pre-push`` where
+        the push starts, so from the clone root it ran the clone root's hook
+        against another branch's tree; a push never re-adds a pruned
+        worktree, since a missing local branch would be cut from
+        ``origin/HEAD`` there, and keeps the clone root's push-by-name
+        recovery instead). A read of a task the caller does not own reads it
+        too (``tree_for_agent_read``).
+        """
+        worktree = self._worktree_for_task(clone_root, require_uuid(task.id))
+        listed = await self._run_git(
+            clone_root, ["worktree", "list", "--porcelain"], check=False
+        )
+        record = f"worktree {worktree}\n"
+        branch = f"branch refs/heads/{task.branch_name}\n"
+        for entry in listed.stdout.split("\n\n"):
+            if entry.startswith(record) and branch in f"{entry}\n":
+                return worktree
+        return clone_root
 
     async def _assert_on_task_branch(
         self, workspace: Path, task_branch: str | None
@@ -1325,13 +1456,9 @@ class GitBranches(_Base):
         # of stale branches (dependabot, feature, abandoned) is pure network
         # cost on every branch creation. check=False so a base that isn't on
         # the remote yet doesn't abort (the fallback below handles it).
-        fetch_refs = list(dict.fromkeys([base_branch, default_branch]))
-        await self._run_git(
-            workspace,
-            ["fetch", "origin", *fetch_refs],
-            check=False,
-            timeout=_network_git_timeout(),
-        )
+        # A base deleted on origin after the ls-remote above must not keep the
+        # default branch from refreshing (git aborts the whole fetch).
+        await self._fetch_branches_origin_has(workspace, [base_branch, default_branch])
 
         # --- F123: per-task worktree, not a shared-clone checkout. ---
         # The dev clone is one persistent checkout shared across this dev's
@@ -1382,8 +1509,10 @@ class GitBranches(_Base):
             await self._run_git(
                 worktree_path, ["reset", "--hard", base_ref], check=False
             )
+        # From the worktree: git runs a project's pre-push where the push
+        # starts, and the clone root holds another branch's tree.
         await self._run_git(
-            workspace,
+            worktree_path,
             ["push", "-u", "origin", branch_name],
             timeout=_network_git_timeout(),
         )
@@ -1483,8 +1612,17 @@ class GitBranches(_Base):
         the contributor's fork. This is the first point untrusted contributor
         code enters a roboco branch, so the caller MUST only invoke it for a
         human-confirmed (``confirmed_by_human``) supersede.
+
+        The branch is pushed by name and never checked out: the system clone
+        root stays on its default branch (F123), never on contributor code,
+        and a retry can update the branch (git refuses to fetch into a
+        checked-out branch). A clone root an earlier cut left on the branch
+        is parked off it first.
         """
         pull_ref = f"refs/pull/{pr_number}/head"
+        await asyncio.to_thread(
+            WorkspaceService._park_clone_root_off_branch, workspace, branch_name
+        )
         # Force the refspec (``+``) so a retry after a prior push (e.g. the
         # commit after the push failed and rolled the umbrella back) updates the
         # leftover local branch in the persistent system workspace instead of
@@ -1494,7 +1632,6 @@ class GitBranches(_Base):
             ["fetch", "origin", f"+{pull_ref}:{branch_name}"],
             timeout=_network_git_timeout(),
         )
-        await self._run_git(workspace, ["checkout", branch_name])
         await self._run_git(
             workspace,
             ["push", "-u", "origin", branch_name],
@@ -1559,6 +1696,54 @@ class GitBranches(_Base):
 class GitCheckoutPush(_Base):
     """Moving between branches and the remote: checkout and the branches an agent
     may check out, push, pull, fetch, rebase, and remote branch checks and pruning."""
+
+    async def _fetch_branches_origin_has(
+        self, workspace: Path, branches: list[str]
+    ) -> None:
+        """``git fetch origin <branches>``, leaving out any branch origin no
+        longer has. Best-effort, never raises.
+
+        git aborts a whole fetch when one named ref is missing on origin, so
+        one deleted branch (a child merged and pruned) used to leave every
+        other named branch at whatever this clone last saw. One fetch in the
+        common case; when it fails on a missing ref, ``ls-remote`` names the
+        branches that do exist and only those are fetched.
+        """
+        wanted = list(dict.fromkeys(branches))
+        fetched = await self._run_git(
+            workspace,
+            ["fetch", "origin", *wanted],
+            check=False,
+            timeout=_network_git_timeout(),
+        )
+        if fetched.returncode == 0 or _MISSING_REMOTE_REF not in fetched.stderr:
+            return
+        present = await self._branches_on_origin(workspace, wanted)
+        if present:
+            await self._run_git(
+                workspace,
+                ["fetch", "origin", *present],
+                check=False,
+                timeout=_network_git_timeout(),
+            )
+
+    async def _branches_on_origin(
+        self, workspace: Path, branches: list[str]
+    ) -> list[str]:
+        """The ``branches`` origin has, by exact ``refs/heads/<name>`` (an
+        ``ls-remote`` pattern also matches longer names ending the same)."""
+        listed = await self._run_git(
+            workspace,
+            ["ls-remote", "--heads", "origin", *branches],
+            check=False,
+            timeout=_network_git_timeout(),
+        )
+        heads = {
+            line.split("\t", 1)[1]
+            for line in listed.stdout.splitlines()
+            if "\t" in line
+        }
+        return [branch for branch in branches if f"refs/heads/{branch}" in heads]
 
     async def branch_exists_on_remote(
         self,
@@ -1699,6 +1884,14 @@ class GitCheckoutPush(_Base):
         of their own assigned tasks' branches, or the project default
         branch (read-only inspection). Hierarchical prefixes are allowed
         so a PM can checkout the parent branch of a subtask they own.
+
+        F123: a task branch is never checked out in a clone root. The
+        caller's own task gets its worktree (``ensure_task_worktree``; in
+        the clone root git refused, the branch being checked out there);
+        another agent's task branch is refused (it used to move the clone
+        root onto a branch origin deletes once merged). A branch no task
+        owns (the default branch) is checked out in the clone root, which
+        is where F123 parks it.
         """
         allowed = await self._allowed_checkout_branches(data.project_slug, agent_id)
         if data.branch not in allowed and not any(
@@ -1713,8 +1906,25 @@ class GitCheckoutPush(_Base):
                 ),
             )
 
-        workspace = await self.get_workspace(data.project_slug, agent_id)
-        await self.checkout(workspace, data.branch)
+        await self._check_out_for_agent(data.project_slug, agent_id, data.branch)
+
+    async def _check_out_for_agent(
+        self, project_slug: str, agent_id: UUID, branch: str
+    ) -> None:
+        """The checkout itself (see ``checkout_branch_for_agent``)."""
+        task = await self._task_for_branch(branch)
+        if task is None:
+            workspace = await self.get_workspace(project_slug, agent_id)
+            await self.checkout(workspace, branch)
+            return
+        if task.assigned_to != agent_id:
+            raise ValidationError(
+                f"CHECKOUT_OTHER_TASK: '{branch}' is task {task.id}'s branch, "
+                "which is not yours; a clone root is never checked out on a "
+                "task branch. Read it with roboco_git_log(branch=...) or "
+                "GET /api/git/file instead."
+            )
+        await self.ensure_task_worktree(project_slug, agent_id, task)
 
     async def _ensure_pushable_branch(self, workspace: Path, branch: str) -> None:
         """Make sure ``branch`` exists as a local ref before a push-by-name.
@@ -1871,7 +2081,8 @@ class GitCheckoutPush(_Base):
             workspace = await self.get_workspace(data.project_slug, agent_id)
             # Push the task's branch BY NAME, not the current checkout — the
             # shared clone is often parked on a later task's branch by now.
-            return await self.push(workspace, force, branch=str(task.branch_name))
+            tree = await self._attached_task_tree(workspace, task)
+            return await self.push(tree, force, branch=str(task.branch_name))
         workspace = await self.get_workspace(data.project_slug, agent_id)
         return await self.push(workspace, force)
 
@@ -1903,7 +2114,8 @@ class GitCheckoutPush(_Base):
         # the locally-committed work never reached origin → open_pr then saw
         # "No commits between" (origin branch empty/missing). The local task
         # branch ref carries the commits; push it by name.
-        _branch, pushed = await self.push(workspace, branch=str(task.branch_name))
+        tree = await self._attached_task_tree(workspace, task)
+        _branch, pushed = await self.push(tree, branch=str(task.branch_name))
         return pushed
 
     # =========================================================================
@@ -4601,13 +4813,15 @@ class GitQualityGate(_Base):
     async def run_pre_submit_quality_gate(
         self, actor_agent_id: UUID, task: Any
     ) -> GateResult:
-        """Run the project's fast quality gate in the developer's workspace.
+        """Run the project's fast quality gate on the task being submitted.
 
-        Resolves the task's project and the developer's workspace clone, then
-        runs the configured lint + typecheck commands there. Returns a skipped
-        pass when the project configures no fast-gate commands (so projects that
-        opt out are never blocked). Raises only on workspace-resolution failure;
-        the caller treats any such failure as fail-open.
+        Resolves the task's project and the task's worktree in the developer's
+        clone (``ensure_task_worktree``), then runs the configured lint +
+        typecheck commands there: the clone root holds some other branch's
+        code. Returns a skipped pass when the project configures no fast-gate
+        commands (so projects that opt out are never blocked). Raises only on
+        workspace-resolution failure; the caller treats any such failure as
+        fail-open.
         """
         project = await self._project_for_task(task)
         if project is None:
@@ -4615,8 +4829,8 @@ class GitQualityGate(_Base):
         commands = self._fast_gate_commands(project)
         if not commands:
             return GateResult(passed=True, skipped=True)
-        workspace = await self.get_workspace(project.slug, actor_agent_id)
-        return await run_quality_commands(workspace, commands)
+        worktree = await self.ensure_task_worktree(project.slug, actor_agent_id, task)
+        return await run_quality_commands(worktree, commands)
 
     @staticmethod
     def _codegen_command_for(project: Any) -> str | None:
@@ -4853,29 +5067,32 @@ class GitAgentWorkspace(_Base):
         workspace_agent_id = self._resolve_workspace_agent_id(task, actor_agent_id)
         return await self.get_workspace(project.slug, agent_id=workspace_agent_id)
 
-    async def checkout_branch_in_agent_workspace(
+    async def ensure_branch_worktree_for_agent(
         self,
         branch_name: str,
         *,
         actor_agent_id: UUID,
     ) -> None:
-        """Check out `branch_name` into the actor's own clone.
+        """Attach the worktree of the task owning ``branch_name`` in the
+        actor's own clone (``ensure_task_worktree``).
 
-        Dev/PM workspaces land on the right branch because
-        ``_auto_create_branch`` runs ``git checkout -b`` in the dev's
-        clone at claim time. The documenter's clone is a *separate*
-        workspace; when it claims an awaiting_documentation task the
-        branch already exists (created by the dev) so no checkout ever
-        ran in the doc's clone — it stayed on the default branch and
-        ``roboco_docs_write`` / ``commit`` failed with BRANCH_MISMATCH.
-        This puts the doc's workspace on the task branch (fetch +
-        tracking-branch create). Best-effort: a checkout failure must
-        not break the claim itself — the caller surfaces a remediation.
+        The documenter's clone is a *separate* workspace: when it claims an
+        awaiting_documentation task the branch exists only in the dev's
+        clone and on origin. Under F123 the documenter writes and commits in
+        the task's worktree; this attaches it (the branch recovered from
+        origin through the relay). The clone root is never checked out: that
+        either failed ("already checked out" at the worktree) or parked the
+        clone root on a task branch origin deletes once merged, after which
+        every refresh fetch of that clone failed. Best-effort at the caller:
+        a failure must not break the claim.
         """
-        workspace = await self._workspace_for_branch(
-            branch_name, actor_agent_id=actor_agent_id
-        )
-        await self.checkout(workspace, branch_name)
+        task = await self._task_for_branch(branch_name)
+        if task is None:
+            raise NotFoundError("Branch", branch_name)
+        project = await self._project_for_task(task)
+        if project is None:
+            raise NotFoundError("Project", str(task.project_id))
+        await self.ensure_task_worktree(project.slug, actor_agent_id, task)
 
     async def push_branch(
         self,
@@ -4908,7 +5125,13 @@ class GitAgentWorkspace(_Base):
         # forced into i_am_blocked — stranded work the PM's unblock can't fix
         # (it only flips status, not git state). Push-by-name also survives a
         # clone parked on a LATER task's branch.
-        return await self.push(workspace, branch=branch_name)
+        task = await self._task_for_branch(branch_name)
+        tree = (
+            workspace
+            if task is None
+            else await self._attached_task_tree(workspace, task)
+        )
+        return await self.push(tree, branch=branch_name)
 
     async def _ensure_base_on_remote(
         self,
@@ -5694,6 +5917,29 @@ class GitRebase(_Base):
             base_branch=base_branch,
         )
 
+    async def rebase_task_onto(
+        self, task: Any, target_branch: str, *, actor_agent_id: UUID
+    ) -> dict[str, Any]:
+        """``/api/git/rebase`` for a task: its branch rebased onto
+        ``target_branch`` in its worktree in the actor's clone, through the
+        gateway's sync path (``sync_task_branch``: fetch, rebase,
+        ``--force-with-lease`` push). A protected target (master/main or a
+        project-declared protected branch) is refused, as the route's
+        clone-root rebase refuses it."""
+        project = await self._project_for_task(task)
+        protected = frozenset({"master", "main"}) | await self._protected_branches_for(
+            project.slug if project else None
+        )
+        if target_branch in protected:
+            raise ValidationError(
+                f"REBASE_FORBIDDEN: Cannot rebase onto '{target_branch}'. "
+                "Rebasing onto 'master', 'main', or a project-declared "
+                "protected branch is not allowed in automation."
+            )
+        return await self.sync_task_branch(
+            task, base_branch=target_branch, actor_agent_id=actor_agent_id
+        )
+
     async def sync_task_branch(
         self,
         task: Any,
@@ -5797,12 +6043,9 @@ class GitBranchState(_Base):
         # fail later on origin's auth error.
         await self._get_project_token_or_raise(project.slug)
         refs = [str(task.branch_name)] + [str(c.branch_name) for c in candidates]
-        await self._run_git(
-            workspace,
-            ["fetch", "origin", *dict.fromkeys(refs)],
-            check=False,
-            timeout=_network_git_timeout(),
-        )
+        # A merged child's branch is usually deleted on origin; one combined
+        # fetch would then refresh nothing, the parent included.
+        await self._fetch_branches_origin_has(workspace, refs)
         missing: list[dict[str, Any]] = []
         for child in candidates:
             entry = await self._cherry_unmerged_entry(

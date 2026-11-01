@@ -31,6 +31,14 @@ Redis isolation:
     purpose-dedupe) — order/state poison for anything reading the real
     instance. Every production Redis path is fail-open by design, so an
     unreachable port keeps behavior identical to "no redis available".
+
+Database isolation:
+    `_no_live_database` (autouse) points the computed
+    `settings.database_url` (what production code opens: `get_engine()`,
+    `get_db_context()`, the cloud-auth router) at a refusing port, so no
+    test reaches a developer's or the live database. A test that drives the
+    app's own engine machinery asks for `app_settings_on_test_db`, which
+    points it at the throwaway test database instead.
 """
 
 from __future__ import annotations
@@ -69,6 +77,7 @@ from roboco.models.base import (
 from roboco.services import optimal as optimal_module
 from roboco.services.optimal import close_optimal_service
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -174,6 +183,29 @@ def _no_live_redis(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_settings, "redis_port", 1)
 
 
+# Every database ``_test_database_url`` creates is named with this prefix.
+_TEST_DB_NAME_PREFIX = "roboco_test_"
+
+
+@pytest.fixture(autouse=True)
+def _no_live_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep every test off the app's configured database.
+
+    ``settings.database_url`` is what production code opens
+    (``get_engine()``, ``get_db_context()``, the cloud-auth router). Left as
+    configured it is ``localhost:5432/roboco`` (a developer's own database)
+    or whatever ``ROBOCO_DATABASE_*`` names, never the throwaway test
+    database. Port 1 refuses instantly. A test that needs the app's own
+    database machinery asks for ``app_settings_on_test_db``; a database the
+    e2e harness already pointed the settings at for its session (named
+    ``roboco_test_*``) is left alone.
+    """
+    if _settings.database_name.startswith(_TEST_DB_NAME_PREFIX):
+        return
+    monkeypatch.setattr(_settings, "database_host", "127.0.0.1")
+    monkeypatch.setattr(_settings, "database_port", 1)
+
+
 # ---------------------------------------------------------------------------
 # Test DB endpoint discovery — env-overridable.
 #
@@ -261,7 +293,7 @@ async def _test_database_url(request: pytest.FixtureRequest) -> AsyncIterator[st
             allow_module_level=False,
         )
 
-    db_name = f"roboco_test_{os.getpid()}_{uuid4().hex[:8]}"
+    db_name = f"{_TEST_DB_NAME_PREFIX}{os.getpid()}_{uuid4().hex[:8]}"
 
     # 1. CREATE DATABASE on the admin connection.
     admin = await asyncpg.connect(
@@ -325,6 +357,24 @@ async def _test_database_url(request: pytest.FixtureRequest) -> AsyncIterator[st
             await teardown_admin.execute(f'DROP DATABASE IF EXISTS "{db_name}"')
         finally:
             await teardown_admin.close()
+
+
+@pytest.fixture
+def app_settings_on_test_db(
+    _test_database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> str:
+    """Point the app's ``settings.database_url`` at the throwaway test
+    database (provisioned and built by ``_test_database_url``) and return
+    its URL, for a test that drives the app's own engine machinery
+    (``get_engine()``, ``get_db_context()``, a real router). The URL is a
+    property derived from these plain fields on every access."""
+    url = make_url(_test_database_url)
+    monkeypatch.setattr(_settings, "database_host", url.host or "localhost")
+    monkeypatch.setattr(_settings, "database_port", url.port or 5432)
+    monkeypatch.setattr(_settings, "database_user", url.username or "")
+    monkeypatch.setattr(_settings, "database_password", url.password or "")
+    monkeypatch.setattr(_settings, "database_name", url.database or "")
+    return _test_database_url
 
 
 @pytest_asyncio.fixture

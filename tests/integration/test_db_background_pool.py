@@ -20,7 +20,6 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
-from urllib.parse import urlparse
 from uuid import uuid4
 
 import pytest
@@ -185,30 +184,9 @@ async def test_close_db_disposes_both_pools() -> None:
 # ---------------------------------------------------------------------------
 
 
-@pytest.fixture
-def _point_singletons_at_test_db(
-    _test_database_url: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """Repoint the app's settings-derived database_url at the ephemeral test
-    DB (the same one tests/conftest.py already provisioned and migrated), so
-    get_engine()/get_session_factory(), the real singleton machinery, talk
-    to it instead of a dev/production database. database_url is a
-    property re-derived from these plain fields on every access, so
-    patching them is enough; the property itself can't be assigned
-    directly."""
-    parsed = urlparse(_test_database_url)
-    monkeypatch.setattr(settings, "database_host", parsed.hostname or "localhost")
-    monkeypatch.setattr(settings, "database_port", parsed.port or 5432)
-    monkeypatch.setattr(settings, "database_user", parsed.username or "roboco")
-    monkeypatch.setattr(settings, "database_password", parsed.password or "")
-    db_name = (parsed.path or "/roboco").lstrip("/")
-    monkeypatch.setattr(settings, "database_name", db_name)
-
-
 @pytest.mark.asyncio
-async def test_primary_and_background_sessions_have_independent_identity_maps(
-    _point_singletons_at_test_db: None,
-) -> None:
+@pytest.mark.usefixtures("app_settings_on_test_db")
+async def test_primary_and_background_sessions_have_independent_identity_maps() -> None:
     """Claim 1: async_sessionmaker() gives every session_factory() call its
     own Session + identity map, true of the background pool exactly like
     the primary one. Loading the SAME row through a primary-pool session and
@@ -261,9 +239,8 @@ async def test_primary_and_background_sessions_have_independent_identity_maps(
 
 
 @pytest.mark.asyncio
-async def test_defer_after_commit_is_engine_agnostic_on_background_pool(
-    _point_singletons_at_test_db: None,
-) -> None:
+@pytest.mark.usefixtures("app_settings_on_test_db")
+async def test_defer_after_commit_is_engine_agnostic_on_background_pool() -> None:
     """Claim 2: defer_after_commit reads only session.sync_session state
     (get_nested_transaction/get_transaction), never which engine backs the
     session, so it must behave IDENTICALLY on a background-pool session: a

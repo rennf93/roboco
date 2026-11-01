@@ -83,6 +83,8 @@ _DEP_LOCK_DEFAULTS = ("uv.lock", "pnpm-lock.yaml")
 
 
 _REFS_PRUNE_TIMEOUT_SECONDS = 60
+# The tail of a failed install's output that its log line carries.
+_LOGGED_OUTPUT_CHARS = 2000
 
 # Run by the workspace git user (stdlib only): prints the sha256 over each
 # present lockfile's name + bytes, or nothing when none is present.
@@ -166,6 +168,18 @@ _SCAFFOLD_ATTEMPTED: set[str] = set()
 _READ_CLONE_FETCH_TTL_SECONDS = 30.0
 _read_clone_synced: dict[str, float] = {}
 
+# An agent clone's refresh fetch (ensure_workspace) runs at most this often,
+# process-wide: keyed by clone path, stamped when the fetch finished.
+_REFRESH_TTL_SECONDS = 30.0
+_last_refreshed: dict[str, float] = {}
+
+# A dev-deps install for the same lockfile digest is attempted at most once
+# per this window per clone, process-wide, whatever its outcome: a success
+# writes the marker (later calls are cache hits), a failure or an
+# interrupted run waits the window out instead of rerunning on every call.
+_DEV_DEPS_RETRY_SECONDS = 600.0
+_dev_deps_attempted: dict[str, tuple[str | None, float]] = {}
+
 
 def _ensure_lock_for(project_slug: str, agent_slug: str) -> asyncio.Lock:
     """Return the asyncio.Lock for a (project, agent) pair, creating lazily."""
@@ -175,6 +189,32 @@ def _ensure_lock_for(project_slug: str, agent_slug: str) -> asyncio.Lock:
         lock = asyncio.Lock()
         _ENSURE_WORKSPACE_LOCKS[key] = lock
     return lock
+
+
+def _claim_dev_deps_attempt(workspace: Path, digest: str | None) -> bool:
+    """Record an install attempt for ``workspace`` at ``digest``; False when
+    one for the same digest started within ``_DEV_DEPS_RETRY_SECONDS``."""
+    key = str(workspace)
+    now = _monotonic()
+    previous = _dev_deps_attempted.get(key)
+    if (
+        previous is not None
+        and previous[0] == digest
+        and now - previous[1] < _DEV_DEPS_RETRY_SECONDS
+    ):
+        return False
+    _dev_deps_attempted[key] = (digest, now)
+    return True
+
+
+def _names_missing_remote_ref(stderr: str, branch: str) -> bool:
+    """True when git's fetch failed because origin has no ``branch``
+    (``fatal: couldn't find remote ref [refs/heads/]<branch>``)."""
+    endings = (f"remote ref {branch}", f"remote ref refs/heads/{branch}")
+    return any(
+        "couldn't find remote ref" in line and line.rstrip().endswith(endings)
+        for line in stderr.splitlines()
+    )
 
 
 class WorkspaceError(Exception):
@@ -965,6 +1005,14 @@ class WorkspaceProvisioning(_Base):
         are its own branch and the default; the integration branch is refreshed
         at branch-creation time (`create_branch_for_task`), not here.
 
+        git aborts a whole fetch when one named ref is gone from origin, so a
+        clone root parked on a branch origin deleted (merged and pruned) used
+        to refresh nothing at all, the default branch included, on every
+        call. That case is handled by
+        `_refresh_default_after_vanished_branch`. After a successful refresh
+        the clone root's checkout of the default branch follows origin
+        (`_fast_forward_default_checkout`).
+
         Served through the project's relay, so a private repo refreshes too
         (the token stays in the relay). Timeout uses
         `workspace_refresh_fetch_timeout_seconds` (default 60s), NOT
@@ -972,26 +1020,10 @@ class WorkspaceProvisioning(_Base):
         so 300s of blocking on every spawn against a hung remote is
         operationally bad.
         """
-
-        def _scoped_refs() -> list[str]:
-            """The current branch + the repo's default branch, deduped."""
-            current = self._worktree_git(
-                workspace, ["rev-parse", "--abbrev-ref", "HEAD"], check=False
-            ).stdout.strip()
-            origin_head = self._worktree_git(
-                workspace,
-                ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
-                check=False,
-            ).stdout.strip()
-            default = origin_head.split("/", 1)[1] if "/" in origin_head else "master"
-            refs: list[str] = []
-            for ref in (current, default):
-                if ref and ref != "HEAD" and ref not in refs:
-                    refs.append(ref)
-            return refs or ["master"]
-
         try:
-            refs = await asyncio.to_thread(_scoped_refs)
+            current, default = await asyncio.to_thread(
+                self._current_and_default_branch, workspace
+            )
         except (UnsafeWorkspaceGitConfigError, subprocess.SubprocessError) as exc:
             logger.warning(
                 "ensure_workspace: refresh fetch skipped",
@@ -1000,19 +1032,113 @@ class WorkspaceProvisioning(_Base):
                 error=str(exc),
             )
             return
-        result = await self._origin_git(
+        refs = list(dict.fromkeys(ref for ref in (current, default) if ref != "HEAD"))
+        result = await self._refresh_fetch(workspace, project_slug, refs)
+        if result.returncode == 0:
+            await asyncio.to_thread(
+                self._fast_forward_default_checkout, workspace, default
+            )
+            return
+        if current != default and _names_missing_remote_ref(result.stderr, current):
+            await self._refresh_default_after_vanished_branch(
+                workspace, project_slug, current, default
+            )
+            return
+        self._log_failed_refresh(workspace, project_slug, result)
+
+    def _current_and_default_branch(self, workspace: Path) -> tuple[str, str]:
+        """The clone's checked-out branch (``HEAD`` when detached) and the
+        repo's default branch (from ``origin/HEAD``, else ``master``)."""
+        current = self._worktree_git(
+            workspace, ["rev-parse", "--abbrev-ref", "HEAD"], check=False
+        ).stdout.strip()
+        origin_head = self._worktree_git(
+            workspace,
+            ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+            check=False,
+        ).stdout.strip()
+        default = origin_head.split("/", 1)[1] if "/" in origin_head else "master"
+        return current or "HEAD", default
+
+    async def _refresh_fetch(
+        self, workspace: Path, project_slug: str, refs: list[str]
+    ) -> subprocess.CompletedProcess[str]:
+        """``git fetch --no-tags --prune origin <refs>`` through the relay."""
+        return await self._origin_git(
             workspace,
             project_slug,
             ["fetch", "--no-tags", "--prune", "origin", *refs],
             timeout=settings.workspace_refresh_fetch_timeout_seconds,
         )
+
+    async def _refresh_default_after_vanished_branch(
+        self, workspace: Path, project_slug: str, vanished: str, default: str
+    ) -> None:
+        """Fetch the default branch alone, then move the clone root off the
+        branch origin no longer has, onto the default branch (F123: the clone
+        root parks there; its task branches live in worktrees). The vanished
+        branch keeps its local ref and a dirty tree is never overwritten
+        (``_park_clone_root_off_branch``), so nothing is lost."""
+        result = await self._refresh_fetch(workspace, project_slug, [default])
         if result.returncode != 0:
-            logger.warning(
-                "ensure_workspace: refresh fetch returned non-zero",
+            self._log_failed_refresh(workspace, project_slug, result)
+            return
+        logger.info(
+            "ensure_workspace: clone root's branch is gone from origin; "
+            "parking it on the default branch",
+            workspace=str(workspace),
+            project=project_slug,
+            branch=vanished,
+            default_branch=default,
+        )
+        await asyncio.to_thread(self._park_clone_root_off_branch, workspace, vanished)
+        await asyncio.to_thread(self._fast_forward_default_checkout, workspace, default)
+
+    def _fast_forward_default_checkout(self, workspace: Path, default: str) -> None:
+        """Fast-forward the clone root's checkout of ``default`` to
+        ``origin/<default>`` after a refresh fetch.
+
+        The shared ``.venv`` is installed from the clone root's lockfile and
+        every worktree runs on it, so the clone root follows the default
+        branch instead of staying at the commit it was cloned at. Only when
+        it sits on ``default`` with no tracked change, and only
+        ``--ff-only``: another branch, a dirty tree, or local commits on the
+        default branch are never touched (git also refuses to overwrite an
+        untracked file). Best-effort: a refusal is logged.
+        """
+        current = self._worktree_git(
+            workspace, ["branch", "--show-current"], check=False
+        ).stdout.strip()
+        if current != default:
+            return
+        changed = self._worktree_git(
+            workspace, ["status", "--porcelain", "--untracked-files=no"], check=False
+        )
+        if changed.returncode != 0 or changed.stdout.strip():
+            return
+        merged = self._worktree_git(
+            workspace,
+            ["merge", "--ff-only", "--quiet", f"refs/remotes/origin/{default}"],
+            check=False,
+        )
+        if merged.returncode != 0:
+            logger.info(
+                "ensure_workspace: default branch not fast-forwarded",
                 workspace=str(workspace),
-                project=project_slug,
-                stderr=result.stderr.strip(),
+                default_branch=default,
+                stderr=merged.stderr.strip()[:500],
             )
+
+    @staticmethod
+    def _log_failed_refresh(
+        workspace: Path, project_slug: str, result: subprocess.CompletedProcess[str]
+    ) -> None:
+        logger.warning(
+            "ensure_workspace: refresh fetch returned non-zero",
+            workspace=str(workspace),
+            project=project_slug,
+            stderr=result.stderr.strip(),
+        )
 
     async def ensure_workspace(
         self,
@@ -1039,14 +1165,15 @@ class WorkspaceProvisioning(_Base):
             agent_id: Agent UUID or slug
             git_url: Git URL to clone (fetched from project if not provided)
             default_branch: Default branch to checkout
-            force: When True, bypass the 30s refresh-fetch TTL cache and
-                always run ``git fetch origin`` on a healthy workspace.
+            force: When True, bypass the 30s refresh-fetch TTL and always
+                run ``git fetch origin`` on a healthy workspace.
                 Defaults to False so existing callers are unaffected.
-            skip_refresh: When True, skip the refresh-fetch entirely on a
-                healthy workspace. Used by the supersede branch-cut path,
-                which fetches ``refs/pull/{n}/head`` (not an existing local
-                branch), so the 60s origin refresh is wasted I/O. The clone
-                path (workspace does not exist) still runs.
+            skip_refresh: When True, hand back a healthy workspace as it is:
+                no refresh fetch, no dev-dependency install. For callers
+                that fetch the one ref they need themselves or need no
+                origin ref at all (the supersede branch cut, the evidence
+                branch inspection, ``/api/git/log``, ``/api/git/diff``). The
+                clone path (workspace does not exist) still runs.
 
         Returns:
             Path to the workspace directory
@@ -1070,37 +1197,10 @@ class WorkspaceProvisioning(_Base):
             # breaks every subsequent fetch/checkout ("origin/<branch> is
             # not a commit"). Require HEAD + objects/ as the real signal.
             if self._is_workspace_healthy(workspace):
-                # Audit H26: a healthy clone short-circuit USED to return
-                # immediately, so a respawned PM/Doc could be reading
-                # arbitrarily stale refs (whatever was on disk from the
-                # last spawn). Fetch every entry so `git diff origin/...`
-                # reflects what's actually on the remote. Best-effort —
-                # network blips and offline mode must not break workspace
-                # setup; checkout is unchanged.
-                #
-                # 30s TTL cache keyed by workspace path. Dogfooding fired
-                # this fetch 9x/run because every
-                # evidence() call triggers ensure_workspace within the same
-                # few seconds. Skip redundant fetches; force=True overrides.
-                _FETCH_CACHE_TTL_SECONDS = 30.0
-                now = _monotonic()
-                # -math.inf as default means "never fetched" — guarantees
-                # the first call always runs the fetch regardless of clock value.
-                last_fetch = self._fetch_cache.get(str(workspace), -math.inf)
-                if not skip_refresh and (
-                    force or (now - last_fetch) >= _FETCH_CACHE_TTL_SECONDS
-                ):
-                    # Repair broken-ref debris first so the fetch (and the
-                    # agent's later `git diff/log origin/...`) doesn't trip on a
-                    # ref left corrupt by an interrupted recovery.
-                    await asyncio.to_thread(self._prune_broken_refs, workspace)
-                    await self._fetch_origin_best_effort(workspace, project_slug)
-                    self._fetch_cache[str(workspace)] = _monotonic()
-                # Ensure dev deps are present even for workspaces cloned
-                # before this feature landed. Idempotent: the lockfile-digest
-                # marker makes this a no-op once installed, so it costs only a
-                # cheap hash on every healthy re-entry.
-                await self.install_dev_deps(workspace)
+                if not skip_refresh:
+                    await self._refresh_healthy_clone(
+                        workspace, project_slug, force=force
+                    )
                 logger.debug(
                     "Workspace already exists",
                     workspace=str(workspace),
@@ -1148,6 +1248,38 @@ class WorkspaceProvisioning(_Base):
             )
             await self._maybe_scaffold_conventions(project, project_slug, workspace)
             return workspace
+
+    async def _refresh_healthy_clone(
+        self, workspace: Path, project_slug: str, *, force: bool
+    ) -> None:
+        """Bring a healthy clone up to date: origin's refs, then its dev deps.
+
+        Audit H26: a healthy clone short-circuit USED to return immediately,
+        so a respawned PM/Doc could be reading arbitrarily stale refs. The
+        refresh fetch runs at most once per ``_REFRESH_TTL_SECONDS`` per
+        clone, process-wide (``_last_refreshed``): every request builds its
+        own ``WorkspaceService``, so a TTL kept on the instance never skipped
+        a fetch, and every git read paid a relay round trip (serialized per
+        project). ``force`` always fetches. Broken-ref debris is repaired
+        first so the fetch (and the agent's later ``git diff/log
+        origin/...``) doesn't trip on a ref left corrupt by an interrupted
+        recovery. Best-effort: network blips and offline mode must not break
+        workspace setup.
+
+        Dev deps are ensured even for workspaces cloned before that feature
+        landed; the lockfile-digest marker makes it a cheap hash once
+        installed, and a failed install waits out its retry window
+        (``install_dev_deps``).
+        """
+        key = str(workspace)
+        now = _monotonic()
+        # -math.inf as default means "never fetched": the first call always
+        # runs the fetch regardless of the clock's value.
+        if force or now - _last_refreshed.get(key, -math.inf) >= _REFRESH_TTL_SECONDS:
+            await asyncio.to_thread(self._prune_broken_refs, workspace)
+            await self._fetch_origin_best_effort(workspace, project_slug)
+            _last_refreshed[key] = _monotonic()
+        await self.install_dev_deps(workspace)
 
     async def _maybe_scaffold_conventions(
         self, project: Any, project_slug: str, workspace: Path
@@ -1509,8 +1641,9 @@ class WorkspaceReadClones(_Base):
             logger.warning(
                 "dep-update probe: upgrade command non-zero; not originating",
                 command=command,
+                returncode=upgrade.returncode,
                 timed_out=upgrade.timed_out,
-                stderr=upgrade.stderr.strip()[:2000],
+                output=upgrade.output[-_LOGGED_OUTPUT_CHARS:],
             )
             return False
         status = await run_in_workspace_container(
@@ -1541,8 +1674,10 @@ class WorkspaceToolchain(_Base):
         break the agent's clone.
 
         Returns True when an install ran (and at least one command
-        succeeded), False when skipped (cache hit, disabled, or nothing to
-        install).
+        succeeded), False when skipped (cache hit, disabled, nothing to
+        install, or the same lockfiles attempted within
+        ``_DEV_DEPS_RETRY_SECONDS``: a failed install used to rerun, for up to
+        the install timeout, on every call that resolved the clone).
         """
         if not settings.workspace_install_dev_deps:
             return False
@@ -1566,6 +1701,12 @@ class WorkspaceToolchain(_Base):
             # Stamp the toolchain marker the first time it's missing so a
             # workspace provisioned before the flag flipped still records it.
             await self._record_toolchain(workspace, target_python, only_if_missing=True)
+            return False
+        if not _claim_dev_deps_attempt(workspace, digest):
+            logger.debug(
+                "Dev-deps install skipped (attempted recently)",
+                workspace=str(workspace),
+            )
             return False
 
         any_ok = False
@@ -1691,7 +1832,9 @@ class WorkspaceToolchain(_Base):
 
         The install executes the clone's build backend / package scripts,
         which any agent can rewrite, so it never runs here as root. Logs and
-        swallows every failure; returns True only when it exited 0.
+        swallows every failure (a container that did not run it, with the
+        reason; an install that failed, with its exit status and output);
+        returns True only when it exited 0.
         """
         logger.info(
             "Installing workspace dev dependencies",
@@ -1719,8 +1862,9 @@ class WorkspaceToolchain(_Base):
                 "Dev-deps install returned non-zero",
                 workspace=str(workspace),
                 command=label,
+                returncode=result.returncode,
                 timed_out=result.timed_out,
-                stderr=result.stderr.strip()[:2000],
+                output=result.output[-_LOGGED_OUTPUT_CHARS:],
             )
             return False
 
@@ -1860,9 +2004,12 @@ class WorkspaceInspection(_Base):
         operations if needed.
         """
         project_slug = await self._resolve_branch_to_project_slug(branch_name)
+        # The fetch below is the one this read needs: the clone's own
+        # refresh (and a dev-deps install) never rides on an evidence leg.
         workspace = await self.ensure_workspace(
             project_slug=project_slug,
             agent_id=agent_id,
+            skip_refresh=True,
         )
         effective_timeout = (
             subprocess_timeout
@@ -2000,13 +2147,6 @@ class WorkspaceService(
     def __init__(self, session: AsyncSession) -> None:
         self.session = session
         self.root = Path(settings.workspaces_root)
-        # TTL cache for refresh fetches. Dogfooding fired 9 refresh-fetch
-        # warnings per run because each evidence() call triggered
-        # ensure_workspace → fetch. The workspace doesn't
-        # change in subseconds. 30s TTL eliminates the noise without
-        # compromising freshness (commits land slower than 30s in practice;
-        # force=True override exists for the rare need-fresh case).
-        self._fetch_cache: dict[str, float] = {}
 
     def get_workspace_path(
         self,
