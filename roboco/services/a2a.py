@@ -866,9 +866,15 @@ class A2AMessageHandling(_Base):
                     },
                 )
             )
-        except Exception:
-            # Don't fail if event bus unavailable
-            pass
+        except Exception as e:
+            # A failed publish must not fail the response, but this event is
+            # what wakes the requester, so it can't vanish without a trace.
+            logger.warning(
+                "Failed to publish A2A response event",
+                task_id=str(task.id),
+                requester=requester_slug,
+                error=str(e),
+            )
 
     async def _notify_original_requester(
         self,

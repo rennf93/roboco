@@ -46,6 +46,7 @@ from roboco.services.gateway.evidence_repo import EvidenceRepo
 from sqlalchemy import select, text
 from sqlalchemy import select as _sel
 from sqlalchemy.sql.dml import Update
+from structlog.testing import capture_logs
 
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
@@ -1879,15 +1880,24 @@ async def test_publish_a2a_response_event_no_bus() -> None:
 
 @pytest.mark.asyncio
 async def test_publish_a2a_response_event_bus_exception_swallowed() -> None:
+    """A bus failure never fails the response, and is logged, not lost."""
     fake_task = SimpleNamespace(id="00000000-0000-0000-0000-000000000001")
-    with patch(
-        "roboco.services.a2a.get_event_bus",
-        side_effect=RuntimeError("bus down"),
+    with (
+        patch(
+            "roboco.services.a2a.get_event_bus",
+            side_effect=RuntimeError("bus down"),
+        ),
+        capture_logs() as logs,
     ):
-        # Exception swallowed.
         await A2AService._publish_a2a_response_event(
             cast("TaskTable", fake_task), "creator", "requester", "responder"
         )
+    warned = [e for e in logs if e["event"] == "Failed to publish A2A response event"]
+    assert len(warned) == 1
+    assert warned[0]["log_level"] == "warning"
+    assert warned[0]["task_id"] == "00000000-0000-0000-0000-000000000001"
+    assert warned[0]["requester"] == "requester"
+    assert warned[0]["error"] == "bus down"
 
 
 # ---------------------------------------------------------------------------
