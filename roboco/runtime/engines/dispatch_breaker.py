@@ -244,11 +244,15 @@ class RespawnBreakerEngine(_Base):
     ) -> None:
         """Fire-and-forget a write-through of one PM-respawn counter row.
 
+        Every mutation of a counter goes through here, so this is where the
+        record's ``updated_at`` is stamped: the row then says when its newest
+        strike happened, which is what the startup restore's age cutoff reads.
         Copies ``record`` so a later in-place mutation can't race the background
         write, then schedules it on the strong-ref ``_bg_tasks`` set — the
         dispatcher hot path never blocks on the DB, and a write failure degrades
         to in-memory-only (today's behaviour).
         """
+        record["updated_at"] = datetime.now(UTC)
         self._schedule_bg(
             self._persist_respawn_record(agent_slug, task_id, dict(record))
         )
@@ -278,6 +282,12 @@ class RespawnBreakerEngine(_Base):
         FIRST await below, so acquisition order = task creation order = logical
         schedule order, and commits land in that order — the durable row always
         ends at the latest logical value.
+
+        ``updated_at`` is the record's own mutation time (stamped by
+        ``_schedule_respawn_persist``), not the write time: the shutdown flush
+        re-persists every in-memory record, and stamping it with the write time
+        made a counter restored and never touched look freshly struck, so no
+        row ever aged out across restarts.
         """
         async with self._respawn_persist_lock:
             try:
@@ -289,7 +299,7 @@ class RespawnBreakerEngine(_Base):
                 from roboco.db.tables import RespawnTrackerTable
 
                 tid = _UUID(task_id)
-                now = datetime.now(UTC)
+                updated_at = record.get("updated_at") or datetime.now(UTC)
                 stmt = pg_insert(RespawnTrackerTable).values(
                     agent_slug=agent_slug,
                     task_id=tid,
@@ -299,7 +309,7 @@ class RespawnBreakerEngine(_Base):
                     tracing_resets=int(record.get("tracing_resets", 0)),
                     revisit_resets=int(record.get("revisit_resets", 0)),
                     notified=bool(record.get("notified", False)),
-                    updated_at=now,
+                    updated_at=updated_at,
                 )
                 stmt = stmt.on_conflict_do_update(
                     index_elements=[

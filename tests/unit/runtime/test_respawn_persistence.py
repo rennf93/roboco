@@ -51,6 +51,8 @@ async def _attempt_spawn(
 
 
 def _row(task_id: Any, **over: Any) -> SimpleNamespace:
+    """A ``respawn_tracker`` row last struck just now (inside the restore's
+    age cutoff) unless ``updated_at`` says otherwise."""
     base = {
         "agent_slug": "be-pm",
         "task_id": task_id,
@@ -60,6 +62,7 @@ def _row(task_id: Any, **over: Any) -> SimpleNamespace:
         "tracing_resets": 0,
         "notified": False,
         "revisit_resets": 0,
+        "updated_at": datetime.now(UTC),
     }
     base.update(over)
     return SimpleNamespace(**base)
@@ -131,8 +134,8 @@ def test_partition_restamps_last_check_to_now_to_avoid_stale_tracing_gap() -> No
     # spawn.
     tid = uuid4()
     stale_check = datetime(2026, 6, 20, tzinfo=UTC)
-    rows = [_row(tid, last_check=stale_check)]
     restore_now = datetime(2026, 6, 28, 12, 0, tzinfo=UTC)
+    rows = [_row(tid, last_check=stale_check, updated_at=restore_now)]
     restored, stale = AgentOrchestrator._partition_respawn_rows(
         rows, {tid: "in_progress"}, now=restore_now
     )

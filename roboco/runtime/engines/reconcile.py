@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from roboco.agents_config import get_agent_team
+from roboco.foundation.policy.agent_loop import DEFAULT_BUDGET
 from roboco.models.runtime import AgentInstance, WaitingRecord
 from roboco.runtime.orchestrator import (
     _DOCKER_INSPECT_TIMEOUT_SECONDS,
@@ -29,6 +30,27 @@ if TYPE_CHECKING:
     from roboco.runtime.engines._types import AgentOrchestratorSelf as _Base
 else:
     _Base = object
+
+
+def _respawn_row_outlived_cooldown(
+    row: Any, restore_now: datetime, max_age_seconds: int
+) -> bool:
+    """True when a persisted respawn counter's newest strike is older than the
+    breaker's trip cooldown, so restoring it would be stale evidence.
+
+    The cooldown is how long the running breaker itself holds a trip before it
+    re-arms the pair; a counter whose last strike is older than that would
+    already have been forgiven had the process stayed up, and untripped strikes
+    are weaker evidence than a trip. A crash-restart loop, the reason the
+    counters are persisted at all, restarts well inside the window and keeps
+    its counts. Without the cutoff every row lived until its task went
+    terminal: live 2026-10-28 05:15:33 restored 36 rows, the previous run in
+    the orchestrator log having stopped 2026-09-29 21:25, and be-qa on
+    5db9054b and fe-qa on 86ed0eab "tripped" on their very first attempt of
+    the run and paged the CEO; both reviews ran normally once the cooldown let
+    them through.
+    """
+    return bool((restore_now - row.updated_at).total_seconds() > max_age_seconds)
 
 
 class StartupRestoreEngine(_Base):
@@ -106,13 +128,18 @@ class StartupRestoreEngine(_Base):
         rows: "Iterable[Any]",
         status_by_id: dict[Any, Any],
         now: datetime | None = None,
+        *,
+        max_age_seconds: int = DEFAULT_BUDGET.pm_respawn_trip_cooldown_seconds,
     ) -> tuple[dict[tuple[str, str], dict[str, Any]], list[tuple[str, Any]]]:
         """Split persisted respawn rows into (restorable entries, stale keys).
 
         Pure: a row is **stale** when its task is missing from ``status_by_id``
         or terminal (completed/cancelled) — a stale counter must never resurrect
-        against a fixed/deleted task. Restorable entries are keyed
-        ``(agent_slug, str(task_id))`` to match the in-memory dict; stale keys
+        against a fixed/deleted task — or when its newest strike is older than
+        ``max_age_seconds`` (see ``_respawn_row_outlived_cooldown``).
+        Restorable entries are keyed ``(agent_slug, str(task_id))`` to match
+        the in-memory dict and keep the row's ``updated_at``, so a shutdown
+        flush of an untouched entry does not make it look fresh; stale keys
         carry the raw ``task_id`` for deletion.
 
         F034: ``last_check`` is re-stamped to ``now`` (the restore time) on
@@ -131,7 +158,11 @@ class StartupRestoreEngine(_Base):
         for r in rows:
             status = status_by_id.get(r.task_id)
             norm = getattr(status, "value", status)
-            if status is None or norm in terminal:
+            if (
+                status is None
+                or norm in terminal
+                or _respawn_row_outlived_cooldown(r, restore_now, max_age_seconds)
+            ):
                 stale.append((r.agent_slug, r.task_id))
                 continue
             restored[(r.agent_slug, str(r.task_id))] = {
@@ -146,6 +177,7 @@ class StartupRestoreEngine(_Base):
                 "tracing_resets": r.tracing_resets,
                 "revisit_resets": r.revisit_resets,
                 "notified": r.notified,
+                "updated_at": r.updated_at,
             }
         return restored, stale
 
@@ -179,7 +211,11 @@ class StartupRestoreEngine(_Base):
                     )
                 ).all()
                 status_by_id = {row.id: row.status for row in live}
-                restored, stale = self._partition_respawn_rows(rows, status_by_id)
+                restored, stale = self._partition_respawn_rows(
+                    rows,
+                    status_by_id,
+                    max_age_seconds=self._PM_RESPAWN_TRIP_COOLDOWN_SECONDS,
+                )
             self._pm_respawn_tracker.update(restored)
             for agent_slug, task_id in stale:
                 await self._clear_respawn_record(agent_slug, str(task_id))

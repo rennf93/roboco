@@ -69,7 +69,8 @@ class BudgetPolicy:
     # (bounded re-burn); a fixed one advances and the status-change path fully
     # resets. Restore re-stamps last_check to now, so a freshly restored row
     # still trips immediately (durability preserved) — only a row tripped for
-    # longer than the cooldown self-heals.
+    # longer than the cooldown self-heals. The same window bounds a restored
+    # counter's age: a row last struck longer ago than this is not restored.
     pm_respawn_trip_cooldown_seconds: int = 300
     verb_retry_max_per_minute: int = 3  # default cap for verbs not in VERB_RETRY_LIMITS
 
