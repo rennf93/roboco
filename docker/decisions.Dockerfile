@@ -145,6 +145,10 @@ COPY --from=weights /models /models
 
 ARG CLEF_GGUF_QUANT=Q4_K_M
 
+# The clef input cap (CLEF_MAX_INPUT_TOKENS, default 8192) is not set here:
+# compose passes it from ROBOCO_DECISIONS_CLEF_MAX_INPUT_TOKENS, and the
+# entrypoint and server.py default it. A *TOKEN* name in ENV trips the
+# scanner's sensitive-data rule (DL3064), though it is a token count.
 ENV CLEF_MODEL_ID=ggml-org/Clef-Flash-GGUF:Q4_K_M \
     LAYA_MODEL_ID=ggml-org/Laya-GGUF \
     CLEF_GGUF_PATH=/models/Clef-Flash-${CLEF_GGUF_QUANT}.gguf \
@@ -152,7 +156,6 @@ ENV CLEF_MODEL_ID=ggml-org/Clef-Flash-GGUF:Q4_K_M \
     CLEF_UPSTREAM_URL=http://127.0.0.1:8110 \
     LAYA_UPSTREAM_URL=http://127.0.0.1:8111 \
     UPSTREAM_TIMEOUT_S=180.0 \
-    CLEF_MAX_INPUT_TOKENS=8192 \
     LAYA_CTX_SIZE=4096 \
     DECISIONS_HOST=0.0.0.0 \
     DECISIONS_PORT=8100 \
