@@ -68,8 +68,9 @@ ENV CI=true \
 # and no multi-stage split.
 # pnpm-workspace.yaml carries the `allowBuilds` approvals for esbuild and
 # puppeteer — without them pnpm 12 fails the install with
-# ERR_PNPM_IGNORED_BUILDS (exit 1), breaking the image build. pnpm-lock.yaml
-# records the pinned pnpm, which a frozen install requires.
+# ERR_PNPM_IGNORED_BUILDS (exit 1), breaking the image build — and
+# `pmOnFail: ignore`, without which a frozen install rejects the lockfile for
+# not recording the pinned pnpm.
 # --chmod: the files keep the build folder's own modes otherwise, and the NAS
 # deploy copy is owner-only (0600), unreadable to this image's non-root user.
 COPY --chmod=0644 video-renderer/package.json video-renderer/pnpm-lock.yaml video-renderer/pnpm-workspace.yaml ./

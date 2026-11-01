@@ -23,3 +23,10 @@ overrides:
   # hyperframes pins undici to exactly 7.25.0, which carries 29 advisories;
   # 7.30.1 is the first 7.x release that fixes all of them.
   undici: ^7.30.1
+# pmOnFail: ignore keeps pnpm-lock.yaml one YAML document. Without it pnpm 12
+# writes a packageManagerDependencies document at the top of the lockfile, and
+# GitHub's dependency graph reads only the first document
+# (dependabot-core#15904, open), which would silence and close the Dependabot
+# alerts on this lockfile. pnpm then no longer switches to the packageManager
+# pin itself; corepack still enforces it in Motion CI.
+pmOnFail: ignore

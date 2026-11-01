@@ -5,3 +5,11 @@ overrides:
   # @tailwindcss/typography (latest 0.5.20) pins postcss-selector-parser to
   # exactly 6.0.10; 6.1.5 fixes GHSA-rj75-hqrm-r3gf within the same major.
   "@tailwindcss/typography>postcss-selector-parser": ^6.1.5
+# pmOnFail: ignore keeps pnpm-lock.yaml one YAML document. Without it pnpm 12
+# writes a packageManagerDependencies document at the top of the lockfile, and
+# GitHub's dependency graph reads only the first document
+# (dependabot-core#15904, open), which would silence and close the Dependabot
+# alerts on this lockfile. pnpm then no longer switches to the packageManager
+# pin itself; corepack still enforces it in Panel CI and
+# docker/panel.Dockerfile.
+pmOnFail: ignore

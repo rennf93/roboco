@@ -31,8 +31,8 @@ ENV CI=true
 # Copy package manifests first (for layer caching). pnpm-workspace.yaml
 # carries the `allowBuilds` map (sharp, unrs-resolver) — without it pnpm 12
 # fails the install with ERR_PNPM_IGNORED_BUILDS (exit 1) on unrs-resolver's
-# postinstall. pnpm-lock.yaml records the pinned pnpm, which a frozen install
-# requires.
+# postinstall — and `pmOnFail: ignore`, without which a frozen install rejects
+# the lockfile for not recording the pinned pnpm.
 COPY panel/package.json panel/pnpm-lock.yaml panel/pnpm-workspace.yaml ./
 
 # Install dependencies with the settings `pnpm build` runs with. Before a
