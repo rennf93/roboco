@@ -1592,8 +1592,17 @@ class GitBranches(_Base):
         the contributor's fork. This is the first point untrusted contributor
         code enters a roboco branch, so the caller MUST only invoke it for a
         human-confirmed (``confirmed_by_human``) supersede.
+
+        The branch is pushed by name and never checked out: the system clone
+        root stays on its default branch (F123), never on contributor code,
+        and a retry can update the branch (git refuses to fetch into a
+        checked-out branch). A clone root an earlier cut left on the branch
+        is parked off it first.
         """
         pull_ref = f"refs/pull/{pr_number}/head"
+        await asyncio.to_thread(
+            WorkspaceService._park_clone_root_off_branch, workspace, branch_name
+        )
         # Force the refspec (``+``) so a retry after a prior push (e.g. the
         # commit after the push failed and rolled the umbrella back) updates the
         # leftover local branch in the persistent system workspace instead of
@@ -1603,7 +1612,6 @@ class GitBranches(_Base):
             ["fetch", "origin", f"+{pull_ref}:{branch_name}"],
             timeout=_network_git_timeout(),
         )
-        await self._run_git(workspace, ["checkout", branch_name])
         await self._run_git(
             workspace,
             ["push", "-u", "origin", branch_name],
@@ -1856,6 +1864,14 @@ class GitCheckoutPush(_Base):
         of their own assigned tasks' branches, or the project default
         branch (read-only inspection). Hierarchical prefixes are allowed
         so a PM can checkout the parent branch of a subtask they own.
+
+        F123: a task branch is never checked out in a clone root. The
+        caller's own task gets its worktree (``ensure_task_worktree``; in
+        the clone root git refused, the branch being checked out there);
+        another agent's task branch is refused (it used to move the clone
+        root onto a branch origin deletes once merged). A branch no task
+        owns (the default branch) is checked out in the clone root, which
+        is where F123 parks it.
         """
         allowed = await self._allowed_checkout_branches(data.project_slug, agent_id)
         if data.branch not in allowed and not any(
@@ -1870,8 +1886,25 @@ class GitCheckoutPush(_Base):
                 ),
             )
 
-        workspace = await self.get_workspace(data.project_slug, agent_id)
-        await self.checkout(workspace, data.branch)
+        await self._check_out_for_agent(data.project_slug, agent_id, data.branch)
+
+    async def _check_out_for_agent(
+        self, project_slug: str, agent_id: UUID, branch: str
+    ) -> None:
+        """The checkout itself (see ``checkout_branch_for_agent``)."""
+        task = await self._task_for_branch(branch)
+        if task is None:
+            workspace = await self.get_workspace(project_slug, agent_id)
+            await self.checkout(workspace, branch)
+            return
+        if task.assigned_to != agent_id:
+            raise ValidationError(
+                f"CHECKOUT_OTHER_TASK: '{branch}' is task {task.id}'s branch, "
+                "which is not yours; a clone root is never checked out on a "
+                "task branch. Read it with roboco_git_log(branch=...) or "
+                "GET /api/git/file instead."
+            )
+        await self.ensure_task_worktree(project_slug, agent_id, task)
 
     async def _ensure_pushable_branch(self, workspace: Path, branch: str) -> None:
         """Make sure ``branch`` exists as a local ref before a push-by-name.
