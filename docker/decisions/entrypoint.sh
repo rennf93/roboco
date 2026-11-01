@@ -18,11 +18,14 @@
 # starts but never gets healthy (or dies during startup) tears the whole
 # supervisor down so compose's restart policy recovers the pair.
 # --threads 0 means llama.cpp's default (nproc). TERM/INT kill every child.
-# --batch-size / --ubatch-size match the context: a decision request is
-# processed in ONE physical batch, so llama.cpp's 512 default refused every
-# input over 512 tokens ("input (3538 tokens) is too large to process.
-# increase the physical batch size", live 2026-10-28) though the client
-# budgets Clef state at 40000 chars against its 16384-token context.
+# The physical batch stays llama.cpp's default (512 tokens). Clef keeps no KV
+# cache, so llama-server must take a whole input in one physical batch and
+# refuses a longer one at once ("input (N tokens) is too large to process"),
+# which the orchestrator's client takes as no verdict (fail-open). Sizing
+# the batch to the context (b9361261) let those inputs in, and on the NAS
+# CPU Clef reads ~5 tokens/s (219 tokens 48 s, 598 tokens 118 s, measured
+# 2026-11-01): one 10k-token request held ~10 cores for over nine minutes,
+# could not be cancelled, and every request queued behind it timed out.
 
 set -uo pipefail
 
@@ -102,8 +105,6 @@ start_backend() {
     --host 127.0.0.1 \
     --port "$(port_of "$key")" \
     --ctx-size "$(ctx_of "$key")" \
-    --batch-size "$(ctx_of "$key")" \
-    --ubatch-size "$(ctx_of "$key")" \
     --threads "$LLAMA_THREADS" \
     --alias "$(alias_of "$key")" \
     --no-webui \
