@@ -284,9 +284,18 @@ class Settings(BaseSettings):
         description="Max concurrent embed batches for the indexer's own embedder",
     )
     indexer_embed_batch_size: int = Field(
-        default=8,
+        default=1,
         ge=1,
-        description="Embed batch size for the indexer's own embedder",
+        description=(
+            "Embed batch size for the indexer's own embedder. ollama serves "
+            "one embed request at a time per model, so a query embed "
+            "(institutional memory, KB search) waits behind the whole batch "
+            "in flight. Measured on the NAS 2026-11-01 (qwen3-embedding:0.6b): "
+            "a query arriving during an 8-chunk batch waited 41.5 s on the "
+            "CPU, 5 s on the Iris Xe, against the 8 s memory-search deadline; "
+            "8 single-chunk requests take as long as one 8-chunk request, so "
+            "one chunk per request costs no throughput."
+        ),
     )
 
     @property
