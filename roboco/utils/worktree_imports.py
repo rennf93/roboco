@@ -38,20 +38,29 @@ def point_clone_root_paths_at_worktree(prefix: str, path: list[str]) -> None:
     alone, and so do entries under the clone root's own ``.venv``,
     ``.worktrees`` and ``.uv-python``.
     """
-    worktree = Path(os.path.normpath(prefix)).parent
-    if worktree.parent.name != _WORKTREES_DIR:
+    worktree = _worktree_whose_venv_is(prefix)
+    if worktree is None:
         return
-    clone_root = worktree.parent.parent
     for index, entry in enumerate(path):
-        if not entry:
-            continue
-        try:
-            relative = Path(os.path.normpath(entry)).relative_to(clone_root)
-        except ValueError:
-            continue
-        if relative.parts and relative.parts[0] in _CLONE_ROOT_ONLY:
-            continue
-        path[index] = str(worktree / relative)
+        path[index] = _same_place_inside_worktree(entry, worktree)
+
+
+def _worktree_whose_venv_is(prefix: str) -> Path | None:
+    """``<clone root>/.worktrees/<id>`` when ``prefix`` is its ``.venv``."""
+    worktree = Path(os.path.normpath(prefix)).parent
+    return worktree if worktree.parent.name == _WORKTREES_DIR else None
+
+
+def _same_place_inside_worktree(entry: str, worktree: Path) -> str:
+    """``entry`` moved from the clone root into ``worktree``; unchanged when it
+    is relative, outside the clone root, or under a clone-root-only directory."""
+    try:
+        relative = Path(os.path.normpath(entry)).relative_to(worktree.parent.parent)
+    except ValueError:
+        return entry
+    if relative.parts and relative.parts[0] in _CLONE_ROOT_ONLY:
+        return entry
+    return str(worktree / relative)
 
 
 if __name__ == "_roboco_worktree_imports":
