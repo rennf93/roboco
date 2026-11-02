@@ -76,6 +76,12 @@ COPY agents /app/agents
 COPY docs /app/docs
 COPY alembic.ini /app/
 COPY alembic /app/alembic
+# COPY keeps the build folder's modes, and the NAS deploy copy is owner-only:
+# roboco is imported as the git user (the conventions validator) and as the
+# Claude login's owner, never only as root (live 2026-11-02: every i_am_done
+# refused, "Permission denied: '/app/roboco/__init__.py'").
+RUN chmod -R u=rwX,go=rX /app/roboco /app/agents /app/docs /app/alembic \
+        /app/alembic.ini /app/pyproject.toml /app/uv.lock /app/README.md
 RUN uv sync --frozen --no-dev
 
 # The git-user exec helper: static (the runner has no compiler or libc

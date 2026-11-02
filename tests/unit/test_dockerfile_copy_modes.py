@@ -90,15 +90,18 @@ def copies_without_a_mode(text: str, runtime_user: str | None) -> list[int]:
     file's mode to the build folder, when that stage runs as a non-root user."""
     if runtime_user is None or runtime_user in _ROOT_USERS:
         return []
-    final = _stages(text, {})[-1]
+    return _copies_left_to_the_build_folder(_stages(text, {})[-1])
+
+
+def _copies_left_to_the_build_folder(stage: _Stage) -> list[int]:
     loose = []
-    for number, args in final.copies:
+    for number, args in stage.copies:
         if "--from=" in args or "--chmod=" in args or "--chown=" in args:
             continue
         destination = args.split()[-1]
         later_chmod = any(
             "chmod" in run and destination in run
-            for run_number, run in final.runs
+            for run_number, run in stage.runs
             if run_number > number
         )
         if not later_chmod:
@@ -118,6 +121,20 @@ def test_a_non_root_image_sets_the_mode_of_every_file_it_copies_in(
         "stage that runs as a non-root user without --chmod, --chown or a later "
         "chmod of the destination; it breaks when the build folder is owner-only"
     )
+
+
+def test_the_orchestrator_sources_are_readable_by_the_uids_it_runs_them_as() -> None:
+    """The orchestrator image runs as root, but it imports roboco as the git
+    user (the conventions validator) and as the Claude login's owner (the
+    Haiku child). Live 2026-11-02, from the owner-only NAS copy: every
+    i_am_done was refused, "Permission denied: '/app/roboco/__init__.py'".
+    The builder stage's /app sources reach the runner by COPY --from, modes
+    and all."""
+    text = (_DOCKER_DIR / "orchestrator.Dockerfile").read_text()
+    builder = _stages(text, {})[0]
+    into_app = {n for n, args in builder.copies if args.split()[-1].startswith("/app")}
+    loose = [n for n in _copies_left_to_the_build_folder(builder) if n in into_app]
+    assert loose == [], f"orchestrator.Dockerfile lines {loose}"
 
 
 def test_the_guard_flags_a_bare_copy_into_a_non_root_stage() -> None:
