@@ -109,9 +109,7 @@ describe("TaskListNav", () => {
 
     fireEvent.keyDown(window, { key: "ArrowRight", altKey: true });
 
-    expect(mockPush).toHaveBeenCalledWith(
-      "/tasks/t3?status=in_progress",
-    );
+    expect(mockPush).toHaveBeenCalledWith("/tasks/t3?status=in_progress");
   });
 
   it("suppresses Alt+ArrowRight while an input is focused", () => {

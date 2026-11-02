@@ -247,7 +247,8 @@ async def test_i_will_work_on_start_returns_none_invalid_state() -> None:
     )
     task_svc.claim.return_value = claimed_task
     task_svc.set_plan.return_value = claimed_task
-    task_svc.start.return_value = None  # start fails
+    # start fails
+    task_svc.start.return_value = None
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
     env = await c.i_will_work_on(
@@ -458,9 +459,10 @@ async def test_i_will_plan_cell_pm_on_code_typed_parent_succeeds() -> None:
         id=task_id,
         title="Backend slice: Git workflow smoke test",
         team="backend",
-        parent_task_id=uuid4(),  # subtask of the main_pm root
-        task_type="code",  # ← the trigger; pre-fix this rejected with
-        #                    "Cell Pm cannot claim code tasks"
+        # subtask of the main_pm root
+        parent_task_id=uuid4(),
+        # The trigger: pre-fix this rejected with "Cell Pm cannot claim code tasks".
+        task_type="code",
     )
     task_svc = AsyncMock()
     task_svc.get.return_value = task
@@ -522,7 +524,8 @@ async def test_i_will_plan_pending_claim_fails() -> None:
     task_svc.list_in_progress_for_agent.return_value = []
     task_svc.list_paused_for_agent.return_value = []
     task_svc.get_subtasks.return_value = []
-    task_svc.claim.return_value = None  # claim fails
+    # claim fails
+    task_svc.claim.return_value = None
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
     env = await c.i_will_plan(
@@ -723,7 +726,8 @@ async def test_submit_up_submit_pm_review_fails() -> None:
     task_svc.get.return_value = task
     task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
     task_svc.all_subtasks_terminal.return_value = True
-    task_svc.submit_pm_review.return_value = None  # service returns None
+    # service returns None
+    task_svc.submit_pm_review.return_value = None
     journal = AsyncMock()
     journal.has_decision_for_task.return_value = True
     journal.latest_decision_at.return_value = datetime.now(UTC)
@@ -1403,10 +1407,113 @@ async def test_pending_assignment_guard_still_blocks_developer() -> None:
     task_svc.agent_for.return_value = MagicMock(
         role="developer", team="backend", slug=None
     )
+    task_svc.held_task_blocking_claim.return_value = None
     c = Choreographer(_make_deps(task=task_svc))
     guard = await c._pending_assignment_guard(uuid4(), {})
     assert guard is not None
     assert guard.as_dict()["error"] == "invalid_state"
+
+
+@pytest.mark.asyncio
+async def test_pending_assignment_guard_allows_idle_with_active_work() -> None:
+    """Regression (be-pm, 2026-09-27): a cell PM holding one root in_progress
+    with two more roots assigned could NEVER satisfy this guard — the claim
+    gate refuses a second claim, so the refusal demanded the impossible and
+    every run wedged at the exit until the CEO paused the roots by hand. The
+    spawn-per-pending dispatcher gives each pending root its own run."""
+    task_svc = AsyncMock()
+    task_svc.list_assigned_for_agent.return_value = [
+        MagicMock(id=uuid4(), status="in_progress"),
+        MagicMock(id=uuid4(), status="pending"),
+        MagicMock(id=uuid4(), status="pending"),
+    ]
+    task_svc.agent_for.return_value = MagicMock(
+        role="cell_pm", team="backend", slug=None
+    )
+    c = Choreographer(_make_deps(task=task_svc))
+    assert await c._pending_assignment_guard(uuid4(), {}) is None
+
+
+@pytest.mark.asyncio
+async def test_pending_assignment_guard_allows_idle_when_claim_blocked() -> None:
+    """Regression (be-dev-2, 2026-09-27): a pending assignment the claim gate
+    itself holds (dependency/sequence reachability) must not block the exit —
+    "gate A refuses the action, gate B refuses the exit" is a dead-end, and
+    the orchestrator re-spawns when the hold clears."""
+    task_svc = AsyncMock()
+    held = MagicMock(id=uuid4(), status="pending")
+    task_svc.list_assigned_for_agent.return_value = [held]
+    task_svc.agent_for.return_value = MagicMock(
+        role="developer", team="backend", slug=None
+    )
+    task_svc.held_task_blocking_claim.return_value = None
+    task_svc.is_pending_claim_blocked.return_value = True
+    c = Choreographer(_make_deps(task=task_svc))
+    assert await c._pending_assignment_guard(uuid4(), {}) is None
+    task_svc.is_pending_claim_blocked.assert_awaited_once_with(held.id)
+
+
+# A work author's i_will_work_on is refused while it still holds another
+# unfinished task (claimed, in_progress, verifying, blocked or escalated away,
+# paused), but the guard only excused claimed/in_progress holders. Live
+# 2026-10-28 be-dev-1, holding paused f5d66db6 and 11a83407: 06:46:09
+# i_will_work_on refused "You have 2 paused task(s); resume before claiming new
+# work", 06:46:46 i_am_idle refused "You have task ec0b4a38... assigned but
+# never claimed", 06:46:53 the same for 095e3b7c. Refused to act and to exit.
+
+
+def _idle_guard_choreographer(
+    role: str, assigned: list[Any], held: Any | None
+) -> tuple[Choreographer, AsyncMock]:
+    task_svc = AsyncMock()
+    task_svc.list_assigned_for_agent.return_value = assigned
+    task_svc.agent_for.return_value = MagicMock(role=role, team="backend", slug=None)
+    task_svc.held_task_blocking_claim.return_value = held
+    task_svc.is_pending_claim_blocked.return_value = False
+    return Choreographer(_make_deps(task=task_svc)), task_svc
+
+
+def _held_task(status: str) -> MagicMock:
+    return MagicMock(id=uuid4(), status=status, parent_task_id=None)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("held_status", ["paused", "verifying", "blocked"])
+async def test_pending_assignment_guard_lets_a_developer_holding_work_idle(
+    held_status: str,
+) -> None:
+    held = _held_task(held_status)
+    pending = _held_task("pending")
+    c, task_svc = _idle_guard_choreographer("developer", [held, pending], held)
+
+    assert await c._pending_assignment_guard(uuid4(), {}) is None
+    task_svc.held_task_blocking_claim.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_pending_assignment_guard_counts_work_escalated_away() -> None:
+    """A task escalated to the PM is no longer assigned to the developer but is
+    still its held work (pre_block_assignee), so the exit stays open."""
+    escalated = _held_task("blocked")
+    pending = _held_task("pending")
+    c, _ = _idle_guard_choreographer("developer", [pending], escalated)
+
+    assert await c._pending_assignment_guard(uuid4(), {}) is None
+
+
+@pytest.mark.asyncio
+async def test_pending_assignment_guard_still_sends_a_coordinator_to_plan() -> None:
+    """A PM coordinator holds many roots by design and its i_will_plan is never
+    refused for held work, so a pending root it owns is a claim it can make."""
+    paused = _held_task("paused")
+    pending = _held_task("pending")
+    c, task_svc = _idle_guard_choreographer("cell_pm", [paused, pending], paused)
+
+    guard = await c._pending_assignment_guard(uuid4(), {})
+
+    assert guard is not None
+    assert "i_will_plan" in guard.as_dict()["remediate"]
+    task_svc.held_task_blocking_claim.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -1460,7 +1567,8 @@ async def test_notify_qa_survives_mid_flush_failure_inside_savepoint() -> None:
     assert warning is not None
     assert str(qa_id) in warning
     assert "RuntimeError" in warning
-    a2a_svc.send.assert_not_awaited()  # reassign's flush blew up first
+    # reassign's flush blew up first
+    a2a_svc.send.assert_not_awaited()
     task_svc.session.refresh.assert_awaited_once_with(t)
     # No PendingRollbackError on reuse — this is exactly what the bare
     # try/except (pre-fix) failed to guarantee.

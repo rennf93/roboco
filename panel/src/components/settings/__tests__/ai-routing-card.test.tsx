@@ -1098,7 +1098,9 @@ describe("AIRoutingCard", () => {
       ).toBeInTheDocument();
 
       const intakeRow = mixRowFor("intake-1");
-      expect(within(intakeRow).getByText("Kimi (Moonshot)")).toBeInTheDocument();
+      expect(
+        within(intakeRow).getByText("Kimi (Moonshot)"),
+      ).toBeInTheDocument();
 
       const prReviewerRow = mixRowFor("pr-reviewer-1");
       expect(
@@ -1146,7 +1148,9 @@ describe("AIRoutingCard", () => {
 
       const intakeRow = mixRowFor("intake-1");
       expect(within(intakeRow).getByText("Codex (OpenAI)")).toBeInTheDocument();
-      expect(within(intakeRow).getByText("Gemini (Google)")).toBeInTheDocument();
+      expect(
+        within(intakeRow).getByText("Gemini (Google)"),
+      ).toBeInTheDocument();
 
       const prReviewerRow = mixRowFor("pr-reviewer-1");
       expect(
