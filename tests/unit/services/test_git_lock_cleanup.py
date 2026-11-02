@@ -52,7 +52,7 @@ async def test_timeout_removes_stale_git_locks(
     def _boom(*_a: object, **_k: object) -> subprocess.CompletedProcess[str]:
         raise subprocess.TimeoutExpired(cmd=["git", "commit"], timeout=5)
 
-    monkeypatch.setattr("roboco.services.git.subprocess.run", _boom)
+    monkeypatch.setattr("roboco.services.git._run_local_git", _boom)
 
     with pytest.raises(GitTimeoutError):
         await _svc()._run_git(workspace, ["commit", "-m", "x"], check=True)
@@ -75,7 +75,7 @@ async def test_timeout_lock_cleanup_is_best_effort_no_git_dir(
     def _boom(*_a: object, **_k: object) -> subprocess.CompletedProcess[str]:
         raise subprocess.TimeoutExpired(cmd=["git", "reset", "--hard"], timeout=5)
 
-    monkeypatch.setattr("roboco.services.git.subprocess.run", _boom)
+    monkeypatch.setattr("roboco.services.git._run_local_git", _boom)
 
     with pytest.raises(GitTimeoutError):
         await _svc()._run_git(workspace, ["reset", "--hard", "origin/main"])
@@ -95,13 +95,60 @@ async def test_clean_exit_does_not_touch_locks(
     ok = subprocess.CompletedProcess(
         args=["git", "status"], returncode=0, stdout="", stderr=""
     )
-    monkeypatch.setattr("roboco.services.git.subprocess.run", lambda *_a, **_k: ok)
-    # _ensure_agent_owned runs after a clean exit — no-op it.
-    monkeypatch.setattr(
-        "roboco.services.workspace._ensure_agent_owned", lambda _ws: None
-    )
+    monkeypatch.setattr("roboco.services.git._run_local_git", lambda *_a, **_k: ok)
 
     await _svc()._run_git(workspace, ["status"], check=True)
 
     for name in ("index", "head", "packed_refs", "ref"):
         assert locks[name].exists(), f"{name} lock was wrongly removed on clean exit"
+
+
+@pytest.mark.asyncio
+async def test_timeout_in_a_worktree_clears_its_own_admin_dir_locks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A worktree's index.lock lives in <clone>/.git/worktrees/<id>/, found by
+    layout: its .git gitfile is agent-writable and is never read."""
+    clone = tmp_path / "ws"
+    worktree = clone / ".worktrees" / "abc"
+    admin = clone / ".git" / "worktrees" / "abc"
+    admin.mkdir(parents=True)
+    worktree.mkdir(parents=True)
+    (worktree / ".git").write_text("gitdir: /etc\n")  # a planted redirect
+    lock = admin / "index.lock"
+    lock.write_text("stale")
+    sibling = clone / ".git" / "worktrees" / "other" / "index.lock"
+    sibling.parent.mkdir(parents=True)
+    sibling.write_text("live")
+
+    def _boom(*_a: object, **_k: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(cmd=["git", "add"], timeout=5)
+
+    monkeypatch.setattr("roboco.services.git._run_local_git", _boom)
+
+    with pytest.raises(GitTimeoutError):
+        await _svc()._run_git(worktree, ["add", "-A"])
+
+    assert not lock.exists()
+    assert sibling.exists(), "another worktree's live lock was removed"
+
+
+@pytest.mark.asyncio
+async def test_timeout_cleanup_never_follows_a_planted_lock_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "ws"
+    (workspace / ".git").mkdir(parents=True)
+    outside = tmp_path / "precious.lock"
+    outside.write_text("not git's")
+    (workspace / ".git" / "evil.lock").symlink_to(outside)
+
+    def _boom(*_a: object, **_k: object) -> subprocess.CompletedProcess[str]:
+        raise subprocess.TimeoutExpired(cmd=["git", "commit"], timeout=5)
+
+    monkeypatch.setattr("roboco.services.git._run_local_git", _boom)
+
+    with pytest.raises(GitTimeoutError):
+        await _svc()._run_git(workspace, ["commit", "-m", "x"])
+
+    assert outside.read_text() == "not git's"

@@ -22,7 +22,7 @@ from tests.e2e_smoke.arcs import (
     task_state,
     wire_dependency,
 )
-from tests.e2e_smoke.harness import ScriptedAgent, expect_error, expect_ok
+from tests.e2e_smoke.harness import ScriptedAgent, expect_ok
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -126,16 +126,18 @@ def test_h5_unclaim_from_blocked_clears_snapshot(e2e_stack: E2EStack) -> None:
     dev = ScriptedAgent(stack, company.dev_id, "be-dev-1", "developer")
     expect_ok(dev.flow("give_me_work"), "dev give_me_work")
 
+    plan_text = (
+        "Block the task on an external dependency, then unclaim from "
+        "the blocked state. After unclaim the row's pre_block_state "
+        "must be null so a later reclaim starts clean with no stale "
+        "snapshot — this scenario asserts that invariant directly."
+    )
+
     def _claim() -> dict[str, Any]:
         return dev.flow(
             "i_will_work_on",
             task_id=str(tid),
-            plan=(
-                "Block the task on an external dependency, then unclaim from "
-                "the blocked state. After unclaim the row's pre_block_state "
-                "must be null so a later reclaim starts clean with no stale "
-                "snapshot — this scenario asserts that invariant directly."
-            ),
+            plan=plan_text,
             steps=[
                 {
                     "title": "Block the task",
@@ -169,11 +171,9 @@ def test_h5_unclaim_from_blocked_clears_snapshot(e2e_stack: E2EStack) -> None:
             open_questions=[],
         )
 
-    expect_error(_claim(), "tracing_gap", "dev first i_will_work_on")
-    expect_ok(
-        dev.do("note", scope="note", task_id=str(tid), text="claim note"), "dev note"
-    )
-    expect_ok(_claim(), "dev i_will_work_on retry")
+    # The claim records its plan as the at-claim note, so it passes first time.
+    expect_ok(_claim(), "dev i_will_work_on")
+    assert stack.note_contents_on_task(str(tid)) == [plan_text]
     expect_ok(
         dev.flow("i_am_blocked", task_id=str(tid), reason="external dep"), "dev block"
     )

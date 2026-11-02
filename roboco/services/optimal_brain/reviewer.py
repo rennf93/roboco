@@ -10,7 +10,7 @@ Code review assistant that synthesizes feedback from multiple sources:
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, ClassVar, cast
+from typing import TYPE_CHECKING, Any, ClassVar, cast
 from uuid import UUID
 
 import structlog
@@ -20,6 +20,13 @@ from roboco.models.optimal import (
     CodeReviewResult,
     SearchResult,
 )
+
+if TYPE_CHECKING:
+    from roboco.services.optimal_brain._reviewer_service_types import (
+        ReviewerServiceSelf as _Base,
+    )
+else:
+    _Base = object
 
 logger = structlog.get_logger()
 
@@ -38,10 +45,14 @@ class ReviewCategory(Enum):
 class ReviewSeverity(Enum):
     """Severity of review comments."""
 
-    BLOCKER = "blocker"  # Must fix before merge
-    MAJOR = "major"  # Should fix
-    MINOR = "minor"  # Nice to fix
-    SUGGESTION = "suggestion"  # Optional improvement
+    # Must fix before merge
+    BLOCKER = "blocker"
+    # Should fix
+    MAJOR = "major"
+    # Nice to fix
+    MINOR = "minor"
+    # Optional improvement
+    SUGGESTION = "suggestion"
 
 
 @dataclass
@@ -68,13 +79,256 @@ class ReviewSummary:
     major_count: int = 0
     minor_count: int = 0
     suggestions_count: int = 0
-    overall_score: float = 100.0  # 0-100, deducted for issues
+    # 0-100, deducted for issues
+    overall_score: float = 100.0
     approved: bool = True
     relevant_standards: list[SearchResult] = field(default_factory=list)
     past_reviews: list[SearchResult] = field(default_factory=list)
 
 
-class ReviewerService:
+class ReviewerChecks(_Base):
+    """The checks a review runs on the code itself: known error patterns, the
+    language's standards (Python and TypeScript), security, and the language and
+    security-sensitivity guesses they rest on."""
+
+    async def _check_error_patterns(
+        self,
+        code: str,
+    ) -> list[SearchResult]:
+        """Check for known error patterns in the code."""
+        # Search errors index for patterns that match this code
+        return cast(
+            "list[SearchResult]",
+            await self._optimal_service.search_errors(
+                # Use first 500 chars as query
+                query=code[:500],
+                top_k=5,
+            ),
+        )
+
+    def _check_standards(
+        self,
+        code: str,
+        standards: list[SearchResult],
+        file_path: str,
+    ) -> list[ReviewComment]:
+        """Check code against coding standards."""
+        comments: list[ReviewComment] = []
+        language = self._detect_language(file_path)
+
+        # Python-specific checks
+        if language == "python":
+            comments.extend(self._check_python_standards(code, standards))
+
+        # TypeScript-specific checks
+        elif language in ("typescript", "javascript"):
+            comments.extend(self._check_typescript_standards(code, standards))
+
+        return comments
+
+    def _check_python_standards(
+        self,
+        code: str,
+        _standards: list[SearchResult],
+    ) -> list[ReviewComment]:
+        """Apply Python-specific standard checks."""
+        comments: list[ReviewComment] = []
+
+        # Check for type hints on functions
+        lines = code.split("\n")
+        for i, line in enumerate(lines, 1):
+            # Function without return type hint
+            is_function_def = line.strip().startswith("def ") and "->" not in line
+            if is_function_def and ":" in line:
+                comments.append(
+                    ReviewComment(
+                        category=ReviewCategory.STANDARDS,
+                        severity=ReviewSeverity.MAJOR,
+                        message="Function missing return type hint",
+                        line_number=i,
+                        suggestion="Add return type annotation (e.g., -> None)",
+                        rule_reference="PY-001",
+                    )
+                )
+
+            # Bare except
+            if "except:" in line and "except Exception" not in line:
+                comments.append(
+                    ReviewComment(
+                        category=ReviewCategory.ERROR_PRONE,
+                        severity=ReviewSeverity.BLOCKER,
+                        message="Bare except clause catches all exceptions",
+                        line_number=i,
+                        suggestion="Catch specific exceptions",
+                        rule_reference="PY-004",
+                    )
+                )
+
+            # Print statement (should use logging)
+            if "print(" in line and "# noqa" not in line:
+                comments.append(
+                    ReviewComment(
+                        category=ReviewCategory.STANDARDS,
+                        severity=ReviewSeverity.MINOR,
+                        message="Use structured logging instead of print",
+                        line_number=i,
+                        suggestion="Replace with logger.info() or logger.debug()",
+                        rule_reference="PY-005",
+                    )
+                )
+
+        return comments
+
+    def _check_typescript_standards(
+        self,
+        code: str,
+        _standards: list[SearchResult],
+    ) -> list[ReviewComment]:
+        """Apply TypeScript-specific standard checks."""
+        comments: list[ReviewComment] = []
+
+        lines = code.split("\n")
+        for i, line in enumerate(lines, 1):
+            # any type usage
+            if ": any" in line or "as any" in line:
+                comments.append(
+                    ReviewComment(
+                        category=ReviewCategory.STANDARDS,
+                        severity=ReviewSeverity.MAJOR,
+                        message="Avoid using 'any' type",
+                        line_number=i,
+                        suggestion="Use a specific type or 'unknown'",
+                        rule_reference="TS-001",
+                    )
+                )
+
+            # console.log (should use proper logging)
+            if "console.log(" in line and "// noqa" not in line:
+                comments.append(
+                    ReviewComment(
+                        category=ReviewCategory.STANDARDS,
+                        severity=ReviewSeverity.MINOR,
+                        message="Remove console.log before committing",
+                        line_number=i,
+                        suggestion="Use proper logging or remove",
+                    )
+                )
+
+        return comments
+
+    async def _check_security(
+        self,
+        code: str,
+        _file_path: str,
+    ) -> list[ReviewComment]:
+        """Check for security issues."""
+        comments: list[ReviewComment] = []
+
+        lines = code.split("\n")
+        for i, line in enumerate(lines, 1):
+            # SQL injection risk
+            if "execute(" in line.lower() and 'f"' in line:
+                comments.append(
+                    ReviewComment(
+                        category=ReviewCategory.SECURITY,
+                        severity=ReviewSeverity.BLOCKER,
+                        message="Potential SQL injection vulnerability",
+                        line_number=i,
+                        suggestion="Use parameterized queries",
+                        rule_reference="SEC-001",
+                    )
+                )
+
+            # Hardcoded secrets
+            secret_patterns = ["password=", "api_key=", "secret=", "token="]
+            line_lower = line.lower()
+            for pattern in secret_patterns:
+                if pattern in line_lower and ('"' in line or "'" in line):
+                    comments.append(
+                        ReviewComment(
+                            category=ReviewCategory.SECURITY,
+                            severity=ReviewSeverity.BLOCKER,
+                            message=f"Possible hardcoded secret: {pattern.rstrip('=')}",
+                            line_number=i,
+                            suggestion="Use environment variables",
+                            rule_reference="SEC-003",
+                        )
+                    )
+                    break
+
+            # eval() usage
+            if "eval(" in line:
+                comments.append(
+                    ReviewComment(
+                        category=ReviewCategory.SECURITY,
+                        severity=ReviewSeverity.BLOCKER,
+                        message="eval() is a security risk",
+                        line_number=i,
+                        suggestion="Avoid eval(); use safe alternatives",
+                        rule_reference="SEC-007",
+                    )
+                )
+
+        return comments
+
+    def _detect_language(self, file_path: str) -> str:
+        """Detect programming language from file path."""
+        ext_map = {
+            ".py": "python",
+            ".ts": "typescript",
+            ".tsx": "typescript",
+            ".js": "javascript",
+            ".jsx": "javascript",
+            ".go": "go",
+            ".rs": "rust",
+            ".java": "java",
+            ".rb": "ruby",
+            ".php": "php",
+            ".cs": "csharp",
+            ".cpp": "cpp",
+            ".c": "c",
+            ".h": "c",
+            ".hpp": "cpp",
+            ".md": "markdown",
+            ".sql": "sql",
+            ".sh": "shell",
+            ".bash": "shell",
+            ".yml": "yaml",
+            ".yaml": "yaml",
+            ".json": "json",
+        }
+
+        for ext, lang in ext_map.items():
+            if file_path.endswith(ext):
+                return lang
+
+        return "unknown"
+
+    def _looks_security_sensitive(self, code: str) -> bool:
+        """Check if code appears to handle sensitive operations."""
+        sensitive_keywords = [
+            "password",
+            "secret",
+            "token",
+            "auth",
+            "credential",
+            "api_key",
+            "private_key",
+            "encrypt",
+            "decrypt",
+            "hash",
+            "session",
+            "cookie",
+            "permission",
+            "role",
+            "admin",
+        ]
+
+        code_lower = code.lower()
+        return any(kw in code_lower for kw in sensitive_keywords)
+
+
+class ReviewerService(ReviewerChecks):
     """
     Code review assistant that provides automated feedback.
 
@@ -245,185 +499,6 @@ class ReviewerService:
             ),
         )
 
-    async def _check_error_patterns(
-        self,
-        code: str,
-    ) -> list[SearchResult]:
-        """Check for known error patterns in the code."""
-        # Search errors index for patterns that match this code
-        return cast(
-            "list[SearchResult]",
-            await self._optimal_service.search_errors(
-                query=code[:500],  # Use first 500 chars as query
-                top_k=5,
-            ),
-        )
-
-    def _check_standards(
-        self,
-        code: str,
-        standards: list[SearchResult],
-        file_path: str,
-    ) -> list[ReviewComment]:
-        """Check code against coding standards."""
-        comments: list[ReviewComment] = []
-        language = self._detect_language(file_path)
-
-        # Python-specific checks
-        if language == "python":
-            comments.extend(self._check_python_standards(code, standards))
-
-        # TypeScript-specific checks
-        elif language in ("typescript", "javascript"):
-            comments.extend(self._check_typescript_standards(code, standards))
-
-        return comments
-
-    def _check_python_standards(
-        self,
-        code: str,
-        _standards: list[SearchResult],
-    ) -> list[ReviewComment]:
-        """Apply Python-specific standard checks."""
-        comments: list[ReviewComment] = []
-
-        # Check for type hints on functions
-        lines = code.split("\n")
-        for i, line in enumerate(lines, 1):
-            # Function without return type hint
-            is_function_def = line.strip().startswith("def ") and "->" not in line
-            if is_function_def and ":" in line:
-                comments.append(
-                    ReviewComment(
-                        category=ReviewCategory.STANDARDS,
-                        severity=ReviewSeverity.MAJOR,
-                        message="Function missing return type hint",
-                        line_number=i,
-                        suggestion="Add return type annotation (e.g., -> None)",
-                        rule_reference="PY-001",
-                    )
-                )
-
-            # Bare except
-            if "except:" in line and "except Exception" not in line:
-                comments.append(
-                    ReviewComment(
-                        category=ReviewCategory.ERROR_PRONE,
-                        severity=ReviewSeverity.BLOCKER,
-                        message="Bare except clause catches all exceptions",
-                        line_number=i,
-                        suggestion="Catch specific exceptions",
-                        rule_reference="PY-004",
-                    )
-                )
-
-            # Print statement (should use logging)
-            if "print(" in line and "# noqa" not in line:
-                comments.append(
-                    ReviewComment(
-                        category=ReviewCategory.STANDARDS,
-                        severity=ReviewSeverity.MINOR,
-                        message="Use structured logging instead of print",
-                        line_number=i,
-                        suggestion="Replace with logger.info() or logger.debug()",
-                        rule_reference="PY-005",
-                    )
-                )
-
-        return comments
-
-    def _check_typescript_standards(
-        self,
-        code: str,
-        _standards: list[SearchResult],
-    ) -> list[ReviewComment]:
-        """Apply TypeScript-specific standard checks."""
-        comments: list[ReviewComment] = []
-
-        lines = code.split("\n")
-        for i, line in enumerate(lines, 1):
-            # any type usage
-            if ": any" in line or "as any" in line:
-                comments.append(
-                    ReviewComment(
-                        category=ReviewCategory.STANDARDS,
-                        severity=ReviewSeverity.MAJOR,
-                        message="Avoid using 'any' type",
-                        line_number=i,
-                        suggestion="Use a specific type or 'unknown'",
-                        rule_reference="TS-001",
-                    )
-                )
-
-            # console.log (should use proper logging)
-            if "console.log(" in line and "// noqa" not in line:
-                comments.append(
-                    ReviewComment(
-                        category=ReviewCategory.STANDARDS,
-                        severity=ReviewSeverity.MINOR,
-                        message="Remove console.log before committing",
-                        line_number=i,
-                        suggestion="Use proper logging or remove",
-                    )
-                )
-
-        return comments
-
-    async def _check_security(
-        self,
-        code: str,
-        _file_path: str,
-    ) -> list[ReviewComment]:
-        """Check for security issues."""
-        comments: list[ReviewComment] = []
-
-        lines = code.split("\n")
-        for i, line in enumerate(lines, 1):
-            # SQL injection risk
-            if "execute(" in line.lower() and 'f"' in line:
-                comments.append(
-                    ReviewComment(
-                        category=ReviewCategory.SECURITY,
-                        severity=ReviewSeverity.BLOCKER,
-                        message="Potential SQL injection vulnerability",
-                        line_number=i,
-                        suggestion="Use parameterized queries",
-                        rule_reference="SEC-001",
-                    )
-                )
-
-            # Hardcoded secrets
-            secret_patterns = ["password=", "api_key=", "secret=", "token="]
-            line_lower = line.lower()
-            for pattern in secret_patterns:
-                if pattern in line_lower and ('"' in line or "'" in line):
-                    comments.append(
-                        ReviewComment(
-                            category=ReviewCategory.SECURITY,
-                            severity=ReviewSeverity.BLOCKER,
-                            message=f"Possible hardcoded secret: {pattern.rstrip('=')}",
-                            line_number=i,
-                            suggestion="Use environment variables",
-                            rule_reference="SEC-003",
-                        )
-                    )
-                    break
-
-            # eval() usage
-            if "eval(" in line:
-                comments.append(
-                    ReviewComment(
-                        category=ReviewCategory.SECURITY,
-                        severity=ReviewSeverity.BLOCKER,
-                        message="eval() is a security risk",
-                        line_number=i,
-                        suggestion="Avoid eval(); use safe alternatives",
-                        rule_reference="SEC-007",
-                    )
-                )
-
-        return comments
-
     def _apply_past_reviews(
         self,
         _code: str,
@@ -432,7 +507,8 @@ class ReviewerService:
         """Apply relevant comments from past reviews."""
         comments: list[ReviewComment] = []
 
-        for review in past_reviews[:3]:  # Limit to top 3 matches
+        # Limit to top 3 matches
+        for review in past_reviews[:3]:
             if review.score > self.PAST_REVIEW_THRESHOLD:
                 comments.append(
                     ReviewComment(
@@ -506,62 +582,6 @@ class ReviewerService:
             relevant_standards=standards,
             past_reviews=past_reviews,
         )
-
-    def _detect_language(self, file_path: str) -> str:
-        """Detect programming language from file path."""
-        ext_map = {
-            ".py": "python",
-            ".ts": "typescript",
-            ".tsx": "typescript",
-            ".js": "javascript",
-            ".jsx": "javascript",
-            ".go": "go",
-            ".rs": "rust",
-            ".java": "java",
-            ".rb": "ruby",
-            ".php": "php",
-            ".cs": "csharp",
-            ".cpp": "cpp",
-            ".c": "c",
-            ".h": "c",
-            ".hpp": "cpp",
-            ".md": "markdown",
-            ".sql": "sql",
-            ".sh": "shell",
-            ".bash": "shell",
-            ".yml": "yaml",
-            ".yaml": "yaml",
-            ".json": "json",
-        }
-
-        for ext, lang in ext_map.items():
-            if file_path.endswith(ext):
-                return lang
-
-        return "unknown"
-
-    def _looks_security_sensitive(self, code: str) -> bool:
-        """Check if code appears to handle sensitive operations."""
-        sensitive_keywords = [
-            "password",
-            "secret",
-            "token",
-            "auth",
-            "credential",
-            "api_key",
-            "private_key",
-            "encrypt",
-            "decrypt",
-            "hash",
-            "session",
-            "cookie",
-            "permission",
-            "role",
-            "admin",
-        ]
-
-        code_lower = code.lower()
-        return any(kw in code_lower for kw in sensitive_keywords)
 
     async def get_review_history(
         self,

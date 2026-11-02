@@ -22,7 +22,8 @@ def _make_deps(**overrides: AsyncMock) -> ContentActionsDeps:
     else:
         task = AsyncMock()
         task.get_active_task_for_agent.return_value = None
-        task.get_journal_context_task_for_agent.return_value = None
+        task.list_tasks_claimed_by.return_value = []
+        task.list_journal_context_tasks_for_agent.return_value = []
         task.agent_for.return_value = MagicMock(role="cell_pm")
 
     git = overrides.get("git", AsyncMock())
@@ -46,6 +47,8 @@ async def test_notify_pm_creates_ack_required_notification() -> None:
     agent_id = uuid4()
     task_svc = AsyncMock()
     task_svc.get_active_task_for_agent.return_value = None
+    task_svc.list_tasks_claimed_by.return_value = []
+    task_svc.list_journal_context_tasks_for_agent.return_value = []
     task_svc.agent_for.return_value = MagicMock(role="cell_pm")
     notif_svc = AsyncMock()
 
@@ -74,6 +77,8 @@ async def test_notify_main_pm_succeeds() -> None:
     agent_id = uuid4()
     task_svc = AsyncMock()
     task_svc.get_active_task_for_agent.return_value = None
+    task_svc.list_tasks_claimed_by.return_value = []
+    task_svc.list_journal_context_tasks_for_agent.return_value = []
     task_svc.agent_for.return_value = MagicMock(role="main_pm")
     notif_svc = AsyncMock()
 
@@ -238,6 +243,8 @@ async def test_notify_rejects_prompter_recipient() -> None:
     agent_id = uuid4()
     task_svc = AsyncMock()
     task_svc.get_active_task_for_agent.return_value = None
+    task_svc.list_tasks_claimed_by.return_value = []
+    task_svc.list_journal_context_tasks_for_agent.return_value = []
     task_svc.agent_for.return_value = MagicMock(role="cell_pm")
     notif_svc = AsyncMock()
 
@@ -265,6 +272,8 @@ async def test_notify_rejects_secretary_recipient() -> None:
     agent_id = uuid4()
     task_svc = AsyncMock()
     task_svc.get_active_task_for_agent.return_value = None
+    task_svc.list_tasks_claimed_by.return_value = []
+    task_svc.list_journal_context_tasks_for_agent.return_value = []
     task_svc.agent_for.return_value = MagicMock(role="main_pm")
     notif_svc = AsyncMock()
 
@@ -294,7 +303,8 @@ async def test_notify_allows_ceo_recipient() -> None:
     agent_id = uuid4()
     task_svc = AsyncMock()
     task_svc.get_active_task_for_agent.return_value = None
-    task_svc.get_journal_context_task_for_agent.return_value = None
+    task_svc.list_tasks_claimed_by.return_value = []
+    task_svc.list_journal_context_tasks_for_agent.return_value = []
     task_svc.agent_for.return_value = MagicMock(role="cell_pm")
     notif_svc = AsyncMock()
 
@@ -321,7 +331,8 @@ async def test_notify_auto_fills_task_id_from_active_task() -> None:
     task_obj = MagicMock(id=task_id, status="awaiting_pm_review")
     task_svc = AsyncMock()
     task_svc.get_active_task_for_agent.return_value = task_obj
-    task_svc.get_journal_context_task_for_agent.return_value = task_obj
+    task_svc.list_tasks_claimed_by.return_value = [task_obj]
+    task_svc.list_journal_context_tasks_for_agent.return_value = [task_obj]
     task_svc.agent_for.return_value = MagicMock(role="cell_pm")
     notif_svc = AsyncMock()
 
@@ -370,6 +381,8 @@ async def test_notify_priority_high_passed_through() -> None:
     agent_id = uuid4()
     task_svc = AsyncMock()
     task_svc.get_active_task_for_agent.return_value = None
+    task_svc.list_tasks_claimed_by.return_value = []
+    task_svc.list_journal_context_tasks_for_agent.return_value = []
     task_svc.agent_for.return_value = MagicMock(role="cell_pm")
     notif_svc = AsyncMock()
 

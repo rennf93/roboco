@@ -45,6 +45,7 @@ const mockProjects: Project[] = [
     ci_watch_enabled: true,
     ci_watch_workflow: "CI",
     video_engine_enabled: false,
+    entire_trails_enabled: false,
     workspace_path: "/data/workspaces/roboco",
     created_by: "ceo",
     created_at: "2026-06-01T00:00:00Z",
@@ -65,6 +66,7 @@ const mockProjects: Project[] = [
     ci_watch_enabled: false,
     ci_watch_workflow: null,
     video_engine_enabled: false,
+    entire_trails_enabled: false,
     workspace_path: null,
     created_by: "ceo",
     created_at: "2026-06-15T00:00:00Z",
@@ -153,8 +155,7 @@ export const projectsApi = {
         git_url: project.git_url,
         // Mock mode: mirror the backend's auto-detect (github.com -> github).
         git_provider:
-          project.git_provider ??
-          (project.git_url.includes("github.com") ? "github" : null),
+          project.git_provider ?? detectGithubProvider(project.git_url),
         github_installation_id: project.github_installation_id ?? null,
         default_branch: project.default_branch ?? "main",
         environments: project.environments ?? null,
@@ -172,6 +173,7 @@ export const projectsApi = {
         ci_watch_enabled: false,
         ci_watch_workflow: null,
         video_engine_enabled: false,
+        entire_trails_enabled: false,
         dep_update_command: null,
         dep_update_paths: null,
         monthly_budget_usd: null,
@@ -320,7 +322,10 @@ export const projectsApi = {
   // the last agent is removed the backend keeps the empty restricted list.
   // Hits DELETE /projects/{id}/access/{agent_id}, responding with the
   // updated ProjectResponse.
-  revokeAccess: async (projectId: string, agentId: string): Promise<Project> => {
+  revokeAccess: async (
+    projectId: string,
+    agentId: string,
+  ): Promise<Project> => {
     if (isMockMode()) {
       const idx = mockProjects.findIndex((p) => p.id === projectId);
       if (idx === -1) throw new Error("Project not found");

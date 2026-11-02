@@ -8,23 +8,29 @@ on:
     # it's the redundant trigger for a required check that must not go
     # ABSENT on a fleet-authored PR revision.
     branches: [master, slave, 'feature/**', 'bug/**', 'chore/**', 'docs/**', 'hotfix/**']
+    # CodeQL analyzes every Python file in the checkout, not only the files
+    # under these paths, so they list every directory that holds one: a
+    # change outside them would land unanalyzed until some later run.
+    # tests/unit/test_required_checks.py fails when a tracked .py file falls
+    # outside.
     paths:
       - 'roboco/**'
       - 'agents/**'
       - 'alembic/**'
       - 'scripts/**'
+      - 'tests/**'
+      - '.github/scripts/**'
+      - 'docker/decisions/**'
+      - 'docker/docker-gate/**'
+      - 'vulture_whitelist.py'
       - 'pyproject.toml'
       - '.github/workflows/code-ql.yml'
   pull_request:
     # Fleet PRs target the dev branch — see ci.yml's pull_request note.
     branches: [master, slave]
-    paths:
-      - 'roboco/**'
-      - 'agents/**'
-      - 'alembic/**'
-      - 'scripts/**'
-      - 'pyproject.toml'
-      - '.github/workflows/code-ql.yml'
+    # No `paths:` here: master's ruleset requires the `code-ql` check, and a
+    # workflow a paths filter skips never reports it. The job's first step
+    # applies the push trigger's paths instead (see ci.yml).
   schedule:
     - cron: '0 0 * * 1'
   workflow_dispatch:
@@ -36,37 +42,64 @@ on:
 # resolve to the SAME branch name, so the two event shapes share one group —
 # plain `github.ref` would NOT (it's `refs/pull/<n>/merge` for pull_request
 # vs `refs/heads/<branch>` for push, so it'd never collapse them).
+# Named after the required check, not the workflow, so a branch still on the
+# pre-rename definition never cancels this one (see ci.yml).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  group: check-code-ql-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
   analyze:
-    name: Analyze (${{ matrix.language }})
+    # Master's ruleset requires a check with exactly this name, and the fleet's
+    # PR gate maps it to the scope it analyzes (pr_gate_pass._CODEQL_CHECK_SCOPES).
+    name: code-ql
     runs-on: ubuntu-latest
     permissions:
       actions: read
       contents: read
       security-events: write
 
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - language: python
-            build-mode: none
-
+    # No matrix: GitHub appends a matrix job's values to its check name
+    # (`code-ql (python, none)`), and the ruleset needs the bare name. Each
+    # workflow analyzes one language, so the values are written inline.
     steps:
       - name: Checkout code
         uses: actions/checkout@v7.0.1
+        with:
+          # The base commit (the PR merge commit's first parent) for the
+          # paths match below.
+          fetch-depth: 2
+
+      - name: Match the PR's files against the push trigger's paths
+        id: paths
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          # The push trigger's paths, verbatim (tests/unit/test_required_checks.py
+          # keeps the two lists equal).
+          PATHS: |
+            roboco/**
+            agents/**
+            alembic/**
+            scripts/**
+            tests/**
+            .github/scripts/**
+            docker/decisions/**
+            docker/docker-gate/**
+            vulture_whitelist.py
+            pyproject.toml
+            .github/workflows/code-ql.yml
+        run: python3 .github/scripts/required_checks.py match-paths
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4.39.0
+        if: steps.paths.outputs.relevant == 'true'
+        uses: github/codeql-action/init@v4.39.1
         with:
-          languages: ${{ matrix.language }}
-          build-mode: ${{ matrix.build-mode }}
+          languages: python
+          build-mode: none
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v4.39.0
+        if: steps.paths.outputs.relevant == 'true'
+        uses: github/codeql-action/analyze@v4.39.1
         with:
-          category: "/language:${{ matrix.language }}"
+          category: "/language:python"

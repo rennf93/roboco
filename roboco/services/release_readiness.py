@@ -19,6 +19,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from roboco.services.git_relay import is_dispatcher_owned, run_private_git
+from roboco.services.workspace_git import run_workspace_git
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -442,14 +445,11 @@ _GIT_FIELD_SEP = "\x1f"
 
 
 def _run_git(root: Path, args: list[str]) -> str:
+    """Read-only git in the snapshot clone (the dispatcher-owned read clone;
+    any other path is read as the workspace git user)."""
+    runner = run_private_git if is_dispatcher_owned(root) else run_workspace_git
     try:
-        result = subprocess.run(
-            ["git", "-C", str(root), *args],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,
-        )
+        result = runner(root, args, timeout=30, check=False)
     except subprocess.TimeoutExpired as exc:
         # A hung git child must not hang the release-readiness thread silently
         # — bubble a clear error so the loop logs and moves on.

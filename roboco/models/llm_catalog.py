@@ -73,6 +73,7 @@ MODEL_CATALOG: tuple[CatalogEntry, ...] = (
     CatalogEntry("glm-5.3-flash:cloud", ModelProvider.OLLAMA_CLOUD, "GLM 5.3 Flash"),
     CatalogEntry("kimi-k2.6:cloud", ModelProvider.OLLAMA_CLOUD, "Kimi K2.6"),
     CatalogEntry("kimi-k2.7-code:cloud", ModelProvider.OLLAMA_CLOUD, "Kimi K2.7 Code"),
+    CatalogEntry("kimi-k3:cloud", ModelProvider.OLLAMA_CLOUD, "Kimi K3"),
     CatalogEntry("minimax-m3:cloud", ModelProvider.OLLAMA_CLOUD, "Minimax M3"),
     CatalogEntry(
         "nemotron-3-ultra:cloud", ModelProvider.OLLAMA_CLOUD, "Nemotron 3 Ultra"
@@ -184,7 +185,6 @@ def provider_type_for_model(model_name: str) -> ModelProvider | None:
 
 
 # The Ollama model picked for "pure Ollama" mode's GLOBAL row when the
-# caller doesn't override. Minimax M3 wins as the generalist because it has
-# the strongest reasoning/tool-use profile and can fall back to coding/writing
-# adequately if a role ends up mapped to the global default.
-OLLAMA_DEFAULT_MODEL: str = "kimi-k3.1-code:cloud"
+# caller doesn't override: the newest Kimi Ollama Cloud serves. It must be a
+# MODEL_CATALOG entry, or apply_mode('ollama') rejects it as an unknown model.
+OLLAMA_DEFAULT_MODEL: str = "kimi-k3:cloud"
