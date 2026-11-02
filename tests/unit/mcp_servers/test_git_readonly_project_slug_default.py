@@ -77,3 +77,20 @@ def test_git_status_missing_both_returns_error_without_http_call(
         result = git_module.roboco_git_status()
         client_cls.assert_not_called()
     assert result["error"] == "missing_project_slug"
+
+
+def test_git_status_and_diff_forward_a_named_task(
+    git_module: types.ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The task whose worktree to read rides along when given, and is left
+    out otherwise (the route then reads the caller's active task)."""
+    monkeypatch.setenv("ROBOCO_PROJECT_SLUG", "roboco-api")
+    with patch("httpx.Client") as client_cls:
+        client = client_cls.return_value.__enter__.return_value
+        client.get.return_value = _mock_response({"diff": ""})
+        git_module.roboco_git_status(task_id="t-1")
+        assert client.get.call_args.kwargs["params"]["task_id"] == "t-1"
+        git_module.roboco_git_diff(task_id="t-1")
+        assert client.get.call_args.kwargs["params"]["task_id"] == "t-1"
+        git_module.roboco_git_status()
+        assert "task_id" not in client.get.call_args.kwargs["params"]

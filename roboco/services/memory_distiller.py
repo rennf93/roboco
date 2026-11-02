@@ -1,20 +1,22 @@
-"""MemoryDistiller — distill a high-signal completion lesson via the local LLM.
+"""MemoryDistiller: distill a high-signal completion lesson via the background LLM.
 
 Replaces the noisy raw-notes / duration / commit-count capture with one curated
 lesson in a fixed Problem -> Approach -> Gotcha shape (<=120 words). Runs on the
-LOCAL model only (glm-5.3:cloud via the OpenAI-compatible endpoint) — never a cloud
-LLM in the hot path. Best-effort: any failure (LLM down, empty output) returns
-None and the caller records nothing rather than storing junk.
+background LLM client (``roboco.services.background_llm``): the active
+provider's cheap model, Ollama's flash model falling back to Claude Haiku
+outside ``anthropic`` mode. Best-effort: any failure (no backend answered,
+empty output) returns None and the caller records nothing rather than storing
+junk.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-import httpx
 import structlog
 
 from roboco.config import settings
+from roboco.services.background_llm import BackgroundPrompt, generate_background_text
 
 logger = structlog.get_logger()
 
@@ -60,34 +62,25 @@ def _build_prompt(snapshot: LessonInput) -> str:
 
 
 async def _chat(prompt: str) -> str | None:
-    """One local-LLM chat call (OpenAI-compatible); None on a non-success."""
-    async with httpx.AsyncClient(timeout=_CHAT_TIMEOUT_SECONDS) as client:
-        resp = await client.post(
-            f"{settings.local_llm_base_url}/chat/completions",
-            json={
-                "model": settings.local_llm_model,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 400,
-                "options": {"num_ctx": 8192},
-            },
+    """One background-LLM call for a lesson; None when no backend answered."""
+    return await generate_background_text(
+        BackgroundPrompt(
+            purpose="memory_distiller.lesson",
+            user_prompt=prompt,
+            max_tokens=400,
+            timeout_seconds=_CHAT_TIMEOUT_SECONDS,
+            ollama_num_ctx=8192,
         )
-        if not resp.is_success:
-            return None
-        data = resp.json()
-        choices = data.get("choices") or []
-        if not choices:
-            return None
-        content = choices[0].get("message", {}).get("content")
-        return content if isinstance(content, str) else None
+    )
 
 
 class MemoryDistiller:
-    """Turn a completed task into one curated lesson (best-effort, local LLM)."""
+    """Turn a completed task into one curated lesson (best-effort, background LLM)."""
 
     async def distill(self, snapshot: LessonInput) -> str | None:
         """Return a <=120-word lesson, or None on failure / no real lesson.
 
-        B22 memory_distill_gate runs BEFORE the local-LLM call: a
+        B22 memory_distill_gate runs BEFORE the background-LLM call: a
         confidently not-worthy completion skips both the distill call and
         the caller's persist (the same seam as a None return here). The
         gate may only SKIP; it never deletes existing entries. Off /

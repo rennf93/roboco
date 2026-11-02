@@ -738,7 +738,7 @@ async function estimateTokens(
   if (isMockMode()) {
     return {
       token_count: Math.ceil(request.content.length / 4),
-      model: request.model || "claude-sonnet-4-20250514",
+      model: request.model || "claude-sonnet-5-5",
       content_length: request.content.length,
     };
   }

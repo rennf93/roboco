@@ -2,10 +2,7 @@
 
 import { Task } from "@/types";
 import { useTaskGovernance } from "@/hooks/use-tasks";
-import type {
-  GovernanceGateStep,
-  GovernanceReportResponse,
-} from "@/types";
+import type { GovernanceGateStep, GovernanceReportResponse } from "@/types";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -289,9 +286,7 @@ export function TabGovernance({ task }: TabGovernanceProps) {
         <Card>
           <CardContent className="pt-4 space-y-2">
             <HelpTip label="Per-reviewer counts from the revision-findings ledger. Closed combines addressed, verified, and waived findings.">
-              <h3 className="text-sm font-semibold w-fit">
-                Revision findings
-              </h3>
+              <h3 className="text-sm font-semibold w-fit">Revision findings</h3>
             </HelpTip>
             <div className="flex flex-wrap gap-2">
               {data.findings_summary.map((s) => (

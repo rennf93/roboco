@@ -411,7 +411,7 @@ class ExtractionService:
         for rl_attempt in range(MAX_RATE_LIMIT_RETRIES):
             try:
                 return await client.messages.create(
-                    model="claude-3-haiku-20240307",  # Fast, cheap
+                    model="claude-haiku-5-5",  # Fast, cheap
                     max_tokens=2000,
                     messages=[{"role": "user", "content": prompt}],
                 )

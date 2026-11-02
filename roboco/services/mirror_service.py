@@ -162,7 +162,7 @@ class MirrorService(BaseService):
         rationale."""
         from roboco.services.task import get_task_service
 
-        task = await get_task_service(self.session).get(task_id)
+        task = await get_task_service(self.session).get_for_update(task_id)
         if task is None or task.source != MIRROR_SOURCE:
             return None, None, None
         stored = markers.get_messaging_fixes(task)

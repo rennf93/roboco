@@ -303,7 +303,7 @@ async def test_digest_context_empty_shipped_says_so(
     isolates the render logic under test from those queries. After the
     refactor, ``digest_context`` delegates to ``shipped_work_digest``, so the
     patches target that helper's internals, not a MegaphoneEngine method."""
-    _swd = importlib.import_module("roboco.utils.shipped_work_digest")
+    _swd = importlib.import_module("roboco.services.shipped_work_digest")
     monkeypatch.setattr(_swd, "_shipped_this_week", AsyncMock(return_value=[]))
     monkeypatch.setattr(_swd, "_unreleased_changelog", AsyncMock(return_value=""))
     context = await MegaphoneEngine(db_session).digest_context()

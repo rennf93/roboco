@@ -14,6 +14,7 @@ enablement pattern.
 
 from __future__ import annotations
 
+import asyncio
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
@@ -29,6 +30,7 @@ from roboco.services.decisions.client import (
     DecisionsEndpoint,
     get_decisions_client,
 )
+from roboco.services.decisions.deadlines import pilot_deadline_s
 from roboco.services.decisions.resolver import resolve_endpoint
 from roboco.services.decisions.schemas import (
     ChoiceQuestion,
@@ -39,6 +41,13 @@ from roboco.services.decisions.schemas import (
 )
 
 logger = structlog.get_logger(__name__)
+
+# SHADOW verdicts run as background tasks so no caller waits for them. The
+# set keeps a reference to each (the loop holds tasks weakly) and caps how
+# many one process has in flight: past it a shadow verdict is skipped, and
+# the sidecar's own admission control drops what it cannot serve in time.
+_SHADOW_TASKS: set[asyncio.Task[None]] = set()
+_MAX_SHADOW_IN_FLIGHT = 16
 
 
 def state_key(state: dict[str, Any]) -> str:
@@ -195,8 +204,17 @@ async def decide_for_pilot(
         return PilotMode.OFF, None
     if endpoint is None:
         return mode, None
+    if mode is PilotMode.SHADOW:
+        _decide_in_background(
+            endpoint, pilot, state, questions, session_id=f"{pilot}:{session_id}"
+        )
+        return mode, None
     result = await get_decisions_client().decide(
-        endpoint, state, questions, session_id=f"{pilot}:{session_id}"
+        endpoint,
+        state,
+        questions,
+        session_id=f"{pilot}:{session_id}",
+        deadline_s=pilot_deadline_s(pilot),
     )
     if result is None:
         logger.info(
@@ -205,6 +223,62 @@ async def decide_for_pilot(
             mode=mode.value,
         )
     return mode, result
+
+
+def _decide_in_background(
+    endpoint: DecisionsEndpoint,
+    pilot: str,
+    state: object,
+    questions: Mapping[str, DecisionQuestion],
+    *,
+    session_id: str,
+) -> None:
+    """Ask a SHADOW question set without making the caller wait.
+
+    Shadow callers act as if no verdict existed, so the caller gets its
+    baseline at once and the verdict, when it comes, is persisted for the
+    corpus by ``_record_shadow_verdict``. On 2026-10-28 shadow pilots made
+    the same blocking call as ON ones inside agents' verbs (lesson_prune in
+    give_me_work, steer_gate in dm, transcript_notes in i_am_blocked).
+    """
+    if len(_SHADOW_TASKS) >= _MAX_SHADOW_IN_FLIGHT:
+        logger.debug("shadow verdict skipped: too many in flight", pilot=pilot)
+        return
+    task = asyncio.create_task(
+        _record_shadow_verdict(endpoint, pilot, state, questions, session_id)
+    )
+    _SHADOW_TASKS.add(task)
+    task.add_done_callback(_SHADOW_TASKS.discard)
+
+
+async def wait_for_shadow_verdicts() -> None:
+    """Wait until every SHADOW verdict in flight in this process has landed."""
+    while _SHADOW_TASKS:
+        await asyncio.gather(*_SHADOW_TASKS, return_exceptions=True)
+
+
+async def _record_shadow_verdict(
+    endpoint: DecisionsEndpoint,
+    pilot: str,
+    state: object,
+    questions: Mapping[str, DecisionQuestion],
+    session_id: str,
+) -> None:
+    """The background half of a SHADOW verdict: ask, then log and persist
+    the raw answers (the corpus keeps answers, not the pilot's reading)."""
+    try:
+        result = await get_decisions_client().decide(
+            endpoint,
+            state,
+            questions,
+            session_id=session_id,
+            deadline_s=settings.decisions_background_deadline_s,
+        )
+    except Exception as exc:  # a shadow verdict must never surface anywhere
+        logger.warning("shadow verdict failed", pilot=pilot, error=str(exc))
+        return
+    if result is not None:
+        log_action(pilot, PilotMode.SHADOW, None, "no-op (shadow)", result)
 
 
 def _confidence(result: DecisionResult, key: str) -> float | None:
@@ -285,11 +359,15 @@ async def self_heal_transient(
 ) -> SelfHealGate:
     """Gate the self-heal origination on a transient-vs-regression verdict.
 
-    ``ORIGINATE`` means the engine may originate the fix task exactly as
-    today; ``SKIP`` means log and skip (no task this sweep); ``NO_VERDICT``
-    means Decisions had nothing to say and the engine does what it did
-    before. The gate direction (affirmed-transience -> originate) and the
-    thresholds come straight from spec 6.1; shadow data is the referee.
+    ``SKIP`` means the failure is confidently transient (a flake): no fix
+    task this sweep, because repair churn on a flake is the expensive
+    mistake (spec 6.1's rationale). ``ORIGINATE`` means a regression, an
+    unsure verdict, or a "flake" past the attempt limit (a failure that
+    keeps coming back is not one): the engine originates the fix task as
+    today. ``NO_VERDICT`` means Decisions had nothing to say and the engine
+    does what it did before. CEO ruling 2026-11-01 (trail #55) on spec 6.1,
+    whose gate text said the opposite of its rationale; the thresholds are
+    the spec's.
     """
     state = {
         "repo": repo,
@@ -316,9 +394,9 @@ async def self_heal_transient(
     if noul is None:
         return SelfHealGate.NO_VERDICT
     if noul >= SELF_HEAL_NOUL_FLOOR and attempt_number <= SELF_HEAL_MAX_ATTEMPT:
-        verdict = SelfHealGate.ORIGINATE
-    else:
         verdict = SelfHealGate.SKIP
+    else:
+        verdict = SelfHealGate.ORIGINATE
     if mode is PilotMode.SHADOW:
         # Shadow: log the would-be action, behave as today.
         log_action("self_heal", mode, verdict.value, "no-op (shadow)", result)

@@ -16,7 +16,9 @@ function KanbanRedirect() {
   useEffect(() => {
     // replace (not push): the redirect itself shouldn't become a history
     // entry a user has to hit "back" through.
-    router.replace(view ? `/tasks?tab=kanban&view=${view}` : "/tasks?tab=kanban");
+    router.replace(
+      view ? `/tasks?tab=kanban&view=${view}` : "/tasks?tab=kanban",
+    );
   }, [router, view]);
 
   return (

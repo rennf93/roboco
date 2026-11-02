@@ -1,6 +1,7 @@
 import { readFileSync, existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { JSDOM } from "jsdom";
 import { describe, expect, it } from "vitest";
 
 // HTML-structure smoke test for the panel-demo composition — mirrors
@@ -17,6 +18,21 @@ const orientations = [
   { file: "vertical.html", height: "1920" },
   { file: "square.html", height: "1080" },
 ];
+
+// Where the click must land (motion/README.md, "Coordinates guessed instead
+// of measured"). The cursor's glide ends as its ring clicks, at 7.2s, and it
+// rests there to the last frame, so the glide's end point (--pk-cursor-x1/y1:
+// the glyph's tip, in content-box px) has to sit inside every box the status
+// pill takes from the click on: the fading "in progress" pill at 7.2s, then
+// the "completed" pill as it enters at 7.4s and once it settles. It also sits
+// right of both labels: the glyph hangs right and down from its tip, so there
+// it never covers the word the beat is about. These boxes are measured in
+// headless Chrome from each cut's laid-out page; re-measure them when the
+// card's layout or the column's top moves.
+const pillBoxes = {
+  "vertical.html": { left: 239, right: 253, top: 402, bottom: 436 },
+  "square.html": { left: 239, right: 253, top: 332, bottom: 366 },
+};
 
 describe("panel-demo composition", () => {
   it("ships props.js (default preview values, sidecar overwrites at render)", () => {
@@ -84,5 +100,17 @@ describe("panel-demo composition", () => {
     // No CDN / network fetch of any kind — the render is offline.
     expect(html).not.toMatch(/<script[^>]+src="https?:\/\//);
     expect(html).not.toMatch(/href="https?:\/\//);
+  });
+
+  it.each(orientations)("$file clicks on the status pill", ({ file }) => {
+    const { document } = new JSDOM(read(file)).window;
+    const glide = document.querySelector(".pk-cursor").style;
+    const x = parseFloat(glide.getPropertyValue("--pk-cursor-x1"));
+    const y = parseFloat(glide.getPropertyValue("--pk-cursor-y1"));
+    const box = pillBoxes[file];
+    expect(x).toBeGreaterThanOrEqual(box.left);
+    expect(x).toBeLessThanOrEqual(box.right);
+    expect(y).toBeGreaterThanOrEqual(box.top);
+    expect(y).toBeLessThanOrEqual(box.bottom);
   });
 });
