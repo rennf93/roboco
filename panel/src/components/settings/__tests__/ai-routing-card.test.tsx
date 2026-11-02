@@ -1477,7 +1477,7 @@ describe("AIRoutingCard", () => {
       expect(screen.queryByText(/No models found/)).not.toBeInTheDocument();
     });
 
-    it("maps a 429 to the rate-limit copy and an unknown failure to the generic fallback", async () => {
+    it("maps a 429 to the rate-limit copy", async () => {
       searchOpenRouterModels.mockRejectedValueOnce({
         response: { status: 429 },
       });
@@ -1490,6 +1490,34 @@ describe("AIRoutingCard", () => {
         { timeout: 3000 },
       );
       expect(screen.queryByText(/No models found/)).not.toBeInTheDocument();
+    });
+
+    it("maps an HTTP 400 to the key-not-set copy", async () => {
+      searchOpenRouterModels.mockRejectedValueOnce({
+        response: { status: 400 },
+      });
+      const search = await openPicker();
+      fireEvent.change(search, { target: { value: "glm" } });
+
+      await screen.findByText(
+        /OpenRouter API key not set — save your key above first/,
+        {},
+        { timeout: 3000 },
+      );
+    });
+
+    it("maps an unknown failure to the generic unavailable copy", async () => {
+      searchOpenRouterModels.mockRejectedValueOnce({
+        response: { status: 500 },
+      });
+      const search = await openPicker();
+      fireEvent.change(search, { target: { value: "glm" } });
+
+      await screen.findByText(
+        /OpenRouter API is unavailable — try again in a moment/,
+        {},
+        { timeout: 3000 },
+      );
     });
 
     it("maps a timed-out models query to the timeout copy", async () => {
