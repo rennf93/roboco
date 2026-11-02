@@ -509,6 +509,23 @@ def test_the_clone_repair_opens_a_pre_git_user_venv_for_the_agent(
     assert stat.S_IMODE(package.stat().st_mode) == _PRE_GIT_USER_DIR_MODE
 
 
+@pytest.mark.parametrize("cache", [".uv-cache", ".qa-venv", ".pnpm-store"])
+def test_the_clone_repair_never_descends_into_a_tool_cache(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, cache: str
+) -> None:
+    """Live 2026-11-02: regrouping these caches on the first walk after a
+    restart touched about 400k entries and stalled every fsync on the NAS."""
+    _site_packages_drop_required(monkeypatch, tmp_path)
+    clone = tmp_path / "proj" / "backend" / "be-dev-1"
+    entry = clone / ".worktrees" / "abc12345" / cache / "archive-v0"
+    entry.mkdir(parents=True, mode=_PRE_GIT_USER_DIR_MODE)
+    entry.chmod(_PRE_GIT_USER_DIR_MODE)
+
+    wg.make_clone_group_writable(clone)
+
+    assert stat.S_IMODE(entry.stat().st_mode) == _PRE_GIT_USER_DIR_MODE
+
+
 def test_with_the_drop_off_the_site_packages_repair_does_nothing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
