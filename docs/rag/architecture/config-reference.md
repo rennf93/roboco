@@ -61,9 +61,12 @@ Environment variables for RoboCo (prefix: `ROBOCO_`).
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ROBOCO_LOCAL_LLM_MODEL` | `glm-5.3:cloud` | Local LLM for RAG |
+| `ROBOCO_LOCAL_LLM_MODEL` | `glm-5.3-flash:cloud` | Ollama model the background LLM client tries first when Claude is not the main driver |
 | `ROBOCO_LOCAL_LLM_BASE_URL` | `http://roboco-ollama:11434/v1` | OpenAI-compat API |
 | `ROBOCO_OLLAMA_BASE_URL` | `http://roboco-ollama:11434` | Native Ollama API |
+| `ROBOCO_BACKGROUND_LLM_CLAUDE_HOME` | `""` (compose: `/home/claude-login`) | HOME of the Claude Haiku process; its `.claude` is the Claude Code login, and the process runs as the uid:gid that own it (empty = this process's own home) |
+
+Every orchestrator-side text-LLM call (RAG answer synthesis, the Mentor, standards validation, lesson distillation, vault intake, X and video drafting, the eval judge) goes through one client, `roboco/services/background_llm.py`, which follows the active AI provider: in Anthropic mode Claude Haiku answers alone; in every other mode Ollama's flash model answers first and Claude Haiku answers when Ollama cannot (an HTTP error, a connection error, a timeout, an empty reply). Haiku runs on the Claude Code login mounted at `~/.claude`, never an API key, and always as the user who owns that login, never as root. When neither answers, each call keeps its own fallback (RAG returns a direct extract of the sources, the validator falls back to heuristics).
 
 ## Grok provider (xAI)
 
@@ -225,7 +228,7 @@ The work-already-done fast path on `i_am_done`. Default-off, transparent to the 
 | `ROBOCO_CLOUD_AUTH_ENABLED` | `false` | Master switch. Off: `get_agent_context` behaves byte-for-byte as today (header-trust). On: no registration router is mounted — exactly one user, seeded from `cloud_auth_email` / `cloud_auth_password`. **Fails loud at startup** (raises before the app boots) if `true` without `ROBOCO_CLOUD_AUTH_SECRET` set. |
 | `ROBOCO_CLOUD_AUTH_EMAIL` | (unset) | Email for the single seeded CEO login user. |
 | `ROBOCO_CLOUD_AUTH_PASSWORD` | (unset) | Password for the single seeded user. Hashed at startup; never stored in plain text. |
-| `ROBOCO_CLOUD_AUTH_SECRET` | (unset) | Session-signing secret for the login cookie's JWT. Required when enabled — generate with `python -c 'import secrets; print(secrets.token_hex(32))'`. |
+| `ROBOCO_CLOUD_AUTH_SECRET` | (unset) | Session-signing secret for the login cookie's JWT. Required when enabled, at least 32 bytes (`Settings._validate_signing_secret_lengths` refuses a shorter one at startup: an HS256 key under 256 bits can be brute-forced from one cookie) — generate with `python -c 'import secrets; print(secrets.token_hex(32))'`. |
 | `ROBOCO_CLOUD_AUTH_COOKIE_MAX_AGE` | `2592000` | Session cookie lifetime in seconds (30 days). Sliding: every authenticated request re-mints + re-sets the cookie, so an active session never expires — only genuine inactivity past this window logs out. |
 
 The session cookie is `secure`-only (`cookie_secure=True` in `roboco/api/auth/backend.py`) — arm this flag only behind TLS, or the browser will silently refuse to send the cookie and login will appear to fail.
@@ -246,7 +249,7 @@ The session cookie is `secure`-only (`cookie_secure=True` in `roboco/api/auth/ba
 |----------|---------|-------------|
 | `ROBOCO_ROLE` | `all` | `all`: single process, everything runs (default, unchanged behavior). `api`: serves stateless FastAPI request/response routes; never runs the startup reconciliation or launches a background loop. Keeps its own Orchestrator instance only for isolated on-demand actions with no fleet-state dependency (`POST /api/tasks/{id}/supersede-external-pr`'s branch cut) - NOT the secretary/intake live chats, which nginx routes to the dispatcher instead. `dispatcher`: the fleet owner - runs the startup reconciliation plus every loop, and (via nginx) every route that touches the live fleet; also serves its own `/health` off the same FastAPI app for its container healthcheck. Its own task/notification queries go over HTTP to its OWN uvicorn (`internal_api_url` resolves to 127.0.0.1, pinned explicitly via `ROBOCO_API_URL` in the compose files), never the orchestrator (api-role) service. `indexer`: runs only the KB/embedding worker (`roboco/services/optimal_brain/indexer_worker.py`), no docker socket, no HTTP server. |
 
-### nginx routing table (`docker/nginx.conf`)
+### nginx routing table (`deploy/nginx.conf`)
 
 `AgentOrchestrator._instances`/`_waiting_records` (the live fleet's spawn/waiting-agent registries) are per-process dicts. In split-role mode the dispatcher is the only process with a populated copy - the orchestrator (api role) runs the same route code against an always-empty copy - so nginx routes every fleet-touching path to the dispatcher upstream instead.
 
@@ -277,7 +280,7 @@ Pure DB/notification event handlers (task-status and handoff notifications) regi
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ROBOCO_ENCRYPTION_KEY` | (required) | Fernet key that encrypts secrets at rest (e.g. per-project git tokens, the `x_credentials` OAuth 1.0a singleton row). Generate with `Fernet.generate_key()`. |
-| `ROBOCO_AGENT_AUTH_SECRET` | (required) | HMAC secret the orchestrator signs each agent's `X-Agent-Token` with. |
+| `ROBOCO_AGENT_AUTH_SECRET` | (required) | HMAC secret the orchestrator signs each agent's `X-Agent-Token` (and the panel's CEO token) with. At least 32 bytes: startup refuses a shorter one. |
 | `ROBOCO_AGENT_AUTH_REQUIRED` | `false` | When `true`, every request must carry a valid agent token (secure mode). |
 | `ROBOCO_PANEL_AGENT_TOKEN` | (unset) | The control panel's CEO token, injected by nginx in secure mode. Get it with `make panel-token`. |
 

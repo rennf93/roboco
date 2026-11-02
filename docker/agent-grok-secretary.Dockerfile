@@ -19,4 +19,4 @@ LABEL description="Secretary on Grok — a panel-driven grok-CLI conversation"
 EXPOSE 9000
 
 # Override the base grok one-shot entrypoint with the interactive secretary driver.
-ENTRYPOINT ["python", "-m", "roboco.agent_sdk.grok_secretary_main"]
+ENTRYPOINT ["/app/scripts/umask-exec.sh", "python", "-m", "roboco.agent_sdk.grok_secretary_main"]

@@ -149,13 +149,15 @@ async def test_b1_plan_quality_postures(
     assert await _call_plan_quality_gate(choreo) is None
     decide.assert_not_awaited()
 
-    # SHADOW: a confident LOW score still behaves as off.
+    # SHADOW: a confident LOW score still behaves as off, and the verdict is
+    # asked in the background (the verb never waits for it).
     decide = _pin_verdict(
         monkeypatch,
         pilots.PilotMode.SHADOW,
         _result(gate={"type": "score", "score": 0, "confidence": 0.9}),
     )
     assert await _call_plan_quality_gate(choreo) is None
+    await pilots.wait_for_shadow_verdicts()
     decide.assert_awaited_once()
 
     # ON + confident LOW score: the padded plan is REJECTED (strictly).

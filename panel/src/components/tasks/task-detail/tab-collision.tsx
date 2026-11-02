@@ -24,8 +24,7 @@ interface TabCollisionProps {
 // across the task-detail tabs, so this mirrors tab-findings' inline maps).
 const STATUS_CLASS: Record<string, string> = {
   pending: "bg-gray-100 text-gray-700 dark:bg-gray-800 dark:text-gray-300",
-  claimed:
-    "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
+  claimed: "bg-blue-100 text-blue-700 dark:bg-blue-900 dark:text-blue-300",
   in_progress:
     "bg-indigo-100 text-indigo-700 dark:bg-indigo-900 dark:text-indigo-300",
   awaiting_qa:
@@ -38,15 +37,13 @@ const STATUS_CLASS: Record<string, string> = {
     "bg-teal-100 text-teal-700 dark:bg-teal-900 dark:text-teal-300",
   awaiting_ceo_approval:
     "bg-orange-100 text-orange-700 dark:bg-orange-900 dark:text-orange-300",
-  needs_revision:
-    "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300",
+  needs_revision: "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300",
   completed:
     "bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300",
-  cancelled:
-    "bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-500",
-  blocked:
-    "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300",
-  paused: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300",
+  cancelled: "bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-500",
+  blocked: "bg-red-100 text-red-700 dark:bg-red-900 dark:text-red-300",
+  paused:
+    "bg-yellow-100 text-yellow-700 dark:bg-yellow-900 dark:text-yellow-300",
   verifying:
     "bg-violet-100 text-violet-700 dark:bg-violet-900 dark:text-violet-300",
   backlog: "bg-gray-100 text-gray-500 dark:bg-gray-800 dark:text-gray-500",
@@ -64,9 +61,7 @@ function SiblingCard({ sib }: { sib: CollisionSibling }) {
             <span className="text-sm font-medium truncate">{sib.title}</span>
           )}
           <HelpTip label={taskStatusDescription(sib.status as TaskStatus)}>
-            <Badge
-              className={STATUS_CLASS[sib.status] ?? STATUS_CLASS.pending}
-            >
+            <Badge className={STATUS_CLASS[sib.status] ?? STATUS_CLASS.pending}>
               {sib.status}
             </Badge>
           </HelpTip>
@@ -125,8 +120,7 @@ function SiblingCard({ sib }: { sib: CollisionSibling }) {
         {sib.overlap.length > 0 && (
           <p className="text-xs text-muted-foreground">
             <AlertTriangle className="inline h-3 w-3 mr-1" />
-            Overlaps your declared surface on{" "}
-            {sib.overlap.join(", ")}.
+            Overlaps your declared surface on {sib.overlap.join(", ")}.
           </p>
         )}
 

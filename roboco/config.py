@@ -13,11 +13,14 @@ from collections.abc import Callable
 from functools import lru_cache
 from pathlib import Path
 from typing import Literal
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from pydantic import Field, computed_field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# RFC 7518 section 3.2: an HS256 key MUST be at least the hash's 256 bits.
+_MIN_SIGNING_SECRET_BYTES = 32
 
 
 class Settings(BaseSettings):
@@ -57,7 +60,7 @@ class Settings(BaseSettings):
             "external-PR-supersede branch cut, /api/tasks/{id}/"
             "supersede-external-pr) - NOT the secretary/intake live chats, "
             "which nginx routes to the dispatcher instead (see "
-            "docker/nginx.conf) because spawning them needs the SAME "
+            "deploy/nginx.conf) because spawning them needs the SAME "
             "process as the reconciliation/reaper loops that must see them. "
             "'dispatcher': the fleet owner - runs the startup reconciliation "
             "+ every Orchestrator loop, AND (via nginx) the /api/orchestrator/*, "
@@ -132,7 +135,6 @@ class Settings(BaseSettings):
     )
     cors_allow_credentials: bool = True
 
-    @computed_field  # type: ignore[prop-decorator]
     @property
     def internal_api_url(self) -> str:
         """
@@ -142,12 +144,10 @@ class Settings(BaseSettings):
         regardless of api_url (which is the agent-facing URL handed to
         spawned containers, not the dispatcher's own address). Every other
         role uses api_url if set, otherwise builds from host/port.
-        Note: 0.0.0.0 is only valid for binding, not connecting - use
-        127.0.0.1 instead.
+        A bind-all host is only valid for binding, not connecting; see
+        ``reachable_url_host``.
         """
-        # String COMPARISON against the bind-all literal (not a bind call);
-        # the conditional maps 0.0.0.0 to loopback for connect URLs.
-        connect_host = "127.0.0.1" if self.host == "0.0.0.0" else self.host  # nosec B104
+        connect_host = reachable_url_host(self.host)
         if self.role == "dispatcher":
             return f"http://{connect_host}:{self.port}/api"
         if self.api_url:
@@ -188,10 +188,10 @@ class Settings(BaseSettings):
     # The idle default MUST clear the longest legitimate in-transaction
     # window: a cold-workspace claim holds its transaction across the clone
     # (workspace_clone_timeout, 300s) + dep install
-    # (workspace_dep_install_timeout_seconds, 600s) under the 900s
-    # flow_verb_slow_timeout_seconds wall — hence 20 min, not tighter.
+    # (workspace_dep_install_timeout_seconds, 600s) under the 1500s
+    # flow_verb_slow_timeout_seconds wall, hence 30 min, not tighter.
     database_idle_in_transaction_timeout_ms: int = Field(
-        default=1_200_000,
+        default=1_800_000,
         ge=0,
         description=(
             "Postgres idle_in_transaction_session_timeout for app "
@@ -210,7 +210,6 @@ class Settings(BaseSettings):
         ),
     )
 
-    @computed_field  # type: ignore[prop-decorator]
     @property
     def database_url(self) -> str:
         """Async PostgreSQL connection URL."""
@@ -219,7 +218,6 @@ class Settings(BaseSettings):
             f"@{self.database_host}:{self.database_port}/{self.database_name}"
         )
 
-    @computed_field  # type: ignore[prop-decorator]
     @property
     def database_url_sync(self) -> str:
         """Sync PostgreSQL connection URL (for Alembic)."""
@@ -236,13 +234,19 @@ class Settings(BaseSettings):
     redis_db: int = 0
     redis_password: str | None = None
 
-    @computed_field  # type: ignore[prop-decorator]
     @property
     def redis_url(self) -> str:
         """Redis connection URL."""
-        if self.redis_password:
-            return f"redis://:{self.redis_password}@{self.redis_host}:{self.redis_port}/{self.redis_db}"
-        return f"redis://{self.redis_host}:{self.redis_port}/{self.redis_db}"
+        return self.redis_url_for_db(self.redis_db)
+
+    def redis_url_for_db(self, db: int) -> str:
+        """Redis connection URL for ``db``, carrying the password when one is set.
+
+        The password is URL-quoted so a hand-picked one containing ``@`` or
+        ``/`` still parses (a generated hex password is unaffected).
+        """
+        auth = f":{quote(self.redis_password, safe='')}@" if self.redis_password else ""
+        return f"redis://{auth}{self.redis_host}:{self.redis_port}/{db}"
 
     # ==========================================================================
     # RAG (in-house engine with pgvector)
@@ -280,12 +284,20 @@ class Settings(BaseSettings):
         description="Max concurrent embed batches for the indexer's own embedder",
     )
     indexer_embed_batch_size: int = Field(
-        default=8,
+        default=1,
         ge=1,
-        description="Embed batch size for the indexer's own embedder",
+        description=(
+            "Embed batch size for the indexer's own embedder. ollama serves "
+            "one embed request at a time per model, so a query embed "
+            "(institutional memory, KB search) waits behind the whole batch "
+            "in flight. Measured on the NAS 2026-11-01 (qwen3-embedding:0.6b): "
+            "a query arriving during an 8-chunk batch waited 41.5 s on the "
+            "CPU, 5 s on the Iris Xe, against the 8 s memory-search deadline; "
+            "8 single-chunk requests take as long as one 8-chunk request, so "
+            "one chunk per request costs no throughput."
+        ),
     )
 
-    @computed_field  # type: ignore[prop-decorator]
     @property
     def rag_store_url(self) -> str:
         """PostgreSQL connection URL for the in-house vector store."""
@@ -309,21 +321,37 @@ class Settings(BaseSettings):
         description="Embedding dimensions (1024 for qwen3-embedding)",
     )
 
-    # Local LLM for RAG answer synthesis
+    # Ollama side of the background LLM client (roboco/services/background_llm.py):
+    # RAG synthesis, distillation, drafting, validation, the Mentor, the eval judge.
     local_llm_model: str = Field(
-        default="glm-5.3:cloud",
-        description="Local LLM for RAG answer synthesis "
-        "(non-thinking models are faster)",
+        default="glm-5.3-flash:cloud",
+        description=(
+            "Ollama model the background LLM client tries first whenever Claude "
+            "is not the main driver. The flash tier: the full glm-5.3 spends "
+            "far more tokens on these short orchestrator-side calls."
+        ),
     )
     local_llm_base_url: str = Field(
         default="http://roboco-ollama:11434/v1",
         description="Base URL for local LLM (Ollama OpenAI-compat API)",
     )
+    background_llm_claude_home: str = Field(
+        default="",
+        description=(
+            "HOME of the background LLM client's Claude Haiku process: its "
+            "`.claude` is the Claude Code login, and the process runs as the "
+            "uid:gid that own that login, so nothing it writes there is "
+            "root-owned. The compose files mount the host login a second time "
+            "at /home/claude-login/.claude for this (the orchestrator's own "
+            "/root/.claude is behind /root, mode 0700, which that uid cannot "
+            "enter). Empty = this process's own home (local dev)."
+        ),
+    )
 
     @field_validator("local_llm_base_url")
     @classmethod
     def _local_llm_base_url_internal_only(cls, v: str) -> str:
-        # The fire-and-forget hot path (distillation, RAG synthesis, X/video
+        # The background LLM client (distillation, RAG synthesis, X/video
         # drafting) reads this verbatim. Reject non-internal hosts so a one-line
         # env mistake can't route quiet generation through a paid cloud LLM.
         host = (urlparse(v).hostname or "").lower()
@@ -367,7 +395,7 @@ class Settings(BaseSettings):
     # score / noul) with calibrated confidence at decision points that would
     # otherwise be a full LLM call or a hardcoded heuristic. Three tiers behind
     # one wire format, all served by the roboco-decisions sidecar or the
-    # OpenRouter Decisions API: Clef (self-hosted 27B, built-in sweet-spot
+    # OpenRouter Decisions API: Clef (self-hosted Clef-Flash 9B, built-in
     # default, no key, no spend), Laya (self-hosted 421M, the cheap option,
     # fallback when the Clef backend is unhealthy) and Jev via OpenRouter
     # (opt-in, the expensive option). With the master flag off, every call
@@ -384,7 +412,7 @@ class Settings(BaseSettings):
         ),
     )
     decisions_model: str = Field(
-        default="ggml-org/Clef-GGUF:Q4_K_M",
+        default="ggml-org/Clef-Flash-GGUF:Q4_K_M",
         description=(
             "Model id reported to the Decisions backend for the default tier. "
             "For the self-hosted sidecar this doubles as the routing hint: "
@@ -415,7 +443,7 @@ class Settings(BaseSettings):
         default=True,
         description=(
             "Serve decisions from the self-hosted sidecar's Clef backend "
-            "(27B llama.cpp, the BUILT-IN sweet-spot default tier) when it "
+            "(Clef-Flash 9B on llama.cpp, the BUILT-IN default tier) when it "
             "is healthy. Inert until the roboco-decisions container exists "
             "and the master flag is on."
         ),
@@ -447,13 +475,65 @@ class Settings(BaseSettings):
         ),
     )
     decisions_clef_timeout_s: float = Field(
+        default=180.0,
+        gt=0,
+        description=(
+            "Upper bound on one call to the default self-hosted Clef tier "
+            "(single attempt, no retries). Each call carries its own, shorter "
+            "deadline (the decisions_*_deadline_s settings) and the sidecar "
+            "refuses at once, as busy, an input that cannot finish before it. "
+            "Measured on the NAS 2026-11-01, Clef-Flash on the Iris Xe: p50 "
+            "3.6 s, p95 22.9 s, max 51 s over 45 real pilot payloads."
+        ),
+    )
+    decisions_clef_max_input_tokens: int = Field(
+        default=8192,
+        gt=0,
+        description=(
+            "Largest input, in tokens, the Clef backend takes. Decision models "
+            "keep no KV cache, so the sidecar sizes llama.cpp's batch to it "
+            "(compose passes the same variable to both sides) and the client "
+            "trims every Clef state to two characters per token of it (real "
+            "pilot payloads ran 2.3 characters per token)."
+        ),
+    )
+    decisions_inline_deadline_s: float = Field(
+        default=20.0,
+        gt=0,
+        description=(
+            "How long an ON pilot inside an agent's verb waits for its verdict "
+            "before the verb carries on with its baseline (i_am_idle, "
+            "delegate, i_will_plan, claim_gate_review, give_me_work, ...)."
+        ),
+    )
+    decisions_agent_tool_deadline_s: float = Field(
+        default=25.0,
+        gt=0,
+        description=(
+            "Deadline for the verdict an agent asks for itself "
+            "(preflight_diff, triage_failure): under the agent's 30 s "
+            "/api/v1/do client timeout, so the server answers before the "
+            "agent gives up."
+        ),
+    )
+    decisions_long_verb_deadline_s: float = Field(
         default=60.0,
         gt=0,
         description=(
-            "Per-call timeout for the default self-hosted Clef tier (single "
-            "attempt, no retries). The 27B forward pass over a capped state "
-            "is CPU prefill-bound: seconds on typical pilot states, tens of "
-            "seconds worst case. Measure on the real deploy before tuning."
+            "Deadline for ON pilots inside the long submit verbs (i_am_done, "
+            "submit_up, submit_root: 1500 s walls), whose inputs carry a diff."
+        ),
+    )
+    decisions_background_deadline_s: float = Field(
+        default=60.0,
+        gt=0,
+        description=(
+            "Deadline for pilots in an engine's own loop or a fire-and-forget "
+            "task, and for every SHADOW verdict (which runs in the background "
+            "and never makes its caller wait). A pilot call runs inside its "
+            "caller's transaction, so this bounds how long one stays open; "
+            "Clef-Flash on the NAS's Iris Xe answered 45 real payloads with "
+            "p95 22.9 s and max 51 s."
         ),
     )
     decisions_openrouter_timeout_s: float = Field(
@@ -743,6 +823,55 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
+    # Entire (entire.io) session checkpoints for the fleet. The agent images
+    # ship a pinned Entire CLI behind a wrapper that reads this flag at spawn;
+    # off => the wrapper turns every Entire hook into a silent no-op. On, RoboCo
+    # runs Entire's commit hooks for agent commits in the sealed workspace
+    # container (roboco/services/entire_hooks.py).
+    entire_enabled: bool = Field(
+        default=False,
+        description=(
+            "Records each agent's Claude Code session with Entire so every "
+            "task commit carries a redacted transcript checkpoint, pushed with "
+            "the branch to the project's own origin (anyone who can read the "
+            "repository can read it). Off => Entire's hooks are no-ops in every "
+            "agent container and RoboCo runs none for their commits."
+        ),
+    )
+    # Entire trails: the dispatcher mirrors each bridged task tree onto one
+    # Entire trail (roboco/services/entire_trails/). The RoboCo database stays
+    # canonical; writes go through a durable outbox drained by the
+    # orchestrator, with the token from the encrypted entire_credentials row.
+    entire_trails_enabled: bool = Field(
+        default=False,
+        description=(
+            "Mirrors the task trees of opted-in GitHub projects onto Entire "
+            "trails: the root's plan is the trail, every branch a change, "
+            "review findings trail findings, the CEO's approval a trail "
+            "approval. RoboCo's own state and merge path stay canonical. Off "
+            "=> nothing is sent to Entire and no new tree is bridged."
+        ),
+    )
+    entire_trails_drain_interval_seconds: int = Field(
+        default=15,
+        ge=1,
+        description="Seconds between passes of the Entire trails outbox drain.",
+    )
+    entire_trails_max_attempts: int = Field(
+        default=8,
+        ge=1,
+        description=(
+            "Failed attempts after which an Entire trails outbox row stops "
+            "retrying (its tree's queue holds) and the CEO is alerted."
+        ),
+    )
+    entire_trails_cli_timeout_seconds: int = Field(
+        default=60,
+        ge=5,
+        description="Timeout for one Entire CLI call made by the trails bridge.",
+    )
+
+    # ==========================================================================
     # Web Research (pluggable external search/fetch for Board + PM roles)
     # ==========================================================================
     # Calls go agent -> roboco-search MCP -> /api/research/* -> ResearchService
@@ -956,6 +1085,31 @@ class Settings(BaseSettings):
             )
         return self
 
+    @model_validator(mode="after")
+    def _validate_signing_secret_lengths(self) -> "Settings":
+        """Refuse to start with an HMAC signing secret shorter than its hash.
+
+        Both secrets key HMAC-SHA256: the login cookie's HS256 JWT, and the
+        agent tokens minted at spawn (and the panel's CEO token). A shorter
+        key can be brute-forced offline from one captured token, which
+        forges a CEO session or any agent's identity.
+        """
+        in_use = {
+            "ROBOCO_CLOUD_AUTH_SECRET": (
+                self.cloud_auth_secret if self.cloud_auth_enabled else None
+            ),
+            "ROBOCO_AGENT_AUTH_SECRET": os.environ.get("ROBOCO_AGENT_AUTH_SECRET"),
+        }
+        for name, secret in in_use.items():
+            if secret and len(secret.encode("utf-8")) < _MIN_SIGNING_SECRET_BYTES:
+                raise ValueError(
+                    f"{name} must be at least {_MIN_SIGNING_SECRET_BYTES} bytes "
+                    "(an HS256 key shorter than its 256-bit hash can be brute-"
+                    "forced from one token). Generate one with: python -c "
+                    "'import secrets; print(secrets.token_hex(32))'"
+                )
+        return self
+
     # ==========================================================================
     # GitHub repository provisioning (pitch -> approve -> auto-provision)
     # ==========================================================================
@@ -1086,7 +1240,7 @@ class Settings(BaseSettings):
     )
 
     # ==========================================================================
-    # HTTP security hardening (fastapi-guard 8.0.0 / guard-core 4.0.1), DEFAULT OFF
+    # HTTP security hardening (fastapi-guard 8.1.2 / guard-core 4.4.0), DEFAULT OFF
     # ==========================================================================
     # A fastapi-guard SecurityMiddleware + per-route decorator layer (IP/rate/geo
     # controls, WAF signature detection, security headers, honeypots, and custom
@@ -1423,17 +1577,25 @@ class Settings(BaseSettings):
     )
     release_git_name: str = Field(
         default="RoboCo Release Manager",
-        description="Committer identity for the executor's release commit.",
+        description=(
+            "Identity of the release clone's own commits. It reaches the repo "
+            "only on a forge where the release is pushed with git (Gitea, "
+            "GitLab); on GitHub, GitHub's API writes the commits and the "
+            "token's owner (the RoboCo App, or the PAT's user) is the author."
+        ),
     )
     release_git_email: str = Field(
         default="release-manager@roboco.local",
-        description="Committer email for the executor's release commit.",
+        description="Email of the release clone's own commits (see release_git_name).",
     )
     release_sign_commits: bool = Field(
         default=False,
         description=(
-            "Sign the release commit (-S). Off by default: the orchestrator "
-            "container carries no signing key; arm only with a mounted key."
+            "Sign the release clone's commits (-S) with a mounted key. It "
+            "matters only where the release is pushed with git (Gitea, "
+            "GitLab): on GitHub the commits are written and signed by GitHub, "
+            "so leave it off there. Off by default: the orchestrator container "
+            "carries no signing key."
         ),
     )
     release_min_commits: int = Field(
@@ -1641,11 +1803,12 @@ class Settings(BaseSettings):
         ),
     )
     x_feature_spotlight_interval_seconds: int = Field(
-        default=86400,  # 1 day — tunable; marketing cadence is a CEO call, not a
-        # technical constant. This is the BASE loop tick only: the engine's own
+        # 1 day — tunable; marketing cadence is a CEO call, not a technical
+        # constant. This is the BASE loop tick only: the engine's own
         # smart-cadence guard (XEngine._feature_activity_stretch_skip) stretches
         # the effective cadence to 3x this whenever nothing has shipped since
         # the last spotlight activity, so a quiet week doesn't fire daily.
+        default=86400,
         ge=3600,
         description="Seconds between feature-spotlight exploration cycles.",
     )
@@ -1951,6 +2114,117 @@ class Settings(BaseSettings):
             "minutes; the default clone timeout is too short for this."
         ),
     )
+    agent_uid: int = Field(
+        default=1000,
+        description=(
+            "uid of the `agent` user in the agent images (Debian `useradd` "
+            "default). Workspace files belong to it, and every throwaway "
+            "workspace container runs as it."
+        ),
+    )
+    agent_gid: int = Field(
+        default=1000,
+        description="Primary gid of the `agent` user in the agent images.",
+    )
+    git_user_uid: int = Field(
+        default=1500,
+        description=(
+            "uid the orchestrator drops to for every git command in an agent "
+            "workspace (`roboco-git` in the orchestrator image, primary gid "
+            "agent_gid). Never root (agents can rewrite every clone) and "
+            "never agent_uid (that is the host user on the NAS, who owns the "
+            "provider credentials mounted into the orchestrator). Must match "
+            "the image's ROBOCO_GIT_USER_UID build arg."
+        ),
+    )
+    workspace_git_drop: Literal["required", "off"] = Field(
+        default="off",
+        description=(
+            "Whether every process RoboCo starts in an agent workspace (git, "
+            "file reads/writes, the conventions validator, the relay's "
+            "upload-pack) must run as the git user through the image's "
+            "set-id helper /usr/local/libexec/roboco/as-git-user. "
+            "'required' (the orchestrator image sets it): a missing or "
+            "failing helper raises and nothing runs as this process instead; "
+            "the api and dispatcher refuse to start unless a process started "
+            "through it is uid git_user_uid with only agent_gid, no "
+            "capabilities and no_new_privs; the workspace permission repair, "
+            "clone-parent creation and tree removal take their descriptor-"
+            "based paths. 'off' (dev and CI on the host): processes run as "
+            "this one."
+        ),
+    )
+    git_support_dir: str = Field(
+        default="/opt/roboco/git",
+        description=(
+            "Root-owned dir in the orchestrator image: `hooks/` is the ONLY "
+            "hooks dir any orchestrator-side git runs (core.hooksPath), "
+            "`workspace.gitconfig` is the git user's global config."
+        ),
+    )
+    host_data_dir: str = Field(
+        default="",
+        description=(
+            "Host path of the data dir the compose files mount under /data "
+            "(ROBOCO_HOST_DATA_DIR). Bind mounts for containers the "
+            "orchestrator starts over the Docker socket name host paths, so "
+            "/data/workspaces/... is translated through it. Empty = the "
+            "orchestrator runs on the host itself (local dev)."
+        ),
+    )
+    host_claude_dir: str = Field(
+        default="",
+        description=(
+            "Host path of the ~/.claude every agent container mounts "
+            "(ROBOCO_HOST_CLAUDE_DIR; this orchestrator sees it as its own "
+            "~/.claude). The Entire step mounts one agent's transcript folder "
+            "from it into the throwaway container. Empty = the orchestrator "
+            "runs on the host itself (local dev)."
+        ),
+    )
+    private_data_root: str = Field(
+        default="/data/private",
+        description=(
+            "Orchestrator-only data dir, never mounted into an agent "
+            "container (agents mount ALL of /data/workspaces read-write). "
+            "Holds the per-project git relays (`relays/<slug>.git`, the only "
+            "repositories that ever see a project token), the read clones "
+            "(`read/<slug>`), the release clones (`release/<slug>`) and the "
+            "scratch trees the orchestrator builds itself (`scratch/`)."
+        ),
+    )
+    workspace_container_image: str | None = Field(
+        default=None,
+        description=(
+            "Image of the throwaway container that runs a workspace's own "
+            "code: the quality gate, codegen, dependency installs, the "
+            "toolchain smoke and the dep-update probe. Unset = the image this "
+            "orchestrator runs, read from its own container, so the toolchain "
+            "is the one these commands used when they ran here as root. Set "
+            "it when the orchestrator is not itself in a container."
+        ),
+    )
+    workspace_container_network: str = Field(
+        default="bridge",
+        description=(
+            "Docker network for the throwaway workspace container. The "
+            "default `bridge` reaches package registries but not RoboCo's "
+            "networks (no API, no Postgres/Redis by name)."
+        ),
+    )
+    workspace_container_memory: str = Field(
+        default="4g",
+        description="`docker run --memory` for the throwaway workspace container.",
+    )
+    workspace_container_cpus: str = Field(
+        default="2",
+        description="`docker run --cpus` for the throwaway workspace container.",
+    )
+    workspace_container_pids_limit: int = Field(
+        default=4096,
+        ge=64,
+        description="`docker run --pids-limit` for the throwaway workspace container.",
+    )
 
     # ==========================================================================
     # Agent container images (spawn source)
@@ -2055,7 +2329,7 @@ class Settings(BaseSettings):
         ),
     )
     flow_verb_slow_timeout_seconds: int = Field(
-        default=900,
+        default=1500,
         ge=1,
         description=(
             "Server-side timeout for the slow flow verbs (i_am_done, "
@@ -2089,6 +2363,17 @@ class Settings(BaseSettings):
             "the Next.js panel) can exceed the 30s default-git timeout while "
             "git hashes every object and the orchestrator re-chowns the "
             "tree, so the commit choreography uses this longer budget."
+        ),
+    )
+    project_hook_push_timeout_seconds: int = Field(
+        default=240,
+        ge=30,
+        description=(
+            "Time a project's own pre-push hook may run (in the throwaway "
+            "container) before RoboCo pushes for an agent; past it the push is "
+            "refused. Projects run their test suites there. It has to fit, "
+            "with the quality gate (up to 1200 s), inside i_am_done's "
+            "flow_verb_slow_timeout_seconds wall (1500 s)."
         ),
     )
     git_network_timeout_seconds: int = Field(
@@ -3042,6 +3327,25 @@ class Settings(BaseSettings):
                         "must not double-index a projection/intake dir."
                     )
         return self
+
+
+def reachable_url_host(bind_host: str) -> str:
+    """``bind_host`` as the host part of a URL that reaches the server bound to it.
+
+    A bind-all address can't be dialled, so it maps to the loopback of its own
+    family: ``0.0.0.0`` to ``127.0.0.1`` and ``::`` to ``::1``. The family
+    matters: asyncio sets ``IPV6_V6ONLY`` on a socket it binds to ``::``, so
+    that server never answers on 127.0.0.1. An IPv6 address is bracketed
+    (``http://[::1]:8000``); a hostname is returned unchanged.
+    """
+    try:
+        address = ipaddress.ip_address(bind_host)
+    except ValueError:
+        return bind_host
+    is_ipv6 = isinstance(address, ipaddress.IPv6Address)
+    if address.is_unspecified:
+        address = ipaddress.ip_address("::1" if is_ipv6 else "127.0.0.1")
+    return f"[{address}]" if is_ipv6 else str(address)
 
 
 def _vault_dirs_overlap(a: str, b: str) -> bool:

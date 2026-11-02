@@ -17,7 +17,8 @@ from uuid import UUID
 
 import pytest
 from roboco.foundation.identity import AGENTS, Role, Team
-from roboco.runtime.orchestrator import AGENT_IMAGES, AgentOrchestrator
+from roboco.models.runtime import AgentInstance
+from roboco.runtime.orchestrator import AGENT_IMAGES, AgentOrchestrator, AgentState
 from roboco.seeds.initial_data import _AGENT_PRESENTATION, AGENT_UUIDS
 
 _TWO_SPAWNS = 2
@@ -25,6 +26,7 @@ _TWO_SPAWNS = 2
 
 def _orch() -> Any:
     orch: Any = AgentOrchestrator.__new__(AgentOrchestrator)
+    orch._instances = {}
     orch._tick_handled_tasks = set()
     orch._bg_tasks = set()
     orch._build_pr_gate_prompt = MagicMock(return_value="prompt")
@@ -385,3 +387,70 @@ def test_cell_pr_reviewer_2_has_presentation_name() -> None:
 
 def test_cell_pr_reviewer_2_image_is_pr_reviewer() -> None:
     assert AGENT_IMAGES["cell-pr-reviewer-2"] == "roboco-agent-pr-reviewer"
+
+
+# ---------------------------------------------------------------------------
+# Spawn-to-claim window: claim_gate_review sets active_claimant_id only once
+# the spawned reviewer has booted. Live 2026-10-28 be-pr-reviewer (06:34:21)
+# and cell-pr-reviewer-2 (06:34:35) were both sent onto 300472d1.
+# ---------------------------------------------------------------------------
+
+
+def _reviewer_on(task_id: str, slug: str, state: AgentState) -> AgentInstance:
+    return AgentInstance(agent_id=slug, state=state, current_task_id=task_id)
+
+
+@pytest.mark.parametrize(
+    "state", [AgentState.STARTING, AgentState.ACTIVE, AgentState.WAITING_SHORT]
+)
+def test_gate_task_reviewer_waits_while_a_reviewer_is_up_on_the_task(
+    state: AgentState,
+) -> None:
+    orch = _orch()
+    task_id = "11111111-1111-1111-1111-111111111111"
+    orch._instances = {"be-pr-reviewer": _reviewer_on(task_id, "be-pr-reviewer", state)}
+    orch._is_agent_active = MagicMock(side_effect=lambda aid: aid == "be-pr-reviewer")
+
+    assert orch._gate_task_reviewer(_gate_task(task_id)) is None
+
+
+def test_overflow_still_takes_a_different_task_while_the_primary_works() -> None:
+    orch = _orch()
+    orch._instances = {
+        "be-pr-reviewer": _reviewer_on(
+            "11111111-1111-1111-1111-111111111111",
+            "be-pr-reviewer",
+            AgentState.ACTIVE,
+        )
+    }
+    orch._is_agent_active = MagicMock(side_effect=lambda aid: aid == "be-pr-reviewer")
+    other = _gate_task("33333333-3333-3333-3333-333333333333")
+
+    assert orch._gate_task_reviewer(other) == "cell-pr-reviewer-2"
+
+
+@pytest.mark.asyncio
+async def test_a_second_tick_before_the_claim_spawns_no_second_reviewer() -> None:
+    orch = _orch()
+    task = _gate_task("11111111-1111-1111-1111-111111111111")
+    orch._fetch_tasks = AsyncMock(return_value=[task])
+    orch._pm_respawn_should_gate = AsyncMock(return_value=False)
+    orch._gate_task_ci_pending = AsyncMock(return_value=False)
+    orch._sync_gate_reviewer_assignment = AsyncMock()
+    orch._dispatch_devops_gate_review = AsyncMock()
+    spawned: list[str] = []
+
+    async def fake_spawn(**kwargs: Any) -> None:
+        spawned.append(kwargs["agent_id"])
+        orch._instances[kwargs["agent_id"]] = _reviewer_on(
+            kwargs["task_id"], kwargs["agent_id"], AgentState.STARTING
+        )
+
+    orch.spawn_agent = AsyncMock(side_effect=fake_spawn)
+    orch._is_agent_active = MagicMock(side_effect=lambda aid: aid in orch._instances)
+
+    await orch._dispatch_pr_gate_work(MagicMock())
+    orch._tick_handled_tasks = set()
+    await orch._dispatch_pr_gate_work(MagicMock())
+
+    assert spawned == ["be-pr-reviewer"]

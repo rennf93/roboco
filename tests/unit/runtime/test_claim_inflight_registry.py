@@ -36,7 +36,7 @@ def _orch() -> AgentOrchestrator:
 
 def _any(orch: AgentOrchestrator) -> Any:
     """Untyped view for stubbing methods in these tests - avoids per-line
-    method-assign noise without ever reaching for `# type: ignore`."""
+    method-assign noise without an inline mypy suppression."""
     return cast("Any", orch)
 
 

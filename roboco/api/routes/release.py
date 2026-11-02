@@ -14,11 +14,19 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from roboco.api.deps import CurrentAgentContext, DbSession
 from roboco.api.schemas.release import (
+    ReleaseCiVerdictsResponse,
     ReleaseExecuteResponse,
     ReleaseProposalResponse,
     ReleaseRejectRequest,
+    ReleaseVerificationResponse,
 )
-from roboco.api.utils.release import _require_ceo, _to_response
+from roboco.api.utils.release import (
+    _require_ceo,
+    _to_response,
+    open_proposal_or_404,
+    release_ci_verdicts_response,
+    release_verification_response,
+)
 from roboco.security import guard_deco
 from roboco.services.release_proposal import (
     dispatch_approve,
@@ -34,12 +42,28 @@ async def get_release_proposal(
 ) -> ReleaseProposalResponse:
     """The single held release proposal awaiting the CEO (404 when none)."""
     _require_ceo(agent)
-    task = await get_release_proposal_service(db).open_proposal()
-    if task is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail="No open release proposal"
-        )
-    return await _to_response(task, db)
+    return await _to_response(await open_proposal_or_404(db), db)
+
+
+@router.get("/proposal/verification", response_model=ReleaseVerificationResponse)
+async def get_release_proposal_verification(
+    db: DbSession, agent: CurrentAgentContext
+) -> ReleaseVerificationResponse:
+    """Every member task's verification receipt for the open proposal in one
+    response (404 when no proposal is open): the rollup's single read instead
+    of four requests per member task."""
+    _require_ceo(agent)
+    return await release_verification_response(await open_proposal_or_404(db), db)
+
+
+@router.get("/proposal/ci-verdicts", response_model=ReleaseCiVerdictsResponse)
+async def get_release_proposal_ci_verdicts(
+    db: DbSession, agent: CurrentAgentContext
+) -> ReleaseCiVerdictsResponse:
+    """Every member task's PR CI verdict for the open proposal, read from the
+    forge a few at a time (404 when no proposal is open)."""
+    _require_ceo(agent)
+    return await release_ci_verdicts_response(await open_proposal_or_404(db), db)
 
 
 @router.post(

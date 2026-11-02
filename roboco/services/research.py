@@ -17,6 +17,10 @@ Design:
   raises and always yields empty results.
 * ``ResearchService`` selects an adapter from settings, clamps result/byte
   caps defensively, and is the single entry point the route uses.
+* Every failure is a ``ResearchError`` subclass from
+  ``roboco.services.research_errors`` whose message names the party that
+  failed the call (the provider, the target site, or RoboCo's URL guard) and
+  why, so the route can answer with that party's status.
 
 Swapping providers is a config change (``ROBOCO_RESEARCH_PROVIDER``) only.
 """
@@ -35,19 +39,17 @@ import httpx
 import trafilatura
 
 from roboco.config import settings
-
-
-class ResearchError(Exception):
-    """A provider call failed (network error, non-2xx, or malformed body)."""
-
-
-class ResearchUnsupportedError(ResearchError):
-    """The active provider does not support the requested operation.
-
-    Raised, for example, when ``web_fetch`` is called while the configured
-    provider has no content-extraction endpoint (Brave). Distinct from a
-    transient ``ResearchError`` so the route can map it to 501 rather than 502.
-    """
+from roboco.services.research_errors import (
+    ResearchUnsupportedError,
+    carries_challenge_header,
+    provider_body_error,
+    provider_status_error,
+    provider_unreachable_error,
+    site_redirect_limit_error,
+    site_status_error,
+    site_unreachable_error,
+    url_refused_error,
+)
 
 
 @dataclass(frozen=True)
@@ -131,7 +133,13 @@ class SearchProvider(ABC):
         json_body: dict[str, Any] | None = None,
         params: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Issue a request and return parsed JSON, or raise ``ResearchError``."""
+        """Call the provider's API and return its JSON object body.
+
+        Every failure raises a ``ResearchProviderError`` that names this
+        provider and the endpoint: no answer, an error status, or a body that
+        is not a JSON object.
+        """
+        endpoint = f"{method} {url}"
         client = await self._http()
         try:
             response = await client.request(
@@ -143,17 +151,19 @@ class SearchProvider(ABC):
                 timeout=self._timeout,
             )
         except httpx.HTTPError as exc:
-            msg = f"{self.name}: request failed: {exc}"
-            raise ResearchError(msg) from exc
+            raise provider_unreachable_error(self.name, endpoint, exc) from exc
         if not response.is_success:
-            detail = response.text[:200] if response.text else "no body"
-            msg = f"{self.name}: HTTP {response.status_code}: {detail}"
-            raise ResearchError(msg)
+            raise provider_status_error(self.name, endpoint, response)
+        return self._json_object(endpoint, response)
+
+    def _json_object(self, endpoint: str, response: httpx.Response) -> dict[str, Any]:
+        """The response body as a JSON object, or a ``ResearchProviderError``."""
         try:
-            parsed: dict[str, Any] = response.json()
+            parsed = response.json()
         except (ValueError, TypeError) as exc:
-            msg = f"{self.name}: invalid JSON response: {exc}"
-            raise ResearchError(msg) from exc
+            raise provider_body_error(self.name, endpoint, response) from exc
+        if not isinstance(parsed, dict):
+            raise provider_body_error(self.name, endpoint, response)
         return parsed
 
     @abstractmethod
@@ -293,6 +303,14 @@ class ExaProvider(SearchProvider):
         return _truncated_fetch(url, content, max_chars, self.name)
 
 
+# The most redirects a page fetch follows. RFC 9110 section 15.4 notes that an
+# earlier HTTP specification recommended at most five and warns content
+# developers that some clients still enforce that limit, so a page meant to be
+# reached keeps its chain within it. Every hop costs a guard DNS lookup and a
+# request with its own timeout, which a longer chain would multiply.
+_MAX_PAGE_REDIRECTS = 5
+
+
 class SearXNGProvider(SearchProvider):
     """SearXNG: self-hosted metasearch aggregator, no API key.
 
@@ -353,22 +371,52 @@ class SearXNGProvider(SearchProvider):
         )
 
     async def fetch(self, url: str, max_chars: int) -> FetchOutcome:
+        """Download the page itself and extract its readable text.
+
+        The outcome's URL is the page the redirects, if any, ended on.
+        """
+        response = await self._get_page(url)
+        extracted = await asyncio.to_thread(_extract_readable_text, response.text)
+        return _truncated_fetch(
+            str(response.url), extracted or "", max_chars, self.name
+        )
+
+    async def _get_page(self, url: str) -> httpx.Response:
+        """GET the target page one redirect hop at a time, guarding every hop.
+
+        httpx's own redirect following would request each hop before anything
+        could check it, so every hop's URL passes RoboCo's URL guard here
+        first, and at most ``_MAX_PAGE_REDIRECTS`` are followed. httpx still
+        builds each hop's request (``next_request``), so 301/302/303/307/308,
+        relative ``Location`` headers and cookies behave as its own redirect
+        following would. The site, not SearXNG, is the party here: SearXNG
+        only searches.
+        """
         await _assert_public_http_url(url)
         client = await self._http()
-        try:
-            response = await client.get(
-                url, timeout=self._timeout, follow_redirects=True
+        first = client.build_request("GET", url, timeout=self._timeout)
+        response = await self._send_page_hop(url, first)
+        redirects = 0
+        while (hop := response.next_request) is not None:
+            if redirects == _MAX_PAGE_REDIRECTS:
+                raise site_redirect_limit_error(
+                    url, response, hop.url, _MAX_PAGE_REDIRECTS
+                )
+            await _assert_public_http_url(
+                str(hop.url), redirected_from=str(response.url)
             )
+            response = await self._send_page_hop(url, hop)
+            redirects += 1
+        _raise_unless_page(url, response)
+        return response
+
+    async def _send_page_hop(self, url: str, hop: httpx.Request) -> httpx.Response:
+        """Send one hop of the fetch of ``url`` without following its redirect."""
+        client = await self._http()
+        try:
+            return await client.send(hop, follow_redirects=False)
         except httpx.HTTPError as exc:
-            msg = f"{self.name}: request failed: {exc}"
-            raise ResearchError(msg) from exc
-        if not response.is_success:
-            detail = response.text[:200] if response.text else "no body"
-            msg = f"{self.name}: HTTP {response.status_code}: {detail}"
-            raise ResearchError(msg)
-        html = response.text
-        extracted = await asyncio.to_thread(_extract_readable_text, html)
-        return _truncated_fetch(url, extracted or "", max_chars, self.name)
+            raise site_unreachable_error(url, hop.url, exc) from exc
 
 
 class NullProvider(SearchProvider):
@@ -521,42 +569,52 @@ def _as_float(value: Any) -> float | None:
 
 def _extract_readable_text(html: str) -> str | None:
     """Extract the readable main content of a page (sync, thread-offloaded)."""
+    # A malformed page must degrade to empty content, never raise.
     try:
         return trafilatura.extract(
             html, include_links=False, include_comments=False, include_tables=True
         )
-    except Exception:  # a malformed page must degrade to empty, never raise
+    except Exception:
         return None
 
 
-async def _assert_public_http_url(url: str) -> None:
+async def _assert_public_http_url(url: str, redirected_from: str | None = None) -> None:
     """Refuse URLs that are not plain http(s) pointing at a public host.
 
     ``web_fetch`` fetches agent-supplied URLs from the orchestrator process,
     which is multi-homed and can reach the DB, Redis, and every internal
     service. An agent-supplied URL must never become a probe of that network,
     so the hostname must resolve to a globally-routable address (covers
-    loopback, RFC1918, link-local incl. cloud metadata, and ULA).
+    loopback, RFC1918, link-local incl. cloud metadata, and ULA). The fetch
+    runs it on every redirect hop too, passing the URL that redirected there.
     """
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
-        msg = f"refusing non-http(s) url: {url!r}"
-        raise ResearchError(msg)
+        raise url_refused_error(url, "only http(s) URLs are fetched", redirected_from)
     host = parsed.hostname
     if not host:
-        msg = f"refusing url without hostname: {url!r}"
-        raise ResearchError(msg)
+        raise url_refused_error(url, "it has no hostname", redirected_from)
     loop = asyncio.get_running_loop()
     try:
         infos = await loop.getaddrinfo(host, None)
     except socket.gaierror as exc:
-        msg = f"cannot resolve {host!r}"
-        raise ResearchError(msg) from exc
+        why = f"its host {host!r} does not resolve ({type(exc).__name__}: {exc})"
+        raise url_refused_error(url, why, redirected_from) from exc
     for info in infos:
         ip = ipaddress.ip_address(info[4][0])
         if not ip.is_global:
-            msg = f"refusing url resolving to non-public address: {url!r}"
-            raise ResearchError(msg)
+            why = "it resolves to a non-public address"
+            raise url_refused_error(url, why, redirected_from)
+
+
+def _raise_unless_page(url: str, response: httpx.Response) -> None:
+    """Refuse a final response that is an error status or a bot-check page.
+
+    A response a bot-mitigation layer marked as its challenge page is a
+    refusal even with a 2xx status (AWS WAF challenges answer 202).
+    """
+    if not response.is_success or carries_challenge_header(response):
+        raise site_status_error(url, response)
 
 
 def _truncated_fetch(

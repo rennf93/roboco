@@ -35,12 +35,23 @@ from roboco.foundation.policy.conventions.models import (
 )
 from roboco.services.base import BaseService
 from roboco.services.git import CONVENTIONS_SCAFFOLD_BRANCH, get_git_service
+from roboco.services.git_relay import is_dispatcher_owned, run_private_git
+from roboco.services.workspace_git import run_workspace_git
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     from sqlalchemy.exc import IntegrityError
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from roboco.db.tables import ProjectTable
+
+if TYPE_CHECKING:
+    from roboco.services._conventions_service_types import (
+        ConventionsServiceSelf as _Base,
+    )
+else:
+    _Base = object
 
 _SCAFFOLD_BRANCH = CONVENTIONS_SCAFFOLD_BRANCH
 _AMBIENT_CHAR_CAP = 2000
@@ -109,7 +120,239 @@ def _cache_row_current(row: ProjectConventionsCacheTable) -> bool:
     )
 
 
-class ConventionsService(BaseService):
+class ConventionsMapResolution(_Base):
+    """Resolving a project's conventions map: its workspace and head SHA, deriving
+    or reading the committed standard, publishing it, and the per-SHA cache with its
+    last good row."""
+
+    # -- internals ---------------------------------------------------------- #
+
+    @staticmethod
+    def _pid(project: ProjectTable) -> UUID:
+        # ProjectTable.id is typed as the SQLAlchemy UUID column; normalize to a
+        # plain uuid.UUID for the cache-row helpers.
+        return UUID(str(project.id))
+
+    @staticmethod
+    def _head_sha(project: ProjectTable) -> str:
+        return project.head_commit or "HEAD"
+
+    @staticmethod
+    def _workspace_root(project: ProjectTable) -> Path | None:
+        if not project.workspace_path:
+            return None
+        path = Path(project.workspace_path)
+        return path if path.exists() else None
+
+    async def resolve_workspace(self, project: ProjectTable) -> Path | None:
+        """Ensure (clone / refresh) the project's read clone; None if unavailable."""
+        from roboco.services.workspace import get_workspace_service
+
+        try:
+            return await get_workspace_service(self.session).ensure_read_clone(
+                project.slug, force=True
+            )
+        except Exception as exc:
+            self.log.warning(
+                "conventions: read-clone unavailable; falling back to workspace_path",
+                project=getattr(project, "slug", None),
+                error=str(exc),
+            )
+            return None
+
+    def _resolve(
+        self, project: ProjectTable, workspace: Path | None
+    ) -> tuple[Path | None, str | None]:
+        """Resolve the repo root to read the standard from, plus its raw HEAD sha.
+
+        Returns ``(root, sha_raw)`` with no side effects: the caller mutates
+        ``project.workspace_path`` / ``project.head_commit`` on the event loop
+        (mutating ORM state off the event loop is unsafe under SQLAlchemy 2
+        async). ``sha_raw`` is the real rev-parse, or None for a non-git legacy
+        path — the caller computes the ``sha or self._head_sha(project)``
+        fallback for cache key / health head_sha.
+        """
+        root: Path | None = None
+        if workspace is not None and Path(workspace).exists():
+            root = Path(workspace)
+        else:
+            root = self._workspace_root(project)
+        if root is None:
+            return None, None
+        sha = self._head_sha_at(root)
+        return root, sha
+
+    @staticmethod
+    def _head_sha_at(root: Path) -> str | None:
+        """The clone's HEAD sha, or None if ``root`` is not a readable git repo.
+
+        Root git only in the dispatcher-owned read clone; an agent clone (a
+        first-clone scaffold) is read as the workspace git user.
+        """
+        runner = run_private_git if is_dispatcher_owned(root) else run_workspace_git
+        try:
+            result = runner(root, ["rev-parse", "HEAD"], timeout=10, check=False)
+        except (OSError, RuntimeError, subprocess.SubprocessError):
+            return None
+        return result.stdout.strip() or None
+
+    def _derive(self, root: Path | None) -> ConventionsStandard:
+        return derive_from_scan(root) if root is not None else ConventionsStandard()
+
+    def _read_committed_standard(
+        self, root: Path | None
+    ) -> tuple[ConventionsStandard | None, str]:
+        if root is None:
+            return None, "missing"
+        path = root / ".roboco" / "conventions.yml"
+        if not path.is_file():
+            return None, "missing"
+        try:
+            text = path.read_text()
+        except OSError:
+            return None, "missing"
+        try:
+            return ConventionsStandard.parse_yaml(text), "ok"
+        except ConventionsParseError:
+            return None, "degraded"
+
+    async def _publish(
+        self,
+        project: ProjectTable,
+        content: str,
+        *,
+        restore: bool,
+        workspace: Path | None = None,
+    ) -> ScaffoldResult:
+        action = "restore" if restore else "scaffold"
+        title = f"chore(conventions): {action} .roboco/conventions.yml"
+        body = (
+            "Auto-generated by RoboCo's architectural-conventions standard. "
+            "This file is repo-canonical — review, edit, or close as you like."
+        )
+        git = get_git_service(self.session)
+        result = await git.open_conventions_pr(
+            project.slug,
+            content=content,
+            title=title,
+            body=body,
+            workspace=workspace,
+        )
+        if result is None:
+            return ScaffoldResult(
+                pr_number=None, branch=_SCAFFOLD_BRANCH, created=False
+            )
+        return ScaffoldResult(
+            pr_number=result.get("pr_number"),
+            branch=result.get("branch", _SCAFFOLD_BRANCH),
+            created=True,
+        )
+
+    async def _cache_get(
+        self, project_id: UUID, commit_sha: str
+    ) -> ProjectConventionsCacheTable | None:
+        result = await self.session.execute(
+            select(ProjectConventionsCacheTable).where(
+                ProjectConventionsCacheTable.project_id == project_id,
+                ProjectConventionsCacheTable.commit_sha == commit_sha,
+            )
+        )
+        row = result.scalar_one_or_none()
+        if row is not None and not _cache_row_current(row):
+            # Pre-stamp row (written before _CACHE_SCHEMA_VERSION existed): its
+            # payload predates fields like ``infra``, so serving it would mask
+            # the declaration until HEAD moves. Treat it as absent and drop it
+            # so the next ``_cache_put`` can repopulate; a stale row left in
+            # place would otherwise swallow every fresh insert as a benign
+            # concurrent duplicate and force a re-derive on every read.
+            from sqlalchemy.exc import IntegrityError
+
+            try:
+                async with self.session.begin_nested():
+                    await self.session.delete(row)
+            except IntegrityError:
+                # Lost a purge race (another reader dropped it first): the
+                # savepoint contained the failure, the row is gone either way.
+                self.log.debug(
+                    "conventions cache stale-row purge raced",
+                    project_id=str(project_id),
+                    commit_sha=commit_sha,
+                )
+            return None
+        return row
+
+    async def _cache_put(
+        self,
+        project_id: UUID,
+        commit_sha: str,
+        mapping: ConventionsStandard,
+        status: str,
+    ) -> None:
+        """Persist the effective map for ``(project_id, commit_sha)``.
+
+        Runs the INSERT in a savepoint so a concurrent duplicate (two task
+        creates for the same project/HEAD racing to populate the cache) rolls
+        back ONLY the savepoint on IntegrityError — the loser's insert is
+        dropped, the winner's row satisfies the next ``_cache_get``, and the
+        shared session is not poisoned. A bare ``add`` + ``flush`` here would
+        leave the session in error state and crash the rest of task creation
+        (the task-create transaction rides the same session) — F042.
+        """
+        from sqlalchemy.exc import IntegrityError
+
+        try:
+            async with self.session.begin_nested():
+                self.session.add(
+                    ProjectConventionsCacheTable(
+                        project_id=project_id,
+                        commit_sha=commit_sha,
+                        effective_map=_cache_payload(mapping),
+                        status=status,
+                    )
+                )
+        except IntegrityError as exc:
+            # Only a UNIQUE violation (23505) is the benign concurrent-duplicate
+            # case the savepoint is for. A FK / NOT NULL / check violation is a
+            # real bug — silently misattributing it as "concurrent put" would
+            # hide the failure (#130), so log-error and re-raise instead. The
+            # savepoint was rolled back (only the failed insert), leaving the
+            # outer task-create transaction usable.
+            if not _is_unique_violation(exc):
+                self.log.error(
+                    "conventions cache insert failed (non-unique integrity error)",
+                    project_id=str(project_id),
+                    commit_sha=commit_sha,
+                    error=str(exc),
+                )
+                raise
+            self.log.debug(
+                "conventions cache row already present (concurrent put)",
+                project_id=str(project_id),
+                commit_sha=commit_sha,
+            )
+
+    async def _latest_ok_row(
+        self, project_id: UUID
+    ) -> ProjectConventionsCacheTable | None:
+        result = await self.session.execute(
+            select(ProjectConventionsCacheTable)
+            .where(
+                ProjectConventionsCacheTable.project_id == project_id,
+                ProjectConventionsCacheTable.status == "ok",
+            )
+            .order_by(ProjectConventionsCacheTable.derived_at.desc())
+            .limit(1)
+        )
+        return result.scalars().first()
+
+    async def _latest_ok_map(self, project_id: UUID) -> ConventionsStandard | None:
+        row = await self._latest_ok_row(project_id)
+        if row is None:
+            return None
+        return ConventionsStandard.model_validate(row.effective_map)
+
+
+class ConventionsService(BaseService, ConventionsMapResolution):
     """Cache, render, scaffold, and restore a project's conventions standard."""
 
     async def get_map(
@@ -338,247 +581,37 @@ class ConventionsService(BaseService):
             .order_by(ProjectConventionFindingTable.detected_at.desc())
             .limit(limit)
         )
-        return [
-            {
-                "file": row.file,
-                "line": row.line,
-                "rule": row.rule,
-                "level": row.level,
-                "kind": row.kind,
-                "message": row.message,
-                "task_id": str(row.task_id) if row.task_id is not None else None,
-                "detected_at": row.detected_at.isoformat(),
-            }
-            for row in result.scalars().all()
-        ]
+        return [convention_finding_to_dict(row) for row in result.scalars().all()]
 
-    # -- internals ---------------------------------------------------------- #
 
-    @staticmethod
-    def _pid(project: ProjectTable) -> UUID:
-        # ProjectTable.id is typed as the SQLAlchemy UUID column; normalize to a
-        # plain uuid.UUID for the cache-row helpers.
-        return UUID(str(project.id))
+def convention_finding_to_dict(row: ProjectConventionFindingTable) -> dict[str, Any]:
+    """One recorded conventions finding in the panel feed's wire shape."""
+    return {
+        "file": row.file,
+        "line": row.line,
+        "rule": row.rule,
+        "level": row.level,
+        "kind": row.kind,
+        "message": row.message,
+        "task_id": str(row.task_id) if row.task_id is not None else None,
+        "detected_at": row.detected_at.isoformat(),
+    }
 
-    @staticmethod
-    def _head_sha(project: ProjectTable) -> str:
-        return project.head_commit or "HEAD"
 
-    @staticmethod
-    def _workspace_root(project: ProjectTable) -> Path | None:
-        if not project.workspace_path:
-            return None
-        path = Path(project.workspace_path)
-        return path if path.exists() else None
-
-    async def resolve_workspace(self, project: ProjectTable) -> Path | None:
-        """Ensure (clone / refresh) the project's read clone; None if unavailable."""
-        from roboco.services.workspace import get_workspace_service
-
-        try:
-            return await get_workspace_service(self.session).ensure_read_clone(
-                project.slug, force=True
-            )
-        except Exception as exc:
-            self.log.warning(
-                "conventions: read-clone unavailable; falling back to workspace_path",
-                project=getattr(project, "slug", None),
-                error=str(exc),
-            )
-            return None
-
-    def _resolve(
-        self, project: ProjectTable, workspace: Path | None
-    ) -> tuple[Path | None, str | None]:
-        """Resolve the repo root to read the standard from, plus its raw HEAD sha.
-
-        Returns ``(root, sha_raw)`` with no side effects: the caller mutates
-        ``project.workspace_path`` / ``project.head_commit`` on the event loop
-        (mutating ORM state off the event loop is unsafe under SQLAlchemy 2
-        async). ``sha_raw`` is the real rev-parse, or None for a non-git legacy
-        path — the caller computes the ``sha or self._head_sha(project)``
-        fallback for cache key / health head_sha.
-        """
-        root: Path | None = None
-        if workspace is not None and Path(workspace).exists():
-            root = Path(workspace)
-        else:
-            root = self._workspace_root(project)
-        if root is None:
-            return None, None
-        sha = self._head_sha_at(root)
-        return root, sha
-
-    @staticmethod
-    def _head_sha_at(root: Path) -> str | None:
-        """The clone's HEAD sha, or None if ``root`` is not a readable git repo."""
-        try:
-            result = subprocess.run(
-                ["git", "rev-parse", "HEAD"],
-                cwd=str(root),
-                capture_output=True,
-                text=True,
-                check=False,
-                timeout=10,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return None
-        return result.stdout.strip() or None
-
-    def _derive(self, root: Path | None) -> ConventionsStandard:
-        return derive_from_scan(root) if root is not None else ConventionsStandard()
-
-    def _read_committed_standard(
-        self, root: Path | None
-    ) -> tuple[ConventionsStandard | None, str]:
-        if root is None:
-            return None, "missing"
-        path = root / ".roboco" / "conventions.yml"
-        if not path.is_file():
-            return None, "missing"
-        try:
-            text = path.read_text()
-        except OSError:
-            return None, "missing"
-        try:
-            return ConventionsStandard.parse_yaml(text), "ok"
-        except ConventionsParseError:
-            return None, "degraded"
-
-    async def _publish(
-        self,
-        project: ProjectTable,
-        content: str,
-        *,
-        restore: bool,
-        workspace: Path | None = None,
-    ) -> ScaffoldResult:
-        action = "restore" if restore else "scaffold"
-        title = f"chore(conventions): {action} .roboco/conventions.yml"
-        body = (
-            "Auto-generated by RoboCo's architectural-conventions standard. "
-            "This file is repo-canonical — review, edit, or close as you like."
-        )
-        git = get_git_service(self.session)
-        result = await git.open_conventions_pr(
-            project.slug,
-            content=content,
-            title=title,
-            body=body,
-            workspace=workspace,
-        )
-        if result is None:
-            return ScaffoldResult(
-                pr_number=None, branch=_SCAFFOLD_BRANCH, created=False
-            )
-        return ScaffoldResult(
-            pr_number=result.get("pr_number"),
-            branch=result.get("branch", _SCAFFOLD_BRANCH),
-            created=True,
-        )
-
-    async def _cache_get(
-        self, project_id: UUID, commit_sha: str
-    ) -> ProjectConventionsCacheTable | None:
-        result = await self.session.execute(
-            select(ProjectConventionsCacheTable).where(
-                ProjectConventionsCacheTable.project_id == project_id,
-                ProjectConventionsCacheTable.commit_sha == commit_sha,
-            )
-        )
-        row = result.scalar_one_or_none()
-        if row is not None and not _cache_row_current(row):
-            # Pre-stamp row (written before _CACHE_SCHEMA_VERSION existed): its
-            # payload predates fields like ``infra``, so serving it would mask
-            # the declaration until HEAD moves. Treat it as absent and drop it
-            # so the next ``_cache_put`` can repopulate; a stale row left in
-            # place would otherwise swallow every fresh insert as a benign
-            # concurrent duplicate and force a re-derive on every read.
-            from sqlalchemy.exc import IntegrityError
-
-            try:
-                async with self.session.begin_nested():
-                    await self.session.delete(row)
-            except IntegrityError:
-                # Lost a purge race (another reader dropped it first): the
-                # savepoint contained the failure, the row is gone either way.
-                self.log.debug(
-                    "conventions cache stale-row purge raced",
-                    project_id=str(project_id),
-                    commit_sha=commit_sha,
-                )
-            return None
-        return row
-
-    async def _cache_put(
-        self,
-        project_id: UUID,
-        commit_sha: str,
-        mapping: ConventionsStandard,
-        status: str,
-    ) -> None:
-        """Persist the effective map for ``(project_id, commit_sha)``.
-
-        Runs the INSERT in a savepoint so a concurrent duplicate (two task
-        creates for the same project/HEAD racing to populate the cache) rolls
-        back ONLY the savepoint on IntegrityError — the loser's insert is
-        dropped, the winner's row satisfies the next ``_cache_get``, and the
-        shared session is not poisoned. A bare ``add`` + ``flush`` here would
-        leave the session in error state and crash the rest of task creation
-        (the task-create transaction rides the same session) — F042.
-        """
-        from sqlalchemy.exc import IntegrityError
-
-        try:
-            async with self.session.begin_nested():
-                self.session.add(
-                    ProjectConventionsCacheTable(
-                        project_id=project_id,
-                        commit_sha=commit_sha,
-                        effective_map=_cache_payload(mapping),
-                        status=status,
-                    )
-                )
-        except IntegrityError as exc:
-            # Only a UNIQUE violation (23505) is the benign concurrent-duplicate
-            # case the savepoint is for. A FK / NOT NULL / check violation is a
-            # real bug — silently misattributing it as "concurrent put" would
-            # hide the failure (#130), so log-error and re-raise instead. The
-            # savepoint was rolled back (only the failed insert), leaving the
-            # outer task-create transaction usable.
-            if not _is_unique_violation(exc):
-                self.log.error(
-                    "conventions cache insert failed (non-unique integrity error)",
-                    project_id=str(project_id),
-                    commit_sha=commit_sha,
-                    error=str(exc),
-                )
-                raise
-            self.log.debug(
-                "conventions cache row already present (concurrent put)",
-                project_id=str(project_id),
-                commit_sha=commit_sha,
-            )
-
-    async def _latest_ok_row(
-        self, project_id: UUID
-    ) -> ProjectConventionsCacheTable | None:
-        result = await self.session.execute(
-            select(ProjectConventionsCacheTable)
-            .where(
-                ProjectConventionsCacheTable.project_id == project_id,
-                ProjectConventionsCacheTable.status == "ok",
-            )
-            .order_by(ProjectConventionsCacheTable.derived_at.desc())
-            .limit(1)
-        )
-        return result.scalars().first()
-
-    async def _latest_ok_map(self, project_id: UUID) -> ConventionsStandard | None:
-        row = await self._latest_ok_row(project_id)
-        if row is None:
-            return None
-        return ConventionsStandard.model_validate(row.effective_map)
+async def convention_findings_for_tasks(
+    session: AsyncSession, task_ids: Sequence[UUID]
+) -> list[dict[str, Any]]:
+    """Every conventions finding recorded against any of ``task_ids``, newest
+    first, in the feed's wire shape: the task-scoped read the project feed's
+    50-row cap cannot give."""
+    if not task_ids:
+        return []
+    result = await session.execute(
+        select(ProjectConventionFindingTable)
+        .where(ProjectConventionFindingTable.task_id.in_(task_ids))
+        .order_by(ProjectConventionFindingTable.detected_at.desc())
+    )
+    return [convention_finding_to_dict(row) for row in result.scalars().all()]
 
 
 def get_conventions_service(session: AsyncSession) -> ConventionsService:
