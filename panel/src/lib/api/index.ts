@@ -31,6 +31,8 @@ export type {
   XPostHistoryEntry,
   XCredentialsStatus,
 } from "./x";
+export { entireApi } from "./entire";
+export type { EntireTokenStatus, EntireTrailsStatus } from "./entire";
 export { telegramApi } from "./telegram";
 export type { TelegramCredentialsStatus } from "./telegram";
 export { githubAppApi } from "./github-app";

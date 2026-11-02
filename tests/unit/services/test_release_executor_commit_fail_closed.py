@@ -2,7 +2,9 @@
 
 A failed ``git add`` / ``git commit`` (gpgsign unavailable, pre-commit rejection,
 no-op bump) must raise before any push — otherwise ``gh release create`` tags
-the pre-bump base as the new version.
+the pre-bump base as the new version. The fake takes the ``git push`` path (a
+forge with no server-side commit API); GitHub's API path is pinned in
+``test_release_executor_github_commits.py``.
 """
 
 from __future__ import annotations
@@ -10,6 +12,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from roboco.services.git_relay import GitRelay
 from roboco.services.release_executor import _GitReleaseOps, _ReleaseContext
 
 
@@ -19,7 +22,7 @@ def _ctx() -> _ReleaseContext:
         prod_branch="master",
         root=Path("/tmp/roboco-release-f012"),
         git_url="https://github.com/o/roboco",
-        git_prefix=[],
+        relay=GitRelay("roboco-api", "https://github.com/o/roboco", None),
         ci_workflow=None,
         env_chain=[],
     )
@@ -35,7 +38,7 @@ class _FakeGitOps(_GitReleaseOps):
         self._default_branch = ctx.prod_branch
         self._root = ctx.root
         self._git_url = ctx.git_url
-        self._git_prefix = ctx.git_prefix
+        self._relay = ctx.relay
         self._ci_workflow = ctx.ci_workflow
         self._script = list(script)
         self.calls: list[tuple[str, ...]] = []
@@ -43,6 +46,10 @@ class _FakeGitOps(_GitReleaseOps):
     async def _git(self, *args: str) -> tuple[int, str]:
         self.calls.append(args)
         return self._script.pop(0)
+
+    async def _land_through_forge_api(self, version: str) -> str | None:
+        _ = version
+        return None  # no server-side commit API: push with git
 
 
 @pytest.mark.asyncio

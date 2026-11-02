@@ -39,7 +39,9 @@ export function DocsStatusBadge({
         {docsComplete !== undefined && (
           <HelpTip
             label={
-              docsComplete ? DOCS_DESCRIPTIONS.complete : DOCS_DESCRIPTIONS.pending
+              docsComplete
+                ? DOCS_DESCRIPTIONS.complete
+                : DOCS_DESCRIPTIONS.pending
             }
           >
             <Badge
@@ -58,7 +60,9 @@ export function DocsStatusBadge({
         )}
         {prCreated !== undefined && (
           <HelpTip
-            label={prCreated ? PR_DESCRIPTIONS.created : PR_DESCRIPTIONS.pending}
+            label={
+              prCreated ? PR_DESCRIPTIONS.created : PR_DESCRIPTIONS.pending
+            }
           >
             <Badge
               variant="outline"

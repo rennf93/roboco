@@ -16,7 +16,12 @@ describe("validateLadder", () => {
 
   it("accepts a clean ordered ladder", () => {
     expect(
-      validateLadder(rungs([["head", "dev"], ["prod", "master"]])),
+      validateLadder(
+        rungs([
+          ["head", "dev"],
+          ["prod", "master"],
+        ]),
+      ),
     ).toBeNull();
   });
 
@@ -25,12 +30,19 @@ describe("validateLadder", () => {
   });
 
   it("rejects a rung missing a branch", () => {
-    expect(validateLadder(rungs([["head", "  "]]))).toMatch(/name and a branch/);
+    expect(validateLadder(rungs([["head", "  "]]))).toMatch(
+      /name and a branch/,
+    );
   });
 
   it("rejects duplicate branches", () => {
     expect(
-      validateLadder(rungs([["head", "dev"], ["prod", "dev"]])),
+      validateLadder(
+        rungs([
+          ["head", "dev"],
+          ["prod", "dev"],
+        ]),
+      ),
     ).toMatch(/Duplicate branch "dev"/);
   });
 });

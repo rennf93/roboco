@@ -5,9 +5,11 @@ Structured logging setup using structlog with JSON output
 for production and colored console output for development.
 """
 
+import atexit
 import logging
 import logging.handlers
 import os
+import queue
 import re as _re
 import sys
 from collections.abc import Mapping, MutableMapping
@@ -82,6 +84,24 @@ def redact_event_dict(
     return event_dict
 
 
+# The handlers that write (stdout, the log file) run on a listener thread,
+# never on the thread that logs: on the API's event loop one flush() to the
+# log file on the NAS volume froze every request for 5 s (py-spy, 2026-11-02).
+_log_writers: list[logging.handlers.QueueListener] = []
+
+
+def _stop_log_writers() -> None:
+    """Write out what is still queued, then close the writers' handlers."""
+    while _log_writers:
+        writer = _log_writers.pop()
+        writer.stop()
+        for handler in writer.handlers:
+            handler.close()
+
+
+atexit.register(_stop_log_writers)
+
+
 def setup_logging() -> None:
     """
     Configure structlog for the application.
@@ -133,28 +153,48 @@ def setup_logging() -> None:
     # we have a persistent record that survives container restarts and
     # doesn't depend on docker's log driver rotation policy.
     root = logging.getLogger()
-    root.handlers.clear()
+    # Close what a previous call attached instead of only dropping it: each
+    # dropped rotating file handler kept its log file open.
+    for handler in root.handlers[:]:
+        root.removeHandler(handler)
+        if isinstance(handler, logging.FileHandler):
+            handler.close()
+    _stop_log_writers()
     root.setLevel(log_level)
 
     stdout_handler = logging.StreamHandler(sys.stdout)
     stdout_handler.setFormatter(logging.Formatter("%(message)s"))
-    root.addHandler(stdout_handler)
+    writers: list[logging.Handler] = [stdout_handler]
 
     log_dir = _resolve_log_dir()
     if log_dir is not None:
         try:
             log_dir.mkdir(parents=True, exist_ok=True)
+            # Agent log dumps here carry real tokens and provider keys: no
+            # other uid in the container (the workspace git user) may even
+            # traverse the log root. Only its owner may change its mode,
+            # whichever uid this process runs as.
+            if log_dir.stat().st_uid == os.geteuid():
+                log_dir.chmod(0o700)
             file_handler = logging.handlers.RotatingFileHandler(
                 log_dir / "orchestrator.log",
-                maxBytes=50 * 1024 * 1024,  # 50 MB per file
-                backupCount=5,  # keep 5 rotations -> ~250 MB cap
+                # 50 MB per file
+                maxBytes=50 * 1024 * 1024,
+                # Keep 5 rotations -> ~250 MB cap
+                backupCount=5,
                 encoding="utf-8",
             )
             file_handler.setFormatter(logging.Formatter("%(message)s"))
-            root.addHandler(file_handler)
+            writers.append(file_handler)
         except OSError as e:
             # Don't let a broken log-dir take down the app; stdout still works.
             sys.stderr.write(f"[logging] could not attach file handler: {e}\n")
+
+    log_queue: queue.SimpleQueue[logging.LogRecord] = queue.SimpleQueue()
+    root.addHandler(logging.handlers.QueueHandler(log_queue))
+    writer = logging.handlers.QueueListener(log_queue, *writers)
+    writer.start()
+    _log_writers.append(writer)
 
     # Quiet noisy libraries
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)

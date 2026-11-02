@@ -4,6 +4,8 @@ transport, plus unconfigured/unreachable graceful failure (never a crash).
 
 from __future__ import annotations
 
+import io
+import tarfile
 from pathlib import Path
 
 import httpx
@@ -63,13 +65,15 @@ async def test_render_posts_tar_and_saves_mp4(
     assert b"Intro" in body
     assert b"vertical" in body
     assert b"motion.tar.gz" in body
-    assert b"\x1f\x8b" in body  # gzip magic bytes: the tar payload made it in
+    # The gzip magic bytes: the tar payload made it in.
+    assert b"\x1f\x8b" in body
 
     saved = Path(path)
     assert saved.exists()
     assert saved.read_bytes() == b"fake-mp4-bytes"
     assert saved.parent == out_dir
-    assert saved.name == "task-99-vertical.mp4"  # task-scoped, not composition-scoped
+    # Task-scoped, not composition-scoped.
+    assert saved.name == "task-99-vertical.mp4"
 
 
 @pytest.mark.asyncio
@@ -408,7 +412,8 @@ async def test_save_swallows_minio_put_failure(
     monkeypatch.setattr(cfg, "video_output_dir", str(out_dir))
 
     minio_client._reset_client()
-    monkeypatch.setattr(minio_client, "get_client", object)  # guard passes
+    # The guard passes.
+    monkeypatch.setattr(minio_client, "get_client", object)
 
     def failing_put_object(_data: bytes, _key: str) -> None:
         raise RuntimeError("minio unreachable")
@@ -427,3 +432,41 @@ async def test_save_swallows_minio_put_failure(
     assert saved.exists()
     assert saved.read_bytes() == b"fake-mp4-bytes"
     assert saved.name == "task-88-square.mp4"
+
+
+def test_tar_source_sends_the_composition_without_packages_state_or_links(
+    tmp_path: Path,
+) -> None:
+    """A dev's worktree motion/ holds node_modules (pnpm install for lint, test
+    and preview), maybe a pnpm store, and Studio's .hyperframes state; none of
+    it is sent, and neither is a link."""
+    source = tmp_path / "motion"
+    cut = source / "compositions" / "clip"
+    cut.mkdir(parents=True)
+    (source / "index.html").write_text("<div data-composition-id='motion'></div>")
+    (cut / "vertical.html").write_text("<div id='stage'></div>")
+    (source / "public").mkdir()
+    (source / "public" / "logo.png").write_bytes(b"png")
+    for unsent in ("node_modules/hyperframes", ".pnpm-store/v10", ".hyperframes"):
+        (source / unsent).mkdir(parents=True)
+        (source / unsent / "package.json").write_text("{}")
+    (source / "public" / "passwd").symlink_to("/etc/passwd")
+    # tarfile adds a folder's entries in sorted order, so logo.png goes in as
+    # the file and this second name as a hard link to it.
+    (source / "public" / "zz-logo-link.png").hardlink_to(source / "public" / "logo.png")
+
+    tar_bytes = VideoRenderer._tar_source(str(source))
+
+    with tarfile.open(fileobj=io.BytesIO(tar_bytes), mode="r:gz") as tar:
+        members = tar.getmembers()
+    assert {member.name for member in members if member.isfile()} == {
+        "motion/index.html",
+        "motion/compositions/clip/vertical.html",
+        "motion/public/logo.png",
+    }
+    assert [member.name for member in members if member.issym() or member.islnk()] == []
+    assert not any(
+        part in {"node_modules", ".pnpm-store", ".hyperframes"}
+        for member in members
+        for part in member.name.split("/")
+    )

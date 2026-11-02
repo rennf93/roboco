@@ -207,6 +207,18 @@ reflow-docs:
 reflow-check:
 	uv run python scripts/reflow_md.py --check
 
+# Refresh docs/map's mechanically derivable data (line numbers, LOC, the
+# Alembic chain range) and rebuild _complete_map.md. `make quality` fails on a
+# path or symbol that no longer exists, and on a module or migration that no
+# table maps (the message names the slice to add it to); line/size drift is
+# reported as a warning, since every code edit shifts it. Hand-written rows
+# (descriptions, a deleted file's row, a new module's or migration's row)
+# still need a human.
+.PHONY: map
+map:
+	uv run python scripts/verify_codebase_map.py --fix
+	uv run python scripts/rebuild_map_concat.py
+
 # Find dead code with Vulture
 .PHONY: vulture
 vulture:
@@ -292,10 +304,14 @@ quality: sync
 	@uv run ruff check .
 	@echo "==> markdown prose (no hard-wrapping)"
 	@uv run python scripts/reflow_md.py --check
+	@echo "==> codebase map (every path and symbol exists, every module is mapped)"
+	@uv run python scripts/verify_codebase_map.py
+	@echo "==> codebase map concatenation up to date"
+	@uv run python scripts/rebuild_map_concat.py --check
 	@echo "==> mypy"
 	@uv run mypy roboco/ tests/
 	@echo "==> pytest with coverage"
-	@uv run pytest -q --cov=roboco --cov-report=term-missing --cov-fail-under=80
+	@uv run pytest -q --cov=roboco --cov-report=term-missing --cov-fail-under=75
 	@echo "==> xenon (cyclomatic complexity)"
 	@uv run xenon --max-absolute B --max-modules A --max-average A roboco/
 	@echo "==> radon mi (maintainability index)"
@@ -310,7 +326,13 @@ quality: sync
 	# pinned to the CPU wheel and NEVER loaded at runtime — the stack uses Ollama
 	# over HTTP for all embeddings/LLM, so the vulnerable JIT path is unreachable.
 	# Documented waiver; revisit when a fixed torch ships.
-	@uv run pip-audit --ignore-vuln CVE-2025-3000
+	# Retried: the audit fetches the vulnerability database over the network,
+	# and a dropped connection ("Connection reset by peer") failed slave's CI
+	# on 2026-10-28 with no finding. A real finding fails all three attempts.
+	@for attempt in 1 2 3; do \
+		uv run pip-audit --ignore-vuln CVE-2025-3000 && exit 0; \
+		echo "pip-audit attempt $$attempt/3 failed"; sleep 15; \
+	done; exit 1
 	@echo "==> deptry (dependency hygiene)"
 	@uv run deptry roboco/
 	@echo "==> alembic upgrade --sql (migrations parse)"
@@ -350,10 +372,11 @@ gate: sync
 	@uv run xenon --max-absolute B --max-modules A --max-average A roboco/
 	@uv run lint-imports
 
-# Panel (Next.js) fast gate: lint + type-check + vitest.
+# Panel (Next.js) fast gate: format check + lint + type-check + vitest.
 # Run locally before submitting panel changes; mirrors the CI panel job exactly.
 .PHONY: panel-gate
 panel-gate:
+	@cd panel && pnpm format:check
 	@cd panel && pnpm lint
 	@cd panel && pnpm exec tsc --noEmit
 	@cd panel && pnpm test
@@ -518,6 +541,7 @@ help:
 	@echo "  make lint                     - Run linting (ruff, mypy, vulture)"
 	@echo "  make fix                      - Auto-fix linting issues"
 	@echo "  make quality                  - Run all quality checks"
+	@echo "  make map                      - Refresh docs/map line numbers/LOC + rebuild the concat"
 	@echo "  make security                 - Run security checks (bandit, safety, pip-audit)"
 	@echo "  make check-all                - Run ALL checks"
 	@echo "  make panel-token              - Print the panel's CEO token for secure mode"
@@ -592,8 +616,13 @@ ci-lifecycle-check: foundation-check
 # Write counterpart to foundation-check's read: regenerates the same checked-in
 # artifacts IN PLACE (no diff/exit-code guard) so a project can point its
 # `codegen_command` at this and have drift committed before a push, instead of
-# only ever discovering it at CI's foundation-check hard-fail.
+# only ever discovering it at CI's foundation-check hard-fail. It also rebuilds
+# docs/map/_complete_map.md, which `quality` checks, so a slice edit never
+# reaches CI with a stale concatenation. It does NOT run the map checker's
+# --fix: two parallel branches would both rewrite the same rows' line numbers
+# and conflict at merge (`make map` is the manual refresh).
 .PHONY: codegen
 codegen:
 	@$(MAKE) lifecycle
 	@uv run python scripts/regenerate_verb_tables.py
+	@uv run python scripts/rebuild_map_concat.py

@@ -17,7 +17,7 @@ from uuid import uuid4
 import httpx
 import pytest
 from roboco.models.runtime import AgentInstance
-from roboco.runtime.engines import interactive_sessions as usage_root_mod
+from roboco.runtime.engines import spawn_exit as usage_root_mod
 from roboco.runtime.orchestrator import AgentOrchestrator
 
 if TYPE_CHECKING:
@@ -37,7 +37,7 @@ _METERED_COST = 0.137
 
 def _write_usage(path: Path, **fields: object) -> None:
     payload = {
-        "model": "anthropic/claude-sonnet-5",
+        "model": "anthropic/claude-sonnet-5-5",
         "tokens_input": 0,
         "tokens_output": 0,
         "tokens_cache_read": 0,
@@ -50,7 +50,7 @@ def _write_usage(path: Path, **fields: object) -> None:
 
 def _usage_payload() -> dict[str, object]:
     return {
-        "model": "anthropic/claude-sonnet-5",
+        "model": "anthropic/claude-sonnet-5-5",
         "tokens_input": _TIN,
         "tokens_output": _TOUT,
         "tokens_cache_read": _TCR,
@@ -61,7 +61,7 @@ def _usage_payload() -> dict[str, object]:
 
 def _openrouter_instance(agent_id: str = "be-dev-1") -> AgentInstance:
     cfg = type(
-        "C", (), {"provider_type": "openrouter", "model": "anthropic/claude-sonnet-5"}
+        "C", (), {"provider_type": "openrouter", "model": "anthropic/claude-sonnet-5-5"}
     )()
     return AgentInstance(agent_id=agent_id, config=cfg)
 
@@ -203,7 +203,7 @@ def _openrouter_session_instance(agent_id: str = "be-dev-1") -> AgentInstance:
         (),
         {
             "provider_type": "openrouter",
-            "model": "anthropic/claude-sonnet-5",
+            "model": "anthropic/claude-sonnet-5-5",
             "blueprint_path": None,
         },
     )()

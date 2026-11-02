@@ -12,15 +12,20 @@ choreographer sweep wires up.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
+from roboco.config import settings
+from roboco.foundation.policy import lifecycle
 from roboco.foundation.policy.lifecycle import (
     Context,
     Role,
     can_invoke_intent,
 )
 from roboco.models.base import TaskStatus
+
+if TYPE_CHECKING:
+    import pytest
 
 
 def _task(**overrides: Any) -> Any:
@@ -102,3 +107,35 @@ def test_cross_team_cell_pm_unblock_is_rejected() -> None:
     )
     assert not decision.allowed
     assert "team" in (decision.message or "").lower()
+
+
+def test_devops_cross_team_exemption_follows_lane_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Devops rides the org-wide exemption only while its lane flag is on —
+    the same gate TaskService's claim team exemption and the gateway's
+    project-access guard apply, so all three sites agree on who crosses
+    cells. Before this gate existed here, the spec exempted devops
+    unconditionally while both other sites flag-gated it."""
+    spec_action = cast("Any", SimpleNamespace(needs_team_match=True))
+
+    monkeypatch.setattr(settings, "devops_enabled", True)
+    assert (
+        lifecycle._check_team_match(
+            spec_action,
+            _task(team="backend"),
+            Context(actor_id=uuid4(), agent_team="board"),
+            role=Role.DEVOPS,
+        )
+        is None
+    )
+
+    monkeypatch.setattr(settings, "devops_enabled", False)
+    decision = lifecycle._check_team_match(
+        spec_action,
+        _task(team="backend"),
+        Context(actor_id=uuid4(), agent_team="board"),
+        role=Role.DEVOPS,
+    )
+    assert decision is not None
+    assert not decision.allowed
