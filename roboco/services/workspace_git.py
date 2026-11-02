@@ -876,10 +876,12 @@ def _keys_of(keys: list[str], wanted: GitConfigClass) -> tuple[str, ...]:
 
 _OPEN_NO_FOLLOW = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
 _OPEN_DIRECTORY_NO_FOLLOW = _OPEN_NO_FOLLOW | os.O_DIRECTORY
+# Not ``.venv``: the quality gate's ``uv sync`` runs as the agent uid and must
+# replace packages root installed before the git user (live 2026-11-02:
+# "failed to remove file ... decorator-5.3.1.dist-info/INSTALLER").
 _REPAIR_SKIPPED_TREES = frozenset(
     {
         "node_modules",
-        ".venv",
         "venv",
         ".uv-python",
         ".next",
@@ -931,8 +933,8 @@ def make_venv_site_packages_group_writable(clone_root: Path) -> bool:
     """Give the agent group rw on the ``site-packages`` directories of a
     clone's shared venv (those directories only, not their contents).
 
-    The worktree import hook is written there as the git user, and the clone
-    repair never descends into ``.venv``: a venv made before the git user
+    The worktree import hook is written there as the git user, possibly
+    before this process's clone repair ran: a venv made before the git user
     existed carries the host's group or mode 755, so the write is refused.
     Same rules as the clone repair: drop required, workspaces root only, every
     component opened by descriptor with ``O_NOFOLLOW`` (a symlinked ``.venv``,
