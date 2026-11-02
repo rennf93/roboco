@@ -879,11 +879,16 @@ _OPEN_DIRECTORY_NO_FOLLOW = _OPEN_NO_FOLLOW | os.O_DIRECTORY
 # Not ``.venv``: the quality gate's ``uv sync`` runs as the agent uid and must
 # replace packages root installed before the git user (live 2026-11-02:
 # "failed to remove file ... decorator-5.3.1.dist-info/INSTALLER").
+# The tool caches are skipped: the first walk after the restart on 2026-11-02
+# regrouped about 400k entries in them and stalled every fsync on the NAS.
 _REPAIR_SKIPPED_TREES = frozenset(
     {
         "node_modules",
         "venv",
         ".uv-python",
+        ".uv-cache",
+        ".qa-venv",
+        ".pnpm-store",
         ".next",
         ".turbo",
         "__pycache__",
