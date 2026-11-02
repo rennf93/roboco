@@ -39,6 +39,7 @@ from roboco.models.base import (
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.base import UnauthorizedError
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
+from roboco.services.gateway.quality_gate import GateResult
 from roboco.services.task import TaskService
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
@@ -109,6 +110,12 @@ class _StubGit:
         # When set, pr_merge raises CEO_ONLY for this target, mirroring the
         # production guard that reserves the head env branch for the CEO.
         self._ceo_only_branch = ceo_only_branch
+
+    async def run_pre_submit_quality_gate(
+        self, _actor_agent_id: Any, _task: Any
+    ) -> GateResult:
+        """No gate commands configured: the skipped pass GitService returns."""
+        return GateResult(passed=True, skipped=True)
 
     async def commit(
         self,
