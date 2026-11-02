@@ -323,7 +323,7 @@ async def _work_sessions(
     )
 
 
-async def _ci_verdict(
+async def pr_ci_verdict(
     git_service: Any, project_slug: str | None, pr_number: int | None
 ) -> CiVerdict:
     """The PR head commit's CI verdict via ``git_service.get_pr_ci_status``
@@ -518,7 +518,7 @@ async def assemble_task_attestation(
         work_sessions=await _work_sessions(session, task_id),
         acceptance_criteria=_attested_criteria(task),
         findings_by_round=await _findings_by_round(session, task_id),
-        ci=await _ci_verdict(git_service, project_slug, task.pr_number),
+        ci=await pr_ci_verdict(git_service, project_slug, task.pr_number),
         conventions_findings=await _conventions_findings(session, task_id),
         reviewer_chain=await _reviewer_chain(session, task_id),
     )

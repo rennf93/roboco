@@ -60,11 +60,11 @@ def test_aggregate_sums_all_assistant_message_end_events(tmp_path: Path) -> None
         ],
     )
     agg = hummin_cli_usage.aggregate_usage(run_log)
-    assert agg["tokens_input"] == 300  # noqa: PLR2004
-    assert agg["tokens_output"] == 30  # noqa: PLR2004
-    assert agg["tokens_cache_read"] == 20  # noqa: PLR2004
-    assert agg["tokens_cache_write"] == 5  # noqa: PLR2004
-    assert agg["turns"] == 2  # noqa: PLR2004
+    assert agg["tokens_input"] == 300
+    assert agg["tokens_output"] == 30
+    assert agg["tokens_cache_read"] == 20
+    assert agg["tokens_cache_write"] == 5
+    assert agg["turns"] == 2
     # The final assistant text is the LAST assistant message_end's text.
     assert agg["result_text"] == "step two"
 
@@ -90,9 +90,9 @@ def test_capture_run_usage_writes_contract(tmp_path: Path) -> None:
     assert (tin, tout, cr, cw) == (1_000_000, 100, 50, 0)
     data = json.loads(out.read_text(encoding="utf-8"))
     assert data["model"] == "glm-5.3"
-    assert data["tokens_input"] == 1_000_000  # noqa: PLR2004
-    assert data["tokens_output"] == 100  # noqa: PLR2004
-    assert data["tokens_cache_read"] == 50  # noqa: PLR2004
+    assert data["tokens_input"] == 1_000_000
+    assert data["tokens_output"] == 100
+    assert data["tokens_cache_read"] == 50
     assert data["tokens_cache_write"] == 0
     assert data["turns"] == 1
     # glm-5.3: $1.40/1M in, $4.40/1M out, $0.26/1M cache-read (the static

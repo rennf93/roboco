@@ -15,10 +15,7 @@ import {
 
 export type MessageHandler = (data: unknown) => void;
 export type ConnectionState =
-  | "connecting"
-  | "connected"
-  | "disconnected"
-  | "reconnecting";
+  "connecting" | "connected" | "disconnected" | "reconnecting";
 
 export interface WebSocketOptions {
   url: string;

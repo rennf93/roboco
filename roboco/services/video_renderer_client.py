@@ -20,7 +20,7 @@ import asyncio
 import io
 import json
 import tarfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import httpx
@@ -30,6 +30,21 @@ from roboco.config import settings
 from roboco.services import minio_client
 
 log = structlog.get_logger(__name__)
+
+# Folders a dev's motion/ may hold that a render never reads: installed
+# packages (pnpm install for lint, test and preview) and Studio's preview
+# state. The sidecar serves the whole of motion/ to the page.
+_UNSENT_DIRS = frozenset({"node_modules", ".pnpm-store", ".hyperframes"})
+
+
+def _source_member(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
+    """The tar filter for a composition source: drop links (the sidecar would
+    drop them too) and anything under an unsent folder."""
+    if member.issym() or member.islnk():
+        return None
+    if _UNSENT_DIRS.intersection(PurePosixPath(member.name).parts):
+        return None
+    return member
 
 
 class VideoRendererError(Exception):
@@ -125,10 +140,11 @@ class VideoRenderer:
 
     @staticmethod
     def _tar_source(source_dir: str) -> bytes:
-        """Tar ``source_dir`` (the motion/ package) into an in-memory gzip archive."""
+        """Tar ``source_dir`` (the motion/ package) into an in-memory gzip
+        archive, without links or the folders in ``_UNSENT_DIRS``."""
         buf = io.BytesIO()
         with tarfile.open(fileobj=buf, mode="w:gz") as tar:
-            tar.add(source_dir, arcname="motion")
+            tar.add(source_dir, arcname="motion", filter=_source_member)
         return buf.getvalue()
 
     async def _http(self, timeout: httpx.Timeout) -> httpx.AsyncClient:
@@ -205,7 +221,7 @@ class VideoRenderer:
             # fine. Log and continue; the next render re-attempts the PUT.
             try:
                 minio_client.put_object(mp4_bytes, path.name)
-            except Exception as exc:  # durable copy, never fatal to the render
+            except Exception as exc:
                 log.warning(
                     "minio put failed; render kept on local disk",
                     key=path.name,

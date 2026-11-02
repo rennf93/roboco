@@ -11,7 +11,7 @@ A cookie-session login for the **single human CEO user**, built on FastAPI Users
 | `ROBOCO_CLOUD_AUTH_ENABLED` | `false` | Master switch. Off: `get_agent_context` (the single dependency every API route resolves its caller through) behaves byte-for-byte as today's header-trust. On: no registration router is mounted — exactly one user, seeded from `ROBOCO_CLOUD_AUTH_EMAIL` / `_PASSWORD`. |
 | `ROBOCO_CLOUD_AUTH_EMAIL` | (unset) | Email for the single seeded user. |
 | `ROBOCO_CLOUD_AUTH_PASSWORD` | (unset) | Password for the single seeded user. Hashed at startup (bcrypt via `PasswordHelper`), never stored in plain text. |
-| `ROBOCO_CLOUD_AUTH_SECRET` | (unset) | JWT signing secret for the session cookie. **Fails loud at startup** — `Settings._validate_cloud_auth` raises before the app boots — if `cloud_auth_enabled=true` without this set. |
+| `ROBOCO_CLOUD_AUTH_SECRET` | (unset) | JWT signing secret for the session cookie. **Fails loud at startup** — `Settings._validate_cloud_auth` raises before the app boots — if `cloud_auth_enabled=true` without this set, and `Settings._validate_signing_secret_lengths` refuses one shorter than 32 bytes. |
 | `ROBOCO_CLOUD_AUTH_COOKIE_MAX_AGE` | `2592000` (30 days) | Sliding session lifetime in seconds. |
 
 ## Single seeded user, no registration

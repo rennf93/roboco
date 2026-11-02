@@ -7,6 +7,13 @@ coverage/
 # Deps + lockfiles
 node_modules/
 pnpm-lock.yaml
+# pnpm's content-addressable store lands inside the project when HOME is on
+# another filesystem (e.g. a container with the panel bind-mounted). Prettier
+# reads panel/.gitignore and this file, not the root .gitignore that lists it.
+.pnpm-store/
 
 # Generated
 next-env.d.ts
+# Written by scripts/build_lifecycle_artifacts.py; `make foundation-check`
+# regenerates it and fails on any diff, so it keeps the generator's format.
+lib/lifecycle.json

@@ -65,6 +65,7 @@ from roboco.api.utils.tasks import (
     _resolve_project_for_merge,
     _StatusOverride,
     _translate_error,
+    resolve_task_ref_or_http_error,
 )
 from roboco.enforcement import get_valid_transitions
 from roboco.exceptions import GitError, TaskLifecycleError
@@ -689,12 +690,18 @@ async def get_valid_transitions_for_task(
 
 @router.get("/{task_id}", response_model=TaskResponse)
 async def get_task(
-    task_id: UUID,
+    task_id: str,
     db: DbSession,
 ) -> TaskResponse:
-    """Get a specific task with full context (work session, project)."""
+    """Get a specific task with full context (work session, project).
+
+    ``task_id`` is the full UUID or the 8+ character id prefix the cards and
+    prompts show; the response always carries the full id, which every other
+    per-task route takes.
+    """
+    resolved_id = await resolve_task_ref_or_http_error(db, task_id)
     service = get_task_service(db)
-    task = await service.get(task_id)
+    task = await service.get(resolved_id)
     if not task:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Task not found"
@@ -710,7 +717,7 @@ async def get_task(
     from roboco.config import settings as _settings
 
     if _settings.task_budgets_enabled:
-        response.spend_usd = await service.task_spend_usd(task_id)
+        response.spend_usd = await service.task_spend_usd(resolved_id)
 
     return response
 
