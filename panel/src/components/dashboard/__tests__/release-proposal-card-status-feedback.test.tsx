@@ -15,25 +15,23 @@ const { resolveApproveRef } = vi.hoisted(() => ({
 }));
 
 const { getProposal, approve, reject } = vi.hoisted(() => ({
-  getProposal: vi.fn(
-    async (): Promise<ReleaseProposal> => ({
-      task_id: "t1",
-      title: "Cut v0.14.0",
-      status: "awaiting_ceo_approval",
-      required_changes: null,
-      member_task_ids: [],
-      report: {
-        proposed_version: "0.14.0",
-        bump_kind: "minor",
-        change_summary: ["feat: metrics"],
-        drafted_changelog: "## 0.14.0\n- metrics",
-        version_bump_plan: ["pyproject.toml"],
-        gaps: [],
-        migration_notes: [],
-        gate_state: "green",
-      },
-    }),
-  ),
+  getProposal: vi.fn(async (): Promise<ReleaseProposal> => ({
+    task_id: "t1",
+    title: "Cut v0.14.0",
+    status: "awaiting_ceo_approval",
+    required_changes: null,
+    member_task_ids: [],
+    report: {
+      proposed_version: "0.14.0",
+      bump_kind: "minor",
+      change_summary: ["feat: metrics"],
+      drafted_changelog: "## 0.14.0\n- metrics",
+      version_bump_plan: ["pyproject.toml"],
+      gaps: [],
+      migration_notes: [],
+      gate_state: "green",
+    },
+  })),
   // Deferred so the test can freeze the approve mid-flight.
   approve: vi.fn(
     () =>

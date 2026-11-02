@@ -26,6 +26,18 @@ def _new_orchestrator() -> AgentOrchestrator:
     return orch
 
 
+async def _attempt_spawn(
+    orch: AgentOrchestrator, slug: str, task: dict[str, Any]
+) -> bool:
+    """One dispatch attempt: consult the breaker and, when it lets the spawn
+    through, launch it. ``_launch_spawn`` reports every container that really
+    started to the breaker, and only those attempts count as strikes."""
+    gated = await orch._pm_respawn_should_gate(slug, task)
+    if not gated:
+        orch._note_respawn_spawn_launched(slug, task["id"])
+    return gated
+
+
 def _quiet_audit() -> AsyncMock:
     audit = AsyncMock()
     audit.has_recent_tracing_gap = AsyncMock(return_value=False)
@@ -48,8 +60,8 @@ async def test_status_ping_pong_eventually_trips_the_gate() -> None:
     ):
         for status in statuses:
             results.append(
-                await orch._pm_respawn_should_gate(
-                    "be-dev-1", {"id": task_id, "status": status}
+                await _attempt_spawn(
+                    orch, "be-dev-1", {"id": task_id, "status": status}
                 )
             )
     assert any(results), (
@@ -71,8 +83,8 @@ async def test_forward_progress_through_new_statuses_never_gates() -> None:
         ),
     ):
         for status in lifecycle:
-            assert not await orch._pm_respawn_should_gate(
-                "be-dev-1", {"id": task_id, "status": status}
+            assert not await _attempt_spawn(
+                orch, "be-dev-1", {"id": task_id, "status": status}
             ), f"forward progress into {status} must not gate"
 
 
@@ -89,6 +101,6 @@ async def test_single_revisit_within_budget_does_not_gate() -> None:
         ),
     ):
         for status in ["in_progress", "awaiting_qa", "in_progress", "awaiting_qa"]:
-            assert not await orch._pm_respawn_should_gate(
-                "be-dev-1", {"id": task_id, "status": status}
+            assert not await _attempt_spawn(
+                orch, "be-dev-1", {"id": task_id, "status": status}
             ), "one revision round-trip must not trip the breaker"

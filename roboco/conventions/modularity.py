@@ -55,15 +55,35 @@ _DB_METHODS = frozenset(
         "query",
     }
 )
-# `add`/`add_all`/`merge` are ambiguous (set.add, cache.add, etc.) — only a DB
-# hit when the receiver is a session handle. The other _DB_METHODS are unambiguous.
-_AMBIGUOUS_DB_METHODS = frozenset({"add", "add_all", "merge"})
+# These names are just as common off a session — set.add / cache.add, a live
+# event registry's registry.stream(session_id), a service's own
+# service.query(...) that a thin route delegates to — so each is a DB hit only
+# when the receiver is a session handle. The other _DB_METHODS are unambiguous.
+_AMBIGUOUS_DB_METHODS = frozenset({"add", "add_all", "merge", "query", "stream"})
 _SESSION_HANDLES = frozenset({"db", "session", "conn", "s"})
 
 _DB_CONSTRUCTS = frozenset({"select", "insert", "update", "delete"})
 
-# Data-fetching that belongs in a hook / query layer, not in a component body.
+# Data-fetching that belongs in a hook / query layer, not in a component body:
+# a bare fetch(...) / axios(...) call, or one of axios's request methods.
+# axios's other statics (isAxiosError, isCancel, create) never touch the
+# network, so narrowing a caught error with axios.isAxiosError is not fetching.
 _FETCH_IDENTIFIERS = frozenset({"fetch", "axios"})
+_AXIOS_REQUEST_METHODS = frozenset(
+    {
+        "request",
+        "get",
+        "delete",
+        "head",
+        "options",
+        "post",
+        "put",
+        "patch",
+        "postForm",
+        "putForm",
+        "patchForm",
+    }
+)
 
 # A class with more methods than this is doing too much (single responsibility).
 _GOD_CLASS_METHODS = 15
@@ -325,11 +345,15 @@ def _component_fetches(func: Node) -> bool:
             continue
         if fn.type == "identifier" and _text(fn) in _FETCH_IDENTIFIERS:
             return True
-        if fn.type == "member_expression":
-            obj = fn.child_by_field_name("object")
-            if obj is not None and _text(obj) in _FETCH_IDENTIFIERS:
-                return True
+        if fn.type == "member_expression" and _is_axios_request(fn):
+            return True
     return False
+
+
+def _is_axios_request(member: Node) -> bool:
+    obj = member.child_by_field_name("object")
+    method = member.child_by_field_name("property")
+    return _text(obj) == "axios" and _text(method) in _AXIOS_REQUEST_METHODS
 
 
 def _contains_jsx(node: Node) -> bool:

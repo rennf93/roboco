@@ -14,19 +14,25 @@ import runpy
 import sys
 import types
 from http import HTTPStatus
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from roboco import bootstrap
 from roboco.bootstrap import (
     _BootstrapHolder,
     _run_api_server,
     _run_indexer_role,
     _start_indexer_task_if_available,
     _wait_for_api_ready,
+    _warn_when_docker_bypasses_the_gate,
     main,
 )
 from roboco.config import settings
+from roboco.services.workspace_git import GitUserDropError
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 _INDEXER_MODULE = "roboco.services.optimal_brain.indexer_worker"
 
@@ -37,7 +43,7 @@ def _inject_fake_indexer_module(
     """Simulate the parallel leg's module landing: a real import of
     ``_INDEXER_MODULE`` would otherwise ImportError in this checkout."""
     fake_module = types.ModuleType(_INDEXER_MODULE)
-    fake_module.run_indexer = run_indexer  # type: ignore[attr-defined]
+    monkeypatch.setattr(fake_module, "run_indexer", run_indexer, raising=False)
     monkeypatch.setitem(sys.modules, _INDEXER_MODULE, fake_module)
 
 
@@ -135,7 +141,8 @@ def _make_main_patches(*, raise_on_spawn: bool = False) -> tuple[Any, Any, Any]:
     event_bus_mock.start_listening = AsyncMock()
     event_bus_mock.disconnect = AsyncMock()
 
-    api_task_mock = AsyncMock()  # api_task awaited inside main
+    # api_task is awaited inside main.
+    api_task_mock = AsyncMock()
 
     return orchestrator_mock, event_bus_mock, api_task_mock
 
@@ -195,7 +202,8 @@ async def test_main_full_path_starts_orchestrator_and_shuts_down() -> None:
     orch.stop.assert_awaited_once()
     bus.start_listening.assert_awaited_once()
     bus.disconnect.assert_awaited_once()
-    assert _BootstrapHolder.orchestrator is None  # Cleared in finally.
+    # Cleared in finally.
+    assert _BootstrapHolder.orchestrator is None
 
 
 @pytest.mark.asyncio
@@ -244,7 +252,8 @@ async def test_main_logs_and_continues_when_spawn_fails() -> None:
         await main(spawn_agents=["broken-agent"])
 
     orch.spawn_agent.assert_awaited_once()
-    orch.stop.assert_awaited_once()  # Cleanup still ran.
+    # Cleanup still ran.
+    orch.stop.assert_awaited_once()
 
 
 def test_module_run_as_script_invokes_cli() -> None:
@@ -254,6 +263,9 @@ def test_module_run_as_script_invokes_cli() -> None:
         "sys.modules",
         {"roboco.cli": MagicMock(cli=cli_mock)},
     ):
+        # As under `python -m`, the module isn't imported yet when it runs as
+        # __main__; runpy warns otherwise. patch.dict puts it back afterwards.
+        del sys.modules["roboco.bootstrap"]
         runpy.run_module("roboco.bootstrap", run_name="__main__")
     cli_mock.assert_called_once()
 
@@ -425,8 +437,159 @@ async def test_main_dispatcher_role_skips_websocket_bridge_and_indexer_task(
     bus_fn.assert_awaited_once()
     orch_cls.assert_called_once()
     orch.start.assert_awaited_once()
-    start_indexer_mock.assert_not_called()  # only 'all' runs it in-process
-    bridge.assert_not_awaited()  # dispatcher has no /ws/ connections to bridge
+    # Only 'all' runs it in-process.
+    start_indexer_mock.assert_not_called()
+    # The dispatcher has no /ws/ connections to bridge.
+    bridge.assert_not_awaited()
     assert bus_fn.await_args is not None
     consumer_name = bus_fn.await_args.kwargs["consumer_name"]
     assert consumer_name.startswith("orchestrator-dispatcher-")
+
+
+# ---------------------------------------------------------------------------
+# The git-user drop self-test gates the api and dispatcher (and "all").
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("role", ["api", "dispatcher", "all"])
+async def test_main_refuses_to_start_when_the_drop_fails(
+    monkeypatch: pytest.MonkeyPatch, role: str
+) -> None:
+    monkeypatch.setattr(settings, "role", role)
+    db_mock = AsyncMock()
+    with (
+        patch(
+            "roboco.bootstrap.verify_git_user_drop",
+            side_effect=GitUserDropError("as-git-user: refused"),
+        ),
+        patch("roboco.bootstrap.bootstrap_database", db_mock),
+        pytest.raises(SystemExit) as exited,
+    ):
+        await main(skip_orchestrator=True)
+    assert exited.value.code == 1
+    db_mock.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_main_runs_the_self_test_before_anything_else(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "role", "api")
+    order: list[str] = []
+    with (
+        patch(
+            "roboco.bootstrap.verify_git_user_drop",
+            side_effect=lambda: order.append("self-test"),
+        ),
+        patch(
+            "roboco.bootstrap.bootstrap_database",
+            AsyncMock(side_effect=lambda: order.append("db")),
+        ),
+    ):
+        await main(skip_orchestrator=True)
+    assert order == ["self-test", "db"]
+
+
+@pytest.mark.asyncio
+async def test_main_indexer_role_runs_no_self_test(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The indexer starts no workspace process."""
+    monkeypatch.setattr(settings, "role", "indexer")
+    self_test = MagicMock()
+    with (
+        patch("roboco.bootstrap.verify_git_user_drop", self_test),
+        patch("roboco.bootstrap.bootstrap_database", AsyncMock()),
+        patch("roboco.bootstrap._run_indexer_role", AsyncMock()),
+    ):
+        await main()
+    self_test.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# A compose file from before the Docker gate gets a warning (trail #34).
+# ---------------------------------------------------------------------------
+
+
+def _raw_socket(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, present: bool
+) -> None:
+    sock = tmp_path / "docker.sock"
+    if present:
+        sock.touch()
+    monkeypatch.setattr(bootstrap, "HOST_DOCKER_SOCKET", sock)
+
+
+def _patched_logger(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    # A Mock, not capture_logs: setup_logging elsewhere in the suite
+    # reconfigures structlog after this module's logger is cached.
+    fake_logger = MagicMock()
+    monkeypatch.setattr(bootstrap, "logger", fake_logger)
+    return fake_logger
+
+
+@pytest.mark.parametrize("role", ["api", "dispatcher"])
+def test_a_raw_socket_without_docker_host_warns(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, role: str
+) -> None:
+    monkeypatch.setattr(settings, "role", role)
+    monkeypatch.delenv("DOCKER_HOST", raising=False)
+    _raw_socket(monkeypatch, tmp_path, present=True)
+    logger = _patched_logger(monkeypatch)
+    _warn_when_docker_bypasses_the_gate()
+    logger.warning.assert_called_once()
+    assert "update the compose file" in logger.warning.call_args.args[0]
+
+
+@pytest.mark.parametrize(
+    ("role", "docker_host", "present"),
+    [
+        # The gate's compose file: DOCKER_HOST names the gate's socket.
+        ("api", "unix:///run/roboco-docker/blue.sock", True),
+        ("dispatcher", "unix:///run/roboco-docker/blue.sock", False),
+        # No socket mounted at all.
+        ("api", "", False),
+        # A host run talks to its own host's daemon.
+        ("all", "", True),
+        # The indexer never reaches Docker.
+        ("indexer", "", True),
+    ],
+)
+def test_no_warning_otherwise(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    role: str,
+    docker_host: str,
+    present: bool,
+) -> None:
+    monkeypatch.setattr(settings, "role", role)
+    monkeypatch.setenv("DOCKER_HOST", docker_host)
+    _raw_socket(monkeypatch, tmp_path, present=present)
+    logger = _patched_logger(monkeypatch)
+    _warn_when_docker_bypasses_the_gate()
+    logger.warning.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_main_warns_after_the_self_test_and_before_the_database(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "role", "api")
+    order: list[str] = []
+    with (
+        patch(
+            "roboco.bootstrap.verify_git_user_drop",
+            side_effect=lambda: order.append("self-test"),
+        ),
+        patch(
+            "roboco.bootstrap._warn_when_docker_bypasses_the_gate",
+            side_effect=lambda: order.append("gate-check"),
+        ),
+        patch(
+            "roboco.bootstrap.bootstrap_database",
+            AsyncMock(side_effect=lambda: order.append("db")),
+        ),
+    ):
+        await main(skip_orchestrator=True)
+    assert order == ["self-test", "gate-check", "db"]

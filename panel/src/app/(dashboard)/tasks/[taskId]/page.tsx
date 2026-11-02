@@ -355,11 +355,7 @@ export default function TaskDetailPage({ params }: TaskDetailPageProps) {
         project_slug: project.slug,
         task_id: task.id,
         branch_type: branchType as
-          | "feature"
-          | "bug"
-          | "chore"
-          | "docs"
-          | "hotfix",
+          "feature" | "bug" | "chore" | "docs" | "hotfix",
         agent_id: "ceo", // CEO is creating the branch from the panel
       });
       toast.success("Branch created successfully");
