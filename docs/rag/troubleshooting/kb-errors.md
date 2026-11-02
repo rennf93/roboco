@@ -24,6 +24,8 @@
 2. LLM returned thinking tags only
 3. Query too vague
 
+An answer that starts "Here's what I found in the knowledge base" is not an error: no background LLM answered (Ollama out of credit or down, and Claude Haiku unavailable), so you got a direct extract of the sources. Read them as-is.
+
 **Solutions**:
 - Check KB has relevant content
 - Rephrase query to be more specific

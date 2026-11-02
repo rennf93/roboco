@@ -5,7 +5,7 @@ Provides CRUD operations and git workflow management for projects.
 Projects represent git repositories that agents work on.
 """
 
-from typing import ClassVar
+from typing import TYPE_CHECKING, ClassVar
 from typing import cast as typing_cast
 from uuid import UUID
 
@@ -13,7 +13,7 @@ from sqlalchemy import case, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.config import settings
-from roboco.db.tables import ProjectTable, TaskTable
+from roboco.db.tables import AgentTable, ProjectTable, TaskTable
 from roboco.exceptions import ValidationError
 from roboco.foundation.policy.forge import detect_provider, validate_project_forge
 from roboco.models.base import TaskStatus, Team
@@ -24,6 +24,11 @@ from roboco.services.github_app_auth import GitHubAppError, mint_installation_to
 from roboco.services.github_app_credentials import get_github_app_credentials_service
 from roboco.utils.crypto import EncryptionError, decrypt_token, encrypt_token
 
+if TYPE_CHECKING:
+    from roboco.services._project_service_types import ProjectServiceSelf as _Base
+else:
+    _Base = object
+
 # Statuses that are NOT active progress: completed (done), cancelled
 # (abandoned), blocked (its own bucket). Everything else counts as active.
 _INACTIVE_STATUSES = (
@@ -33,7 +38,411 @@ _INACTIVE_STATUSES = (
 )
 
 
-class ProjectService(BaseService):
+class ProjectListings(_Base):
+    """Listing projects: all of them, by cell, and their task counts."""
+
+    # =========================================================================
+    # QUERIES
+    # =========================================================================
+
+    async def list_all(
+        self,
+        active_only: bool = True,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[ProjectTable]:
+        """
+        List all projects with pagination.
+
+        Args:
+            active_only: If True, only return active projects
+            limit: Maximum number of projects to return
+            offset: Number of projects to skip
+
+        Returns:
+            List of projects
+        """
+        query = select(ProjectTable)
+
+        if active_only:
+            query = query.where(ProjectTable.is_active.is_(True))
+
+        query = query.order_by(ProjectTable.name).limit(limit).offset(offset)
+
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
+    async def task_counts_for_projects(
+        self, projects: list[ProjectTable]
+    ) -> dict[UUID, dict[str, int]]:
+        """Per-project task progress (done/active/blocked) — one grouped query.
+
+        One ``GROUP BY project_id`` over tasks for every distinct project_id
+        in the list. Returns {project_id: {done, active, blocked}}; a project
+        with no tasks is absent (the caller falls back to zeros).
+        """
+        project_ids = [typing_cast("UUID", p.id) for p in projects if p.id is not None]
+        if not project_ids:
+            return {}
+
+        result = await self.session.execute(
+            select(
+                TaskTable.project_id,
+                func.coalesce(
+                    func.sum(
+                        case((TaskTable.status == TaskStatus.COMPLETED, 1), else_=0)
+                    ),
+                    0,
+                ).label("done"),
+                func.coalesce(
+                    func.sum(
+                        case((TaskTable.status == TaskStatus.BLOCKED, 1), else_=0)
+                    ),
+                    0,
+                ).label("blocked"),
+                func.coalesce(
+                    func.sum(
+                        case((TaskTable.status.in_(_INACTIVE_STATUSES), 0), else_=1)
+                    ),
+                    0,
+                ).label("active"),
+            )
+            .where(TaskTable.project_id.in_(project_ids))
+            .group_by(TaskTable.project_id)
+        )
+        out: dict[UUID, dict[str, int]] = {}
+        for row in result.fetchall():
+            out[typing_cast("UUID", row.project_id)] = {
+                "done": int(row.done or 0),
+                "active": int(row.active or 0),
+                "blocked": int(row.blocked or 0),
+            }
+        return out
+
+    async def list_by_cell(
+        self,
+        cell: Team,
+        active_only: bool = True,
+    ) -> list[ProjectTable]:
+        """
+        List projects assigned to a specific cell.
+
+        Args:
+            cell: The team/cell to filter by
+            active_only: If True, only return active projects
+
+        Returns:
+            List of projects for the cell
+        """
+        query = select(ProjectTable).where(ProjectTable.assigned_cell == cell)
+
+        if active_only:
+            query = query.where(ProjectTable.is_active.is_(True))
+
+        query = query.order_by(ProjectTable.name)
+
+        result = await self.session.execute(query)
+        return list(result.scalars().all())
+
+
+class ProjectWorkspaceState(_Base):
+    """A project's workspace path and its sync state."""
+
+    # =========================================================================
+    # WORKSPACE MANAGEMENT
+    # =========================================================================
+
+    async def set_workspace_path(
+        self,
+        project_id: UUID,
+        workspace_path: str,
+    ) -> ProjectTable | None:
+        """
+        Set the local workspace path for a project.
+
+        Called after cloning/syncing the repository.
+
+        Args:
+            project_id: Project to update
+            workspace_path: Path to the local workspace directory
+
+        Returns:
+            The updated project or None if not found
+        """
+        project = await self.get(project_id)
+        if not project:
+            return None
+
+        project.workspace_path = workspace_path
+        await self.session.flush()
+
+        self.log.info(
+            "Workspace path set",
+            project_id=str(project_id),
+            workspace_path=workspace_path,
+        )
+        return project
+
+    async def update_sync_state(
+        self,
+        project_id: UUID,
+        head_commit: str,
+    ) -> ProjectTable | None:
+        """
+        Update the sync state after a git pull/fetch.
+
+        Args:
+            project_id: Project to update
+            head_commit: Current HEAD commit SHA
+
+        Returns:
+            The updated project or None if not found
+        """
+        from datetime import UTC, datetime
+
+        project = await self.get(project_id)
+        if not project:
+            return None
+
+        project.head_commit = head_commit
+        project.last_synced_at = datetime.now(UTC)
+        await self.session.flush()
+
+        self.log.info(
+            "Sync state updated",
+            project_id=str(project_id),
+            # Short SHA
+            head_commit=head_commit[:8],
+        )
+        return project
+
+
+class ProjectTokens(_Base):
+    """A project's git token: resolving it (a stored PAT or a GitHub App
+    installation token) and decrypting it by id or slug."""
+
+    # =========================================================================
+    # GIT TOKEN MANAGEMENT
+    # =========================================================================
+
+    async def _resolve_token(
+        self, project: ProjectTable, *, log_ref: str
+    ) -> str | None:
+        """Resolve the token git operations should use for ``project``.
+
+        An installation-bound project (``github_installation_id`` set) with
+        App credentials stored mints a short-lived installation token instead
+        of using the stored PAT. Any minting failure (App not configured,
+        installation revoked, network hiccup) is logged as a warning and falls
+        back to the PAT path below — a GitHub App hiccup must never brick git
+        operations for a project that also has a PAT on file.
+        """
+        if project.github_installation_id is not None:
+            has_app_creds = await get_github_app_credentials_service(
+                self.session
+            ).has_credentials()
+            if has_app_creds:
+                try:
+                    return await mint_installation_token(
+                        self.session, project.github_installation_id
+                    )
+                except GitHubAppError as e:
+                    self.log.warning(
+                        "GitHub App token mint failed; falling back to PAT",
+                        error=str(e),
+                        project=log_ref,
+                    )
+
+        if not project.git_token_encrypted:
+            return None
+        try:
+            return decrypt_token(project.git_token_encrypted)
+        except EncryptionError:
+            self.log.error(
+                "Failed to decrypt git token",
+                project=log_ref,
+                error="encryption_key_mismatch_or_corrupted",
+            )
+            raise
+
+    async def get_decrypted_token(self, project_id: UUID) -> str | None:
+        """
+        Get the decrypted git token for a project.
+
+        Used by WorkspaceService and GitService for git operations. When the
+        project is bound to a GitHub App installation, this instead returns a
+        minted installation token (see ``_resolve_token``); the returned
+        string is otherwise decrypted on-demand and should not be cached.
+
+        Args:
+            project_id: Project to get token for
+
+        Returns:
+            Decrypted token, minted installation token, or None if neither
+            is available
+
+        Raises:
+            EncryptionError: If PAT decryption fails (key mismatch, corrupted
+                data) — never raised for a GitHub App minting failure, which
+                falls back to the PAT instead.
+        """
+        project = await self.get(project_id)
+        if not project:
+            return None
+        return await self._resolve_token(project, log_ref=str(project_id))
+
+    async def get_decrypted_token_by_slug(self, slug: str) -> str | None:
+        """
+        Get the decrypted git token for a project by slug.
+
+        Convenience method for services that work with project slugs. Same
+        GitHub App / PAT resolution as ``get_decrypted_token``.
+
+        Args:
+            slug: Project slug
+
+        Returns:
+            Decrypted token, minted installation token, or None
+
+        Raises:
+            EncryptionError: If PAT decryption fails
+        """
+        project = await self.get_by_slug(slug)
+        if not project:
+            return None
+        return await self._resolve_token(project, log_ref=slug)
+
+
+class ProjectAccess(_Base):
+    """Which agents may work on a project: adding, removing and checking one."""
+
+    # =========================================================================
+    # ACCESS CONTROL
+    # =========================================================================
+
+    async def add_allowed_agent(
+        self,
+        project_id: UUID,
+        agent_id: UUID,
+    ) -> ProjectTable | None:
+        """
+        Add an agent to the allowed list for a project.
+
+        The list NARROWS within the assigned cell (check_agent_access
+        requires the cell match first), so a grant is only meaningful for
+        an agent already in that cell: a cross-cell or nonexistent id would
+        flip the project from whole-cell access to list-only while the
+        added agent gains nothing, locking out every legitimate cell
+        member with one call. Both are rejected here, at the services-layer
+        chokepoint, so the guard the list feeds cannot be undermined by its
+        own write path.
+
+        Args:
+            project_id: Project to update
+            agent_id: Agent to allow
+
+        Returns:
+            The updated project or None if not found
+
+        Raises:
+            NotFoundError: If the agent does not exist
+            ValidationError: If the agent is outside the assigned cell
+        """
+        project = await self.get(project_id)
+        if not project:
+            return None
+
+        agent = await self.session.get(AgentTable, agent_id)
+        if agent is None:
+            raise NotFoundError("Agent", str(agent_id))
+        if agent.team != project.assigned_cell:
+            raise ValidationError(
+                f"agent {agent_id} is in the {agent.team} cell; project "
+                f"{project_id} is assigned to the {project.assigned_cell} "
+                "cell and the allowed-agents list only narrows within it"
+            )
+
+        # Initialize list if None (means all agents in cell allowed)
+        if project.allowed_agents is None:
+            project.allowed_agents = [agent_id]
+        elif agent_id not in project.allowed_agents:
+            project.allowed_agents = [*project.allowed_agents, agent_id]
+
+        await self.session.flush()
+        return project
+
+    async def remove_allowed_agent(
+        self,
+        project_id: UUID,
+        agent_id: UUID,
+    ) -> ProjectTable | None:
+        """
+        Remove an agent from the allowed list for a project.
+
+        Args:
+            project_id: Project to update
+            agent_id: Agent to remove
+
+        Returns:
+            The updated project or None if not found
+        """
+        project = await self.get(project_id)
+        if not project or project.allowed_agents is None:
+            return None
+
+        if agent_id in project.allowed_agents:
+            remaining = [a for a in project.allowed_agents if a != agent_id]
+            # An emptied list is no restriction at all (rule 3: None = whole
+            # cell has access) -- collapse back to None so removing the last
+            # allowed agent actually restores cell-default access instead of
+            # denying everyone (check_agent_access treats a non-None empty
+            # list as "nobody is on the list", not "no restriction").
+            project.allowed_agents = remaining or None
+
+        await self.session.flush()
+        return project
+
+    async def check_agent_access(
+        self,
+        project_id: UUID,
+        agent_id: UUID,
+        agent_team: Team,
+    ) -> bool:
+        """
+        Check if an agent has access to a project.
+
+        Access rules:
+        1. Agent must be in the project's assigned cell
+        2. If allowed_agents is set, agent must be in the list
+        3. If allowed_agents is None, all agents in the cell have access
+
+        Args:
+            project_id: Project to check
+            agent_id: Agent to check
+            agent_team: Agent's team/cell
+
+        Returns:
+            True if agent has access, False otherwise
+        """
+        project = await self.get(project_id)
+        if not project:
+            return False
+
+        # Must be in the assigned cell
+        if project.assigned_cell != agent_team:
+            return False
+
+        # If no specific allowed list, all cell members have access
+        if project.allowed_agents is None:
+            return True
+
+        # Check the allowed list
+        return agent_id in project.allowed_agents
+
+
+class ProjectService(
+    BaseService, ProjectAccess, ProjectListings, ProjectTokens, ProjectWorkspaceState
+):
     """
     Service for managing projects (git repositories).
 
@@ -203,6 +612,27 @@ class ProjectService(BaseService):
         )
         return self._register_forge(result.scalar_one_or_none())
 
+    async def get_by_workspace_path(self, workspace_path: str) -> ProjectTable | None:
+        """The project whose operator-configured ``workspace_path`` this is.
+
+        None when no project, or more than one, claims the path: picking one
+        arbitrarily would serve git for that path with another project's relay
+        and token.
+        """
+        result = await self.session.execute(
+            select(ProjectTable)
+            .where(ProjectTable.workspace_path == workspace_path)
+            .limit(2)
+        )
+        projects = list(result.scalars().all())
+        if len(projects) > 1:
+            self.log.warning(
+                "workspace_path is claimed by more than one project",
+                workspace_path=workspace_path,
+            )
+            return None
+        return self._register_forge(projects[0] if projects else None)
+
     async def get_or_raise(self, project_id: UUID) -> ProjectTable:
         """Get a project by ID or raise NotFoundError."""
         project = await self.get(project_id)
@@ -348,6 +778,7 @@ class ProjectService(BaseService):
 
         if delete_workspaces:
             from roboco.services.workspace import get_workspace_service
+            from roboco.services.workspace_git import remove_workspace_tree
 
             ws_svc = get_workspace_service(self.session)
             try:
@@ -357,9 +788,7 @@ class ProjectService(BaseService):
 
                     path = Path(ws_info["path"])
                     if path.exists():
-                        import shutil
-
-                        shutil.rmtree(path)
+                        remove_workspace_tree(path)
                 self.log.info(
                     "Deleted workspaces for project",
                     project_slug=project_slug,
@@ -374,367 +803,6 @@ class ProjectService(BaseService):
 
         self.log.info("Project deleted", project_id=str(project_id))
         return True
-
-    # =========================================================================
-    # QUERIES
-    # =========================================================================
-
-    async def list_all(
-        self,
-        active_only: bool = True,
-        limit: int = 100,
-        offset: int = 0,
-    ) -> list[ProjectTable]:
-        """
-        List all projects with pagination.
-
-        Args:
-            active_only: If True, only return active projects
-            limit: Maximum number of projects to return
-            offset: Number of projects to skip
-
-        Returns:
-            List of projects
-        """
-        query = select(ProjectTable)
-
-        if active_only:
-            query = query.where(ProjectTable.is_active.is_(True))
-
-        query = query.order_by(ProjectTable.name).limit(limit).offset(offset)
-
-        result = await self.session.execute(query)
-        return list(result.scalars().all())
-
-    async def task_counts_for_projects(
-        self, projects: list[ProjectTable]
-    ) -> dict[UUID, dict[str, int]]:
-        """Per-project task progress (done/active/blocked) — one grouped query.
-
-        One ``GROUP BY project_id`` over tasks for every distinct project_id
-        in the list. Returns {project_id: {done, active, blocked}}; a project
-        with no tasks is absent (the caller falls back to zeros).
-        """
-        project_ids = [typing_cast("UUID", p.id) for p in projects if p.id is not None]
-        if not project_ids:
-            return {}
-
-        result = await self.session.execute(
-            select(
-                TaskTable.project_id,
-                func.coalesce(
-                    func.sum(
-                        case((TaskTable.status == TaskStatus.COMPLETED, 1), else_=0)
-                    ),
-                    0,
-                ).label("done"),
-                func.coalesce(
-                    func.sum(
-                        case((TaskTable.status == TaskStatus.BLOCKED, 1), else_=0)
-                    ),
-                    0,
-                ).label("blocked"),
-                func.coalesce(
-                    func.sum(
-                        case((TaskTable.status.in_(_INACTIVE_STATUSES), 0), else_=1)
-                    ),
-                    0,
-                ).label("active"),
-            )
-            .where(TaskTable.project_id.in_(project_ids))
-            .group_by(TaskTable.project_id)
-        )
-        out: dict[UUID, dict[str, int]] = {}
-        for row in result.fetchall():
-            out[typing_cast("UUID", row.project_id)] = {
-                "done": int(row.done or 0),
-                "active": int(row.active or 0),
-                "blocked": int(row.blocked or 0),
-            }
-        return out
-
-    async def list_by_cell(
-        self,
-        cell: Team,
-        active_only: bool = True,
-    ) -> list[ProjectTable]:
-        """
-        List projects assigned to a specific cell.
-
-        Args:
-            cell: The team/cell to filter by
-            active_only: If True, only return active projects
-
-        Returns:
-            List of projects for the cell
-        """
-        query = select(ProjectTable).where(ProjectTable.assigned_cell == cell)
-
-        if active_only:
-            query = query.where(ProjectTable.is_active.is_(True))
-
-        query = query.order_by(ProjectTable.name)
-
-        result = await self.session.execute(query)
-        return list(result.scalars().all())
-
-    # =========================================================================
-    # WORKSPACE MANAGEMENT
-    # =========================================================================
-
-    async def set_workspace_path(
-        self,
-        project_id: UUID,
-        workspace_path: str,
-    ) -> ProjectTable | None:
-        """
-        Set the local workspace path for a project.
-
-        Called after cloning/syncing the repository.
-
-        Args:
-            project_id: Project to update
-            workspace_path: Path to the local workspace directory
-
-        Returns:
-            The updated project or None if not found
-        """
-        project = await self.get(project_id)
-        if not project:
-            return None
-
-        project.workspace_path = workspace_path
-        await self.session.flush()
-
-        self.log.info(
-            "Workspace path set",
-            project_id=str(project_id),
-            workspace_path=workspace_path,
-        )
-        return project
-
-    async def update_sync_state(
-        self,
-        project_id: UUID,
-        head_commit: str,
-    ) -> ProjectTable | None:
-        """
-        Update the sync state after a git pull/fetch.
-
-        Args:
-            project_id: Project to update
-            head_commit: Current HEAD commit SHA
-
-        Returns:
-            The updated project or None if not found
-        """
-        from datetime import UTC, datetime
-
-        project = await self.get(project_id)
-        if not project:
-            return None
-
-        project.head_commit = head_commit
-        project.last_synced_at = datetime.now(UTC)
-        await self.session.flush()
-
-        self.log.info(
-            "Sync state updated",
-            project_id=str(project_id),
-            head_commit=head_commit[:8],  # Short SHA
-        )
-        return project
-
-    # =========================================================================
-    # GIT TOKEN MANAGEMENT
-    # =========================================================================
-
-    async def _resolve_token(
-        self, project: ProjectTable, *, log_ref: str
-    ) -> str | None:
-        """Resolve the token git operations should use for ``project``.
-
-        An installation-bound project (``github_installation_id`` set) with
-        App credentials stored mints a short-lived installation token instead
-        of using the stored PAT. Any minting failure (App not configured,
-        installation revoked, network hiccup) is logged as a warning and falls
-        back to the PAT path below — a GitHub App hiccup must never brick git
-        operations for a project that also has a PAT on file.
-        """
-        if project.github_installation_id is not None:
-            has_app_creds = await get_github_app_credentials_service(
-                self.session
-            ).has_credentials()
-            if has_app_creds:
-                try:
-                    return await mint_installation_token(
-                        self.session, project.github_installation_id
-                    )
-                except GitHubAppError as e:
-                    self.log.warning(
-                        "GitHub App token mint failed; falling back to PAT",
-                        error=str(e),
-                        project=log_ref,
-                    )
-
-        if not project.git_token_encrypted:
-            return None
-        try:
-            return decrypt_token(project.git_token_encrypted)
-        except EncryptionError:
-            self.log.error(
-                "Failed to decrypt git token",
-                project=log_ref,
-                error="encryption_key_mismatch_or_corrupted",
-            )
-            raise
-
-    async def get_decrypted_token(self, project_id: UUID) -> str | None:
-        """
-        Get the decrypted git token for a project.
-
-        Used by WorkspaceService and GitService for git operations. When the
-        project is bound to a GitHub App installation, this instead returns a
-        minted installation token (see ``_resolve_token``); the returned
-        string is otherwise decrypted on-demand and should not be cached.
-
-        Args:
-            project_id: Project to get token for
-
-        Returns:
-            Decrypted token, minted installation token, or None if neither
-            is available
-
-        Raises:
-            EncryptionError: If PAT decryption fails (key mismatch, corrupted
-                data) — never raised for a GitHub App minting failure, which
-                falls back to the PAT instead.
-        """
-        project = await self.get(project_id)
-        if not project:
-            return None
-        return await self._resolve_token(project, log_ref=str(project_id))
-
-    async def get_decrypted_token_by_slug(self, slug: str) -> str | None:
-        """
-        Get the decrypted git token for a project by slug.
-
-        Convenience method for services that work with project slugs. Same
-        GitHub App / PAT resolution as ``get_decrypted_token``.
-
-        Args:
-            slug: Project slug
-
-        Returns:
-            Decrypted token, minted installation token, or None
-
-        Raises:
-            EncryptionError: If PAT decryption fails
-        """
-        project = await self.get_by_slug(slug)
-        if not project:
-            return None
-        return await self._resolve_token(project, log_ref=slug)
-
-    # =========================================================================
-    # ACCESS CONTROL
-    # =========================================================================
-
-    async def add_allowed_agent(
-        self,
-        project_id: UUID,
-        agent_id: UUID,
-    ) -> ProjectTable | None:
-        """
-        Add an agent to the allowed list for a project.
-
-        Args:
-            project_id: Project to update
-            agent_id: Agent to allow
-
-        Returns:
-            The updated project or None if not found
-        """
-        project = await self.get(project_id)
-        if not project:
-            return None
-
-        # Initialize list if None (means all agents in cell allowed)
-        if project.allowed_agents is None:
-            project.allowed_agents = [agent_id]
-        elif agent_id not in project.allowed_agents:
-            project.allowed_agents = [*project.allowed_agents, agent_id]
-
-        await self.session.flush()
-        return project
-
-    async def remove_allowed_agent(
-        self,
-        project_id: UUID,
-        agent_id: UUID,
-    ) -> ProjectTable | None:
-        """
-        Remove an agent from the allowed list for a project.
-
-        Args:
-            project_id: Project to update
-            agent_id: Agent to remove
-
-        Returns:
-            The updated project or None if not found
-        """
-        project = await self.get(project_id)
-        if not project or project.allowed_agents is None:
-            return None
-
-        if agent_id in project.allowed_agents:
-            remaining = [a for a in project.allowed_agents if a != agent_id]
-            # An emptied list is no restriction at all (rule 3: None = whole
-            # cell has access) -- collapse back to None so removing the last
-            # allowed agent actually restores cell-default access instead of
-            # denying everyone (check_agent_access treats a non-None empty
-            # list as "nobody is on the list", not "no restriction").
-            project.allowed_agents = remaining or None
-
-        await self.session.flush()
-        return project
-
-    async def check_agent_access(
-        self,
-        project_id: UUID,
-        agent_id: UUID,
-        agent_team: Team,
-    ) -> bool:
-        """
-        Check if an agent has access to a project.
-
-        Access rules:
-        1. Agent must be in the project's assigned cell
-        2. If allowed_agents is set, agent must be in the list
-        3. If allowed_agents is None, all agents in the cell have access
-
-        Args:
-            project_id: Project to check
-            agent_id: Agent to check
-            agent_team: Agent's team/cell
-
-        Returns:
-            True if agent has access, False otherwise
-        """
-        project = await self.get(project_id)
-        if not project:
-            return False
-
-        # Must be in the assigned cell
-        if project.assigned_cell != agent_team:
-            return False
-
-        # If no specific allowed list, all cell members have access
-        if project.allowed_agents is None:
-            return True
-
-        # Check the allowed list
-        return agent_id in project.allowed_agents
 
 
 # =============================================================================

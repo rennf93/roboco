@@ -27,6 +27,7 @@ from roboco.api.routes.coroner import router as coroner_router
 from roboco.api.routes.dashboard import router as dashboard_router
 from roboco.api.routes.docs import router as docs_router
 from roboco.api.routes.dogfood import router as dogfood_router
+from roboco.api.routes.entire import router as entire_router
 from roboco.api.routes.git import router as git_router
 from roboco.api.routes.github_app import router as github_app_router
 from roboco.api.routes.health import router as health_router
@@ -143,9 +144,10 @@ async def _apply_flag_overrides() -> None:
 async def _check_decisions_openrouter_key_at_startup() -> None:
     """Decisions spec 4 startup key check: OpenRouter fallback opted in but
     no OpenRouter key on the AI Provider screen means ONE ack-required CEO
-    notification naming the fix screen, and the resolver stays on the Laya
-    tier for the process lifetime. Best-effort: a failure here must never
-    block startup, the per-call lazy check still exists as a backstop."""
+    notification naming the fix screen, and the resolver stays on the
+    self-hosted tiers (Clef, then Laya) for the process lifetime.
+    Best-effort: a failure here must never block startup, the per-call lazy
+    check still exists as a backstop."""
     try:
         async with get_session_factory()() as decisions_db:
             await check_openrouter_fallback_at_startup(decisions_db)
@@ -194,7 +196,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
 
     # Decisions (spec 4): if the OpenRouter fallback is opted in but the AI
     # Provider screen has no key, alert the CEO once now and resolve to the
-    # Laya tier for the process lifetime. Best-effort: never blocks startup.
+    # self-hosted tiers for the process lifetime. Best-effort: never blocks
+    # startup.
     await _check_decisions_openrouter_key_at_startup()
 
     # Initialize Phase 2 services
@@ -355,6 +358,26 @@ def _mount_board_program_routers(app: FastAPI, api_prefix: str) -> None:
     # friction-fix cycle. Approving materializes a BACKLOG task; nothing
     # auto-starts.
     app.include_router(dogfood_router, prefix=f"{api_prefix}/dogfood", tags=["Dogfood"])
+
+
+def _mount_bridge_routers(app: FastAPI, api_prefix: str) -> None:
+    """The CEO surfaces of the server-side bridges to outside services.
+    Grouped to keep ``create_app``'s own statement count bounded (same
+    rationale as ``_mount_board_program_routers``)."""
+    # Telegram notifications bridge — CEO-managed bot-token + chat-id credentials
+    # (write-only); the fan-out itself runs server-side from the CEO producers.
+    app.include_router(
+        telegram_router,
+        prefix=f"{api_prefix}/telegram",
+        tags=["Telegram"],
+    )
+    # Entire trails bridge — the CEO's Entire token (write-only), the bridge's
+    # status and the retry of stopped operations; the bridge runs server-side.
+    app.include_router(
+        entire_router,
+        prefix=f"{api_prefix}/entire",
+        tags=["Entire"],
+    )
 
 
 def _mount_release_routers(app: FastAPI, api_prefix: str) -> None:
@@ -536,13 +559,7 @@ def create_app() -> FastAPI:
         tags=["TikTok"],
     )
 
-    # Telegram notifications bridge — CEO-managed bot-token + chat-id credentials
-    # (write-only); the fan-out itself runs server-side from the CEO producers.
-    app.include_router(
-        telegram_router,
-        prefix=f"{api_prefix}/telegram",
-        tags=["Telegram"],
-    )
+    _mount_bridge_routers(app, api_prefix)
     # Telegram Mini App sign-in — public, pre-auth; mounted only when both
     # telegram_miniapp_enabled and cloud_auth_enabled are armed — mirrors
     # mount_cloud_auth's conditional-mount pattern above. Off (either flag):

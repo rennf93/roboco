@@ -157,7 +157,11 @@ function DependencyList({
                   : "Add a task ID that this task is blocking"
               }
             >
-              <Button size="sm" variant="ghost" onClick={() => setIsAdding(true)}>
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => setIsAdding(true)}
+              >
                 <Plus className="h-4 w-4 mr-1" />
                 Add
               </Button>

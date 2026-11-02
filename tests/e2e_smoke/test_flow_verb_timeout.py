@@ -25,8 +25,8 @@ Two tests give the empirical proof:
 - ``test_flow_verb_timeout_releases_row_lock`` (fix ARMED, server timeout
   1s): verb-1's hang is cancelled at 1s, ``get_db`` rolls back (lock
   released), a 504 ``gateway_timeout`` comes back, and verb-2 re-acquires
-  the row and reaches the post-claim gate (``tracing_gap``). Reaching the
-  gate is the success marker — the verb completed its composed transaction.
+  the row and completes. Completing is the success marker — the verb ran
+  its composed transaction on a row nothing still held.
 - ``test_flow_verb_holds_lock_when_timeout_disarmed`` (fix DISARMED, server
   timeout 1000s + MCP client timeout 3s): verb-1's hang is NOT cancelled,
   so it holds the FOR UPDATE lock past the client's HTTP timeout — the
@@ -47,7 +47,7 @@ from tests.e2e_smoke.arcs import (
     seed_task,
     set_branch_name,
 )
-from tests.e2e_smoke.harness import ScriptedAgent, expect_error
+from tests.e2e_smoke.harness import ScriptedAgent, expect_error, expect_ok
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -89,6 +89,9 @@ _DISARMED_SERVER_TIMEOUT_SECONDS = 1000.0
 # AFTER priming the per-agent flow_server reload (a pre-call patch is
 # clobbered by the reload on the first flow() call).
 _MCP_CLIENT_TIMEOUT_SECONDS = 3.0
+# The disarmed reproduction's last verb waits out verb-1's hang; its client
+# timeout sits well past _HANG_SECONDS.
+_DRAIN_CLIENT_TIMEOUT_SECONDS = 60.0
 
 
 def _seed_planning_root(
@@ -177,10 +180,10 @@ def test_flow_verb_timeout_releases_row_lock(
     # 2. verb-2: the task was rolled back to PENDING by verb-1's
     #    cancellation, so claim re-enters and acquires the row (only
     #    possible because verb-1 released the lock). set_plan runs for
-    #    real, start commits, and the post-claim tracing gate fires (no
-    #    decision note) -> tracing_gap. Reaching the gate is the success
-    #    marker: on master the row would still be locked by verb-1's stuck
-    #    coroutine and this claim would hang on the FOR UPDATE.
+    #    real, start commits, and the plan is recorded as the claim-time
+    #    decision, so the verb completes. Completing is the success marker:
+    #    were the row still locked by verb-1's stuck coroutine, this claim
+    #    would hang on the FOR UPDATE.
     env2 = main_pm.flow(
         "i_will_plan",
         task_id=str(task_id),
@@ -188,11 +191,7 @@ def test_flow_verb_timeout_releases_row_lock(
         approach=_APPROACH,
         sub_tasks=_SUB_TASKS,
     )
-    expect_error(
-        env2,
-        "tracing_gap",
-        "verb-2 reaches the post-claim gate — the row lock was released",
-    )
+    expect_ok(env2, "verb-2 completes — the row lock was released")
 
 
 def test_flow_verb_holds_lock_when_timeout_disarmed(
@@ -245,3 +244,19 @@ def test_flow_verb_holds_lock_when_timeout_disarmed(
         "not reproduced; either the hang injection broke or the server is "
         "cancelling despite the disarmed timeout"
     )
+
+    # verb-1 is still running on the server, its transaction holding the row
+    # lock until the sleep ends and it commits. verb-2 waits that out (a
+    # client timeout past the hang, then a re-entry once the lock frees), so
+    # the test never returns with verb-1 in flight: the per-test TRUNCATE in
+    # teardown would race its transaction, and Postgres can abort either one
+    # as a deadlock.
+    monkeypatch.setattr(flow_server, "_TIMEOUT", _DRAIN_CLIENT_TIMEOUT_SECONDS)
+    env2 = main_pm.flow(
+        "i_will_plan",
+        task_id=str(task_id),
+        plan=_PLAN,
+        approach=_APPROACH,
+        sub_tasks=_SUB_TASKS,
+    )
+    expect_ok(env2, "verb-2 completes once verb-1's hung transaction ends")

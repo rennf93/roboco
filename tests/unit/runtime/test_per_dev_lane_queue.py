@@ -33,6 +33,7 @@ def _sibling(
     status: TaskStatus,
     *,
     task_type: str = "code",
+    dependency_ids: tuple[object, ...] = (),
 ) -> MagicMock:
     return MagicMock(
         id=uuid4(),
@@ -40,6 +41,7 @@ def _sibling(
         assigned_to=owner,
         status=status,
         task_type=task_type,
+        dependency_ids=dependency_ids,
     )
 
 
@@ -147,6 +149,64 @@ async def test_equal_sequence_same_dev_tiebreaks_by_created_at() -> None:
     p1, p2 = _patch_siblings([later])
     with p1, p2:
         assert await orch._blocked_by_earlier_lane_sibling(task) is False
+
+
+@pytest.mark.asyncio
+async def test_sibling_depending_on_task_is_never_a_lane_predecessor() -> None:
+    """Regression (be-dev-2, 2026-09-27): a PM wired the dependency opposite to
+    creation order — the earlier-created sibling DEPENDS on the later-created
+    task. The dependency guard holds the sibling on the task; if the lane
+    barrier also held the task on the sibling (equal-sequence created-at
+    tiebreak), each guard waited on the other and the dev starved silently.
+    Dependency order outranks the tiebreak."""
+    orch = _new_orchestrator()
+    task = _task(0, "be-dev-1")
+    task["created_at"] = "2026-09-27T02:26:43+00:00"
+    dependent = _sibling(
+        0,
+        "be-dev-1",
+        TaskStatus.PENDING,
+        dependency_ids=(task["id"],),
+    )
+    dependent.created_at = datetime(2026, 9, 27, 1, 14, tzinfo=UTC)
+    p1, p2 = _patch_siblings([dependent])
+    with p1, p2:
+        assert await orch._blocked_by_earlier_lane_sibling(task) is False
+
+
+@pytest.mark.asyncio
+async def test_transitive_dependent_sibling_is_never_a_lane_predecessor() -> None:
+    """The exclusion is transitive within the sibling set: A depends on B and
+    B depends on the task, so neither A nor B may hold the task."""
+    orch = _new_orchestrator()
+    task = _task(0, "be-dev-1")
+    mid = _sibling(0, "be-dev-1", TaskStatus.PENDING, dependency_ids=(task["id"],))
+    head = _sibling(0, "be-dev-1", TaskStatus.PENDING, dependency_ids=(mid.id,))
+    p1, p2 = _patch_siblings([head, mid])
+    with p1, p2:
+        assert await orch._blocked_by_earlier_lane_sibling(task) is False
+
+
+@pytest.mark.asyncio
+async def test_dependent_excluded_but_independent_earlier_still_blocks() -> None:
+    """Excluding dependency-successors from the tiebreak must not weaken the
+    barrier itself: an earlier sibling with no dependency on the task still
+    holds the lane."""
+    orch = _new_orchestrator()
+    task = _task(0, "be-dev-1")
+    task["created_at"] = "2026-09-27T02:26:43+00:00"
+    dependent = _sibling(
+        0,
+        "be-dev-1",
+        TaskStatus.PENDING,
+        dependency_ids=(task["id"],),
+    )
+    dependent.created_at = datetime(2026, 9, 27, 1, 14, tzinfo=UTC)
+    independent = _sibling(0, "be-dev-1", TaskStatus.IN_PROGRESS)
+    independent.created_at = datetime(2026, 9, 27, 1, 20, tzinfo=UTC)
+    p1, p2 = _patch_siblings([dependent, independent])
+    with p1, p2:
+        assert await orch._blocked_by_earlier_lane_sibling(task) is True
 
 
 @pytest.mark.asyncio

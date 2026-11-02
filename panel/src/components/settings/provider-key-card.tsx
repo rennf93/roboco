@@ -366,7 +366,9 @@ export function HumminProviderKeyRow() {
     <section className="space-y-2">
       <div className="flex items-center justify-between">
         <HelpTip label="Stored encrypted server-side; never displayed once saved.">
-          <Label className="text-sm font-medium">hummin (GLM Coding Plan) key</Label>
+          <Label className="text-sm font-medium">
+            hummin (GLM Coding Plan) key
+          </Label>
         </HelpTip>
         {hasKey ? (
           <HelpTip label="Enables the hummin mode button and the GLM entries in the model picker below.">
@@ -417,10 +419,10 @@ export function HumminProviderKeyRow() {
         </label>
       ) : (
         <p className="text-xs text-muted-foreground">
-          Your Z.ai key for the GLM Coding Plan — the GLM go-to (the hummin
-          CLI injects it as ZAI_API_KEY at spawn). Independent of the ZAI
-          row&apos;s key on purpose. Stored Fernet-encrypted server-side;
-          never returned by the API.
+          Your Z.ai key for the GLM Coding Plan — the GLM go-to (the hummin CLI
+          injects it as ZAI_API_KEY at spawn). Independent of the ZAI row&apos;s
+          key on purpose. Stored Fernet-encrypted server-side; never returned by
+          the API.
         </p>
       )}
     </section>

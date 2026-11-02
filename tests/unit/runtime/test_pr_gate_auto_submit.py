@@ -18,6 +18,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from roboco.foundation.policy.lifecycle import Role, intents_for_role
 from roboco.runtime.orchestrator import AGENT_UUIDS, AgentOrchestrator
 
 # The commit/notes validator's minimum substantive length.
@@ -218,3 +219,35 @@ def test_closure_prompt_omits_note_when_no_reason() -> None:
     orch = _orch()
     prompt = orch._build_pm_closure_prompt(_CELL_TASK, [])
     assert "already attempted to auto-submit" not in prompt
+
+
+_CLOSURE_VERBS = ("submit_up", "submit_root", "complete")
+
+
+def _closure_verbs_named(prompt: str) -> set[str]:
+    return {verb for verb in _CLOSURE_VERBS if f"{verb}(" in prompt}
+
+
+def test_root_closure_prompt_submits_with_a_main_pm_verb() -> None:
+    """A root's closure spawns the Main PM. submit_up is cell_pm-only, so the
+    prompt's "submit_up promotes to awaiting_ceo_approval" sent the Main PM
+    to a verb the gateway refuses for its role; it submits with submit_root
+    (what _try_auto_submit itself runs for main_pm), which enters the
+    PR-review gate rather than going straight to the CEO."""
+    root = {**_CELL_TASK, "team": "main_pm"}
+    prompt = _orch()._build_pm_closure_prompt(root, [])
+
+    assert "submit_root(" in prompt
+    assert _closure_verbs_named(prompt) <= set(intents_for_role(Role.MAIN_PM))
+    assert "awaiting_pr_review" in prompt
+
+
+def test_cell_closure_prompt_names_the_pr_review_gate() -> None:
+    """submit_up moves a cell task into the cell PR-review gate
+    (awaiting_pr_review), not to awaiting_pm_review for the parent PM."""
+    cell = {**_CELL_TASK, "parent_task_id": "44444444-4444-4444-4444-444444444444"}
+    prompt = _orch()._build_pm_closure_prompt(cell, [])
+
+    assert "submit_up(" in prompt
+    assert _closure_verbs_named(prompt) <= set(intents_for_role(Role.CELL_PM))
+    assert "awaiting_pr_review" in prompt
