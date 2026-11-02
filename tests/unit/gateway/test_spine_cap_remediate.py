@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from roboco.services.gateway.choreographer._impl import Choreographer
+from roboco.services.gateway.choreographer import Choreographer
 
 
 def test_spine_cap_remediate_forbids_task_type_workaround() -> None:

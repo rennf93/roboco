@@ -38,8 +38,8 @@ if TYPE_CHECKING:
 
 # A fixed HMAC secret so agent-token verification is deterministic; the JWT
 # session secret is set on `settings.cloud_auth_secret` separately.
-_HMAC_SECRET = "e2e-auth-gate-secret"
-_JWT_SECRET = "e2e-jwt-session-secret"
+_HMAC_SECRET = "e2e-auth-gate-hmac-secret-0123456789"
+_JWT_SECRET = "e2e-jwt-session-secret-0123456789ab"
 _CEO_EMAIL = "ceo@roboco.local"
 _CEO_PASSWORD = "e2e-ceo-password"
 

@@ -32,10 +32,8 @@ interactive login flow.
 from __future__ import annotations
 
 import base64
-import contextlib
 import json
 import os
-import shutil
 import sys
 import threading
 from datetime import UTC, datetime
@@ -44,6 +42,8 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 import structlog
+
+from roboco.llm.providers._credential_file import write_agent_credential
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -146,27 +146,26 @@ def _post_token(url: str, form: dict[str, str]) -> dict[str, Any]:
 
 
 def _atomic_write(auth_path: Path, bundle: dict[str, Any]) -> None:
-    """Rewrite ``auth.json`` atomically, preserving the original file mode.
+    """Rewrite ``auth.json`` atomically as an agent-owned, owner-only file.
 
     The rotated refresh_token is single-use (OpenAI invalidates the old one the
     instant it issues the new one), so losing this write loses the credential
     permanently — the same F006 concern grok_auth documents. Atomic tmp+replace
     first; a direct-write fallback if that fails, so the rotated token still
-    lands on disk. Only if BOTH fail does the OSError propagate.
+    lands on disk. Only if BOTH fail does the OSError propagate. Both paths
+    write through ``write_agent_credential`` (agent uid, 0600).
     """
     payload = json.dumps(bundle)
     tmp = auth_path.with_name(auth_path.name + ".refresh.tmp")
     try:
-        tmp.write_text(payload, encoding="utf-8")
-        with contextlib.suppress(OSError):
-            shutil.copymode(auth_path, tmp)
+        write_agent_credential(tmp, payload)
         tmp.replace(auth_path)
         return
     except OSError as exc:
         logger.warning(
             "codex auth atomic write failed; trying direct write", error=str(exc)
         )
-    auth_path.write_text(payload, encoding="utf-8")
+    write_agent_credential(auth_path, payload)
 
 
 def _is_stale(tokens: dict[str, Any], now: datetime, skew_seconds: int) -> bool:

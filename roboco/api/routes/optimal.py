@@ -63,6 +63,7 @@ from roboco.api.schemas.optimal import (
     ValidateActionResponse,
 )
 from roboco.api.utils.optimal import kb_denial_response as _kb_denial_response
+from roboco.api.utils.optimal import parse_index_types as _parse_index_types
 from roboco.models.optimal import (
     CodeReviewRequest as ModelCodeReviewRequest,
 )
@@ -91,20 +92,6 @@ from roboco.services.optimal_brain import (
 logger = structlog.get_logger()
 
 router = APIRouter()
-
-
-def _parse_index_types(raw: list[str] | None) -> list[IndexType] | None:
-    """Parse a request's ``index_types`` list into validated ``IndexType``
-    values, or ``None`` when unset. Raises 400 on an invalid type string."""
-    if not raw:
-        return None
-    try:
-        return [IndexType(t) for t in raw]
-    except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid index type: {e}",
-        ) from e
 
 
 # =============================================================================

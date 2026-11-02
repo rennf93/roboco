@@ -9,8 +9,8 @@ calling code accepts, rejects, or escalates on a confidence threshold -
 
 Three tiers behind one wire format, resolved per call (``resolver.py``):
 
-1. Clef (BUILT-IN sweet-spot default): the self-hosted ``roboco-decisions``
-   sidecar's 27B llama.cpp backend (``settings.decisions_base_url``), no
+1. Clef (BUILT-IN default): the self-hosted ``roboco-decisions`` sidecar's
+   Clef-Flash 9B llama.cpp backend (``settings.decisions_base_url``), no
    key, no spend, no egress.
 2. Laya (CHEAP self-hosted option): the same sidecar's 421M backend,
    serving when Clef is disabled or unhealthy.

@@ -22,6 +22,11 @@ from roboco.services.base import (
 )
 from roboco.services.permissions import AgentContext
 from roboco.services.task import TaskService
+from roboco.services.task_ref import (
+    MIN_TASK_REF_HEX_CHARS,
+    TaskRefOutcome,
+    resolve_task_ref,
+)
 
 if TYPE_CHECKING:
     from roboco.api.schemas.tasks import TaskUpdate
@@ -483,3 +488,29 @@ async def _resolve_project_for_merge(task: Any, db: AsyncSession) -> Any:
             ),
         )
     return project
+
+
+_TASK_REF_HTTP_ERRORS: dict[TaskRefOutcome, tuple[int, str]] = {
+    TaskRefOutcome.MALFORMED: (
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "pass the full task UUID or the "
+        f"{MIN_TASK_REF_HEX_CHARS}+ character hex prefix shown on the task card",
+    ),
+    TaskRefOutcome.NOT_FOUND: (status.HTTP_404_NOT_FOUND, "Task not found"),
+    TaskRefOutcome.AMBIGUOUS: (
+        status.HTTP_422_UNPROCESSABLE_CONTENT,
+        "more than one task shares this id prefix: pass more characters or "
+        "the full task UUID",
+    ),
+}
+
+
+async def resolve_task_ref_or_http_error(db: AsyncSession, task_ref: str) -> UUID:
+    """The id of the task ``task_ref`` names (a full UUID or the card's 8+ char
+    prefix), or the HTTP error saying why it names none. The resolution is
+    ``roboco.services.task_ref``'s, the same one the agent gateway uses."""
+    resolution = await resolve_task_ref(db, task_ref)
+    if resolution.task_id is not None:
+        return resolution.task_id
+    status_code, detail = _TASK_REF_HTTP_ERRORS[resolution.outcome]
+    raise HTTPException(status_code=status_code, detail=detail)

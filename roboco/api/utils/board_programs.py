@@ -7,14 +7,15 @@ Route-glue helpers backing roboco/api/routes/board_programs.py.
 from typing import TYPE_CHECKING
 
 from roboco.api.deps import CurrentAgentContext, require_ceo_role
+from roboco.api.schemas.board_programs import (
+    BoardProgramCycleResponse,
+    BoardProgramDecisionResponse,
+    BoardProgramResponse,
+)
 from roboco.foundation.policy.board_programs import PROGRAMS
 from roboco.services.board_programs import BoardProgramEngine
 
 if TYPE_CHECKING:
-    from roboco.api.routes.board_programs import (
-        BoardProgramCycleResponse,
-        BoardProgramResponse,
-    )
     from roboco.db.tables import BoardProgramCycleTable
 
 
@@ -22,13 +23,7 @@ def require_ceo(agent: CurrentAgentContext) -> None:
     require_ceo_role(agent.role, action="view or act on Board Programs")
 
 
-async def to_response(engine: BoardProgramEngine, key: str) -> "BoardProgramResponse":
-    # Deferred import: BoardProgramResponse stays defined in the route module
-    # (it is that file's response_model, untouched by this extraction) — a
-    # top-level import here would be circular since the route module imports
-    # this module.
-    from roboco.api.routes.board_programs import BoardProgramResponse
-
+async def to_response(engine: BoardProgramEngine, key: str) -> BoardProgramResponse:
     program = PROGRAMS[key]
     enabled = await engine.enabled(key)
     open_cycle, last_opened_at = await engine.cycle_state(key)
@@ -49,13 +44,7 @@ async def to_response(engine: BoardProgramEngine, key: str) -> "BoardProgramResp
     )
 
 
-def cycle_to_response(cycle: "BoardProgramCycleTable") -> "BoardProgramCycleResponse":
-    # Deferred import: same circularity rationale as to_response above.
-    from roboco.api.routes.board_programs import (
-        BoardProgramCycleResponse,
-        BoardProgramDecisionResponse,
-    )
-
+def cycle_to_response(cycle: "BoardProgramCycleTable") -> BoardProgramCycleResponse:
     return BoardProgramCycleResponse(
         id=str(cycle.id),
         opened_at=cycle.opened_at.isoformat(),

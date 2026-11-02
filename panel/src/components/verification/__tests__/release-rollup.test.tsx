@@ -2,32 +2,21 @@ import { describe, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import type {
   AcVerificationStamp,
+  MemberVerification,
   PrCiVerdict,
   ReviewerChainEntry,
   ReviewRoundFindings,
 } from "@/lib/api/verification";
 import type { ConventionFinding } from "@/lib/api/conventions";
 
-const {
-  useAcVerificationStamps,
-  useFindingsByRound,
-  usePrCiVerdict,
-  useReviewerChain,
-  useTaskConventionFindings,
-} = vi.hoisted(() => ({
-  useAcVerificationStamps: vi.fn(),
-  useFindingsByRound: vi.fn(),
-  usePrCiVerdict: vi.fn(),
-  useReviewerChain: vi.fn(),
-  useTaskConventionFindings: vi.fn(),
+const { useReleaseVerification, useReleaseCiVerdicts } = vi.hoisted(() => ({
+  useReleaseVerification: vi.fn(),
+  useReleaseCiVerdicts: vi.fn(),
 }));
 
 vi.mock("@/hooks/use-verification", () => ({
-  useAcVerificationStamps,
-  useFindingsByRound,
-  usePrCiVerdict,
-  useReviewerChain,
-  useTaskConventionFindings,
+  useReleaseVerification,
+  useReleaseCiVerdicts,
 }));
 
 import { ReleaseVerificationRollup } from "../release-rollup";
@@ -97,12 +86,11 @@ const FINDINGS_BY_TASK: Record<string, ReviewRoundFindings[]> = {
 };
 
 const CI_BY_TASK: Record<string, PrCiVerdict> = {
-  t1: { available: false, reason: "no route", technicalDetail: "no route" },
-  // t2 is the deliberate no-CI-repo case with its own distinct reason.
+  t1: { available: false, reason: "No CI verdict yet." },
+  // t2 has its own distinct reason, to tell the two rows' verdicts apart.
   t2: {
     available: false,
-    reason: "no REST route exists for this repo",
-    technicalDetail: "no REST route exists for this repo",
+    reason: "The task's verification record couldn't be loaded.",
   },
 };
 
@@ -132,36 +120,42 @@ const REVIEWERS_BY_TASK: Record<string, ReviewerChainEntry[]> = {
   ],
 };
 
-function setup() {
-  useAcVerificationStamps.mockImplementation((taskId: string) => ({
-    data: AC_BY_TASK[taskId] ?? [],
+const TITLES: Record<string, string> = {
+  t1: "Shared data layer",
+  t2: "Verification tab",
+};
+
+function member(taskId: string): MemberVerification {
+  return {
+    taskId,
+    title: TITLES[taskId],
+    ac: AC_BY_TASK[taskId],
+    findings: FINDINGS_BY_TASK[taskId],
+    conventions: CONVENTIONS_BY_TASK[taskId],
+    reviewers: REVIEWERS_BY_TASK[taskId],
+  };
+}
+
+function setup({
+  receiptsFail = false,
+  ciFail = false,
+}: { receiptsFail?: boolean; ciFail?: boolean } = {}) {
+  useReleaseVerification.mockReturnValue({
+    data: receiptsFail ? undefined : [member("t1"), member("t2")],
     isLoading: false,
-  }));
-  useFindingsByRound.mockImplementation((taskId: string) => ({
-    data: FINDINGS_BY_TASK[taskId] ?? [],
+    isError: receiptsFail,
+  });
+  useReleaseCiVerdicts.mockReturnValue({
+    data: ciFail ? undefined : CI_BY_TASK,
     isLoading: false,
-  }));
-  usePrCiVerdict.mockImplementation((taskId: string) => ({
-    data: CI_BY_TASK[taskId] ?? {
-      available: false,
-      reason: "unknown",
-      technicalDetail: "unknown",
-    },
-    isLoading: false,
-  }));
-  useTaskConventionFindings.mockImplementation((taskId: string) => ({
-    data: CONVENTIONS_BY_TASK[taskId] ?? [],
-    isLoading: false,
-  }));
-  useReviewerChain.mockImplementation((taskId: string) => ({
-    data: REVIEWERS_BY_TASK[taskId] ?? [],
-    isLoading: false,
-  }));
+    isError: ciFail,
+  });
 }
 
 describe("ReleaseVerificationRollup", () => {
-  it("states this release genuinely has no member tasks, not that data is unavailable, when no ids are given", () => {
-    render(<ReleaseVerificationRollup taskIds={[]} />);
+  it("states this release genuinely has no member tasks, and fetches nothing, when it has none", () => {
+    setup();
+    render(<ReleaseVerificationRollup proposalTaskId="p1" memberCount={0} />);
     expect(
       screen.getByText(
         "This release has no member tasks. There's nothing to verify per-task.",
@@ -172,17 +166,14 @@ describe("ReleaseVerificationRollup", () => {
     expect(
       screen.queryByText(/available yet|endpoint|escalate/i),
     ).not.toBeInTheDocument();
-    expect(useAcVerificationStamps).not.toHaveBeenCalled();
+    expect(useReleaseVerification).toHaveBeenCalledWith("p1", false);
+    expect(useReleaseCiVerdicts).toHaveBeenCalledWith("p1", false);
   });
 
-  it("aggregates mixed verified/open state across member tasks, and surfaces the no-CI-repo case", () => {
+  it("aggregates mixed verified/open state across member tasks from the one bulk read", () => {
     setup();
-    render(
-      <ReleaseVerificationRollup
-        taskIds={["t1", "t2"]}
-        taskTitles={{ t1: "Shared data layer", t2: "Verification tab" }}
-      />,
-    );
+    render(<ReleaseVerificationRollup proposalTaskId="p1" memberCount={2} />);
+    expect(useReleaseVerification).toHaveBeenCalledWith("p1", true);
 
     // Fully-verified member: 1/1 AC, no open-findings badge.
     const row1 = screen.getByRole("button", {
@@ -191,16 +182,14 @@ describe("ReleaseVerificationRollup", () => {
     expect(within(row1).getByText("1/1 AC verified")).toBeInTheDocument();
     expect(within(row1).queryByText(/open$/)).not.toBeInTheDocument();
 
-    // Partially-verified member: 1/2 AC, one open finding, distinct CI
-    // unavailable reason (the no-CI-repo member case).
+    // Partially-verified member: 1/2 AC, one open finding.
     const row2 = screen.getByRole("button", {
       name: /Verification tab/i,
     });
     expect(within(row2).getByText("1/2 AC verified")).toBeInTheDocument();
     expect(within(row2).getByText("1 open")).toBeInTheDocument();
 
-    // Both rows render their own CI-unavailable badge (each hook call is
-    // keyed by its own task id — not one shared/global verdict).
+    // Each row renders the CI verdict keyed by its own task id.
     expect(screen.getAllByText("CI verdict unavailable")).toHaveLength(2);
 
     // Detail sections render per member (default-open collapsible), showing
@@ -212,9 +201,19 @@ describe("ReleaseVerificationRollup", () => {
     expect(screen.getByText("open")).toBeInTheDocument();
   });
 
-  it("falls back to the bare task id when no title is supplied", () => {
-    setup();
-    render(<ReleaseVerificationRollup taskIds={["t1"]} />);
-    expect(screen.getByRole("button", { name: /t1/i })).toBeInTheDocument();
+  it("says the receipts could not be loaded instead of rendering an empty rollup", () => {
+    setup({ receiptsFail: true });
+    render(<ReleaseVerificationRollup proposalTaskId="p1" memberCount={2} />);
+    expect(
+      screen.getByText(
+        "The release's verification receipts couldn't be loaded.",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("marks every member's CI verdict unreadable when the CI read fails", () => {
+    setup({ ciFail: true });
+    render(<ReleaseVerificationRollup proposalTaskId="p1" memberCount={2} />);
+    expect(screen.getAllByText("CI verdict unavailable")).toHaveLength(2);
   });
 });

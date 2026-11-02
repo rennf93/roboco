@@ -68,7 +68,10 @@ export function OrchestratorStatusCards({
             {rosterLoading ? (
               <Skeleton className="h-6 w-8" />
             ) : (
-              <span data-testid="stat-total-agents" className="text-xl font-bold">
+              <span
+                data-testid="stat-total-agents"
+                className="text-xl font-bold"
+              >
                 {rosterCount}
               </span>
             )}

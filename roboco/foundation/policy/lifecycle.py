@@ -30,6 +30,9 @@ from typing import TYPE_CHECKING, Any, Literal
 # (mirroring TaskService and the gateway access guard); config imports
 # nothing from roboco, so this stays cycle-free.
 from roboco.config import settings
+from roboco.foundation._validate_lifecycle import (
+    run_all_lifecycle_validators as _run_all_lifecycle_validators,
+)
 
 # Role enum is canonicalized in roboco/foundation/identity.py.
 # Re-exported here so callers can import `Role` from this module alongside
@@ -2190,8 +2193,7 @@ _KNOWN_UNMIGRATED_CONSUMERS: frozenset[str] = frozenset(
 # (a sibling of ``foundation/_validate.py`` for identity); placing them
 # alongside the identity validators would create an import cycle because
 # ``roboco.foundation.__init__`` eagerly imports ``foundation/_validate``.
-from roboco.foundation._validate_lifecycle import (  # noqa: E402
-    run_all_lifecycle_validators as _run_all_lifecycle_validators,
-)
-
+# Their import sits with the others at the top of this module: that module
+# defers every reference to this one to call time, so only this call has to
+# wait until every table above is defined.
 _run_all_lifecycle_validators()

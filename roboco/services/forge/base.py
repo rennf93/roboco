@@ -20,7 +20,10 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,20 +49,42 @@ class RepoRef:
     host: str | None = None
 
 
-class GitProvider(ABC):
-    """The forge REST operations ``GitService`` performs, minus the
-    classification of what a response means — that stays in ``GitService``.
-
-    Every method is transport only: build the request, send it, hand back the
-    response (or let a transport-level error propagate). Deciding whether a
-    404 means "doesn't exist" vs. "no CI configured", retrying a specific
-    status code as part of a *business* policy, and translating a failure
-    into a domain exception are all ``GitService``'s job, not the provider's.
-    """
+class ForgeRepository(ABC):
+    """A repository on the forge: parsing a remote URL into its RepoRef, reading the
+    repo, creating one under an org, and making sure a label exists."""
 
     @abstractmethod
     def parse_repo_ref(self, git_url: str) -> RepoRef:
         """Parse a remote URL (https/ssh/tokened) into a :class:`RepoRef`."""
+
+    @abstractmethod
+    async def get_repo(self, repo: RepoRef, token: str) -> Any:
+        """Fetch repo metadata (used for merge-method settings and to confirm a
+        just-created repo)."""
+
+    @abstractmethod
+    async def ensure_label(
+        self, repo: RepoRef, token: str, name: str, color: str
+    ) -> Any:
+        """Create a repo label if missing."""
+
+    @abstractmethod
+    async def create_org_repo(
+        self,
+        token: str,
+        org: str,
+        *,
+        name: str,
+        description: str,
+        private: bool,
+        auto_init: bool,
+    ) -> Any:
+        """Create a new repository under an org (provisioning)."""
+
+
+class ForgePullRequests(ABC):
+    """Pull requests: listing and reading them with their diff, opening and updating
+    one, marking a draft ready for review, and merging."""
 
     @abstractmethod
     async def list_pulls(
@@ -105,10 +130,22 @@ class GitProvider(ABC):
         """Patch a pull request's title/body/state — ``PATCH .../pulls/{n}``."""
 
     @abstractmethod
+    async def mark_pr_ready_for_review(
+        self, repo: RepoRef, token: str, pr_node_id: str
+    ) -> Any:
+        """Take a draft pull request out of draft (a forge without drafts
+        answers a shaped 501)."""
+
+    @abstractmethod
     async def merge_pr(
         self, repo: RepoRef, token: str, pr_number: int, *, merge_method: str
     ) -> Any:
         """Merge a pull request — ``PUT .../pulls/{n}/merge``."""
+
+
+class ForgeReviews(ABC):
+    """Review traffic on a pull request: requesting reviewers, posting a review,
+    commenting, and adding labels."""
 
     @abstractmethod
     async def request_reviewers(
@@ -123,10 +160,72 @@ class GitProvider(ABC):
         """Post a review (approve / request-changes / comment) on a pull request."""
 
     @abstractmethod
+    async def add_labels(
+        self, repo: RepoRef, token: str, pr_number: int, labels: list[str]
+    ) -> Any:
+        """Attach labels to an already-open PR/issue."""
+
+    @abstractmethod
+    async def create_issue_comment(
+        self, repo: RepoRef, token: str, issue_number: int, body: str
+    ) -> Any:
+        """Post a comment on an issue/PR."""
+
+
+class ForgeBranches(ABC):
+    """Branch refs: merging one branch into another, creating, moving and deleting a
+    ref, and committing files onto a branch through the API."""
+
+    @abstractmethod
     async def merge_branch(
         self, repo: RepoRef, token: str, *, base: str, head: str, commit_message: str
     ) -> Any:
-        """Server-side merge one branch into another (the env-sync cascade)."""
+        """Server-side merge one branch into another — ``POST .../merges``
+        (the env-sync cascade, and the release's env-chain merges on GitHub).
+        ``head`` may be a branch or a commit sha."""
+
+    @abstractmethod
+    async def create_branch_ref(
+        self, repo: RepoRef, token: str, branch: str, *, sha: str
+    ) -> Any:
+        """Create a branch at ``sha`` — ``POST .../git/refs``. The release
+        executor's first server-side commit call: a forge that cannot write
+        commits itself answers a shaped 501, read as "push with git"."""
+
+    @abstractmethod
+    async def update_branch_ref(
+        self, repo: RepoRef, token: str, branch: str, *, sha: str, force: bool
+    ) -> Any:
+        """Move a branch to ``sha`` — ``PATCH .../git/refs/heads/{branch}``.
+        ``force=False`` refuses anything but a fast-forward."""
+
+    @abstractmethod
+    async def create_commit_on_branch(
+        self,
+        repo: RepoRef,
+        token: str,
+        branch: str,
+        *,
+        expected_head_oid: str,
+        headline: str,
+        additions: Mapping[str, bytes],
+        deletions: Sequence[str],
+        timeout: float | None = None,
+    ) -> Any:
+        """Have the forge write and sign a commit on ``branch`` from whole-file
+        contents (GitHub's GraphQL ``createCommitOnBranch``), refused unless
+        the branch head is ``expected_head_oid``."""
+
+    @abstractmethod
+    async def delete_branch_ref(
+        self, repo: RepoRef, token: str, branch: str, *, timeout: float | None = None
+    ) -> Any:
+        """Delete a branch ref on the remote."""
+
+
+class ForgeCI(ABC):
+    """CI on the forge: a branch's workflow runs, a commit's check runs, and the
+    repo's workflows."""
 
     @abstractmethod
     async def list_ci_runs(
@@ -151,34 +250,9 @@ class GitProvider(ABC):
     async def list_workflows(self, repo: RepoRef, token: str, *, per_page: int) -> Any:
         """List a repo's configured CI workflows (used to detect "no CI at all")."""
 
-    @abstractmethod
-    async def get_repo(self, repo: RepoRef, token: str) -> Any:
-        """Fetch repo metadata (used for merge-method settings and to confirm a
-        just-created repo)."""
 
-    @abstractmethod
-    async def ensure_label(
-        self, repo: RepoRef, token: str, name: str, color: str
-    ) -> Any:
-        """Create a repo label if missing."""
-
-    @abstractmethod
-    async def add_labels(
-        self, repo: RepoRef, token: str, pr_number: int, labels: list[str]
-    ) -> Any:
-        """Attach labels to an already-open PR/issue."""
-
-    @abstractmethod
-    async def delete_branch_ref(
-        self, repo: RepoRef, token: str, branch: str, *, timeout: float | None = None
-    ) -> Any:
-        """Delete a branch ref on the remote."""
-
-    @abstractmethod
-    async def create_issue_comment(
-        self, repo: RepoRef, token: str, issue_number: int, body: str
-    ) -> Any:
-        """Post a comment on an issue/PR."""
+class ForgeReleases(ABC):
+    """Publishing a release."""
 
     @abstractmethod
     async def create_release(
@@ -194,15 +268,21 @@ class GitProvider(ABC):
     ) -> Any:
         """Publish a release."""
 
-    @abstractmethod
-    async def create_org_repo(
-        self,
-        token: str,
-        org: str,
-        *,
-        name: str,
-        description: str,
-        private: bool,
-        auto_init: bool,
-    ) -> Any:
-        """Create a new repository under an org (provisioning)."""
+
+class GitProvider(
+    ForgeBranches,
+    ForgeCI,
+    ForgePullRequests,
+    ForgeReleases,
+    ForgeRepository,
+    ForgeReviews,
+):
+    """The forge REST operations ``GitService`` performs, minus the
+    classification of what a response means — that stays in ``GitService``.
+
+    Every method is transport only: build the request, send it, hand back the
+    response (or let a transport-level error propagate). Deciding whether a
+    404 means "doesn't exist" vs. "no CI configured", retrying a specific
+    status code as part of a *business* policy, and translating a failure
+    into a domain exception are all ``GitService``'s job, not the provider's.
+    """

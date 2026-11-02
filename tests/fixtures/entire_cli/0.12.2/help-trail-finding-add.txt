@@ -1,0 +1,26 @@
+Create a finding on a trail
+
+Usage:
+  entire trail finding add [<trail>] [flags]
+
+Flags:
+  -m, --body string          Finding body
+      --client-id string     Retry key for this finding and its review (24-hour server retention; reuse with the same fields)
+      --confidence float     Finding confidence from 0.0 to 1.0 (default -1)
+      --end-line int         End line for the finding location
+      --file string          File path for the finding location; defaults to the file a --patch modifies
+  -h, --help                 help for add
+      --instruction string   Manual suggested-change instruction to attach
+      --json                 Output as JSON
+      --line int             Line number for the finding location
+      --patch string         Unified-diff suggested change to attach; must modify a single existing file in this worktree
+      --patch-file string    Read unified-diff suggested change from file; use '-' for stdin
+      --severity string      Finding severity: high,medium,low
+      --start-line int       Start line for the finding location
+
+Global Flags:
+      --branch string    Select a repository branch within the trail
+      --context name     Act as this saved login name for this command only — including the git and agent processes it spawns — instead of the active context (entire auth contexts lists them)
+      --project string   Project as gh/<owner> or et/<project>; required for list, otherwise defaults to the repository's namespace
+      --repo string      Target repository as forge/owner/repo (e.g. gh/acme/app) or a clone URL; for list, only filters the required --project
+      --trail string     Project trail number, ID, or <repo>/<number> (defaults to the current branch's parent)
