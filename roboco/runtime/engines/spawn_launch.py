@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -37,6 +38,7 @@ from roboco.runtime.orchestrator import (
     AGENT_BASE_IMAGE,
     AGENT_IMAGES,
     AGENT_NETWORK,
+    AGENT_PLUGINS_DATA_DIR,
     CLAUDE_AUTH_HOST_PATH,
     DATA_HOST_PATH,
     GATEWAY_ENABLED_ROLES,
@@ -1108,6 +1110,7 @@ class ContainerMountsEngine(_Base):
             "-v",
             f"{hosts['claude']}:/home/agent/.claude",
         ]
+        AgentOrchestrator._append_agent_plugins_mount(cmd)
         AgentOrchestrator._append_claude_json_mount(cmd, hosts)
         AgentOrchestrator._append_optional_host_mounts(cmd, hosts)
         role = get_agent_role(config.agent_id) or "developer"
@@ -1118,6 +1121,32 @@ class ContainerMountsEngine(_Base):
         AgentOrchestrator._append_manifest_args(cmd, config, subagent_model)
         AgentOrchestrator._append_workspace_cwd(cmd, config)
         return cmd
+
+    @staticmethod
+    def _append_agent_plugins_mount(cmd: list[str]) -> None:
+        """Overlay a RoboCo-owned dir on ~/.claude/plugins (after the .claude bind).
+
+        The agent CLI rewrites plugin state with its own HOME paths; on the
+        shared host ~/.claude that broke the CEO's installed plugins. The
+        docker-gate refuses a missing bind source, so create it first.
+        """
+        if PROJECT_HOST_PATH:
+            local = Path(AGENT_PLUGINS_DATA_DIR)
+            host = f"{DATA_HOST_PATH}/agent-claude-plugins"
+        else:
+            local = Path(tempfile.gettempdir()) / "roboco-agent-claude-plugins"
+            host = str(local)
+        try:
+            local.mkdir(parents=True, exist_ok=True)
+            os.chown(local, -1, settings.agent_gid)
+            local.chmod(0o2775)
+        except OSError as exc:
+            logger.warning(
+                "could not pre-create agent plugins dir; agent CLI may EACCES",
+                path=str(local),
+                error=str(exc),
+            )
+        cmd.extend(["-v", f"{host}:/home/agent/.claude/plugins"])
 
     @staticmethod
     def _append_claude_json_mount(cmd: list[str], hosts: dict[str, str | None]) -> None:
