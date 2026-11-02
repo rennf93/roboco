@@ -365,10 +365,13 @@ function NotificationsPageContent() {
                   value="unread"
                   data-state={activeTab === "unread" ? "active" : "inactive"}
                 >
-                  Unread {data && data.unread_count > 0 && `(${data.unread_count})`}
+                  Unread{" "}
+                  {data && data.unread_count > 0 && `(${data.unread_count})`}
                 </TabsTrigger>
               </TooltipTrigger>
-              <TooltipContent>Notifications you haven&apos;t opened yet</TooltipContent>
+              <TooltipContent>
+                Notifications you haven&apos;t opened yet
+              </TooltipContent>
             </Tooltip>
             <Tooltip>
               <TooltipTrigger asChild>

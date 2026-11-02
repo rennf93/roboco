@@ -229,10 +229,7 @@ export function WorkSessionTable({
                 </div>
                 <Tooltip>
                   <TooltipTrigger asChild>
-                    <Link
-                      href={`/tasks/${session.task_id}`}
-                      prefetch={false}
-                    >
+                    <Link href={`/tasks/${session.task_id}`} prefetch={false}>
                       <Button variant="ghost" size="icon" className="shrink-0">
                         <ExternalLink className="h-4 w-4" />
                       </Button>

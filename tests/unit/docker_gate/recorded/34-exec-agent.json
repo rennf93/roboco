@@ -1,0 +1,20 @@
+{
+  "body": {
+    "AttachStderr": true,
+    "AttachStdin": false,
+    "AttachStdout": true,
+    "Cmd": [
+      "printenv",
+      "ROBOCO_AGENT_TOKEN"
+    ],
+    "DetachKeys": "",
+    "Env": null,
+    "Privileged": false,
+    "Tty": false,
+    "User": "",
+    "WorkingDir": ""
+  },
+  "method": "POST",
+  "source": "exec:agent",
+  "target": "/v1.51/containers/roboco-agent-be-dev-1/exec"
+}

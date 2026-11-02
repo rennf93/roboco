@@ -8,11 +8,11 @@ Provides business logic for A2A protocol operations including:
 """
 
 from datetime import UTC, datetime
-from typing import Any, Final, cast
+from typing import TYPE_CHECKING, Any, Final, cast
 from uuid import UUID
 
 import structlog
-from sqlalchemy import or_, select
+from sqlalchemy import ColumnElement, or_, select, true
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from roboco.agents_config import (
@@ -21,7 +21,7 @@ from roboco.agents_config import (
     get_agent_skills,
     get_agent_team,
 )
-from roboco.config import settings
+from roboco.config import reachable_url_host, settings
 from roboco.db.tables import (
     A2AConversationTable,
     A2AMessageTable,
@@ -62,6 +62,11 @@ from roboco.seeds.initial_data import AGENT_UUIDS
 # heavier submodules import lazily inside the gate methods; this module-level
 # import exists so the quoted annotations below resolve under get_type_hints().
 from roboco.services import decisions as decisions_pilots
+
+if TYPE_CHECKING:
+    from roboco.services._a2a_service_types import A2AServiceSelf as _Base
+else:
+    _Base = object
 
 logger = structlog.get_logger()
 
@@ -120,43 +125,32 @@ def render_steering_note(
 _LIVE_VIEW_EXCERPT_CHARS: Final[int] = 240
 
 
+def awaiting_response() -> ColumnElement[bool]:
+    """Messages that still wait for a reply. Written ``= true`` to match
+    ``ix_a2a_msg_pending``'s predicate (migration 001): the planner cannot
+    use that partial index for ``IS TRUE``, which ``.is_(True)`` emits."""
+    return A2AMessageTable.requires_response == true()
+
+
 def _excerpt(text: str, limit: int = _LIVE_VIEW_EXCERPT_CHARS) -> str:
     """Truncate ``text`` to ``limit`` chars, appending an ellipsis marker
     only when truncation actually happened."""
     return text if len(text) <= limit else text[:limit].rstrip() + "…"
 
 
-class A2AService:
-    """
-    Service layer for A2A protocol operations.
-
-    Provides methods for:
-    - Building Agent Cards for discovery
-    - Converting between RoboCo tasks and A2A tasks
-    - Processing A2A messages
-    """
-
-    def __init__(self, session: AsyncSession):
-        """Initialize with database session."""
-        self.session = session
+class A2AAgentCards(_Base):
+    """Agent cards and discovery: the service endpoint, the system and per-agent
+    cards, discovering agents, and resolving a message's target agent and team."""
 
     @staticmethod
     def get_service_endpoint() -> str:
         """Build service endpoint URL from settings.
 
         When the API binds to the all-interfaces address (dev default),
-        we can't use it for outbound callbacks — dial loopback instead.
-        `is_unspecified` covers both 0.0.0.0 and ::, and avoids a bare
-        literal that trips bandit B104.
+        we can't use it for outbound callbacks; ``reachable_url_host`` dials
+        the loopback of the same address family instead.
         """
-        import ipaddress
-
-        try:
-            is_any_iface = ipaddress.ip_address(settings.host).is_unspecified
-        except ValueError:
-            is_any_iface = False
-        connect_host = "127.0.0.1" if is_any_iface else settings.host
-        return f"http://{connect_host}:{settings.port}"
+        return f"http://{reachable_url_host(settings.host)}:{settings.port}"
 
     @staticmethod
     def build_system_agent_card() -> AgentCard:
@@ -335,6 +329,88 @@ class A2AService:
             },
             security=[{"bearerAuth": []}],
         )
+
+    async def discover_agents(
+        self,
+        role: str | None = None,
+        team: str | None = None,
+        skill_tag: str | None = None,
+    ) -> list[AgentCard]:
+        """
+        Discover agents matching criteria.
+
+        Args:
+            role: Filter by agent role
+            team: Filter by team
+            skill_tag: Filter by skill tag (future)
+
+        Returns:
+            List of matching AgentCards
+        """
+        query = select(AgentTable)
+
+        if role:
+            query = query.where(AgentTable.role == role)
+        if team:
+            query = query.where(AgentTable.team == team)
+
+        result = await self.session.execute(query)
+        agents = result.scalars().all()
+
+        cards = [self._agent_to_card(agent) for agent in agents]
+
+        # Filter by skill tag if specified
+        if skill_tag:
+            cards = [
+                card
+                for card in cards
+                if any(skill_tag in skill.tags for skill in card.skills)
+            ]
+
+        return cards
+
+    # =========================================================================
+    # MESSAGE ROUTING
+    # =========================================================================
+
+    @staticmethod
+    def get_team_from_agent(agent_slug: str) -> Team:
+        """Get Team enum from agent slug."""
+        team_str = get_agent_team(agent_slug)
+        team_map = {
+            "backend": Team.BACKEND,
+            "frontend": Team.FRONTEND,
+            "ux_ui": Team.UX_UI,
+        }
+        return team_map.get(team_str or "", Team.BACKEND)
+
+    @staticmethod
+    def resolve_target_agent(metadata: dict[str, Any]) -> str | None:
+        """
+        Resolve target agent from A2A request metadata.
+
+        Returns agent slug or None if not specified.
+        """
+        # Check for explicit target
+        target = metadata.get("target_agent")
+        if target and target in ALL_AGENTS:
+            return cast("str", target)
+
+        # Check for skill-based routing
+        skill = metadata.get("skill")
+        if skill:
+            for agent_slug in ALL_AGENTS:
+                agent_skills = get_agent_skills(agent_slug)
+                skill_ids = [s.get("id", "") for s in agent_skills]
+                if skill in skill_ids:
+                    return agent_slug
+
+        return None
+
+
+class A2ATasks(_Base):
+    """Tasks over A2A: a task as an A2A task, getting and listing them, and
+    cancelling one with its note."""
 
     def task_to_a2a(self, task: TaskTable) -> A2ATask:
         """
@@ -551,82 +627,10 @@ class A2AService:
 
         return self.task_to_a2a(task)
 
-    async def discover_agents(
-        self,
-        role: str | None = None,
-        team: str | None = None,
-        skill_tag: str | None = None,
-    ) -> list[AgentCard]:
-        """
-        Discover agents matching criteria.
 
-        Args:
-            role: Filter by agent role
-            team: Filter by team
-            skill_tag: Filter by skill tag (future)
-
-        Returns:
-            List of matching AgentCards
-        """
-        query = select(AgentTable)
-
-        if role:
-            query = query.where(AgentTable.role == role)
-        if team:
-            query = query.where(AgentTable.team == team)
-
-        result = await self.session.execute(query)
-        agents = result.scalars().all()
-
-        cards = [self._agent_to_card(agent) for agent in agents]
-
-        # Filter by skill tag if specified
-        if skill_tag:
-            cards = [
-                card
-                for card in cards
-                if any(skill_tag in skill.tags for skill in card.skills)
-            ]
-
-        return cards
-
-    # =========================================================================
-    # MESSAGE ROUTING
-    # =========================================================================
-
-    @staticmethod
-    def get_team_from_agent(agent_slug: str) -> Team:
-        """Get Team enum from agent slug."""
-        team_str = get_agent_team(agent_slug)
-        team_map = {
-            "backend": Team.BACKEND,
-            "frontend": Team.FRONTEND,
-            "ux_ui": Team.UX_UI,
-        }
-        return team_map.get(team_str or "", Team.BACKEND)
-
-    @staticmethod
-    def resolve_target_agent(metadata: dict[str, Any]) -> str | None:
-        """
-        Resolve target agent from A2A request metadata.
-
-        Returns agent slug or None if not specified.
-        """
-        # Check for explicit target
-        target = metadata.get("target_agent")
-        if target and target in ALL_AGENTS:
-            return cast("str", target)
-
-        # Check for skill-based routing
-        skill = metadata.get("skill")
-        if skill:
-            for agent_slug in ALL_AGENTS:
-                agent_skills = get_agent_skills(agent_slug)
-                skill_ids = [s.get("id", "") for s in agent_skills]
-                if skill in skill_ids:
-                    return agent_slug
-
-        return None
+class A2AMessageHandling(_Base):
+    """Handling an inbound A2A message: its text, the task it updates, the requester
+    it notifies, and the response event."""
 
     # =========================================================================
     # MESSAGE HANDLING
@@ -862,8 +866,15 @@ class A2AService:
                     },
                 )
             )
-        except Exception:
-            pass  # Don't fail if event bus unavailable
+        except Exception as e:
+            # A failed publish must not fail the response, but this event is
+            # what wakes the requester, so it can't vanish without a trace.
+            logger.warning(
+                "Failed to publish A2A response event",
+                task_id=str(task.id),
+                requester=requester_slug,
+                error=str(e),
+            )
 
     async def _notify_original_requester(
         self,
@@ -879,7 +890,8 @@ class A2AService:
         """
         dev_notes = task.dev_notes or ""
         if "A2A Request" not in dev_notes:
-            return  # Not an A2A task
+            # Not an A2A task
+            return
 
         created_by = task.created_by
         if not created_by:
@@ -896,6 +908,11 @@ class A2AService:
         await self._publish_a2a_response_event(
             task, created_by, requester_slug, responder_agent
         )
+
+
+class A2AConversations(_Base):
+    """Persistent conversations: getting or creating one for a pair, listing them
+    for an agent and an admin, closing one, and converting rows to models."""
 
     # =========================================================================
     # PERSISTENT CONVERSATION MANAGEMENT
@@ -1231,6 +1248,116 @@ class A2AService:
             conversation_id=str(conversation_id),
             by_agent=agent_slug,
         )
+
+    async def list_pairs(self, agent_slug: str) -> list[A2APair]:
+        """List unique agent pairs for frontend display."""
+        from sqlalchemy import or_
+
+        query = (
+            select(A2AConversationTable)
+            .where(
+                or_(
+                    A2AConversationTable.agent_a == agent_slug,
+                    A2AConversationTable.agent_b == agent_slug,
+                )
+            )
+            .order_by(A2AConversationTable.updated_at.desc())
+        )
+
+        result = await self.session.execute(query)
+        conversations = result.scalars().all()
+
+        # Group by pair
+        pairs: dict[tuple[str, str], A2APair] = {}
+        for conv in conversations:
+            pair_key = (conv.agent_a, conv.agent_b)
+            if pair_key not in pairs:
+                pairs[pair_key] = A2APair(
+                    agent_a=conv.agent_a,
+                    agent_b=conv.agent_b,
+                    conversation_count=0,
+                    total_unread=0,
+                    last_activity=None,
+                )
+
+            pairs[pair_key].conversation_count += 1
+
+            unread = (
+                conv.unread_by_a if agent_slug == conv.agent_a else conv.unread_by_b
+            )
+            pairs[pair_key].total_unread += unread
+
+            current_activity = pairs[pair_key].last_activity
+            if current_activity is None or (
+                conv.updated_at is not None and conv.updated_at > current_activity
+            ):
+                pairs[pair_key].last_activity = conv.updated_at
+
+        return list(pairs.values())
+
+    # =========================================================================
+    # MODEL CONVERSIONS
+    # =========================================================================
+
+    def _conv_to_model(self, conv: A2AConversationTable) -> A2AConversation:
+        """Convert table row to Pydantic model."""
+        return A2AConversation(
+            id=str(conv.id),
+            agent_a=conv.agent_a,
+            agent_b=conv.agent_b,
+            topic=conv.topic,
+            task_id=str(conv.task_id) if conv.task_id else None,
+            status=conv.status,
+            resolution=conv.resolution,
+            message_count=conv.message_count,
+            unread_by_a=conv.unread_by_a,
+            unread_by_b=conv.unread_by_b,
+            created_at=conv.created_at,
+            updated_at=conv.updated_at,
+            last_message_at=conv.last_message_at,
+        )
+
+    def _msg_to_model(self, msg: A2AMessageTable) -> A2AChatMessage:
+        """Convert table row to Pydantic model."""
+        return A2AChatMessage(
+            id=str(msg.id),
+            conversation_id=str(msg.conversation_id),
+            from_agent=msg.from_agent,
+            # ponytail: a2a_messages.content is nullable in the DB; 1815 pre-gap
+            # rows recovered from the Aug 2026 NAS outage carry NULL content (the
+            # heap extractor could not parse the varlena). The model requires a
+            # non-empty str, so coerce NULL to an honest placeholder instead of
+            # 500ing the whole conversation view.
+            content=msg.content or "(message content unavailable)",
+            message_kind=msg.message_kind,
+            skill=msg.skill,
+            steering=msg.steering,
+            response_to_id=str(msg.response_to_id) if msg.response_to_id else None,
+            requires_response=msg.requires_response,
+            read_at=msg.read_at,
+            created_at=msg.created_at,
+            edited_at=msg.edited_at,
+            edit_history=msg.edit_history or [],
+        )
+
+    # =========================================================================
+    # GATEWAY (CHOREOGRAPHER + CONTENT_ACTIONS) BACKFILL
+    # =========================================================================
+
+    async def _resolve_slug_from_id(self, agent_id: UUID) -> str:
+        """Look up an agent's slug from its UUID; raise ValueError if missing."""
+        result = await self.session.execute(
+            select(AgentTable.slug).where(AgentTable.id == agent_id)
+        )
+        slug = result.scalar_one_or_none()
+        if not slug:
+            raise ValueError(f"Agent not found for id {agent_id}")
+        return str(slug)
+
+
+class A2AChatDelivery(_Base):
+    """Sending a chat message and delivering it: the CEO reply budget, duplicates,
+    conversation stats, the vault note, and live steering for decisions."""
 
     async def _enforce_ceo_reply_budget(
         self,
@@ -1704,6 +1831,11 @@ class A2AService:
         except Exception as e:
             logger.warning("Vault A2A note materialization failed", error=str(e))
 
+
+class A2AReadState(_Base):
+    """Reading messages and their read state: messages for an agent and an admin,
+    marking read, unread messages and the inbox summary."""
+
     async def get_messages(
         self,
         conversation_id: UUID,
@@ -1982,7 +2114,7 @@ class A2AService:
             .select_from(A2AMessageTable)
             .where(
                 A2AMessageTable.from_agent == agent_slug,
-                A2AMessageTable.requires_response.is_(True),
+                awaiting_response(),
             )
         )
         pending_result = await self.session.execute(pending_query)
@@ -1999,7 +2131,7 @@ class A2AService:
                     A2AConversationTable.agent_b == agent_slug,
                 ),
                 A2AMessageTable.from_agent != agent_slug,
-                A2AMessageTable.requires_response.is_(True),
+                awaiting_response(),
             )
         )
         unanswered_result = await self.session.execute(unanswered_query)
@@ -2012,110 +2144,10 @@ class A2AService:
             unanswered_requests=unanswered_requests,
         )
 
-    async def list_pairs(self, agent_slug: str) -> list[A2APair]:
-        """List unique agent pairs for frontend display."""
-        from sqlalchemy import or_
 
-        query = (
-            select(A2AConversationTable)
-            .where(
-                or_(
-                    A2AConversationTable.agent_a == agent_slug,
-                    A2AConversationTable.agent_b == agent_slug,
-                )
-            )
-            .order_by(A2AConversationTable.updated_at.desc())
-        )
-
-        result = await self.session.execute(query)
-        conversations = result.scalars().all()
-
-        # Group by pair
-        pairs: dict[tuple[str, str], A2APair] = {}
-        for conv in conversations:
-            pair_key = (conv.agent_a, conv.agent_b)
-            if pair_key not in pairs:
-                pairs[pair_key] = A2APair(
-                    agent_a=conv.agent_a,
-                    agent_b=conv.agent_b,
-                    conversation_count=0,
-                    total_unread=0,
-                    last_activity=None,
-                )
-
-            pairs[pair_key].conversation_count += 1
-
-            unread = (
-                conv.unread_by_a if agent_slug == conv.agent_a else conv.unread_by_b
-            )
-            pairs[pair_key].total_unread += unread
-
-            current_activity = pairs[pair_key].last_activity
-            if current_activity is None or (
-                conv.updated_at is not None and conv.updated_at > current_activity
-            ):
-                pairs[pair_key].last_activity = conv.updated_at
-
-        return list(pairs.values())
-
-    # =========================================================================
-    # MODEL CONVERSIONS
-    # =========================================================================
-
-    def _conv_to_model(self, conv: A2AConversationTable) -> A2AConversation:
-        """Convert table row to Pydantic model."""
-        return A2AConversation(
-            id=str(conv.id),
-            agent_a=conv.agent_a,
-            agent_b=conv.agent_b,
-            topic=conv.topic,
-            task_id=str(conv.task_id) if conv.task_id else None,
-            status=conv.status,
-            resolution=conv.resolution,
-            message_count=conv.message_count,
-            unread_by_a=conv.unread_by_a,
-            unread_by_b=conv.unread_by_b,
-            created_at=conv.created_at,
-            updated_at=conv.updated_at,
-            last_message_at=conv.last_message_at,
-        )
-
-    def _msg_to_model(self, msg: A2AMessageTable) -> A2AChatMessage:
-        """Convert table row to Pydantic model."""
-        return A2AChatMessage(
-            id=str(msg.id),
-            conversation_id=str(msg.conversation_id),
-            from_agent=msg.from_agent,
-            # ponytail: a2a_messages.content is nullable in the DB; 1815 pre-gap
-            # rows recovered from the Aug 2026 NAS outage carry NULL content (the
-            # heap extractor could not parse the varlena). The model requires a
-            # non-empty str, so coerce NULL to an honest placeholder instead of
-            # 500ing the whole conversation view.
-            content=msg.content or "(message content unavailable)",
-            message_kind=msg.message_kind,
-            skill=msg.skill,
-            steering=msg.steering,
-            response_to_id=str(msg.response_to_id) if msg.response_to_id else None,
-            requires_response=msg.requires_response,
-            read_at=msg.read_at,
-            created_at=msg.created_at,
-            edited_at=msg.edited_at,
-            edit_history=msg.edit_history or [],
-        )
-
-    # =========================================================================
-    # GATEWAY (CHOREOGRAPHER + CONTENT_ACTIONS) BACKFILL
-    # =========================================================================
-
-    async def _resolve_slug_from_id(self, agent_id: UUID) -> str:
-        """Look up an agent's slug from its UUID; raise ValueError if missing."""
-        result = await self.session.execute(
-            select(AgentTable.slug).where(AgentTable.id == agent_id)
-        )
-        slug = result.scalar_one_or_none()
-        if not slug:
-            raise ValueError(f"Agent not found for id {agent_id}")
-        return str(slug)
+class A2ASend(_Base):
+    """The send verb and the CEO's side of it: replying to the CEO, the CEO's
+    interjection, the sent event, and waking a CEO recipient."""
 
     async def _get_conversation_for_reply_to_ceo(
         self, from_slug: str, to_slug: str
@@ -2422,3 +2454,26 @@ class A2AService:
                 agent_id=str(agent_id),
                 error=str(e),
             )
+
+
+class A2AService(
+    A2AAgentCards,
+    A2AChatDelivery,
+    A2AConversations,
+    A2AMessageHandling,
+    A2AReadState,
+    A2ASend,
+    A2ATasks,
+):
+    """
+    Service layer for A2A protocol operations.
+
+    Provides methods for:
+    - Building Agent Cards for discovery
+    - Converting between RoboCo tasks and A2A tasks
+    - Processing A2A messages
+    """
+
+    def __init__(self, session: AsyncSession):
+        """Initialize with database session."""
+        self.session = session

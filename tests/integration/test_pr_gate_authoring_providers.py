@@ -1,4 +1,4 @@
-"""``PRGateMixin._authoring_providers`` (round-1 pr_gate finding F-8b364f1c) --
+"""``PRGatePassMixin._authoring_providers`` (round-1 pr_gate finding F-8b364f1c) --
 resolves the REAL provider(s) that authored an assembled task's code from its
 descendants' assignees, via the fleet's provider-routing seam, instead of
 hardcoding ``ModelProvider.ANTHROPIC``.

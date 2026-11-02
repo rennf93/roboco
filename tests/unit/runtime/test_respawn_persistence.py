@@ -23,11 +23,14 @@ import pytest
 from roboco.runtime.orchestrator import AgentOrchestrator
 from sqlalchemy.dialects import postgresql
 
-_SEEDED_COUNT = 3  # a persisted strike count, one below the trip threshold
+# a persisted strike count, one below the trip threshold
+_SEEDED_COUNT = 3
 _STRIKE_COUNT = 2
 _MIN_PERSISTS = 2
-_TRIP_COUNT = 4  # count > _PM_RESPAWN_MAX_UNPRODUCTIVE (3) fires the gate
-_REVISIT_RESETS_PERSISTED = 2  # a persisted revisit-reset count
+# count > _PM_RESPAWN_MAX_UNPRODUCTIVE (3) fires the gate
+_TRIP_COUNT = 4
+# a persisted revisit-reset count
+_REVISIT_RESETS_PERSISTED = 2
 
 
 def _new_orchestrator() -> AgentOrchestrator:
@@ -38,7 +41,21 @@ def _new_orchestrator() -> AgentOrchestrator:
     return orch
 
 
+async def _attempt_spawn(
+    orch: AgentOrchestrator, slug: str, task: dict[str, Any]
+) -> bool:
+    """One dispatch attempt: consult the breaker and, when it lets the spawn
+    through, launch it. ``_launch_spawn`` reports every container that really
+    started to the breaker, and only those attempts count as strikes."""
+    gated = await orch._pm_respawn_should_gate(slug, task)
+    if not gated:
+        orch._note_respawn_spawn_launched(slug, task["id"])
+    return gated
+
+
 def _row(task_id: Any, **over: Any) -> SimpleNamespace:
+    """A ``respawn_tracker`` row last struck just now (inside the restore's
+    age cutoff) unless ``updated_at`` says otherwise."""
     base = {
         "agent_slug": "be-pm",
         "task_id": task_id,
@@ -48,6 +65,7 @@ def _row(task_id: Any, **over: Any) -> SimpleNamespace:
         "tracing_resets": 0,
         "notified": False,
         "revisit_resets": 0,
+        "updated_at": datetime.now(UTC),
     }
     base.update(over)
     return SimpleNamespace(**base)
@@ -93,7 +111,8 @@ def test_partition_drops_terminal_and_missing_rows() -> None:
     rows = [_row(done), _row(cancelled), _row(gone)]
     restored, stale = AgentOrchestrator._partition_respawn_rows(
         rows,
-        {done: "completed", cancelled: "cancelled"},  # gone absent entirely
+        # gone absent entirely
+        {done: "completed", cancelled: "cancelled"},
     )
     assert restored == {}
     assert {(s, t) for s, t in stale} == {
@@ -119,8 +138,8 @@ def test_partition_restamps_last_check_to_now_to_avoid_stale_tracing_gap() -> No
     # spawn.
     tid = uuid4()
     stale_check = datetime(2026, 6, 20, tzinfo=UTC)
-    rows = [_row(tid, last_check=stale_check)]
     restore_now = datetime(2026, 6, 28, 12, 0, tzinfo=UTC)
+    rows = [_row(tid, last_check=stale_check, updated_at=restore_now)]
     restored, stale = AgentOrchestrator._partition_respawn_rows(
         rows, {tid: "in_progress"}, now=restore_now
     )
@@ -175,7 +194,8 @@ async def test_loader_skips_terminal_rows_and_deletes_them() -> None:
         restored = await orch.restore_respawn_tracker()
     assert restored == 0
     assert orch._pm_respawn_tracker == {}
-    db.commit.assert_awaited()  # stale row deleted + committed
+    # stale row deleted + committed
+    db.commit.assert_awaited()
 
 
 @pytest.mark.asyncio
@@ -225,8 +245,9 @@ async def test_new_entry_and_strike_schedule_persist() -> None:
             return_value=AsyncMock(),
         ),
     ):
-        await orch._pm_respawn_should_gate("be-pm", task)  # new entry
-        await orch._pm_respawn_should_gate("be-pm", task)  # strike -> count 2
+        # The first attempt opens the record, the second adds a strike.
+        await _attempt_spawn(orch, "be-pm", task)
+        await _attempt_spawn(orch, "be-pm", task)
     assert len(captured) >= _MIN_PERSISTS
     assert captured[0][0] == "be-pm" and captured[0][1] == task_id
     assert captured[0][2]["count"] == 1
@@ -248,8 +269,9 @@ async def test_notified_flip_schedules_persist_with_notified_true() -> None:
             return_value=AsyncMock(),
         ),
     ):
-        for _ in range(4):  # 4th trips the gate + flips notified
-            await orch._pm_respawn_should_gate("be-pm", task)
+        # 4th trips the gate + flips notified
+        for _ in range(4):
+            await _attempt_spawn(orch, "be-pm", task)
     assert any(c[2].get("notified") for c in captured), (
         "the notified flip must schedule a persist with notified=True"
     )
@@ -264,8 +286,9 @@ async def test_tracing_reset_schedules_persist_with_reset_count() -> None:
     fake_audit = AsyncMock()
     fake_audit.has_recent_tracing_gap = AsyncMock(return_value=True)
     with patch("roboco.services.audit.get_audit_service", return_value=fake_audit):
-        await orch._pm_respawn_should_gate("be-pm", task)  # new entry
-        await orch._pm_respawn_should_gate("be-pm", task)  # tracing reset
+        # The first attempt opens the record, the second takes the tracing reset.
+        await _attempt_spawn(orch, "be-pm", task)
+        await _attempt_spawn(orch, "be-pm", task)
     assert captured[-1][2]["count"] == 1
     assert captured[-1][2]["tracing_resets"] == 1
 
@@ -359,8 +382,9 @@ async def test_restored_counter_trips_at_persisted_threshold_not_from_one() -> N
             return_value=AsyncMock(),
         ),
     ):
-        gated = await orch._pm_respawn_should_gate("be-pm", task)
-    assert gated is True  # fires on the next spawn, not re-counted from 1
+        gated = await _attempt_spawn(orch, "be-pm", task)
+    # fires on the next spawn, not re-counted from 1
+    assert gated is True
     assert orch._pm_respawn_tracker[("be-pm", task_id)]["count"] == _TRIP_COUNT
 
 
@@ -400,8 +424,9 @@ async def test_restore_status_mismatch_does_not_reburn_threshold() -> None:
             return_value=AsyncMock(),
         ),
     ):
-        gated = await orch._pm_respawn_should_gate("be-pm", task)
-    assert gated is True  # count 3 -> 4 trips; NOT reset to 1 by the mismatch
+        gated = await _attempt_spawn(orch, "be-pm", task)
+    # count 3 -> 4 trips; NOT reset to 1 by the mismatch
+    assert gated is True
     assert orch._pm_respawn_tracker[("be-pm", str(task_id))]["count"] == _TRIP_COUNT
 
 
@@ -427,7 +452,7 @@ async def test_restart_midloop_continues_identically_to_no_restart() -> None:
                 return_value=AsyncMock(),
             ),
         ):
-            return await orch._pm_respawn_should_gate("be-pm", task)
+            return await _attempt_spawn(orch, "be-pm", task)
 
     no_restart = _new_orchestrator()
     cast("Any", no_restart)._schedule_respawn_persist = MagicMock()

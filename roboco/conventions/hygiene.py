@@ -2,7 +2,8 @@
 
 Comment nodes come from the AST (so markers inside strings are never matched).
 An *inline* comment trails code on its line; a full-line comment (indented or
-not) is allowed. Suppression markers are language-scoped.
+not) is allowed. A suppression is a tool's directive where that tool reads it,
+language-scoped; prose that only names a marker is not one.
 """
 
 from __future__ import annotations
@@ -23,12 +24,6 @@ if TYPE_CHECKING:
 
     from tree_sitter import Node
 
-_SUPPRESSIONS: dict[str, tuple[str, ...]] = {
-    "python": ("noqa", "type: ignore"),
-    "typescript": ("eslint-disable", "ts-ignore", "ts-expect-error"),
-    "tsx": ("eslint-disable", "ts-ignore", "ts-expect-error"),
-}
-
 # Suppression codes that are the SANCTIONED escape hatch rather than a silenced
 # error: ruff's flake8-type-checking codes (TC001/2/3 — an import a framework
 # needs at runtime, e.g. pydantic / SQLAlchemy / FastAPI, cannot move into a
@@ -38,10 +33,34 @@ _SUPPRESSIONS: dict[str, tuple[str, ...]] = {
 # finding. Keeps the rule's teeth on genuine error-silencing without footgunning
 # the framework-mandated annotations every pydantic project needs.
 _ALLOWED_SUPPRESSION_CODES = frozenset({"TC001", "TC002", "TC003", "prop-decorator"})
-_NOQA_CODES = re.compile(r"noqa(?::\s*(?P<codes>[A-Z0-9, ]+))?")
-_TYPE_IGNORE_CODES = re.compile(r"type:\s*ignore(?:\[(?P<codes>[^\]]*)\])?")
-_SUPPRESSION_CODE_PATTERNS: dict[str, tuple[re.Pattern[str], ...]] = {
-    "python": (_NOQA_CODES, _TYPE_IGNORE_CODES),
+# A directive is the marker where its tool reads it: right after a ``#`` for
+# ruff (noqa, any case), mypy (type: ignore) and bandit (nosec), and at the
+# start of the comment for ESLint and TypeScript. A comment that merely names a
+# marker ("we removed the noqa here") suppresses nothing and is no finding.
+_NOQA_DIRECTIVE = re.compile(r"#\s*(?i:noqa)\b(?::\s*(?P<codes>[A-Z0-9, ]+))?")
+_TYPE_IGNORE_DIRECTIVE = re.compile(r"#\s*type:\s*ignore\b(?:\[(?P<codes>[^\]]*)\])?")
+_NOSEC_DIRECTIVE = re.compile(r"#\s*nosec\b")
+_TS_DIRECTIVE = re.compile(
+    r"^(?://|/\*+)\s*"
+    r"(?:eslint-disable(?:-next-line|-line)?|@ts-(?:ignore|expect-error|nocheck))\b"
+)
+_SUPPRESSION_DIRECTIVES: dict[str, tuple[re.Pattern[str], ...]] = {
+    "python": (_NOQA_DIRECTIVE, _TYPE_IGNORE_DIRECTIVE, _NOSEC_DIRECTIVE),
+    "typescript": (_TS_DIRECTIVE,),
+    "tsx": (_TS_DIRECTIVE,),
+}
+# A tool reads these on the very line they trail, so they cannot move above it:
+# coverage's ``pragma: no cover`` / ``no branch``, the formatter's ``fmt: skip``,
+# isort's ``isort: skip``, and the suppressions no_lint_suppressions judges on
+# its own (noqa, type: ignore, nosec; ESLint's ``eslint-disable-line``). A
+# comment that starts with one is a directive, not narration.
+_POSITION_BOUND_DIRECTIVES: dict[str, re.Pattern[str]] = {
+    "python": re.compile(
+        r"^#\s*(?:pragma:\s*no\s+(?:cover|branch)\b|fmt:\s*skip\b|isort:\s*skip\b"
+        r"|(?i:noqa)\b|type:\s*ignore\b|nosec\b)"
+    ),
+    "typescript": re.compile(r"^//\s*eslint-disable-line\b"),
+    "tsx": re.compile(r"^//\s*eslint-disable-line\b"),
 }
 _HYGIENE_TEXT: dict[str, tuple[str, str]] = {
     "no_inline_comments": (
@@ -76,30 +95,37 @@ def _comment_findings(
 ) -> list[Finding]:
     row, col = comment.start_point
     out: list[Finding] = []
-    if _is_inline(lines, row, col):
-        out.append(_finding(rel_path, row + 1, "no_inline_comments", standard))
     text = comment.text.decode(errors="replace") if comment.text else ""
-    if any(
-        marker in text for marker in _SUPPRESSIONS.get(language, ())
-    ) and not _suppression_allowed(text, language):
+    if _is_inline(lines, row, col) and not _is_position_bound(text, language):
+        out.append(_finding(rel_path, row + 1, "no_inline_comments", standard))
+    directives = [
+        match
+        for pattern in _SUPPRESSION_DIRECTIVES.get(language, ())
+        for match in pattern.finditer(text)
+    ]
+    if directives and not _suppression_allowed(directives):
         out.append(_finding(rel_path, row + 1, "no_lint_suppressions", standard))
     return out
 
 
-def _suppression_allowed(text: str, language: str) -> bool:
-    """True iff this suppression lists only sanctioned framework-escape codes.
+def _suppression_allowed(directives: list[re.Match[str]]) -> bool:
+    """True iff every directive lists only sanctioned framework-escape codes.
 
-    A bare marker (no code) suppresses everything and is never allowed; a
-    language with no code grammar here (e.g. TypeScript) is never allowed.
+    A bare marker (no code) suppresses everything and is never allowed, nor
+    is a directive with no code grammar here (nosec, ESLint, TypeScript).
     """
     codes: list[str] = []
-    for pattern in _SUPPRESSION_CODE_PATTERNS.get(language, ()):
-        for match in pattern.finditer(text):
-            group = match.group("codes")
-            if group is None:
-                return False
-            codes += [c.strip() for c in re.split(r"[,\s]+", group) if c.strip()]
+    for directive in directives:
+        group = directive.groupdict().get("codes")
+        if not group:
+            return False
+        codes += [c.strip() for c in re.split(r"[,\s]+", group) if c.strip()]
     return bool(codes) and all(c in _ALLOWED_SUPPRESSION_CODES for c in codes)
+
+
+def _is_position_bound(text: str, language: str) -> bool:
+    pattern = _POSITION_BOUND_DIRECTIVES.get(language)
+    return pattern is not None and pattern.match(text) is not None
 
 
 def _is_inline(lines: list[bytes], row: int, col: int) -> bool:

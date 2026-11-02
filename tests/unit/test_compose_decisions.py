@@ -1,10 +1,11 @@
-"""Compose contract for the roboco-decisions sidecar (the Laya tier of the
-Decisions service, docs/internal/decisions-spec.md sections 8 Stage 0.5
-and 10).
+"""Compose contract for the roboco-decisions sidecar (the self-hosted tiers
+of the Decisions service, docs/internal/decisions-spec.md sections 8
+Stage 0.5 and 10).
 
-The sidecar is an inert-until-armed HTTP service (Laya typed decisions over
-the official onnxruntime path, mirroring the OpenRouter Decisions wire
-shape). Its compose contract is deliberately narrow:
+The sidecar is an inert-until-armed HTTP service (Clef-Flash 9B + Laya 421M
+typed decisions over llama.cpp backends behind one proxy, mirroring the
+OpenRouter Decisions wire shape). Its compose contract is deliberately
+narrow:
 
 - it exists in BOTH compose files (build + registry), byte-consistent with
   how the video-renderer sidecar landed;
@@ -15,8 +16,13 @@ shape). Its compose contract is deliberately narrow:
 - it has a healthcheck (the resolver's cached probe depends on /health);
 - it is NOT exposed on host ports (internal bridge only, never through
   nginx either);
-- it carries a memory cap (int8 ONNX weights + onnxruntime fit in 1-2 GB;
-  the cap is the guardrail);
+- no memory cap, deliberately (the Clef-Flash GGUF loads into RAM; an
+  earlier low cap rendered the container useless and was removed);
+- one input-cap knob (ROBOCO_DECISIONS_CLEF_MAX_INPUT_TOKENS) reaches both
+  the orchestrator's client and the sidecar's llama.cpp batch;
+- docker-compose.igpu.yaml, added by scripts/deploy-nas.sh only when the
+  host has /dev/dri/renderD128, puts the sidecar and ollama on the Intel
+  iGPU;
 - the resolver URL env plumbing points at the container name on port 8100.
 
 The docker-compose.yml/.yaml byte-identity gate (make compose-sync) is
@@ -39,8 +45,10 @@ _SIDECAR_CONTAINER = "roboco-decisions"
 _DECISIONS_ENV_KEYS = (
     "ROBOCO_DECISIONS_ENABLED",
     "ROBOCO_DECISIONS_BASE_URL",
+    "ROBOCO_DECISIONS_TIER_CLEF_ENABLED",
     "ROBOCO_DECISIONS_TIER_LAYA_ENABLED",
     "ROBOCO_DECISIONS_TIER_OPENROUTER_ENABLED",
+    "ROBOCO_DECISIONS_CLEF_MAX_INPUT_TOKENS",
 )
 
 
@@ -121,6 +129,12 @@ def test_sidecar_resolver_url_points_at_container() -> None:
         assert "roboco-decisions:8100" in value and not any(
             banned in value for banned in ("127.0.0.1", "localhost", "0.0.0.0")
         ), f"{name}: ROBOCO_DECISIONS_BASE_URL must name the sidecar container"
+        assert env.get("ROBOCO_DECISIONS_TIER_CLEF_ENABLED") == (
+            "${ROBOCO_DECISIONS_TIER_CLEF_ENABLED:-true}"
+        ), f"{name}: the Clef tier is the built-in default and must default ON"
+        assert env.get("ROBOCO_DECISIONS_TIER_LAYA_ENABLED") == (
+            "${ROBOCO_DECISIONS_TIER_LAYA_ENABLED:-true}"
+        ), f"{name}: the cheap Laya tier is the built-in fallback and must default ON"
         assert env.get("ROBOCO_DECISIONS_TIER_OPENROUTER_ENABLED") == (
             "${ROBOCO_DECISIONS_TIER_OPENROUTER_ENABLED:-false}"
         ), f"{name}: the OpenRouter fallback tier is OPT-IN and must default OFF"
@@ -183,3 +197,43 @@ def test_compose_yaml_twin_byte_identical() -> None:
     assert yml == yaml_twin, (
         "docker-compose.yaml has drifted from docker-compose.yml - copy .yml over .yaml"
     )
+
+
+_IGPU_COMPOSE = "docker-compose.igpu.yaml"
+_INPUT_CAP = "${ROBOCO_DECISIONS_CLEF_MAX_INPUT_TOKENS:-8192}"
+
+
+def test_one_input_cap_knob_reaches_the_sidecar_in_both_composes() -> None:
+    for name in _COMPOSE_FILES:
+        env = _sidecar_service(_load(name), name)["environment"]
+        assert env["CLEF_MAX_INPUT_TOKENS"] == _INPUT_CAP, name
+
+
+def test_the_igpu_override_puts_both_model_servers_on_dri() -> None:
+    services = _load(_IGPU_COMPOSE)["services"]
+    for name in ("decisions", "ollama"):
+        assert services[name]["devices"] == ["/dev/dri:/dev/dri"], name
+    # The sidecar runs as a non-root uid: it needs the host's render group.
+    assert services["decisions"]["group_add"] == [
+        "${ROBOCO_RENDER_GID:?scripts/deploy-nas.sh sets it from /dev/dri/renderD128}"
+    ]
+    # Without the integrated-GPU opt-in ollama logs "dropping integrated
+    # GPU" and stays on the CPU.
+    assert services["ollama"]["environment"] == {
+        "OLLAMA_VULKAN": "1",
+        "OLLAMA_IGPU_ENABLE": "1",
+    }
+
+
+def test_the_igpu_override_names_only_services_the_base_compose_has() -> None:
+    base = set(_load(_BUILD_COMPOSE)["services"])
+    assert set(_load(_IGPU_COMPOSE)["services"]) <= base
+
+
+def test_deploy_nas_adds_the_igpu_override_only_when_the_device_exists() -> None:
+    script = (_REPO_ROOT / "scripts" / "deploy-nas.sh").read_text()
+    guard = "if [ -c /dev/dri/renderD128 ]; then"
+    assert guard in script
+    block = script[script.index(guard) : script.index("fi", script.index(guard))]
+    assert "COMPOSE+=(-f docker-compose.igpu.yaml)" in block
+    assert 'ROBOCO_RENDER_GID="$(stat -c %g /dev/dri/renderD128)"' in block
