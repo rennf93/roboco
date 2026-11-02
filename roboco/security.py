@@ -638,7 +638,7 @@ _DOCKER_BRIDGE_POOL = "172.16.0.0/12"
 # must be one of these before the middleware consults X-Forwarded-For at
 # all. Deliberately the WHOLE docker bridge pool, unlike the hop-peel set
 # below — nginx itself connects from an arbitrary bridge-allocated address
-# (neither compose file pins a `subnet:`), so it must keep presenting XFF
+# (the registry compose does not pin a `subnet:`), so it must keep presenting XFF
 # regardless of which address it lands on. A bare connecting-peer match
 # alone stamps nothing: the XFF entries themselves are still checked against
 # the narrower, operator-scoped `_TRUSTED_HOP_NETWORKS`.

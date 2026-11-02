@@ -94,12 +94,11 @@ if [ -c /dev/dri/renderD128 ]; then
   echo "[deploy] Intel iGPU found (/dev/dri/renderD128, group $ROBOCO_RENDER_GID): decisions and ollama run on it"
 fi
 
-# Host-specific .env values (ensure_env_secret, ensure_env_chain_peer): each
-# is written once and never replaces a value already declared.
+# Host-specific .env values (ensure_env_secret): written once, never
+# replacing a value already declared.
 # shellcheck source=scripts/deploy-env.sh
 source "$STACK_DIR/scripts/deploy-env.sh"
 ensure_env_secret ROBOCO_REDIS_PASSWORD
-ensure_env_chain_peer roboco_default
 
 echo "[deploy] app/$COLOR: content-gated image builds..."
 # ---------------------------------------------------------------------------

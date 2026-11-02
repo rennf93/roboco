@@ -306,12 +306,11 @@ x-orchestrator-env: &orchestrator-env
   # setting it in .env silently does nothing — only vars listed in this
   # stanza reach the container.
   ROBOCO_GUARD_EMERGENCY_WHITELIST: ${ROBOCO_GUARD_EMERGENCY_WHITELIST:-}
-  # Trusted local-proxy hop IPs (docker bridge gateway) for the XFF
-  # real-client resolver — set to the bridge gateway when Tailscale Serve
-  # is gateway-fronted, else the guard sees a whitelisted hop and the WAF
-  # goes inert for /tg. Same "must be listed here to reach the container"
-  # rule as the emergency whitelist above.
-  ROBOCO_GUARD_TRUSTED_CHAIN_PEERS: ${ROBOCO_GUARD_TRUSTED_CHAIN_PEERS:-}
+  # The XFF hop the real-client resolver peels: the roboco_default gateway
+  # that Tailscale Serve traffic reaches nginx from (the subnet is pinned
+  # under `networks:` at the end of this file). Without it the guard sees a
+  # whitelisted hop and the WAF goes inert for /tg.
+  ROBOCO_GUARD_TRUSTED_CHAIN_PEERS: 172.30.0.1
   # Log level for guard-core's suspicious-path lines (IP bans, blocked
   # countries, BehaviorTracker). Same "must be listed here" rule as above.
   ROBOCO_GUARD_LOG_SUSPICIOUS_LEVEL: ${ROBOCO_GUARD_LOG_SUSPICIOUS_LEVEL:-WARNING}
@@ -1460,6 +1459,12 @@ services:
 networks:
   default:
     name: roboco_default
+    # Pinned so the gateway ROBOCO_GUARD_TRUSTED_CHAIN_PEERS names is fixed,
+    # not whatever docker picks when it creates the network.
+    ipam:
+      config:
+        - subnet: 172.30.0.0/16
+          gateway: 172.30.0.1
   # DB isolation: postgres/redis live ONLY here; the orchestrator is the
   # only service homed on both. Spawned agent containers + sandbox sidecars
   # join roboco_default (AGENT_NETWORK) and cannot resolve or reach the
