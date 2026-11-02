@@ -38,12 +38,12 @@ def test_normalized_version_keeps_bare_version() -> None:
 
 
 def test_verified_count_counts_ac_lines() -> None:
-    notes = (
-        "QA passed.\n"
-        "[AC] endpoint exists — verified: routes/portal.py:10\n"
-        "[AC] sorted desc — verified: dashboard.py:55\n"
-    )
-    assert _verified_criteria_count(notes) == 2  # noqa: PLR2004
+    ac_lines = [
+        "[AC] endpoint exists — verified: routes/portal.py:10",
+        "[AC] sorted desc — verified: dashboard.py:55",
+    ]
+    notes = "QA passed.\n" + "".join(f"{line}\n" for line in ac_lines)
+    assert _verified_criteria_count(notes) == len(ac_lines)
 
 
 def test_verified_count_ignores_non_ac_lines() -> None:

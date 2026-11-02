@@ -4,7 +4,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 # Development Rules
 
-**A GOOD FUNCTION NAME IS SELF-EXPLANATORY. IF THE FUNCTION ONLY TAKES CARE OF A SINGLE THINGS, THEN EVEN BETTER BECAUSE THE NAME IS GOING TO BE THE ONLY DOCUMENTATION YOU NEED.** **DOING THINGS WRONGLY COST TWICE. DO THINGS RIGHT AT FIRST, AND YOU DON'T PAY THE PRICE** **ASK QUESTIONS BEFORE YOU DO ANYTHING** **YOU ARE NOT ALLOWED TO MAKE ASSUMPTIONS** **IGNORING != FIXING** **PRE-EXISTING ERRORS ARE STILL EXISTING ERRORS. I DON'T CARE IF THEY ARE PRE-EXISTING, THEY SHOULDN'T EXIST** **HELPING MY PROMPTS**:
+**A GOOD FUNCTION NAME IS SELF-EXPLANATORY. IF THE FUNCTION ONLY TAKES CARE OF A SINGLE THINGS, THEN EVEN BETTER BECAUSE THE NAME IS GOING TO BE THE ONLY DOCUMENTATION YOU NEED.**
+
+**DOING THINGS WRONGLY COST TWICE. DO THINGS RIGHT AT FIRST, AND YOU DON'T PAY THE PRICE**
+
+**ASK QUESTIONS BEFORE YOU DO ANYTHING**
+
+**YOU ARE NOT ALLOWED TO MAKE ASSUMPTIONS**
+
+**IGNORING != FIXING**
+
+**PRE-EXISTING ERRORS ARE STILL EXISTING ERRORS. I DON'T CARE IF THEY ARE PRE-EXISTING, THEY SHOULDN'T EXIST**
+
+**HELPING MY PROMPTS**:
 ```text
 I want the deepest version of the tasks, not bigger ones but rather:
 
@@ -46,7 +58,7 @@ CEO (Renzo - Human)
                    +-- UX/UI Cell (6 agents: 2 Devs, 1 QA, 1 PM, 1 Documenter, 1 PR Reviewer)
 ```
 
-Each agent works in its own git clone under `{ROBOCO_WORKSPACES_ROOT}/{project-slug}/{team}/{agent-slug}` (defaults and auto-clone settings in `roboco/config.py`). The Next.js control panel lives at `roboco/panel/` inside this repo. Workspace and work-session gotchas: `.claude/rules/workspaces-and-git.md`.
+Each agent works in its own git clone under `{ROBOCO_WORKSPACES_ROOT}/{project-slug}/{team}/{agent-slug}` (defaults and auto-clone settings in `roboco/config.py`). The Next.js control panel lives at `roboco/panel/` inside this repo. Every agent container mounts every clone read-write, so the orchestrator never runs git (or anything else) in a workspace as root: workspace git runs as a dedicated git user, origin traffic and the project token live only in a per-project relay under the orchestrator-only `/data/private`, and a workspace's own code runs in a throwaway container. Workspace and work-session gotchas, and that trust boundary: `.claude/rules/workspaces-and-git.md`.
 
 ## Git Workflow
 
@@ -122,6 +134,8 @@ A MegaTask is a branchless **umbrella** task over N **root-subtasks** (each a re
 
 - `nginx` (`localhost:3000`) is the only exposed service: `/api/*` and `/ws/*` go to `orchestrator:8000`, everything else to `panel:3000`. The panel uses relative `/api` and `/ws` URLs; never add a second origin.
 - Two bridges: `roboco_default` (panel, nginx, ollama, agents, sandboxes) and `roboco_data` (postgres + redis ONLY). The orchestrator is the only multi-homed service, so agent containers cannot reach the DB by construction; DB-needing projects use the sandbox opt-in. `ROBOCO_DB_NETWORK_ISOLATED=true` rides the compose files that carry this topology.
+- Docker only through the Docker gate (`docker/docker-gate/gate.py`): `docker-gate-<color>` (`docker-gate` in the registry file) is the only service that mounts `/var/run/docker.sock`. The api and dispatcher reach it through `DOCKER_HOST` on the shared `docker-gate` volume, and it passes only the Engine API calls RoboCo makes, asking only for what RoboCo asks for (it checks create and exec bodies, pulls, calls by container id, and every bind on disk, at create and again at start). Never mount the host socket into another service; a new docker flag, image or bind source needs the gate's policy and a fresh recording. Details: `.claude/rules/workspaces-and-git.md`.
+- Redis runs with `requirepass`: every compose file requires `ROBOCO_REDIS_PASSWORD`. `scripts/deploy-nas.sh` generates one into `.env` the first time it is missing (never overwriting a set value); `make quickstart` generates it for a fresh `.env` and names the missing variable for an existing one. `${ROBOCO_DATA_DIR:-./data}/private` is mounted at `/data/private` in the orchestrator only; never mount it anywhere else.
 - Schema changes ship only as Alembic migrations under `alembic/versions/`; after pulling one, run `docker compose exec orchestrator alembic upgrade head`.
 - `make quickstart` is the pull-and-run bring-up (`scripts/bootstrap.sh`); the release workflow's `pull-smoke` job pulls the registry compose against every published tag.
 
@@ -137,12 +151,13 @@ If the orchestrator is pegged at high CPU and nobody can say why, profile it liv
 
 ## Subsystem doctrine (`.claude/rules/`, auto-loaded by path)
 
-- `workspaces-and-git.md`: clone reset on fresh claim, `uv sync --extra dev`, stale-state fixes, forge adapters, protected-branch fail-open vs fail-closed
+- `workspaces-and-git.md`: clone reset on fresh claim, `uv sync --extra dev`, stale-state fixes, forge adapters, protected-branch fail-open vs fail-closed, the workspace trust boundary, Entire's commit hooks
 - `task-lifecycle.md`: PR gate, zero-diff waiver, sequence bar, PM auto-submit, revision findings ledger
 - `gateway-guards.md`: possibilities matrix, collision map, delegation fidelity, budgets, PR labels, rate-limit parking, tool-call budget, spawn-waste metrics
 - `notifications-and-a2a.md`: re-escalation backoff, outbox + savepoint interaction
 - `agent-providers.md`: routing presets, Grok/Gemini/Codex/Kimi auth and tool-scoping
 - `autonomy-engines.md`: self-heal, CI-watch, dep-update, docs-sync, release manager, env-branch ladder
+- `entire-trails.md`: task trees mirrored onto Entire trails (one way, RoboCo canonical), what Entire 0.12.2 allows (a change never moves, link before the first PR, byte-identical retries), the outbox and its drain
 - `board-programs-and-x.md`: the fourteen Board Programs, X account posting rules
 - `sandbox.md`, `cloud-auth.md`, `conventions-standard.md`, `megatask.md`, `api-streams.md`, `doctrine-memory-eval.md`
 - `video-engine.md`, `obsidian-vault.md`, `telegram-bridge.md` (pre-existing)
@@ -152,5 +167,6 @@ If the orchestrator is pegged at high CPU and nobody can say why, profile it liv
 User-facing documentation is the docs site at **[docs.roboco.tech](https://docs.roboco.tech)** (the `roboco-website` repo). In this repo, `docs/rag/` is the agent-facing RAG corpus and `docs/map/` the agent-facing codebase map, both auto-indexed into the KB at startup (`OptimalService.AUTO_INDEX_DIRS`); `docs/internal/` holds specs and working notes; `docs-redirects/` keeps the old Pages URLs resolving.
 
 <!-- entire-agent:begin -->
-Read .entire/agent-guide.md for this repository's workflow, source inspection, and verification guidance. @.entire/agent-guide.md
+Read .entire/agent-guide.md for this repository's workflow, source inspection, and verification guidance.
+@.entire/agent-guide.md
 <!-- entire-agent:end -->

@@ -225,3 +225,75 @@ async def test_request_changes_rejected_for_non_pm_role() -> None:
     body = env.as_dict()
     assert body["error"] is not None
     task_svc.request_changes.assert_not_awaited()
+
+
+def _request_changes_task_service(task_id: Any, pm_id: Any) -> AsyncMock:
+    """A task service whose PM-review task request_changes bounces to a dev."""
+    task_svc = AsyncMock()
+    task_svc.get.return_value = _pm_review_task(task_id, pm_id)
+    task_svc.agent_for.return_value = _pm_agent_mock(pm_id)
+    task_svc.request_changes.return_value = MagicMock(
+        id=task_id, status="needs_revision", assigned_to=uuid4(), team="frontend"
+    )
+    task_svc.session = MagicMock()
+    task_svc.session.add = MagicMock()
+    task_svc.session.flush = AsyncMock()
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
+    return task_svc
+
+
+@pytest.mark.asyncio
+async def test_request_changes_records_its_findings_as_the_pm_decision() -> None:
+    """request_changes is a PM decision (VERB_REQUIREMENTS declares
+    journal:decision for it) but recorded none, so the PM prompts had the PM
+    note(scope='decision') first. That note is refused on a gate-passed task:
+    pr_pass hands it to the PM with no claim, and awaiting_pm_review has no
+    claim edge. Like complete / unblock / escalate_up, the verb now records
+    its own rationale, the findings, as the PM's decision."""
+    pm_id = uuid4()
+    task_id = uuid4()
+    task_svc = _request_changes_task_service(task_id, pm_id)
+    journal = AsyncMock()
+    journal.latest_decision_at.side_effect = [None, datetime.now(UTC)]
+    c = Choreographer(_make_deps(task=task_svc, journal=journal))
+
+    env = await c.request_changes(
+        pm_id,
+        task_id,
+        ["frontend/CLAUDE.md modified out of scope — revert the doc commit hunk"],
+    )
+
+    assert env.error is None, env.as_dict()
+    journal.write_decision.assert_awaited_once()
+    written = journal.write_decision.await_args.kwargs
+    assert written["agent_id"] == pm_id
+    assert written["task_id"] == task_id
+    assert "frontend/CLAUDE.md modified out of scope" in written["content"]
+
+
+@pytest.mark.asyncio
+async def test_request_changes_without_a_decision_leaves_the_task_untouched() -> None:
+    """The decision gate runs before the findings ledger insert and the
+    needs_revision transition, so a refused request_changes writes nothing."""
+    pm_id = uuid4()
+    task_id = uuid4()
+    task_svc = _request_changes_task_service(task_id, pm_id)
+    journal = AsyncMock()
+    journal.latest_decision_at.return_value = None
+    c = Choreographer(_make_deps(task=task_svc, journal=journal))
+
+    env = await c.request_changes(
+        pm_id,
+        task_id,
+        ["frontend/CLAUDE.md modified out of scope — revert the doc commit hunk"],
+    )
+
+    assert env.error is not None
+    assert "journal:decision" in (env.missing or [])
+    task_svc.session.add.assert_not_called()
+    task_svc.request_changes.assert_not_awaited()

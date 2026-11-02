@@ -16,7 +16,10 @@ export function WaitingAgentsAlert({ waitingAgents }: WaitingAgentsAlertProps) {
   return (
     <Card className="border-orange-500/50">
       <CardHeader>
-        <HelpTip label="Agents blocked in a waiting_long state — refreshed every 10s" side="right">
+        <HelpTip
+          label="Agents blocked in a waiting_long state — refreshed every 10s"
+          side="right"
+        >
           <CardTitle className="text-orange-500 flex items-center gap-2 w-fit">
             <AlertTriangle className="h-5 w-5" />
             Agents Waiting for Input

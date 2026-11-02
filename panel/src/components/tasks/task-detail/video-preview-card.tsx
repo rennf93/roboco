@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import Image from "next/image";
 import { useQuery } from "@tanstack/react-query";
 import { videoApi } from "@/lib/api";
 import type { PreviewFrame, VideoCut } from "@/lib/api/video";
@@ -73,10 +74,17 @@ function FrameStepper({
   return (
     <div className="space-y-2">
       {src ? (
-        <img
+        // `src` is a blob: object URL of a frame fetched with the CEO's
+        // session, which next/image serves unoptimized (the optimizer could
+        // not fetch it). Width/height 0 + h-auto keep the frame's intrinsic
+        // aspect ratio, as the plain <img> did.
+        <Image
           src={src}
           alt={`Frame ${frame?.index} of ${cut} cut, at ${frame?.timestamp_seconds}s`}
-          className="mx-auto max-h-96 w-full rounded-md border bg-black object-contain"
+          width={0}
+          height={0}
+          unoptimized
+          className="mx-auto h-auto max-h-96 w-full rounded-md border bg-black object-contain"
         />
       ) : (
         <Skeleton className="mx-auto h-96 w-full rounded-md" />

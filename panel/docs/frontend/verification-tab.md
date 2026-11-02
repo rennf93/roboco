@@ -15,13 +15,13 @@ This is a **presentational-only** surface: every data read goes through the shar
 
 Each export takes only the `{data, isLoading}` shape a shared hook already returns — none of them know about task-detail, tabs, or any specific caller.
 
-| Export | Renders | Backing hook |
-|---|---|---|
-| `AcVerificationList` | Every acceptance criterion with a check/x icon for verified/unverified, plus the QA evidence line underneath when present | `useAcVerificationStamps` |
-| `FindingsByRoundList` | Findings grouped by review round (round number + origin badge), each finding showing severity + open/addressed/verified/waived status badges and its `file:line` | `useFindingsByRound` |
-| `CiVerdictBadge` | The PR CI verdict; today always renders "CI verdict unavailable" with a `HelpTip` naming the reason — see "Known ceiling: CI verdict" below | `usePrCiVerdict` |
-| `ConventionsFindingsList` | Conventions-validator findings for the task's diff (level, `file:line`, rule) | `useTaskConventionFindings` |
-| `ReviewerChainList` | The reviewer chain, one row per recorded round: round number, origin badge, author slug, and a `model: unknown` HelpTip — see "Known ceiling: reviewer model" below | `useReviewerChain` |
+| Export                    | Renders                                                                                                                                                             | Backing hook                |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------- |
+| `AcVerificationList`      | Every acceptance criterion with a check/x icon for verified/unverified, plus the QA evidence line underneath when present                                           | `useAcVerificationStamps`   |
+| `FindingsByRoundList`     | Findings grouped by review round (round number + origin badge), each finding showing severity + open/addressed/verified/waived status badges and its `file:line`    | `useFindingsByRound`        |
+| `CiVerdictBadge`          | The PR CI verdict; today always renders "CI verdict unavailable" with a `HelpTip` naming the reason — see "Known ceiling: CI verdict" below                         | `usePrCiVerdict`            |
+| `ConventionsFindingsList` | Conventions-validator findings for the task's diff (level, `file:line`, rule)                                                                                       | `useTaskConventionFindings` |
+| `ReviewerChainList`       | The reviewer chain, one row per recorded round: round number, origin badge, author slug, and a `model: unknown` HelpTip — see "Known ceiling: reviewer model" below | `useReviewerChain`          |
 
 Every list export has its own empty state ("No acceptance criteria recorded.", "No revision findings recorded yet.", etc.) and its own `Skeleton` loading state — a caller never needs to handle loading/empty itself.
 
@@ -38,7 +38,7 @@ This is a dense admin data surface, not a landing page: `DESIGN_VARIANCE 2-3`, `
 
 Two data-layer limits (documented in `hooks.md`'s "Escalated gaps" table) show up as explicit UI states rather than blank space:
 
-- **CI verdict**: `CiVerdictBadge` always renders "CI verdict unavailable" today, because no REST route wraps `GitService.get_pr_ci_status`. The `HelpTip` attached to the badge names the reason string the hook returns, so an approver sees *why* it's unavailable instead of a silently missing widget.
+- **CI verdict**: `CiVerdictBadge` always renders "CI verdict unavailable" today, because no REST route wraps `GitService.get_pr_ci_status`. The `HelpTip` attached to the badge names the reason string the hook returns, so an approver sees _why_ it's unavailable instead of a silently missing widget.
 - **Reviewer model**: `ReviewerChainList`'s `model: unknown` HelpTip explains no endpoint exposes which model an agent ran on for a review round. A round that passed clean (no ledger finding) also has no chain entry at all — this is the ledger's structural limit, not a bug in the component.
 
 Both ceilings are also called out in the shared parent task's dev risk notes as candidates for a follow-up backend task; this UI leaf renders them honestly rather than guessing.
