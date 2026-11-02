@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import re
+import subprocess
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -591,3 +593,97 @@ async def test_a_container_that_never_started_within_the_timeout_says_so(
             wc.WorkspaceCommand(["make", "gate"], "gate"),
             timeout=0.01,
         )
+
+
+def _run_entry_script(
+    cwd: Path, mount: Path, command: list[str]
+) -> subprocess.CompletedProcess[str]:
+    st = mount.stat()
+    env = {
+        "PATH": os.environ["PATH"],
+        "HOME": str(mount / "home"),
+        "ROBOCO_WORKSPACE_MOUNT": str(mount),
+        "ROBOCO_WORKSPACE_MOUNT_ID": f"{st.st_dev}:{st.st_ino}",
+    }
+    return subprocess.run(
+        ["/bin/sh", "-c", wc._entry_script(30, merge_stderr=False), "sh", *command],
+        cwd=cwd,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+_OLD_MTIME = 1_000_000
+_PRINT_UV_ENV = ["sh", "-c", 'echo "uv=${UV_PROJECT_ENVIRONMENT-unset}"']
+
+
+def _clone_with_venv(root: Path) -> tuple[Path, Path, Path, Path]:
+    clone = root / "clone"
+    bin_dir = clone / ".venv" / "bin"
+    bin_dir.mkdir(parents=True)
+    baked = bin_dir / "xenon"
+    baked.write_text(
+        f"#!{clone}/.worktrees/abc/.venv/bin/python3\nprint('x')\n", encoding="utf-8"
+    )
+    baked.chmod(0o755)
+    other = bin_dir / "pytest"
+    other.write_text("#!/usr/bin/env python3\nprint('y')\n", encoding="utf-8")
+    other.chmod(0o755)
+    os.utime(other, (_OLD_MTIME, _OLD_MTIME))
+    worktree = clone / ".worktrees" / "abc"
+    worktree.mkdir(parents=True)
+    return clone, worktree, baked, other
+
+
+def test_a_worktree_venv_symlink_gets_its_shebangs_and_uv_env_canonical(
+    tmp_path: Path,
+) -> None:
+    clone, worktree, baked, other = _clone_with_venv(tmp_path)
+    (worktree / ".venv").symlink_to("../../.venv")
+    before = other.read_bytes()
+
+    result = _run_entry_script(worktree, clone, _PRINT_UV_ENV)
+
+    assert result.returncode == 0, result.stderr
+    assert baked.read_text(encoding="utf-8").splitlines()[0] == (
+        f"#!{clone}/.venv/bin/python3"
+    )
+    assert baked.read_text(encoding="utf-8").splitlines()[1] == "print('x')"
+    assert os.access(baked, os.X_OK)
+    assert other.read_bytes() == before
+    assert other.stat().st_mtime == _OLD_MTIME
+    assert f"uv={clone}/.venv" in result.stdout
+
+
+def test_a_worktree_without_a_venv_symlink_rewrites_nothing(tmp_path: Path) -> None:
+    clone, worktree, baked, _other = _clone_with_venv(tmp_path)
+    (worktree / ".venv").mkdir()
+    before = baked.read_bytes()
+
+    result = _run_entry_script(worktree, clone, _PRINT_UV_ENV)
+
+    assert result.returncode == 0, result.stderr
+    assert baked.read_bytes() == before
+    assert "uv=unset" in result.stdout
+
+
+def test_a_venv_symlink_resolving_outside_the_mount_is_ignored(
+    tmp_path: Path,
+) -> None:
+    clone, worktree, _baked, _other = _clone_with_venv(tmp_path)
+    outside = tmp_path / "outside" / ".venv" / "bin"
+    outside.mkdir(parents=True)
+    foreign = outside / "tool"
+    foreign.write_text(
+        f"#!{clone}/.worktrees/abc/.venv/bin/python3\n", encoding="utf-8"
+    )
+    before = foreign.read_bytes()
+    (worktree / ".venv").symlink_to(tmp_path / "outside" / ".venv")
+
+    result = _run_entry_script(worktree, clone, _PRINT_UV_ENV)
+
+    assert result.returncode == 0, result.stderr
+    assert foreign.read_bytes() == before
+    assert "uv=unset" in result.stdout

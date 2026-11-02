@@ -80,6 +80,24 @@ _OPEN_DIRECTORY_NO_FOLLOW = (
 )
 
 
+# Best effort, never fails: a task worktree's .venv is a relative symlink to the
+# clone's shared venv, and uv writes the path it was invoked through into every
+# console script's shebang. Run from a worktree, that bakes a path which breaks
+# once the worktree is reaped, so those shebangs are pointed back at the
+# canonical venv. Only the first line of a script that needs it is rewritten.
+_CANONICAL_VENV_SCRIPT = (
+    "v=; if [ -L .venv ]; then v=$(readlink -f .venv 2>/dev/null); "
+    'case "$v" in "$ROBOCO_WORKSPACE_MOUNT"/*) ;; *) v= ;; esac; fi; '
+    'if [ -n "$v" ]; then for f in "$v"/bin/*; do '
+    '[ -f "$f" ] && [ ! -L "$f" ] || continue; '
+    'IFS= read -r l < "$f" 2>/dev/null || continue; '
+    'case "$l" in "#!"*/.worktrees/*/.venv/bin/*) ;; *) continue ;; esac; '
+    "t=$(mktemp 2>/dev/null) || continue; "
+    '{ printf \'%s\\n\' "#!$v/bin/${l##*/}"; tail -n +2 -- "$f"; } > "$t" '
+    '&& cat "$t" > "$f"; rm -f "$t"; done; fi'
+)
+
+
 def _entry_script(timeout: float, *, merge_stderr: bool) -> str:
     """The container's ``sh -c`` script; the command follows as ``$@``.
 
@@ -97,6 +115,12 @@ def _entry_script(timeout: float, *, merge_stderr: bool) -> str:
     when no orchestrator is left to kill it (a restart or a blue/green
     switch mid-gate), so an orphaned container always ends on its own and
     ``--rm`` removes it.
+
+    When the clone's ``.venv`` is a symlink to a venv under the mount (a task
+    worktree), the shebangs that name a worktree's ``.venv`` are first
+    rewritten to the canonical venv path, and the command runs with
+    ``UV_PROJECT_ENVIRONMENT`` set to it so uv writes no worktree path again.
+    A failure of that repair never stops the command.
     """
     script = (
         '[ "$(stat -c %d:%i -- "$ROBOCO_WORKSPACE_MOUNT")" = '
@@ -107,10 +131,11 @@ def _entry_script(timeout: float, *, merge_stderr: bool) -> str:
         'read-only mount is not the expected directory" >&2; '
         f"exit {_DOCKER_RUN_FAILED}; }}; "
         'umask 002 && mkdir -p "$HOME" && '
+        f"{{ {_CANONICAL_VENV_SCRIPT}; :; }} && "
         f"echo {STARTED_MARKER} >&2 && "
         f"exec timeout -k {_KILL_GRACE_SECONDS} {max(1, int(timeout))} "
         "env -u VIRTUAL_ENV -u UV_PROJECT_ENVIRONMENT -u ROBOCO_WORKSPACE_GIT_DROP "
-        '"$@"'
+        '${v:+"UV_PROJECT_ENVIRONMENT=$v"} "$@"'
     )
     return script + (" 2>&1" if merge_stderr else "")
 
