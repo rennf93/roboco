@@ -32,6 +32,7 @@ async def container_running(name: str) -> bool:
     """Return True if the named container exists and is running."""
     proc = await asyncio.create_subprocess_exec(
         "docker",
+        "container",
         "inspect",
         "--format={{.State.Running}}",
         name,

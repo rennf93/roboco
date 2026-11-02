@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from roboco.config import settings
+from roboco.foundation.identity import slug_for_uuid_or_none
 from roboco.foundation.policy import lifecycle as spec_module
 from roboco.foundation.policy import tracing as _tr
 from roboco.foundation.policy.content import (
@@ -103,8 +104,9 @@ def _extract_original_developer(task: Any) -> str | None:
     return markers.get_original_developer(task)
 
 
-class QAMixin(_Base):
-    """QA-role verbs."""
+class QAClaimMixin(_Base):
+    """``claim_review``: claiming a task for QA with its evidence (the
+    conventions findings, the video context) and the reclaim warning."""
 
     def _review_spec_context(self, agent: Any, qa_agent_id: UUID, t: Any) -> Any:
         """The spec Context claim_review evaluates against: actor identity,
@@ -293,7 +295,9 @@ class QAMixin(_Base):
                     t,
                     await self._emit_rejection(
                         Envelope.not_authorized(
-                            message="this review task is already claimed by another agent",  # noqa: E501
+                            message=(
+                                "this review task is already claimed by another agent"
+                            ),
                             remediate="give_me_work for the next available task",
                             context_briefing=briefing,
                         ).with_introspection(task=t, role=role_str),
@@ -513,7 +517,8 @@ class QAMixin(_Base):
                 collision_context = build_collision_context(
                     task=t, siblings=siblings, actual_files=files_changed
                 )
-        except Exception as exc:  # best-effort enrichment, never breaks the verb
+        except Exception as exc:
+            # Best-effort enrichment, never breaks the verb
             logger.warning(
                 "qa_collision_context_skip", task_id=str(t.id), error=str(exc)
             )
@@ -530,6 +535,12 @@ class QAMixin(_Base):
             video_context=self._qa_video_context(t),
             evidence_gaps=evidence_gaps,
         )
+
+
+class QAReviewGatesMixin(_Base):
+    """The checks ``pass_review`` and ``fail_review`` share: the owner, spec
+    and review-text gates, the acceptance-criteria verdicts, and storing the
+    QA note."""
 
     async def _verify_qa_owner(
         self, qa_agent_id: UUID, task_id: UUID, verb: str
@@ -786,6 +797,11 @@ class QAMixin(_Base):
             task_id=task_id,
             verb=verb,
         )
+
+
+class QAPassMixin(_Base):
+    """``pass_review``: the criteria-verified entries it validates and records,
+    its final gates, and the hand-off to the documenter."""
 
     @staticmethod
     def _parse_criterion_entry(entry: Any, idx: int) -> tuple[str, str] | Envelope:
@@ -1049,7 +1065,10 @@ class QAMixin(_Base):
             # would itself blow up instead of cleanly reaching the agent.
             async with self.task.session.begin_nested():
                 await findings_lib.stamp_addressed_verified(
-                    self.task.session, t.id, origin="qa"
+                    self.task.session,
+                    t.id,
+                    origin="qa",
+                    verified_by=slug_for_uuid_or_none(qa_agent_id),
                 )
             t = await runner.run_intent("pass_review", t, agent, spec_ctx)
         except Exception as exc:
@@ -1109,6 +1128,11 @@ class QAMixin(_Base):
                 f"failed ({exc}). Re-issue the notification via dm."
             )
         return None
+
+
+class QAFailMixin(_Base):
+    """``fail_review``: validating and attaching its findings, notifying the
+    developer, and the success envelope."""
 
     @staticmethod
     def _validate_fail_review_findings(
@@ -1370,3 +1394,8 @@ class QAMixin(_Base):
         if warnings:
             env.warning = " ".join(warnings)
         return env
+
+
+class QAMixin(QAClaimMixin, QAReviewGatesMixin, QAPassMixin, QAFailMixin):
+    """QA-role verbs: ``claim_review``, ``pass_review`` and ``fail_review``,
+    composed from the four mixins above."""

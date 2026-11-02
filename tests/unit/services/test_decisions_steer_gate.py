@@ -17,12 +17,12 @@ def _svc() -> A2AService:
 
 
 def _bare_engine() -> Any:
-    """A SpawnExitEngine without __init__ (no DB). The class carries a
+    """A TranscriptNotesEngine without __init__ (no DB). The class carries a
     TYPE_CHECKING-only Protocol base (abstract at type-check time), so the
     class object is routed through a type[Any] intermediate."""
-    from roboco.runtime.engines.spawn_exit import SpawnExitEngine
+    from roboco.runtime.engines.spawn_exit import TranscriptNotesEngine
 
-    cls: type[Any] = SpawnExitEngine
+    cls: type[Any] = TranscriptNotesEngine
     return object.__new__(cls)
 
 
@@ -50,7 +50,8 @@ def test_switch_consideration_note_carries_the_task_list() -> None:
     assert "Pivot to the API redesign first" in note
     assert "Fix nginx mount" in note
     assert "API redesign" in note
-    assert "your PM's" in note  # the switch decision is not the verdict's
+    # The switch decision is not the verdict's
+    assert "your PM's" in note
 
 
 def test_steer_now_note_is_task_scoped() -> None:
@@ -193,18 +194,21 @@ def _write_fake_transcript(home: Path, agent_id: str, segments: list[str]) -> Pa
 def test_assistant_segments_extraction(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
-    from roboco.runtime.engines.spawn_exit import SpawnExitEngine
+    from roboco.runtime.engines.spawn_exit import TranscriptNotesEngine
 
     _write_fake_transcript(
         tmp_path,
         "backend-dev-1",
         [
-            "x" * 250,  # long enough
+            # Long enough
+            "x" * 250,
             "too short",
         ],
     )
     monkeypatch.setattr("pathlib.Path.home", classmethod(lambda cls: tmp_path))
-    segments = SpawnExitEngine._assistant_segments_from_transcript("backend-dev-1")
+    segments = TranscriptNotesEngine._assistant_segments_from_transcript(
+        "backend-dev-1"
+    )
     assert len(segments) == 1
     assert segments[0] == "x" * 250
 
@@ -254,10 +258,13 @@ async def test_capture_transcript_notes_writes_journal_entries(
     db.execute = AsyncMock(
         return_value=MagicMock(scalar_one_or_none=MagicMock(return_value="agent-uuid"))
     )
+    db.commit = AsyncMock()
     written: list[Any] = []
+    authors: list[Any] = []
 
     class _FakeJournalSvc:
         async def add_general_entry(self, agent_uuid: Any, params: Any) -> None:
+            authors.append(agent_uuid)
             written.append(params)
 
         # get_or_create_journal is called inside add_general_entry; bypass by
@@ -270,7 +277,7 @@ async def test_capture_transcript_notes_writes_journal_entries(
             cm.__aexit__ = AsyncMock(return_value=False)
             return cm
 
-    monkeypatch.setattr(db_base, "get_session_factory", _FakeFactory())
+    monkeypatch.setattr(db_base, "get_session_factory", _FakeFactory)
     import roboco.services.decisions.pilots as pilots_mod
 
     monkeypatch.setattr(
@@ -288,5 +295,7 @@ async def test_capture_transcript_notes_writes_journal_entries(
     )
     await engine._capture_transcript_notes("backend-dev-1")
     assert len(written) == 1
+    assert authors == ["agent-uuid"]
     assert written[0].tags == ["auto-note"]
     assert "lowercase slugs" in written[0].content
+    db.commit.assert_awaited_once()

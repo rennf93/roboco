@@ -23,7 +23,7 @@ import dataclasses
 import importlib.util
 import json
 import sys
-from collections.abc import Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -35,14 +35,14 @@ from roboco.services.decisions.schemas import parse_decisions_payload
 
 # The httpx handler shape MockTransport expects, and the factory the `stub`
 # fixture hands to each test (install one handler, get the recorder back).
-_Handler = Callable[[httpx.Request], httpx.Response]
+_Handler = Callable[[httpx.Request], httpx.Response | Awaitable[httpx.Response]]
 
 # A canned sidecar response body, byte-for-byte the shape the proxy
 # returns for a batched two-question request (model echo of the default
 # clef tier id).
 _SIDECAR_RESPONSE = {
     "id": "dec-local-018f3c",
-    "model": "ggml-org/Clef-GGUF:Q4_K_M",
+    "model": "ggml-org/Clef-Flash-GGUF:Q4_K_M",
     "answers": {
         "gate": {"type": "noul", "noul": 0.93, "confidence": 0.93},
         "routing": {
@@ -315,9 +315,12 @@ class _UpstreamStub:
     def install(self, handler: _Handler) -> "_UpstreamStub":
         stub = self
 
-        def recording_handler(request: httpx.Request) -> httpx.Response:
+        async def recording_handler(request: httpx.Request) -> httpx.Response:
             stub.calls.append(request)
-            return handler(request)
+            response = handler(request)
+            if isinstance(response, httpx.Response):
+                return response
+            return await response
 
         client = httpx.AsyncClient(transport=httpx.MockTransport(recording_handler))
         self.monkeypatch.setitem(self.server._HTTP, "client", client)
@@ -500,8 +503,11 @@ async def test_proxy_upstream_outage_maps_to_503(
 
 @pytest.mark.asyncio
 async def test_proxy_state_caps_422_per_tier(
-    stub: _StubFactory, server_module: ModuleType
+    stub: _StubFactory, server_module: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Admission is not under test here: make every input estimate instant.
+    monkeypatch.setenv("CLEF_EXPECTED_TOKENS_PER_S", "1000000")
+    monkeypatch.setenv("CLEF_MIN_CALL_S", "0")
     calls = stub(_systemone_handler)
     # laya tier: 1800 chars fits, 1801 refuses.
     ok = await _post_decisions(
@@ -516,11 +522,11 @@ async def test_proxy_state_caps_422_per_tier(
     assert over.status_code == 422, over.text
     detail = over.json()["detail"]
     assert "1801" in detail and "laya" in detail
-    # clef tier (the default route): the 40000-char state that blows
-    # laya's budget fits, 40001 refuses.
-    ok = await _post_decisions(server_module, _decisions_payload(state="x" * 40_000))
+    # clef tier (the default route): two chars per token of its 8192-token
+    # input cap, so 16384 chars fit and 16385 refuse.
+    ok = await _post_decisions(server_module, _decisions_payload(state="x" * 16_384))
     assert ok.status_code == 200, ok.text
-    over = await _post_decisions(server_module, _decisions_payload(state="x" * 40_001))
+    over = await _post_decisions(server_module, _decisions_payload(state="x" * 16_385))
     assert over.status_code == 422, over.text
     assert "clef" in over.json()["detail"]
     # A 422 never reaches the upstream.
@@ -660,3 +666,118 @@ async def test_auth_accepts_canonical_legacy_and_bearer_headers(
         server_module, payload, {"Authorization": "Bearer sekrit"}
     )
     assert bearer.status_code == 200, bearer.text
+
+
+# ---------------------------------------------------------------------------
+# Admission control: one input at a time, never one that cannot finish
+# before its caller's deadline (2026-11-01: a 10k-token input held the NAS
+# for nine minutes and every request behind it timed out).
+# ---------------------------------------------------------------------------
+
+
+def _slow_clef(server: ModuleType, *, tokens_per_s: float) -> Any:
+    queue = server.AdmissionQueue(
+        server.ServiceTime(seconds_per_token=1 / tokens_per_s, min_call_s=0.0)
+    )
+    server._QUEUES["clef"] = queue
+    return queue
+
+
+@pytest.mark.asyncio
+async def test_an_input_that_cannot_finish_by_the_deadline_is_busy_at_once(
+    stub: _StubFactory, server_module: ModuleType
+) -> None:
+    calls = stub(_systemone_handler)
+    # ~10 chars/s: a 2300-char input needs far more than a 5 s deadline.
+    _slow_clef(server_module, tokens_per_s=4)
+    response = await _post_decisions(
+        server_module,
+        _decisions_payload(state="x" * 2300),
+        headers={server_module.DEADLINE_HEADER: "5"},
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"].startswith("busy:")
+    assert calls.calls == []
+
+
+@pytest.mark.asyncio
+async def test_an_input_that_fits_its_deadline_is_answered(
+    stub: _StubFactory, server_module: ModuleType
+) -> None:
+    calls = stub(_systemone_handler)
+    _slow_clef(server_module, tokens_per_s=100_000)
+    response = await _post_decisions(
+        server_module,
+        _decisions_payload(),
+        headers={server_module.DEADLINE_HEADER: "5"},
+    )
+    assert response.status_code == 200, response.text
+    assert len(calls.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_queued_work_counts_against_the_next_callers_deadline(
+    server_module: ModuleType,
+) -> None:
+    queue = _slow_clef(server_module, tokens_per_s=1)
+
+    async def hold_backend() -> None:
+        async with queue.slot(estimate_s=30.0, deadline_s=60.0):
+            await asyncio.sleep(0.2)
+
+    holder = asyncio.create_task(hold_backend())
+    await asyncio.sleep(0.05)
+    with pytest.raises(server_module.BackendBusy):
+        async with queue.slot(estimate_s=1.0, deadline_s=10.0):
+            pass
+    await holder
+    assert queue.expected_wait_s() == 0.0
+
+
+@pytest.mark.asyncio
+async def test_the_backend_serves_one_input_at_a_time(
+    stub: _StubFactory, server_module: ModuleType
+) -> None:
+    in_flight = {"now": 0, "max": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        in_flight["now"] += 1
+        in_flight["max"] = max(in_flight["max"], in_flight["now"])
+        await asyncio.sleep(0.05)
+        in_flight["now"] -= 1
+        return _systemone_handler(request)
+
+    stub(handler)
+    _slow_clef(server_module, tokens_per_s=100_000)
+    responses = await asyncio.gather(
+        *(_post_decisions(server_module, _decisions_payload()) for _ in range(3))
+    )
+    assert [r.status_code for r in responses] == [200, 200, 200]
+    assert in_flight["max"] == 1
+
+
+@pytest.mark.asyncio
+async def test_answered_calls_teach_the_estimate(
+    stub: _StubFactory, server_module: ModuleType
+) -> None:
+    stub(_systemone_handler)
+    queue = _slow_clef(server_module, tokens_per_s=100_000)
+    before = queue.service_time.chars_per_token
+    response = await _post_decisions(server_module, _decisions_payload())
+    assert response.status_code == 200, response.text
+    # The stub reports 210 input tokens for a ~80-char body: the learned
+    # ratio moves toward it.
+    assert queue.service_time.chars_per_token < before
+
+
+def test_the_deadline_header_is_clamped(server_module: ModuleType) -> None:
+    def deadline(value: str | None) -> float:
+        headers = {server_module.DEADLINE_HEADER: value} if value is not None else {}
+        request = httpx.Request("POST", "http://sidecar.test", headers=headers)
+        return float(server_module._deadline_s(request))
+
+    assert deadline(None) == server_module.UPSTREAM_TIMEOUT_S
+    assert deadline("0.1") == 1.0
+    assert deadline("99999") == server_module.UPSTREAM_TIMEOUT_S
+    assert deadline("nonsense") == server_module.UPSTREAM_TIMEOUT_S
+    assert deadline("20") == 20.0

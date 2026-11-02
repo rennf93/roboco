@@ -283,8 +283,11 @@ class TestLiveChatsSpawnOnEveryProvider:
         orch = _make_minimal_orchestrator()
         run_calls = _mock_live_spawn(orch, monkeypatch)
 
-        async def _no_prompt(*_a: Any, **_k: Any) -> str:
-            return "prompt"
+        def _no_prompt(*_a: Any, **_k: Any) -> Path:
+            # _generate_composed_prompt is synchronous (it returns the
+            # written prompt's Path); an async stand-in left its coroutine
+            # unawaited and handed the spawn a coroutine for a path.
+            return Path("prompt")
 
         monkeypatch.setattr(orch, "_resolve_agent_route", _route)
         monkeypatch.setattr(orch, "_generate_composed_prompt", _no_prompt)

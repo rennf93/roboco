@@ -63,6 +63,7 @@ x-orchestrator-env: &orchestrator-env
   ROBOCO_DATABASE_NAME: roboco
   ROBOCO_REDIS_HOST: roboco-redis
   ROBOCO_REDIS_PORT: 6379
+  ROBOCO_REDIS_PASSWORD: ${ROBOCO_REDIS_PASSWORD:?ROBOCO_REDIS_PASSWORD is required (make quickstart generates one; see .env.example)}
   ROBOCO_HOST: 0.0.0.0
   ROBOCO_PORT: 8000
   ROBOCO_ENCRYPTION_KEY: ${ROBOCO_ENCRYPTION_KEY:?ROBOCO_ENCRYPTION_KEY is required}
@@ -74,7 +75,10 @@ x-orchestrator-env: &orchestrator-env
   # private network with no untrusted reach to nginx.
   ROBOCO_AGENT_AUTH_REQUIRED: ${ROBOCO_AGENT_AUTH_REQUIRED:-true}
   ROBOCO_LOCAL_LLM_BASE_URL: http://roboco-ollama:11434/v1
-  ROBOCO_LOCAL_LLM_MODEL: glm-5.3:cloud
+  ROBOCO_LOCAL_LLM_MODEL: glm-5.3-flash:cloud
+  # HOME of the background LLM client's Claude Haiku process; its .claude is
+  # the second login mount in x-orchestrator-volumes.
+  ROBOCO_BACKGROUND_LLM_CLAUDE_HOME: /home/claude-login
   ROBOCO_DEFAULT_EMBEDDING_MODEL: qwen3-embedding:0.6b
   ROBOCO_OLLAMA_BASE_URL: http://roboco-ollama:11434
   # Video renderer sidecar (use container name). The video engine
@@ -91,6 +95,9 @@ x-orchestrator-env: &orchestrator-env
   ROBOCO_DECISIONS_TIER_CLEF_ENABLED: ${ROBOCO_DECISIONS_TIER_CLEF_ENABLED:-true}
   ROBOCO_DECISIONS_TIER_LAYA_ENABLED: ${ROBOCO_DECISIONS_TIER_LAYA_ENABLED:-true}
   ROBOCO_DECISIONS_TIER_OPENROUTER_ENABLED: ${ROBOCO_DECISIONS_TIER_OPENROUTER_ENABLED:-false}
+  # One knob for both sides: the client trims Clef states to fit it and the
+  # sidecar sizes llama.cpp's batch to it (decisions sidecar below).
+  ROBOCO_DECISIONS_CLEF_MAX_INPUT_TOKENS: ${ROBOCO_DECISIONS_CLEF_MAX_INPUT_TOKENS:-8192}
   # Spawn the PRE-BUILT agent images from the same registry instead of
   # building them from source (the orchestrator pulls any it lacks).
   ROBOCO_AGENT_IMAGE_REGISTRY: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}
@@ -264,8 +271,16 @@ x-orchestrator-env: &orchestrator-env
   # FileResponse. Arm via a custom override file.
 
 x-orchestrator-volumes: &orchestrator-volumes
-  - /var/run/docker.sock:/var/run/docker.sock
+  # Docker only through the gate (docker-gate, trail #34): the gate holds the
+  # host socket, and DOCKER_HOST points each service's docker CLI at the
+  # gate's socket in this volume.
+  - docker-gate:/run/roboco-docker
   - ${CLAUDE_AUTH_DIR:-${HOME}/.claude}:/root/.claude
+  # The same login again, at a neutral path, for the background LLM client's
+  # Claude Haiku process: it runs as the uid:gid that own the login (never
+  # root, so nothing it writes there is root-owned), and that uid cannot
+  # enter /root (0700). The client hands /home/claude-login to that uid.
+  - ${CLAUDE_AUTH_DIR:-${HOME}/.claude}:/home/claude-login/.claude
   # SuperGrok auth — mount host ~/.grok at the SAME host path the orchestrator
   # hands each Grok agent's `-v`, so its auth.json exists() check passes here
   # AND the agent bind resolves on the host. Read-WRITE: the orchestrator
@@ -297,6 +312,10 @@ x-orchestrator-volumes: &orchestrator-volumes
   - ${ROBOCO_DATA_DIR:-./data}/prompts-generated:/app/prompts-generated
   - ${ROBOCO_DATA_DIR:-./data}/agent-settings:/app/agent-settings
   - ${ROBOCO_DATA_DIR:-./data}/workspaces:/data/workspaces
+  # Orchestrator-only data (never mounted into an agent container, which
+  # mounts ALL of /data/workspaces read-write): scratch clones the
+  # orchestrator builds itself and hands to a throwaway workspace container.
+  - ${ROBOCO_DATA_DIR:-./data}/private:/data/private
   # Per-agent GROK usage capture (usage.json -> finalizer).
   - ${ROBOCO_DATA_DIR:-./data}/grok-usage:/data/grok-usage
   # Per-agent CODEX usage capture — same shape as grok-usage above.
@@ -347,11 +366,16 @@ services:
     image: redis:8-alpine
     container_name: roboco-redis
     restart: unless-stopped
-    # data-only network — see postgres. Redis has no auth, so network
-    # membership is its ONLY containment against agent containers.
+    # data-only network — see postgres.
     networks:
       - data
-    command: redis-server --appendonly yes
+    # requirepass: membership of the data network is NOT the only way in —
+    # the published port below is reachable from the LAN and, through the
+    # host's bridge gateway, from every container (agents included).
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${ROBOCO_REDIS_PASSWORD:?ROBOCO_REDIS_PASSWORD is required (make quickstart generates one; see .env.example)}"]
+    environment:
+      # redis-cli (the healthcheck below) authenticates from this.
+      REDISCLI_AUTH: ${ROBOCO_REDIS_PASSWORD:?ROBOCO_REDIS_PASSWORD is required (make quickstart generates one; see .env.example)}
     ports:
       - "16379:6379"
     volumes:
@@ -454,14 +478,17 @@ services:
           status=$$(echo "$$line" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
           [ -n "$$status" ] && echo "  $$status"
         done || echo "  (pull failed — relying on the cached model)"
-        echo "=== Pulling LLM model (glm-5.3:cloud) — best-effort ==="
-        curl -sN http://ollama:11434/api/pull -d '{"name":"glm-5.3:cloud"}' | while read -r line; do
+        echo "=== Pulling background LLM model (glm-5.3-flash:cloud), best-effort ==="
+        curl -sN http://ollama:11434/api/pull -d '{"name":"glm-5.3-flash:cloud"}' | while read -r line; do
           status=$$(echo "$$line" | grep -o '"status":"[^"]*"' | cut -d'"' -f4)
           [ -n "$$status" ] && echo "  $$status"
         done || echo "  (pull failed — relying on the cached model)"
         echo "=== Verifying models are present (the real success gate) ==="
         curl -sf http://ollama:11434/api/tags | grep -q "qwen3-embedding" || { echo "FATAL: qwen3-embedding missing and could not be pulled"; exit 1; }
-        curl -sf http://ollama:11434/api/tags | grep -q "glm-5.3" || { echo "FATAL: glm-5.3 missing and could not be pulled"; exit 1; }
+        # Not fatal: the background LLM client falls back to Claude Haiku when
+        # Ollama cannot answer, so a missing chat model must not hold back the
+        # orchestrator the way a missing embedding model does.
+        curl -sf http://ollama:11434/api/tags | grep -q "glm-5.3-flash" || echo "WARNING: glm-5.3-flash missing; background LLM calls fall back to Claude Haiku"
         echo "=== All models ready! ==="
 
   # --------------------------------------------------------------------------
@@ -498,8 +525,8 @@ services:
 
   # --------------------------------------------------------------------------
   # Decisions sidecar (the built-in self-hosted tiers of the Decisions
-  # service) - CPU-only typed decisions over llama.cpp: a 27B Clef backend
-  # (sweet-spot default) and a 421M Laya backend (cheap fallback), each a
+  # service) - typed decisions over llama.cpp: a 9B Clef-Flash backend
+  # (default) and a 421M Laya backend (cheap fallback), each a
   # llama-server speaking the System One protocol behind one proxy. Inert
   # until ROBOCO_DECISIONS_ENABLED goes on; shipping it changes nothing by
   # itself. No DB, no git, no credentials. NO `networks:` key: joins the
@@ -511,23 +538,26 @@ services:
     container_name: roboco-decisions
     restart: unless-stopped
     environment:
-      # Per-deploy RAM knobs. The 19GB Clef GGUF is the heavy tenant (mmap'd
-      # from the baked image, paged into RAM as the model touches it); the
-      # Laya backend is ~450MB. On a box that cannot hold Clef, set
-      # ROBOCO_SIDECAR_CLEF_ENABLED=false: the container serves the cheap
-      # Laya backend only and the orchestrator's tier ladder follows /health
-      # automatically (no config change above the sidecar). Both backends
-      # idle at ~zero CPU - llama.cpp is event-driven, inference only runs
-      # on a POST.
+      # Per-deploy knobs. The ~6.7GB Clef-Flash GGUF is the heavy tenant
+      # (mmap'd from the baked image); the Laya backend is ~450MB. On a box
+      # that cannot hold Clef-Flash, set ROBOCO_SIDECAR_CLEF_ENABLED=false:
+      # the container serves the cheap Laya backend only and the
+      # orchestrator's tier ladder follows /health automatically (no config
+      # change above the sidecar). Both backends idle at ~zero CPU -
+      # llama.cpp is event-driven, inference only runs on a POST. On a host
+      # with an Intel iGPU, scripts/deploy-nas.sh adds
+      # docker-compose.igpu.yaml, which passes /dev/dri in: Clef-Flash then
+      # runs on the GPU (~70 tok/s on the NAS's Iris Xe vs ~15 on its CPU).
       CLEF_ENABLED: ${ROBOCO_SIDECAR_CLEF_ENABLED:-true}
       LAYA_ENABLED: ${ROBOCO_SIDECAR_LAYA_ENABLED:-true}
+      CLEF_MAX_INPUT_TOKENS: ${ROBOCO_DECISIONS_CLEF_MAX_INPUT_TOKENS:-8192}
     healthcheck:
       test: ["CMD", "python", "-c", "import sys,urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8100/health', timeout=3).status == 200 else 1)"]
       interval: 15s
       timeout: 5s
       retries: 5
-      # The PUBLISHED image bakes the cheap Laya tier only (the 19GB Clef
-      # GGUF is not CI-feasible; see release.yml) and loads in seconds. The
+      # The PUBLISHED image bakes the cheap Laya tier only (the ~6.7GB
+      # Clef-Flash GGUF stays off CI; see release.yml) and loads in seconds. The
       # start period stays generous because a Clef-baked image (a NAS/Mac-
       # side docker build with FETCH_CLEF_WEIGHTS=true, the Dockerfile
       # default) legitimately needs the full window for the cold load.
@@ -695,6 +725,52 @@ services:
     restart: "no"
 
   # --------------------------------------------------------------------------
+  # Docker gate (trail #34) - the orchestrator's only way to Docker. It holds
+  # the host socket and serves the orchestrator and dispatcher on
+  # /run/roboco-docker/gate.sock (the docker-gate volume), forwarding only
+  # the Engine API calls RoboCo makes (docker/docker-gate/gate.py), and only
+  # with what RoboCo asks for. It runs as 0:0 because the host socket is
+  # root:docker 0660 and the docker group's gid differs per host; the image's
+  # own USER is 65534, and every capability is dropped but CHOWN (the
+  # socket's owner) and DAC_READ_SEARCH (walking owner-only bind roots such
+  # as ~/.claude to refuse symlinks). Image builds are refused: this file
+  # pulls every image from the registry, the one GATE_REGISTRY names.
+  # GATE_BIND_ROOTS are the host paths RoboCo binds into agents, chats,
+  # sandboxes and throwaway workspace containers (the orchestrator's
+  # ROBOCO_HOST_* values), each mounted read-only below at its own path so
+  # the gate can refuse a bind that goes through a symlink.
+  # --------------------------------------------------------------------------
+  docker-gate:
+    image: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}/roboco-docker-gate:${ROBOCO_VERSION:-latest}
+    container_name: roboco-docker-gate
+    restart: unless-stopped
+    user: "0:0"
+    network_mode: none
+    read_only: true
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_READ_SEARCH
+    security_opt:
+      - no-new-privileges:true
+    environment:
+      GATE_LISTEN: /run/roboco-docker/gate.sock
+      GATE_ALLOW_BUILD: "false"
+      GATE_REGISTRY: ${ROBOCO_REGISTRY:-ghcr.io/rennf93}
+      GATE_BIND_ROOTS: ${ROBOCO_HOST_DATA_DIR:-/opt/roboco/data}:${ROBOCO_HOST_PROJECT_DIR:-/opt/roboco}/docs:${ROBOCO_HOST_CLAUDE_DIR:-${HOME}/.claude}:${ROBOCO_HOST_GROK_DIR:-${HOME}/.grok}:${ROBOCO_HOST_CODEX_DIR:-${HOME}/.codex}:${ROBOCO_HOST_GEMINI_DIR:-${HOME}/.gemini}:${ROBOCO_HOST_KIMI_DIR:-${HOME}/.kimi-code}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - docker-gate:/run/roboco-docker
+      - ${ROBOCO_HOST_DATA_DIR:-/opt/roboco/data}:${ROBOCO_HOST_DATA_DIR:-/opt/roboco/data}:ro
+      - ${ROBOCO_HOST_PROJECT_DIR:-/opt/roboco}/docs:${ROBOCO_HOST_PROJECT_DIR:-/opt/roboco}/docs:ro
+      - ${ROBOCO_HOST_CLAUDE_DIR:-${HOME}/.claude}:${ROBOCO_HOST_CLAUDE_DIR:-${HOME}/.claude}:ro
+      - ${ROBOCO_HOST_GROK_DIR:-${HOME}/.grok}:${ROBOCO_HOST_GROK_DIR:-${HOME}/.grok}:ro
+      - ${ROBOCO_HOST_CODEX_DIR:-${HOME}/.codex}:${ROBOCO_HOST_CODEX_DIR:-${HOME}/.codex}:ro
+      - ${ROBOCO_HOST_GEMINI_DIR:-${HOME}/.gemini}:${ROBOCO_HOST_GEMINI_DIR:-${HOME}/.gemini}:ro
+      - ${ROBOCO_HOST_KIMI_DIR:-${HOME}/.kimi-code}:${ROBOCO_HOST_KIMI_DIR:-${HOME}/.kimi-code}:ro
+
+  # --------------------------------------------------------------------------
   # Orchestrator — API server + agent spawner
   # --------------------------------------------------------------------------
   orchestrator:
@@ -728,6 +804,7 @@ services:
       # run on the dispatcher service instead;
       # see roboco/runtime/orchestrator.py's AgentOrchestrator.start().
       ROBOCO_ROLE: api
+      DOCKER_HOST: unix:///run/roboco-docker/gate.sock
     volumes: *orchestrator-volumes
     healthcheck:
       # curl is purged from the runtime image after the docker-cli install
@@ -748,6 +825,8 @@ services:
         condition: service_healthy
       ollama-init:
         condition: service_completed_successfully
+      docker-gate:
+        condition: service_healthy
       agent-base-image:
         condition: service_completed_successfully
 
@@ -781,6 +860,7 @@ services:
       # loopback (2026-09-06 incident, see above).
       ROBOCO_API_URL: http://roboco-orchestrator:8000
       ROBOCO_ROLE: dispatcher
+      DOCKER_HOST: unix:///run/roboco-docker/gate.sock
     volumes: *orchestrator-volumes
     healthcheck:
       # curl is purged from the runtime image after the docker-cli install
@@ -794,6 +874,8 @@ services:
       start_period: 90s
     depends_on:
       orchestrator:
+        condition: service_healthy
+      docker-gate:
         condition: service_healthy
 
   # --------------------------------------------------------------------------
@@ -817,17 +899,21 @@ services:
       ROBOCO_DATABASE_NAME: roboco
       ROBOCO_REDIS_HOST: roboco-redis
       ROBOCO_REDIS_PORT: 6379
+      ROBOCO_REDIS_PASSWORD: ${ROBOCO_REDIS_PASSWORD:?ROBOCO_REDIS_PASSWORD is required (make quickstart generates one; see .env.example)}
       ROBOCO_ENCRYPTION_KEY: ${ROBOCO_ENCRYPTION_KEY:?ROBOCO_ENCRYPTION_KEY is required}
       ROBOCO_LOCAL_LLM_BASE_URL: http://roboco-ollama:11434/v1
-      ROBOCO_LOCAL_LLM_MODEL: glm-5.3:cloud
+      ROBOCO_LOCAL_LLM_MODEL: glm-5.3-flash:cloud
       ROBOCO_DEFAULT_EMBEDDING_MODEL: qwen3-embedding:0.6b
       ROBOCO_OLLAMA_BASE_URL: http://roboco-ollama:11434
       ROBOCO_ENVIRONMENT: production
     # No healthcheck: the indexer role runs only the Redis-stream worker
     # (roboco/bootstrap.py's _run_indexer_role), never uvicorn, so there is
-    # no HTTP endpoint to probe. Process death is covered by
-    # restart:unless-stopped; scripts/bootstrap.sh waits on running state,
-    # not health.
+    # no HTTP endpoint to probe. The image's own HEALTHCHECK probes the
+    # api/dispatcher /health, so it is turned off here, not just left out.
+    # Process death is covered by restart:unless-stopped;
+    # scripts/bootstrap.sh waits on running state, not health.
+    healthcheck:
+      disable: true
     depends_on:
       orchestrator:
         condition: service_healthy
@@ -897,3 +983,8 @@ networks:
   # else on roboco_default or roboco_data.
   render:
     name: roboco_render
+
+volumes:
+  # The Docker gate's socket (docker-gate). It holds nothing but the socket,
+  # so nothing is lost when it is recreated.
+  docker-gate:

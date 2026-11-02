@@ -230,7 +230,7 @@ async def confirm_live(
 @guard_deco.content_type_filter(["application/json"])
 @guard_deco.honeypot_detection(["email", "phone", "website"])
 async def preview_live_batch(
-    session_id: str,  # noqa: ARG001 — kept for route symmetry; preview is pure
+    session_id: str,
     body: BatchPreviewRequest,
     db: DbSession,
 ) -> dict[str, Any]:

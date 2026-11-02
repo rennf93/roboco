@@ -21,7 +21,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from roboco.config import settings
 from roboco.logging import get_logger
-from roboco.services.git import GitService
+from roboco.services.git import CiRunQuery, GitService
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -128,6 +128,15 @@ def get_ci_telemetry_source(session: AsyncSession) -> GitHubCITelemetrySource:
     return GitHubCITelemetrySource(session)
 
 
+@dataclass(frozen=True)
+class _ProjectCiLookup:
+    """One project's resolved CI lookup: its slug, workflow and query."""
+
+    slug: str
+    workflow: str | None
+    query: CiRunQuery
+
+
 class MultiProjectCITelemetrySource:
     """CI health for EVERY opted-in project (multi-repo CI-watch).
 
@@ -150,8 +159,23 @@ class MultiProjectCITelemetrySource:
 
     async def fetch(self, projects: Sequence[object]) -> list[TelemetrySample]:
         git = GitService(self.session)
+        lookups = await self._resolve_lookups(git, projects)
+        # Only the GitHub calls run concurrently, so one slow 429 doesn't stall
+        # the sweep. The DB reads above stay sequential: they share one
+        # session, which refuses concurrent operations (every ci-watch sweep
+        # failed that way for roboco-api and roboco-panel on 2026-10-28).
+        results = await asyncio.gather(
+            *(self._sample_for(git, lookup) for lookup in lookups)
+        )
+        return [s for s in results if s is not None]
+
+    async def _resolve_lookups(
+        self, git: GitService, projects: Sequence[object]
+    ) -> list[_ProjectCiLookup]:
+        """One CI lookup per project whose repo and token resolve, read one
+        project at a time on the shared session."""
         default_workflow = settings.ci_watch_default_workflow.strip()
-        coros = []
+        lookups: list[_ProjectCiLookup] = []
         for project in projects:
             slug = str(getattr(project, "slug", "") or "").strip()
             if not slug:
@@ -159,17 +183,42 @@ class MultiProjectCITelemetrySource:
             workflow = (
                 str(getattr(project, "ci_watch_workflow", None) or default_workflow)
             ).strip() or None
-            coros.append(self._sample_for(git, slug, workflow))
-        # Gather so one slow GitHub 429 doesn't stall the whole sweep.
-        results = await asyncio.gather(*coros) if coros else []
-        return [s for s in results if s is not None]
+            query = await self._resolve_query(git, slug, workflow)
+            if query is not None:
+                lookups.append(_ProjectCiLookup(slug, workflow, query))
+        return lookups
+
+    @staticmethod
+    async def _resolve_query(
+        git: GitService, slug: str, workflow: str | None
+    ) -> CiRunQuery | None:
+        """The project's CI query, or None (logged) when it can't resolve."""
+        try:
+            query = await git.resolve_ci_query(slug)
+        except Exception as e:  # per-project isolation — never abort the sweep
+            logger.warning(
+                "ci-watch: telemetry fetch failed for project",
+                project_slug=slug,
+                error=str(e),
+            )
+            return None
+        if query is None:
+            logger.warning(
+                "ci-watch: no CI signal for project — skipping",
+                project_slug=slug,
+                workflow=workflow,
+            )
+        return query
 
     async def _sample_for(
-        self, git: GitService, slug: str, workflow: str | None
+        self, git: GitService, lookup: _ProjectCiLookup
     ) -> TelemetrySample | None:
         """One project's sample, or None on an unreadable/absent signal."""
+        slug = lookup.slug
         try:
-            ci = await git.get_latest_ci_conclusion(slug, workflow=workflow)
+            ci = await git.get_latest_ci_conclusion_for(
+                lookup.query, workflow=lookup.workflow
+            )
         except Exception as e:  # per-project isolation — never abort the sweep
             logger.warning(
                 "ci-watch: telemetry fetch failed for project",
@@ -184,7 +233,7 @@ class MultiProjectCITelemetrySource:
             logger.warning(
                 "ci-watch: no CI signal for project — skipping",
                 project_slug=slug,
-                workflow=workflow,
+                workflow=lookup.workflow,
             )
             return None
         conclusion = (ci.get("conclusion") or "").lower()

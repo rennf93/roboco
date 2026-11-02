@@ -12,6 +12,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from roboco.services.git import _CI_RUN_WINDOW, GitService
 
@@ -29,7 +30,7 @@ def _service() -> GitService:
 def _resp(status_code: int, *, json_payload: Any = None, text: str = "") -> MagicMock:
     resp = MagicMock()
     resp.status_code = status_code
-    resp.is_success = 200 <= status_code < 300  # noqa: PLR2004
+    resp.is_success = httpx.codes.is_success(status_code)
     resp.json.return_value = json_payload
     resp.text = text
     return resp
@@ -84,7 +85,7 @@ async def test_list_open_prs_normalizes_and_flags_fork() -> None:
         patch("roboco.services.git.httpx.AsyncClient", return_value=client),
     ):
         out = await svc.list_open_prs("roboco")
-    assert len(out) == 2  # noqa: PLR2004
+    assert len(out) == len(payload)
     fork, internal = out
     assert fork == {
         "number": 7,

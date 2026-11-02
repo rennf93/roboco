@@ -2,7 +2,7 @@
 
 ## What It Is
 
-RoboCo's HTTP request layer is protected by `fastapi-guard` (8.0.0, on `guard-core` 4.0.1), implemented in `roboco/security.py` and wired into the app in `roboco/api/app.py`'s `create_app`.
+RoboCo's HTTP request layer is protected by `fastapi-guard` (8.1.2, on `guard-core` 4.4.0), implemented in `roboco/security.py` and wired into the app in `roboco/api/app.py`'s `create_app`.
 
 ## Enable/Disable
 
@@ -11,7 +11,7 @@ RoboCo's HTTP request layer is protected by `fastapi-guard` (8.0.0, on `guard-co
 | `ROBOCO_GUARD_ENABLED` | `false` | Master switch. Off = completely inert — no middleware is mounted, the request path is entirely unchanged, and nothing is logged or blocked. |
 | `ROBOCO_GUARD_PASSIVE_MODE` | see below | When the guard is enabled, controls whether it blocks matching requests or only logs them. |
 | `ROBOCO_GUARD_EMERGENCY_WHITELIST` | `` (empty) | Comma-separated IPs/CIDRs always allowed through in an active `ROBOCO_GUARD_EMERGENCY` lockdown, in addition to loopback. Empty = loopback only. |
-| `ROBOCO_GUARD_TRUSTED_CHAIN_PEERS` | `` (empty) | Comma-separated exact IP address(es) — never a CIDR range — trusted to appear as a recorded proxy hop inside `X-Forwarded-For` beyond loopback, e.g. the docker bridge gateway a host-proxied Tailscale Serve chain terminates behind, so the resolved client is the real tailnet/LAN peer instead of that hop's own address. Empty = only a loopback rightmost hop ever peels. |
+| `ROBOCO_GUARD_TRUSTED_CHAIN_PEERS` | `` (empty) | Comma-separated exact IP address(es), never a CIDR range, trusted to appear as a recorded proxy hop inside `X-Forwarded-For` beyond loopback, e.g. the docker bridge gateway a host-proxied Tailscale Serve chain terminates behind, so the resolved client is the real tailnet/LAN peer instead of that hop's own address. Empty = only a loopback rightmost hop ever peels. The NAS compose files (docker-compose.yml/.yaml) set it to `172.30.0.1`, the gateway of their pinned `roboco_default` subnet `172.30.0.0/16`. |
 | `ROBOCO_GUARD_SCAN_RESPONSE_BODY` | `false` | Lets `return_pattern` behavior rules read the response body, not just the status code. Roboco's own status:404/status:401 rules never need it (see below); off by default is byte-for-byte unchanged behavior. |
 
 As of 2026-07-19 the guard is gated off by default in config, but the NAS build compose arms it ON in ACTIVE enforcement (`ROBOCO_GUARD_PASSIVE_MODE=false`) — passive/log-only calibration came back clean, and the CEO approved the flip now that cloud auth + Tailscale are armed. A matching request on that deploy is actually blocked, not just logged. The registry compose still ships it fully off (see Enforcement Posture below).
@@ -39,6 +39,12 @@ A blocked request gets a generic `400` or `403` response — no rule or signatur
 Agent traffic legitimately carries code, SQL, diffs, file paths, HTML snippets, and URLs — for example inside `note` / `commit` / `dm` bodies. To avoid false positives, the free-text body fields on those routes are excluded from WAF signature scanning via `excluded_detection_body_fields` in `build_security_config`, so normal code/SQL/diff/HTML payloads from agents are not flagged by the WAF layer.
 
 The three custom validators above are not covered by that exclusion — they scan those same bodies regardless of the WAF exclusion. See `docs/rag/troubleshooting/blocked-http-requests.md` for what this means in practice and what not to put in a request body.
+
+## WAF Scan Time Budget
+
+guard-core gives each signature pattern a scan budget, `detection_compiler_timeout`, and turns a pattern that runs out of it into a `pattern_timeout` threat that the fail-secure posture blocks ("Pattern exceeded scan time budget: '<pattern>'" in the guard log). The budget is wall time: the windowed patterns run on a 4-worker process-wide thread pool and are awaited with `asyncio.wait_for`, so every moment the scan waits for that pool or for the event loop counts, not only regex work. RoboCo sets it to guard-core's ceiling, 10 s (`_PATTERN_SCAN_WALL_BUDGET_SECONDS` in `roboco/security.py`; the default was 2 s).
+
+Why: the blocks the 2 s budget produced were scheduling stalls, not regex cost. `accept: */*` on an agent's `POST /api/v1/do/note` (2026-11-01 04:53:42) and seven tiny tailnet headers (2026-10-28 05:36) "exceeded" it, while a whole request scan costs about 0.1 s of CPU and the patterns run in microseconds on such values. The log shows the process itself stalling: two `/health` requests started 106 ms apart completed together 9.33 s and 9.44 s later with no log line in between, and the guard's Redis reads timed out right after. `tests/unit/test_security_scan_budget.py` reproduces the failure with the pool kept busy for 2.5 s. A pattern that still runs out of 10 s keeps blocking (CEO decision 2026-11-01). The per-request CPU cap, `detection_max_scan_seconds` (10 s of CPU), is unchanged. If stalls ever approach 10 s again, find what stalls the orchestrator (`docker compose exec orchestrator py-spy dump --pid 1`) rather than raising the budget further: guard-core will not accept more.
 
 ## Scanner Auto-Ban
 
@@ -85,6 +91,10 @@ The pattern is `status:404` / `status:401`, not a bare `404` / `401` substring. 
 `route_config.behavior_rules` (per-route `usage_monitor()`/`behavior_analysis()`) and `global_behavior_rules` (the 404/401 rules above) are invoked directly from `SecurityMiddleware.dispatch`/`_process_response` in the `guard` package, OUTSIDE `SecurityCheckPipeline`, the only place `redis_fail_open` is honored. `BehaviorTracker.track_endpoint_usage`/`track_return_pattern` call redis unguarded and raise `GuardRedisError` on a blip, which would otherwise fall through to roboco's generic exception handler as a `500` instead of failing open like every pipeline check does.
 
 `roboco/security.py` patches all three call sites at import time: `BehavioralProcessor.process_usage_rules` (route-level usage/frequency rules), `process_return_rules` (route-level return_pattern rules, roboco has none of these today), and `process_global_return_rules` (the seam the status:404/401 rules actually run through). Each wraps the original method, catches `GuardRedisError`, and either re-raises (when `redis_fail_open=False`) or logs a warning and swallows it (when `redis_fail_open=True`, roboco's default). Verified still required at guard-core 4.0.1; the durable fix belongs upstream.
+
+## Ban-Lookup Redis Fail-Open Patch
+
+`IpSecurityCheck` reads the ban store first (`IPBanManager.is_ip_banned`: the local cache, then Redis). Under `redis_fail_open`, guard-core answers a `GuardRedisError` there by skipping the whole check, and the allowlist decision plus the `is_whitelisted` / `is_exempt` stamps live in that same check. So a Redis outage used to admit every non-member IP and strip the mesh and the tailnet of their exemption: on 2026-10-28 05:35-05:36, while the guard's Redis client hit "Too many connections", "Skipping check ip_security" was logged 192 times and the CEO's tailnet panel (whitelisted bridge IP `172.23.0.1`) was rate-limited 48 times by the in-memory fallback and WAF-scanned 7 times. `roboco/security.py` wraps `is_ip_banned` so that, with `redis_fail_open`, an unreadable ban store means "not banned" (the same answer guard-core's own WebSocket gate gives) and the rest of the check, allowlist included, still runs. Bans already in the process's local cache still apply. `tests/unit/test_security_redis_outage.py` pins it.
 
 ## Internal Readiness Probe
 

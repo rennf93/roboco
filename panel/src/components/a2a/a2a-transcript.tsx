@@ -238,7 +238,9 @@ export function A2ATranscript({
                         </Badge>
                       </HelpTip>
                     )}
-                    <HelpTip label={new Date(message.created_at).toLocaleString()}>
+                    <HelpTip
+                      label={new Date(message.created_at).toLocaleString()}
+                    >
                       <span className="text-xs text-muted-foreground ml-auto w-fit">
                         {formatDistanceToNow(new Date(message.created_at))} ago
                       </span>

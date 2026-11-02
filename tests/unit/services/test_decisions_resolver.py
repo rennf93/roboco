@@ -492,3 +492,19 @@ async def test_pilot_mode_settings_row_beats_env_list(
     monkeypatch.setattr(cfg.settings, "decisions_pilots_on", "self_heal")
     monkeypatch.setattr(SettingsService, "get", AsyncMock(return_value="shadow"))
     assert await pilot_mode(MagicMock(), "self_heal") is PilotMode.SHADOW
+
+
+@pytest.mark.asyncio
+async def test_an_open_clef_circuit_hands_calls_to_laya(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Consecutive Clef failures open its circuit; for that window the
+    resolver serves Laya instead of answering "no verdict" to every call."""
+    _flag_stack(monkeypatch)
+    monkeypatch.setattr(resolver, "_backend_healthy", AsyncMock(return_value=True))
+    client = MagicMock()
+    client.accepts_calls = MagicMock(side_effect=lambda tier: tier != "clef")
+    monkeypatch.setattr(resolver, "get_decisions_client", lambda: client)
+    endpoint = await resolver.resolve_endpoint(_mock_session())
+    assert endpoint is not None
+    assert endpoint.tier == "laya"

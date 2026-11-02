@@ -490,9 +490,10 @@ class SelfHealEngine(BaseService):
             if obs.fingerprint in open_fps:
                 continue
             # Decisions pilot 6.1 (spec): a typed transient-vs-regression
-            # verdict gates origination. NO_VERDICT (flag off, no healthy
-            # tier, backend failure, shadow mode) originates exactly as
-            # today; only an explicit SKIP suppresses this sweep's task.
+            # verdict gates origination. A confidently transient failure (a
+            # flake) skips this sweep's task; a regression, an unsure verdict
+            # or NO_VERDICT (flag off, no healthy tier, backend failure,
+            # shadow mode) originates exactly as today.
             gate = await self._decisions_transient_gate(obs)
             if gate is decisions_pilots.SelfHealGate.SKIP:
                 self.log.info(

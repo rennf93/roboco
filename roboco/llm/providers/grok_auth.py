@@ -20,11 +20,9 @@ rather than hanging at the login prompt.
 from __future__ import annotations
 
 import base64
-import contextlib
 import json
 import os
 import re
-import shutil
 import sys
 import threading
 from datetime import UTC, datetime, timedelta
@@ -33,6 +31,8 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 import structlog
+
+from roboco.llm.providers._credential_file import write_agent_credential
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -136,7 +136,7 @@ def _post_token(url: str, form: dict[str, str]) -> dict[str, Any]:
 
 
 def _atomic_write(auth_path: Path, bundle: dict[str, Any]) -> None:
-    """Rewrite ``auth.json`` atomically, preserving the original file mode.
+    """Rewrite ``auth.json`` atomically as an agent-owned, owner-only file.
 
     F006: a rotated refresh_token is single-use — xAI invalidates the old one
     the instant it issues the new one. If this write fails after the rotation,
@@ -148,13 +148,14 @@ def _atomic_write(auth_path: Path, bundle: dict[str, Any]) -> None:
     caller can report ``failed``. The direct write lands the rotated
     refresh_token on disk even when the atomic replace can't (e.g. the tmp
     rename fails across a boundary the kernel won't honor).
+
+    Both paths write through ``write_agent_credential`` (agent uid, 0600): a
+    copied 0644 mode let every uid in the orchestrator read the token.
     """
     payload = json.dumps(bundle)
     tmp = auth_path.with_name(auth_path.name + ".refresh.tmp")
     try:
-        tmp.write_text(payload, encoding="utf-8")
-        with contextlib.suppress(OSError):
-            shutil.copymode(auth_path, tmp)
+        write_agent_credential(tmp, payload)
         tmp.replace(auth_path)
         return
     except OSError as exc:
@@ -162,7 +163,7 @@ def _atomic_write(auth_path: Path, bundle: dict[str, Any]) -> None:
             "grok auth atomic write failed; trying direct write", error=str(exc)
         )
     # Last-resort direct write so a rotated refresh_token is never lost.
-    auth_path.write_text(payload, encoding="utf-8")
+    write_agent_credential(auth_path, payload)
 
 
 def _is_stale(creds: dict[str, Any], now: datetime, skew_seconds: int) -> bool:
