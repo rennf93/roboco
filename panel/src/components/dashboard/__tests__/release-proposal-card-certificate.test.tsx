@@ -310,7 +310,10 @@ describe("ReleaseProposalCard — Download certificate (task-status-confirmed pu
       .mockImplementation(() => {});
 
     const client = new QueryClient({
-      defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
     });
     render(
       <QueryClientProvider client={client}>

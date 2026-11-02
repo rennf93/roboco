@@ -15,4 +15,4 @@ LABEL description="CEO's chief-of-staff — a long-lived Claude Agent SDK sessio
 
 # Override the base `["claude"]` entrypoint with the secretary driver. WORKDIR
 # /app and the venv on PATH are inherited from the base; roboco lives at /app/roboco.
-ENTRYPOINT ["python", "-m", "roboco.agent_sdk.secretary_main"]
+ENTRYPOINT ["/app/scripts/umask-exec.sh", "python", "-m", "roboco.agent_sdk.secretary_main"]

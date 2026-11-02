@@ -70,7 +70,6 @@ async def test_recovers_by_checkout_when_local_ref_present() -> None:
         "get_current_branch",
         AsyncMock(side_effect=["feature/other--leaf", "feature/main_pm/abc"]),
     )
-    _bind(svc, "_token_for_workspace", AsyncMock(return_value="tok"))
     run = _run_git_mock(local_ref_rc=0, checkout_rc=0)
     _bind(svc, "_run_git", run)
 
@@ -90,7 +89,6 @@ async def test_recovers_missing_local_ref_from_origin() -> None:
         "get_current_branch",
         AsyncMock(side_effect=["feature/other--leaf", "feature/main_pm/abc"]),
     )
-    _bind(svc, "_token_for_workspace", AsyncMock(return_value="tok"))
     run = _run_git_mock(local_ref_rc=1, checkout_rc=0)  # local ref missing
     _bind(svc, "_run_git", run)
 
@@ -106,7 +104,6 @@ async def test_recovers_missing_local_ref_from_origin() -> None:
 async def test_raises_when_cannot_switch() -> None:
     svc = _service()
     _bind(svc, "get_current_branch", AsyncMock(return_value="feature/other--leaf"))
-    _bind(svc, "_token_for_workspace", AsyncMock(return_value="tok"))
     run = _run_git_mock(local_ref_rc=0, checkout_rc=1)  # checkout fails (dirty tree)
     _bind(svc, "_run_git", run)
 

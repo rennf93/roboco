@@ -6,7 +6,7 @@ Mirrors migration 095 (openrouter): adds ``'nebius'`` to the PostgreSQL
 must run in its own autocommit transaction — Postgres forbids using a
 newly added enum value in the same transaction — so we wrap it in
 ``autocommit_block()`` and keep this migration scoped to the enum alone.
-The companion row-seed lives in migration 098.
+The companion row-seed lives in migration 100.
 
 Revision ID: 099_modelprovider_nebius
 Revises: 096_seed_openrouter_provider
@@ -24,7 +24,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    # The ALTER TYPE must run and COMMIT before migration 098 seeds a row
+    # The ALTER TYPE must run and COMMIT before migration 100 seeds a row
     # using 'nebius' (Postgres forbids using a freshly added enum value
     # in the same transaction that added it). Mirrors migration 095
     # (openrouter) exactly — including the offline --sql rendering the

@@ -1,5 +1,7 @@
-"""Auto-extracted engine mixin -- see decomp/extract.py. Method bodies below are
-moved verbatim from AgentOrchestrator (family: dispatch_routing)."""
+"""How the dispatcher routes a task: the role that should own it, then the
+agent that fills that role.
+
+Engine mixins composed into AgentOrchestrator."""
 
 from __future__ import annotations
 
@@ -23,8 +25,10 @@ else:
     _Base = object
 
 
-class DispatchRoutingEngine(_Base):
-    """Mixin holding the "dispatch_routing" methods moved out of AgentOrchestrator."""
+class RoutingClassifierEngine(_Base):
+    """Which role should own a pending task: board, main_pm, cell_pm, dev or
+    marketing. Reads only the task and the orchestrator's keyword and team
+    tables."""
 
     def _has_board_keywords(self, text: str) -> bool:
         """Check if text contains board-level keywords."""
@@ -41,9 +45,8 @@ class DispatchRoutingEngine(_Base):
     @staticmethod
     def _route_by_task_type(task_type: str, team: str | None) -> str | None:
         """Route based on task_type field alone; returns None if no match."""
-        cell_teams = tuple(
-            sorted(t.value for t in CELL_TEAMS)
-        )  # ("backend", "frontend", "ux_ui")
+        # ("backend", "frontend", "ux_ui")
+        cell_teams = tuple(sorted(t.value for t in CELL_TEAMS))
         if task_type in ("planning", "research", "administrative"):
             return "cell_pm" if team in cell_teams else "main_pm"
         if task_type == "design" and team not in ("backend", "frontend"):
@@ -130,6 +133,12 @@ class DispatchRoutingEngine(_Base):
             return self._TEAM_ROUTING_MAP[team]
 
         return self._classify_code_task(task, has_children)
+
+
+class DispatchRoutingEngine(_Base):
+    """Which agent fills the routed role: the target slug, the cell PM for a
+    code task that would strand on main-pm, the creator-skip guard, and the
+    PM to dispatch for a review or a blocker."""
 
     def _resolve_routing_target(self, routing: str, task: dict[str, Any]) -> str | None:
         """
@@ -277,6 +286,12 @@ class DispatchRoutingEngine(_Base):
         target = self._resolve_routing_target(routing, task)
         if target == "main-pm" and self._is_code_task(task):
             return await self._cell_pm_for_stranded_code_task(task)
+        # A running-container check alone picks a dev that may still hold
+        # claimed / blocked / paused work; route to one that holds none.
+        if routing == "dev" and target in self._cell_candidates(
+            task.get("team"), "dev"
+        ):
+            return await self._free_cell_dev(task)
         return target
 
     def _creator_route_should_skip(
@@ -337,11 +352,11 @@ class DispatchRoutingEngine(_Base):
         agent_id = await self._get_routing_target(routing, task)
 
         if not agent_id:
-            logger.warning(
-                "No routing target found",
-                task_id=task.get("id"),
-                routing=routing,
-            )
+            # Dev routing returns None on purpose while every cell dev is busy
+            # or still holds work (logged at debug where that is decided);
+            # only a target that cannot be resolved at all deserves a warning.
+            log = logger.debug if routing == "dev" else logger.warning
+            log("No routing target found", task_id=task.get("id"), routing=routing)
             return
 
         # Board work is a two-reviewer gate (PO + Head of Marketing), not a

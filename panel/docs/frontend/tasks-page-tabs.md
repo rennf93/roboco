@@ -41,6 +41,7 @@ The tabs and kanban view are completely URL-driven. The page reads and writes tw
 All existing filters—search query (`q`), status, team, task type, project, product, sort field, sort direction, pagination, and expanded rows—are preserved as URL parameters and **shared across both tabs**. Switching tabs does not clear filters; users can switch between List and Kanban while maintaining their active filters.
 
 **Example URLs:**
+
 - `/tasks?q=auth&tab=list` – List view filtered by "auth" search
 - `/tasks?q=auth&tab=kanban&view=qa` – QA kanban filtered by "auth" search
 - `/tasks?status=pending&team=backend&tab=kanban&view=dev` – Dev kanban, pending tasks, backend team only
@@ -86,6 +87,7 @@ Each kanban view is embedded inside a `TabsContent` and receives two props:
 ```
 
 **Props:**
+
 - `team`: The currently selected team (or `undefined` if no team or multiple teams are selected)
 - `onTeamChange`: Callback to update the team filter in the parent page's URL state
 

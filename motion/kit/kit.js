@@ -10,10 +10,11 @@
   // Splits `el`'s current text into one <span class="pk-type__char"> per
   // character (whitespace preserved via CSS `white-space: pre` on the
   // container) and gives each an absolute animation-delay so the reveal
-  // cascades left-to-right. `delay` is the composition-absolute second the
-  // first character should appear — the same convention every other
-  // animation-delay in this house uses (seconds from frame 0, not relative
-  // to the element). Deterministic: runs once, before any animation fires.
+  // cascades left-to-right. `delay` counts from the data-start of the
+  // nearest element that carries one, like every animation-delay (see
+  // motion/README.md, "The animation clock"); inside clips that start at 0,
+  // which is where beats belong, it is the composition second the first
+  // character appears. Deterministic: runs once, before any animation fires.
   function typeText(el, options) {
     if (!el) return;
     var opts = options || {};

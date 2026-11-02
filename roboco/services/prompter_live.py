@@ -28,6 +28,11 @@ import structlog
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+if TYPE_CHECKING:
+    from roboco.services._prompter_live_types import PrompterLiveRegistrySelf as _Base
+else:
+    _Base = object
+
 logger = structlog.get_logger()
 
 # The in-container receiver port (same ROBOCO_SDK_PORT every agent sidecar uses).
@@ -48,7 +53,8 @@ class LiveIntakeSession:
     """One live chat: a queue of outbound events + the container to deliver to."""
 
     session_id: str
-    agent_id: str  # container agent id, e.g. "intake-3f9c1a2b"
+    # Container agent id, e.g. "intake-3f9c1a2b"
+    agent_id: str
     queue: asyncio.Queue[Any] = field(default_factory=asyncio.Queue)
     closed: bool = False
     # Set when the chat is *parked* awaiting board review of this task: the
@@ -67,7 +73,133 @@ class LiveIntakeSession:
     pending_text: list[str] = field(default_factory=list)
 
 
-class PrompterLiveRegistry:
+class PrompterLiveBridge(_Base):
+    """The bridge across a live session: agent events queued for the panel's stream
+    (with the turn's text buffered, idle sessions found, and the stream kept alive),
+    and the human's messages delivered to the container."""
+
+    # -- agent -> panel ----------------------------------------------------
+
+    def push(self, session_id: str, event: dict[str, Any]) -> bool:
+        """Queue one agent event for the SSE stream. False if no such session."""
+        session = self._sessions.get(session_id)
+        if session is None or session.closed:
+            return False
+        session.last_activity = time.monotonic()
+        session.queue.put_nowait(event)
+        return True
+
+    def buffer_text(self, session_id: str, text: str) -> None:
+        """Accumulate one assistant ``text`` delta for the in-flight turn."""
+        session = self._sessions.get(session_id)
+        if session is not None:
+            session.pending_text.append(text)
+
+    def flush_text(self, session_id: str) -> str:
+        """Return + clear the accumulated assistant text (called on ``turn_end``)."""
+        session = self._sessions.get(session_id)
+        if session is None:
+            return ""
+        text = "".join(session.pending_text)
+        session.pending_text.clear()
+        return text
+
+    def idle_session_ids(self, threshold_seconds: float) -> list[tuple[str, str]]:
+        """Return ``(session_id, agent_id)`` for live chats idle past the threshold.
+
+        Idle = ``threshold_seconds`` with no turn (push/deliver). Closed and
+        board-review-parked (``task_id`` set) sessions are excluded — the latter
+        are intentionally kept alive while the board reviews. ``threshold <= 0``
+        yields nothing (the caller treats that as "disabled").
+        """
+        if threshold_seconds <= 0:
+            return []
+        now = time.monotonic()
+        return [
+            (sid, s.agent_id)
+            for sid, s in self._sessions.items()
+            if not s.closed
+            and s.task_id is None
+            and now - s.last_activity > threshold_seconds
+        ]
+
+    @staticmethod
+    async def _keepalive(session: LiveIntakeSession) -> None:
+        """Refresh ``last_activity`` while a stream is connected (see ``stream``)."""
+        while True:
+            await asyncio.sleep(_STREAM_KEEPALIVE_SECONDS)
+            session.last_activity = time.monotonic()
+
+    async def stream(self, session_id: str) -> AsyncIterator[dict[str, Any]]:
+        """Yield queued agent events until the session is closed.
+
+        A connected stream keeps the session's ``last_activity`` fresh (a
+        ``_keepalive`` task ticks every ``_STREAM_KEEPALIVE_SECONDS`` even with
+        no events), so the idle reaper treats an open, actively-watched chat as
+        alive — a human reading a proposed draft without typing is not "idle".
+        The keepalive runs beside an un-cancelled ``queue.get()`` (so no live
+        token/``_CLOSE`` is lost) and is cancelled when the stream ends; on
+        client disconnect the refresh stops and an abandoned chat reaps normally.
+        """
+        session = self._sessions.get(session_id)
+        if session is None:
+            return
+        keepalive = asyncio.create_task(self._keepalive(session))
+        try:
+            while True:
+                item = await session.queue.get()
+                if item is _CLOSE:
+                    return
+                session.last_activity = time.monotonic()
+                yield item
+        finally:
+            keepalive.cancel()
+
+    # -- panel -> agent ----------------------------------------------------
+
+    async def deliver(self, session_id: str, text: str) -> bool:
+        """Deliver the human's message to the container's receiver. False if gone."""
+        session = self._sessions.get(session_id)
+        if session is None or session.closed:
+            # Silent: the opening-message retry loop polls through the
+            # container's boot, and the exhaustion path warns once upstream
+            # (_deliver_when_ready) — a per-attempt warning here is spam.
+            return False
+        # Human turn = activity
+        session.last_activity = time.monotonic()
+        url = f"http://roboco-agent-{session.agent_id}:{SDK_PORT}/turn"
+        client = self._client or httpx.AsyncClient(timeout=10.0)
+        try:
+            resp = await client.post(url, json={"text": text})
+            resp.raise_for_status()
+            # The one positive signal the live path had none of: without this
+            # line, a session that "opened then did nothing" left zero trace
+            # in either the orchestrator or the container log (2026-09-27
+            # intake report) — delivery success, delivery failure, and
+            # never-attempted were indistinguishable.
+            self.log.info(
+                "Live turn delivered",
+                session_id=session_id,
+                agent_id=session.agent_id,
+            )
+            return True
+        except Exception as exc:
+            # Debug, not error: the opening-message delivery retries until the
+            # container's receiver is up, so transient failures here are expected
+            # and were spamming ERROR. Callers surface a real failure (the
+            # /messages route 404s; _deliver_when_ready warns once after N tries).
+            self.log.debug(
+                "Message delivery attempt failed",
+                session_id=session_id,
+                error=str(exc),
+            )
+            return False
+        finally:
+            if self._client is None:
+                await client.aclose()
+
+
+class PrompterLiveRegistry(PrompterLiveBridge):
     """Tracks live intake sessions and bridges panel <-> container."""
 
     def __init__(self, *, http_client: httpx.AsyncClient | None = None) -> None:
@@ -177,110 +309,6 @@ class PrompterLiveRegistry:
             if session.task_id == task_id and not session.closed:
                 return session
         return None
-
-    # -- agent -> panel ----------------------------------------------------
-
-    def push(self, session_id: str, event: dict[str, Any]) -> bool:
-        """Queue one agent event for the SSE stream. False if no such session."""
-        session = self._sessions.get(session_id)
-        if session is None or session.closed:
-            return False
-        session.last_activity = time.monotonic()
-        session.queue.put_nowait(event)
-        return True
-
-    def buffer_text(self, session_id: str, text: str) -> None:
-        """Accumulate one assistant ``text`` delta for the in-flight turn."""
-        session = self._sessions.get(session_id)
-        if session is not None:
-            session.pending_text.append(text)
-
-    def flush_text(self, session_id: str) -> str:
-        """Return + clear the accumulated assistant text (called on ``turn_end``)."""
-        session = self._sessions.get(session_id)
-        if session is None:
-            return ""
-        text = "".join(session.pending_text)
-        session.pending_text.clear()
-        return text
-
-    def idle_session_ids(self, threshold_seconds: float) -> list[tuple[str, str]]:
-        """Return ``(session_id, agent_id)`` for live chats idle past the threshold.
-
-        Idle = ``threshold_seconds`` with no turn (push/deliver). Closed and
-        board-review-parked (``task_id`` set) sessions are excluded — the latter
-        are intentionally kept alive while the board reviews. ``threshold <= 0``
-        yields nothing (the caller treats that as "disabled").
-        """
-        if threshold_seconds <= 0:
-            return []
-        now = time.monotonic()
-        return [
-            (sid, s.agent_id)
-            for sid, s in self._sessions.items()
-            if not s.closed
-            and s.task_id is None
-            and now - s.last_activity > threshold_seconds
-        ]
-
-    @staticmethod
-    async def _keepalive(session: LiveIntakeSession) -> None:
-        """Refresh ``last_activity`` while a stream is connected (see ``stream``)."""
-        while True:
-            await asyncio.sleep(_STREAM_KEEPALIVE_SECONDS)
-            session.last_activity = time.monotonic()
-
-    async def stream(self, session_id: str) -> AsyncIterator[dict[str, Any]]:
-        """Yield queued agent events until the session is closed.
-
-        A connected stream keeps the session's ``last_activity`` fresh (a
-        ``_keepalive`` task ticks every ``_STREAM_KEEPALIVE_SECONDS`` even with
-        no events), so the idle reaper treats an open, actively-watched chat as
-        alive — a human reading a proposed draft without typing is not "idle".
-        The keepalive runs beside an un-cancelled ``queue.get()`` (so no live
-        token/``_CLOSE`` is lost) and is cancelled when the stream ends; on
-        client disconnect the refresh stops and an abandoned chat reaps normally.
-        """
-        session = self._sessions.get(session_id)
-        if session is None:
-            return
-        keepalive = asyncio.create_task(self._keepalive(session))
-        try:
-            while True:
-                item = await session.queue.get()
-                if item is _CLOSE:
-                    return
-                session.last_activity = time.monotonic()
-                yield item
-        finally:
-            keepalive.cancel()
-
-    # -- panel -> agent ----------------------------------------------------
-
-    async def deliver(self, session_id: str, text: str) -> bool:
-        """Deliver the human's message to the container's receiver. False if gone."""
-        session = self._sessions.get(session_id)
-        if session is None or session.closed:
-            return False
-        session.last_activity = time.monotonic()  # human turn = activity
-        url = f"http://roboco-agent-{session.agent_id}:{SDK_PORT}/turn"
-        client = self._client or httpx.AsyncClient(timeout=10.0)
-        try:
-            resp = await client.post(url, json={"text": text})
-            resp.raise_for_status()
-            return True
-        except Exception as exc:
-            # Debug, not error: the opening-message delivery retries until the
-            # container's receiver is up, so transient failures here are expected
-            # and were spamming ERROR. Callers surface a real failure (the
-            # /messages route 404s; _deliver_when_ready warns once after N tries).
-            self.log.debug(
-                "Message delivery attempt failed", session_id=session_id, error=str(exc)
-            )
-            return False
-        finally:
-            if self._client is None:
-                await client.aclose()
 
 
 # Process-wide singleton — the orchestrator owns one registry. Held on a class
