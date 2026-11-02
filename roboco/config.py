@@ -188,10 +188,10 @@ class Settings(BaseSettings):
     # The idle default MUST clear the longest legitimate in-transaction
     # window: a cold-workspace claim holds its transaction across the clone
     # (workspace_clone_timeout, 300s) + dep install
-    # (workspace_dep_install_timeout_seconds, 600s) under the 900s
-    # flow_verb_slow_timeout_seconds wall — hence 20 min, not tighter.
+    # (workspace_dep_install_timeout_seconds, 600s) under the 1500s
+    # flow_verb_slow_timeout_seconds wall, hence 30 min, not tighter.
     database_idle_in_transaction_timeout_ms: int = Field(
-        default=1_200_000,
+        default=1_800_000,
         ge=0,
         description=(
             "Postgres idle_in_transaction_session_timeout for app "
@@ -521,7 +521,7 @@ class Settings(BaseSettings):
         gt=0,
         description=(
             "Deadline for ON pilots inside the long submit verbs (i_am_done, "
-            "submit_up, submit_root: 900 s walls), whose inputs carry a diff."
+            "submit_up, submit_root: 1500 s walls), whose inputs carry a diff."
         ),
     )
     decisions_background_deadline_s: float = Field(
@@ -2329,7 +2329,7 @@ class Settings(BaseSettings):
         ),
     )
     flow_verb_slow_timeout_seconds: int = Field(
-        default=900,
+        default=1500,
         ge=1,
         description=(
             "Server-side timeout for the slow flow verbs (i_am_done, "
@@ -2372,8 +2372,8 @@ class Settings(BaseSettings):
             "Time a project's own pre-push hook may run (in the throwaway "
             "container) before RoboCo pushes for an agent; past it the push is "
             "refused. Projects run their test suites there. It has to fit, "
-            "with the quality gate (up to 600 s), inside i_am_done's "
-            "flow_verb_slow_timeout_seconds wall (900 s)."
+            "with the quality gate (up to 1200 s), inside i_am_done's "
+            "flow_verb_slow_timeout_seconds wall (1500 s)."
         ),
     )
     git_network_timeout_seconds: int = Field(
