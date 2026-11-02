@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import logging
 import stat
+import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
 import structlog
+from roboco import logging as roboco_logging
 from roboco.logging import (
     LogContext,
     _redact_secrets,
@@ -100,13 +103,16 @@ def test_redact_event_dict_preserves_non_string_values() -> None:
 
 
 @pytest.fixture(autouse=True)
-def _restore_root_handlers() -> Iterator[None]:
+def _restore_root_handlers(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """setup_logging replaces the root logger's handlers: put the test
     session's back afterwards and close the file handlers a test attached,
-    so no log file under a test's tmp_path stays open into later tests."""
+    so no log file under a test's tmp_path stays open into later tests. The
+    session's own log writer is left running."""
     root = logging.getLogger()
     handlers, level = root.handlers[:], root.level
+    monkeypatch.setattr(roboco_logging, "_log_writers", [])
     yield
+    roboco_logging._stop_log_writers()
     for handler in root.handlers[:]:
         if handler not in handlers and isinstance(handler, logging.FileHandler):
             handler.close()
@@ -125,14 +131,10 @@ def test_setup_logging_closes_the_file_handler_it_replaces(tmp_path: Path) -> No
         mock_settings.app_version = "1.0.0"
         mock_settings.debug = False
         setup_logging()
-        (first,) = [
-            h
-            for h in logging.getLogger().handlers
-            if isinstance(h, logging.FileHandler)
-        ]
+        (first,) = _file_handlers()
         setup_logging()
     assert first.stream is None
-    assert first not in logging.getLogger().handlers
+    assert first not in _file_handlers()
 
 
 def test_setup_logging_development_branch(tmp_path: Path) -> None:
@@ -172,12 +174,7 @@ def test_setup_logging_handles_missing_log_dir() -> None:
         mock_settings.app_version = "x"
         mock_settings.debug = False
         setup_logging()
-    handlers = logging.getLogger().handlers
-    # No file handler should be created.
-    has_file_handler = any(
-        isinstance(h, logging.handlers.RotatingFileHandler) for h in handlers
-    )
-    assert has_file_handler is False
+    assert _file_handlers() == []
 
 
 def test_setup_logging_handles_log_dir_oserror() -> None:
@@ -210,6 +207,45 @@ def _setup_logging_into(log_dir: Path) -> None:
         mock_settings.app_version = "x"
         mock_settings.debug = False
         setup_logging()
+
+
+def _file_handlers() -> list[logging.FileHandler]:
+    return [
+        handler
+        for writer in roboco_logging._log_writers
+        for handler in writer.handlers
+        if isinstance(handler, logging.FileHandler)
+    ]
+
+
+_NEVER_WAITS_SECONDS = 1.0
+_STALLED_WRITE_SECONDS = 10.0
+
+
+def test_a_stalled_log_write_never_blocks_the_caller(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Live 2026-11-02: one flush() to orchestrator.log on the NAS volume held
+    the API's event loop for 5 s, so every request waited on the disk."""
+    _setup_logging_into(tmp_path)
+    (file_handler,) = _file_handlers()
+    release = threading.Event()
+    write = file_handler.emit
+
+    def stalled_write(record: logging.LogRecord) -> None:
+        release.wait(_STALLED_WRITE_SECONDS)
+        write(record)
+
+    monkeypatch.setattr(file_handler, "emit", stalled_write)
+
+    started = time.monotonic()
+    logging.getLogger("roboco.test").warning("written by the writer thread")
+    assert time.monotonic() - started < _NEVER_WAITS_SECONDS
+
+    release.set()
+    roboco_logging._stop_log_writers()
+    log_file = tmp_path / "orchestrator.log"
+    assert "written by the writer thread" in log_file.read_text()
 
 
 def test_setup_logging_closes_a_log_dir_this_process_owns(tmp_path: Path) -> None:
