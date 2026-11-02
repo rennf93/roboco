@@ -1,9 +1,8 @@
-# Each value must be true or false: pnpm 11 fails `pnpm install` (and so
-# `pnpm test`) on any other value. esbuild is the only package left with an
-# install script, and `pnpm test`, `pnpm lint` and `pnpm preview` do not need
-# it: esbuild loads its prebuilt platform package. (hyperframes 0.8 dropped
-# onnxruntime-node, @google/genai and protobufjs; sharp 0.35 has no install
-# script.)
+# Each value must be true or false: pnpm 12 fails `pnpm install` on any other
+# value. esbuild is the only package left with an install script, and
+# `pnpm test`, `pnpm lint` and `pnpm preview` do not need it: esbuild loads its
+# prebuilt platform package. (hyperframes 0.8 dropped onnxruntime-node,
+# @google/genai and protobufjs; sharp 0.35 has no install script.)
 allowBuilds:
   esbuild: false
 # hyperframes is pinned to the 0.8.216 the video-renderer renders with. pnpm
@@ -24,3 +23,10 @@ overrides:
   # hyperframes pins undici to exactly 7.25.0, which carries 29 advisories;
   # 7.30.1 is the first 7.x release that fixes all of them.
   undici: ^7.30.1
+# pmOnFail: ignore keeps pnpm-lock.yaml one YAML document. Without it pnpm 12
+# writes a packageManagerDependencies document at the top of the lockfile, and
+# GitHub's dependency graph reads only the first document
+# (dependabot-core#15904, open), which would silence and close the Dependabot
+# alerts on this lockfile. pnpm then no longer switches to the packageManager
+# pin itself; corepack still enforces it in Motion CI.
+pmOnFail: ignore

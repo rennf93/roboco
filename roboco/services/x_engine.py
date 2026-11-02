@@ -11,8 +11,10 @@ hold" shape:
 * **No creds, no calls.** Without stored X credentials the client degrades to
   ``NullXClient`` (never raises, never egresses) exactly like an unconfigured
   research provider.
-* **Local model only.** Drafting runs on the local LLM (MemoryDistiller
-  posture) — never a cloud LLM in the hot path.
+* **Background LLM.** Drafting runs on the background LLM client
+  (``roboco.services.background_llm``, MemoryDistiller posture: the active
+  provider's cheap model, Ollama's flash model falling back to Claude Haiku
+  outside ``anthropic`` mode).
 * **Mention text is screened.** A tweet mentioning the account is external,
   attacker-writable text; ``foundation.policy.injection_guard.
   screen_external_text`` neutralizes it (envelope + inline pattern flags,
@@ -33,7 +35,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
-import httpx
 import redis.asyncio as redis
 from sqlalchemy import func, select
 
@@ -50,6 +51,7 @@ from roboco.foundation.policy.injection_guard import (
     screen_external_text_with_decisions,
 )
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
+from roboco.services.background_llm import BackgroundPrompt, generate_background_text
 from roboco.services.base import BaseService
 from roboco.services.board_programs import program_armed
 from roboco.services.company_goals import get_company_goals_service
@@ -125,13 +127,13 @@ class _RedraftLockUnavailable(Exception):
 
 # Ported from agents/prompts/identities/head-marketing.md's VOICE GUIDE (the
 # reasoning-backed voice HoM's own spawns already carry) plus a slop-ban list
-# adapted from agents/prompts/teams/ux_ui.md's "AI tells to avoid" — the local-
-# model release/reply drafts previously ran on one throwaway sentence with
+# adapted from agents/prompts/teams/ux_ui.md's "AI tells to avoid". The
+# background-LLM release/reply drafts previously ran on one throwaway sentence with
 # neither. ``{product_name}`` is filled in by ``_hom_voice`` so the shared
 # style examples never hardcode a literal brand name. The IMPACT BAR section
 # is likewise ported verbatim from head-marketing.md's own IMPACT BAR (kept
 # in parity by tests/unit/services/test_x_engine.py's sentinel-phrase check)
-# so the local-model chokepoint and the cloud-agent chokepoint hold the same
+# so the background-LLM chokepoint and the cloud-agent chokepoint hold the same
 # bar, not two copies that can drift.
 _HOM_VOICE_GUIDE = """VOICE, with the reasoning behind each rule:
 - Confident, not hedgy: you're announcing something that shipped and works —
@@ -344,24 +346,15 @@ def _reply_prompt(screened_mention_text: str, voice: str, product_name: str) -> 
 
 
 async def _chat(prompt: str) -> str | None:
-    """One local-LLM chat call (OpenAI-compatible); None on a non-success."""
-    async with httpx.AsyncClient(timeout=_CHAT_TIMEOUT_SECONDS) as client:
-        resp = await client.post(
-            f"{settings.local_llm_base_url}/chat/completions",
-            json={
-                "model": settings.local_llm_model,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 200,
-            },
+    """One background-LLM call for a post draft; None when no backend answered."""
+    return await generate_background_text(
+        BackgroundPrompt(
+            purpose="x_engine.draft",
+            user_prompt=prompt,
+            max_tokens=200,
+            timeout_seconds=_CHAT_TIMEOUT_SECONDS,
         )
-        if not resp.is_success:
-            return None
-        data = resp.json()
-        choices = data.get("choices") or []
-        if not choices:
-            return None
-        content = choices[0].get("message", {}).get("content")
-        return content if isinstance(content, str) else None
+    )
 
 
 def _is_meaningful(mention: XMention, min_engagement: int) -> bool:
@@ -664,7 +657,7 @@ class XMentions(_Base):
 
     async def _decisions_mention_skip(self, mention: XMention) -> bool:
         """B4 x_mention_triage: a confident spam/compliment verdict
-        suppresses the local-LLM draft call (the whole point: not every
+        suppresses the background-LLM draft call (the whole point: not every
         mention deserves a draft); a question/bug-report verdict and any
         below-floor/off/shadow outcome proceed exactly as today. Runs
         only after the engagement heuristic passed, so off = no pilot
@@ -739,7 +732,7 @@ class XMentions(_Base):
             # mention is already marked seen above, so this is a deliberate
             # miss, not a retry candidate.
             self.log.info(
-                "x-engine: local model produced no reply; skipping draft "
+                "x-engine: background LLM produced no reply; skipping draft "
                 "(no generic filler)",
                 mention_id=mention.id,
             )
@@ -765,7 +758,7 @@ class XMentions(_Base):
     async def _draft_reply_body(
         self, screened_mention_text: str, product_name: str
     ) -> str | None:
-        """The clamped reply body, or None when the local model produced
+        """The clamped reply body, or None when the background LLM produced
         nothing usable — a blank/failed draft is skipped rather than papered
         over with a generic filler line (see ``_originate_reply``)."""
         # Reply drafts are always from the anchor project's own X account
@@ -778,7 +771,7 @@ class XMentions(_Base):
             )
         except Exception as exc:
             self.log.warning(
-                "x-engine: local-model reply draft failed (skipping mention)",
+                "x-engine: background-LLM reply draft failed (skipping mention)",
                 error=str(exc),
             )
             draft = None
@@ -1224,7 +1217,7 @@ class XPostMaterialization(_Base):
             )
         except Exception as exc:
             self.log.warning(
-                "x-engine: local-model draft failed (fallback template)",
+                "x-engine: background-LLM draft failed (fallback template)",
                 error=str(exc),
             )
             draft = None
@@ -1428,9 +1421,9 @@ class XRedrafts(_Base):
 
         Reads the rejected draft's source-specific reference marker (release
         version for x_post, mention ref for x_reply, feature ref for
-        x_feature) and asks the local model to revise the rejected body with
+        x_feature) and asks the background LLM to revise the rejected body with
         the CEO's reason folded in as guidance. Falls back gracefully: a
-        local-model failure or empty draft originates NOTHING — a degraded
+        background-LLM failure or empty draft originates NOTHING, since a degraded
         copy is worse than none (see ``_draft_revision_body``).
 
         Deduped like ``VideoEngine.open_video_task``'s occasion scoping: a
@@ -1446,7 +1439,7 @@ class XRedrafts(_Base):
         the redraft rather than risking a duplicate (the CEO can re-reject).
 
         Best-effort: never raises. Any failure (unresolvable project,
-        local-model error) logs a warning and returns None — the caller's
+        background-LLM error) logs a warning and returns None, because the caller's
         reject must succeed regardless of this seam.
         """
         try:
@@ -1593,7 +1586,7 @@ class XRedrafts(_Base):
         )
         if body is None:
             self.log.info(
-                "x-engine: local model produced no revision; skipping redraft "
+                "x-engine: background LLM produced no revision; skipping redraft "
                 "(no degraded copy)",
                 task_id=str(post_task.id),
             )
@@ -1622,7 +1615,7 @@ class XRedrafts(_Base):
         reason: str,
         product_name: str,
     ) -> str | None:
-        """The clamped revision body, or None when the local model produced
+        """The clamped revision body, or None when the background LLM produced
         nothing usable — mirrors ``_draft_reply_body``'s no-degraded-copy
         posture (see ``redraft_from_rejection``)."""
         voice = await self._voice_guide(product_name)
@@ -1633,7 +1626,7 @@ class XRedrafts(_Base):
             )
         except Exception as exc:
             self.log.warning(
-                "x-engine: local-model redraft failed (no degraded copy)",
+                "x-engine: background-LLM redraft failed (no degraded copy)",
                 task_id=str(post_task.id),
                 error=str(exc),
             )

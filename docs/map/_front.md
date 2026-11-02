@@ -120,8 +120,8 @@ graph TB
     Orch -->|spawn/reap| Agents
     Orch --> Svcs
 
-    Ollama["Ollama<br/>(qwen3-embedding:0.6b + glm-5.3:cloud)"]
-    Svcs -->|embeddings + local LLM| Ollama
+    Ollama["Ollama<br/>(qwen3-embedding:0.6b + glm-5.3-flash:cloud)"]
+    Svcs -->|embeddings + background LLM| Ollama
 
     Panel["Next.js Panel"]
     Nginx["nginx :3000"]
@@ -595,7 +595,7 @@ Six subsystems, all default-off + additive:
 2. **DB network isolation** (`ROBOCO_DB_NETWORK_ISOLATED`): second `roboco_data` compose bridge = postgres+redis only, orchestrator multi-homed; agents can't reach prod DB. Suppresses `_append_gate_env` prod-creds injection. In BOTH build+registry composes (topology-coupled).
 3. **Mobile UI** (panel): `useIsMobile` (useSyncExternalStore, hydration-safe), `ResponsiveTable` table→card, snap `TabsList`, bottom tab bar, Comms/A2A single-pane drill-down below lg, vh→dvh. REVIEW FIX: `justify-center-safe` (overflow clip), memoized matchMedia subscribe.
 4. **Cloud auth** (`ROBOCO_CLOUD_AUTH_ENABLED`, migration 058 `users`): FastAPI Users, single seeded user, cookie sliding 30-day session (pwd-fingerprint JWT), `get_agent_context` dual-path (deps.py). Off = byte-identical. `proxy.ts` (Next 16). REVIEW FIX: on-mode rejects EVERY non-CEO role without a token (not just ceo — closed the PM/board :8000 spoof).
-5. **X engine** (`ROBOCO_X_ENGINE_ENABLED`, migration 059 Fernet `x_credentials` + `x_seen_mentions`): release-post + mention-reply drafts held for per-post CEO approval; local-model draft, hand-rolled OAuth1 signer, `XPostService.approve` sole `post_tweet` caller. REVIEW FIX: closed a double-post race (in-lock re-read + commit-before-release).
+5. **X engine** (`ROBOCO_X_ENGINE_ENABLED`, migration 059 Fernet `x_credentials` + `x_seen_mentions`): release-post + mention-reply drafts held for per-post CEO approval; background-LLM draft, hand-rolled OAuth1 signer, `XPostService.approve` sole `post_tweet` caller. REVIEW FIX: closed a double-post race (in-lock re-read + commit-before-release).
 6. **Board roadmap engine** (`ROBOCO_ROADMAP_ENGINE_ENABLED`, marker-backed, no migration): weekly one-shot PO-solo explore → `propose_roadmap` verb (PO-only, 3-7 items) → CEO per-item approve→BACKLOG. `_dispatch_roadmap_exploration` bypasses the two-reviewer board path. REVIEW: builder found+fixed a SQLAlchemy dirty-check bug (deepcopy marker before mutate); I whitelisted `create_task_from_draft` source ({prompter, roadmap}).
 
 Compose: every optional feature armed `:-true` in the NAS composes, OFF in registry; two opt-in exceptions (`CLOUD_AUTH`, `ROUTING_STRICT`) default off (change auth/failure behavior, not capability).

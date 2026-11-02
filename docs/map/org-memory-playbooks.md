@@ -5,13 +5,13 @@ The organizational-memory + playbooks slice: captures cross-agent learnings and 
 
 | Path | Role | LOC |
 |---|---|---|
-| roboco/services/memory_distiller.py | Local-LLM distiller: turns a completed task into one <=120-word Problem/Approach/Gotcha lesson (best-effort, returns None on failure) | 131 |
+| roboco/services/memory_distiller.py | Background-LLM distiller: turns a completed task into one <=120-word Problem/Approach/Gotcha lesson (best-effort, returns None on failure) | 124 |
 | roboco/services/playbook.py | PlaybookService: draft + Auditor curation state machine (draft/approve/reject/archive) + post-commit RAG index/de-index orchestration | 415 |
 | roboco/services/learning.py | LearningPropagationService: record a learning, index it, notify same-scope non-human agents, scope-filtered retrieval (legacy pre-distiller capture path) | 603 |
 | roboco/services/_learning_propagation_types.py | `LearningPropagationServiceSelf`, a TYPE_CHECKING-only Protocol declaring the attributes the `LearningPropagationService` mixin reads through `self` (no moved body calls across classes, so it has no `<Class>Surface` yet); `tests/unit/services/test_learning_propagation_service_mixins.py` fails on a stray stub or a member defined twice | 29 |
-| roboco/services/optimal.py | OptimalService: plugin-based RAG hub over pgvector; owns index_playbook/unindex_playbook/record_learning/search/search_learnings and the singleton accessor | 2548 |
+| roboco/services/optimal.py | OptimalService: plugin-based RAG hub over pgvector; owns index_playbook/unindex_playbook/record_learning/search/search_learnings and the singleton accessor | 2486 |
 | roboco/services/_optimal_service_types.py | `OptimalServiceSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `OptimalService` mixins reach through `self` (`OptimalSurface` for `OptimalService` itself), plus its instance attributes; the ones a mixin assigns carry `__init__`'s value, since mypy reads an assignment to an annotation-only Protocol member as a new definition. `tests/unit/services/test_optimal_service_mixins.py` fails on a stray stub or a member defined twice | 97 |
-| roboco/services/optimal_brain/indexes/base.py | BaseIndexPlugin ABC: chunk/filter/embed/store pipeline, hybrid search, 429-retried ask(); atomic replace_chunks reingest semantics | 1223 |
+| roboco/services/optimal_brain/indexes/base.py | BaseIndexPlugin ABC: chunk/filter/embed/store pipeline, hybrid search, 429-retried ask(); atomic replace_chunks reingest semantics | 1159 |
 | roboco/services/optimal_brain/indexes/_base_index_plugin_types.py | `BaseIndexPluginSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `BaseIndexPlugin` mixins reach through `self`, plus its instance attributes; `tests/unit/services/optimal_brain/test_base_index_plugin_mixins.py` fails on a stray stub or a member defined twice | 88 |
 | roboco/services/optimal_brain/indexes/learnings.py | LearningsIndexPlugin: record/search cross-agent learnings; forces shareable=True on shared retrieval so private reflections never leak into briefings | 253 |
 | roboco/services/optimal_brain/indexes/playbooks.py | PlaybooksIndexPlugin: index approved playbooks (title+when-to-use+procedure) and delete_playbook de-index | 97 |
@@ -29,7 +29,7 @@ The organizational-memory + playbooks slice: captures cross-agent learnings and 
 | `roboco/services/optimal_brain/indexes/journals.py` | `JournalsIndexPlugin`: index agent journal entries; search by agent or entry type | 102 |
 | `roboco/services/optimal_brain/indexes/reviews.py` | `ReviewsIndexPlugin`: record code-review comments and fetch past reviews for a file, type or severity | 205 |
 | `roboco/services/optimal_brain/indexes/standards.py` | `StandardsIndexPlugin`: index standards (single entries or parsed markdown files) and return the ones relevant to a domain or to content being validated | 315 |
-| `roboco/services/optimal_brain/mentor.py` | `MentorService` singleton: agent-aware Q&A over the indexes with a per-agent profile and stored conversation history | 930 |
+| `roboco/services/optimal_brain/mentor.py` | `MentorService` singleton: agent-aware Q&A over the indexes with a per-agent profile and stored conversation history | 886 |
 | `roboco/services/optimal_brain/_mentor_service_types.py` | `MentorServiceSelf`, a TYPE_CHECKING-only Protocol declaring the attributes the `MentorService` mixins read through `self` (no moved body calls across classes, so it has no `<Class>Surface` yet); `tests/unit/services/optimal_brain/test_mentor_service_mixins.py` fails on a stray stub or a member defined twice | 29 |
 | `roboco/services/optimal_brain/ollama_embedder.py` | `OllamaEmbedder`: Ollama native-API embeddings with an LRU content-hash cache, retry and rate-limit backoff, and parallel batch embedding | 872 |
 | `roboco/services/optimal_brain/_ollama_embedder_types.py` | `OllamaEmbedderSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `OllamaEmbedder` mixins reach through `self`, plus its instance attributes; `tests/unit/services/optimal_brain/test_ollama_embedder_mixins.py` fails on a stray stub or a member defined twice | 72 |
@@ -37,26 +37,26 @@ The organizational-memory + playbooks slice: captures cross-agent learnings and 
 | `roboco/services/optimal_brain/_reviewer_service_types.py` | `ReviewerServiceSelf`, a TYPE_CHECKING-only Protocol declaring the attributes the `ReviewerService` mixin reads through `self` (no moved body calls across classes, so it has no `<Class>Surface` yet); `tests/unit/services/optimal_brain/test_reviewer_service_mixins.py` fails on a stray stub or a member defined twice | 24 |
 | `roboco/services/optimal_brain/shared_embedder.py` | Process-wide shared embedder singleton (`get_shared_embedder` / `set_shared_embedder` / `close_shared_embedder`) behind an `Embedder` protocol | 177 |
 | `roboco/services/optimal_brain/text_chunker.py` | `TextChunker`: in-house character-window sliding chunker, plus the `Document`, `Chunk` and `Citation` value types the vector store uses | 218 |
-| `roboco/services/optimal_brain/validator.py` | `ValidatorService` singleton: parses standards markdown into rules (`StandardsParser`) and validates an agent action against the relevant ones with an LLM call | 776 |
+| `roboco/services/optimal_brain/validator.py` | `ValidatorService` singleton: parses standards markdown into rules (`StandardsParser`) and validates an agent action against the relevant ones with an LLM call | 705 |
 
 ## Key Symbols
 
 | Name | Kind | File:Line | Responsibility |
 |---|---|---|---|
 | `ReviewerChecks` | class | roboco/services/optimal_brain/reviewer.py:89 | Mixin of `ReviewerService` (7 methods): The checks a review runs on the code itself: known error patterns, the language's standards (Python and TypeScript), security, and the language and security-sensitivity guesses they rest on. |
-| `MentorConversations` | class | roboco/services/optimal_brain/mentor.py:187 | Mixin of `MentorService` (8 methods): A mentor conversation in Redis (or memory): its key, loading, saving and starting one, the context its recent turns give, recording a turn, and reading or clearing the history. |
-| `MentorRetrieval` | class | roboco/services/optimal_brain/mentor.py:301 | Mixin of `MentorService` (7 methods): What an answer draws on: the agent's profile and its own journals, the question enhanced with prior context, the indexes for its domain, and searching them with the results deduplicated. |
-| `MentorAnswers` | class | roboco/services/optimal_brain/mentor.py:502 | Mixin of `MentorService` (10 methods): Turning sources into an answer: the knowledge-base context and the prompts, the LLM synthesis with its extraction and the fallback, and the role-specific follow-up suggestions. |
-| `IndexPluginIngestion` | class | roboco/services/optimal_brain/indexes/base.py:139 | Mixin of `BaseIndexPlugin` (8 methods): Getting documents in: validating content, ingesting one (chunk, filter, embed, store), and batch ingestion with its preparation, chunk filtering and per-document failure results. |
-| `IndexPluginSearch` | class | roboco/services/optimal_brain/indexes/base.py:475 | Mixin of `BaseIndexPlugin` (7 methods): Searching the index: preprocessing and embedding the query, hybrid citation fetches, metadata filtering into results, and search with or without a precomputed embedding. |
-| `IndexPluginAnswers` | class | roboco/services/optimal_brain/indexes/base.py:705 | Mixin of `BaseIndexPlugin` (3 methods): RAG answers: asking a question over the index's search results, and the retried LLM synthesis with think tags stripped. |
-| `IndexPluginDocuments` | class | roboco/services/optimal_brain/indexes/base.py:882 | Mixin of `BaseIndexPlugin` (3 methods): The documents the index holds: counting its chunks, clearing it, and listing them. |
-| `IndexPluginSources` | class | roboco/services/optimal_brain/indexes/base.py:913 | Mixin of `BaseIndexPlugin` (5 methods): File sources: expanding a source into paths, ingesting each file, and recording each indexed file in the database. |
+| `MentorConversations` | class | roboco/services/optimal_brain/mentor.py:184 | Mixin of `MentorService` (8 methods): A mentor conversation in Redis (or memory): its key, loading, saving and starting one, the context its recent turns give, recording a turn, and reading or clearing the history. |
+| `MentorRetrieval` | class | roboco/services/optimal_brain/mentor.py:298 | Mixin of `MentorService` (7 methods): What an answer draws on: the agent's profile and its own journals, the question enhanced with prior context, the indexes for its domain, and searching them with the results deduplicated. |
+| `MentorAnswers` | class | roboco/services/optimal_brain/mentor.py:499 | Mixin of `MentorService` (10 methods): Turning sources into an answer: the knowledge-base context and the prompts, the LLM synthesis with its extraction and the fallback, and the role-specific follow-up suggestions. |
+| `IndexPluginIngestion` | class | roboco/services/optimal_brain/indexes/base.py:130 | Mixin of `BaseIndexPlugin` (8 methods): Getting documents in: validating content, ingesting one (chunk, filter, embed, store), and batch ingestion with its preparation, chunk filtering and per-document failure results. |
+| `IndexPluginSearch` | class | roboco/services/optimal_brain/indexes/base.py:466 | Mixin of `BaseIndexPlugin` (7 methods): Searching the index: preprocessing and embedding the query, hybrid citation fetches, metadata filtering into results, and search with or without a precomputed embedding. |
+| `IndexPluginAnswers` | class | roboco/services/optimal_brain/indexes/base.py:696 | Mixin of `BaseIndexPlugin` (3 methods): RAG answers: asking a question over the index's search results, and the retried LLM synthesis with think tags stripped. |
+| `IndexPluginDocuments` | class | roboco/services/optimal_brain/indexes/base.py:818 | Mixin of `BaseIndexPlugin` (3 methods): The documents the index holds: counting its chunks, clearing it, and listing them. |
+| `IndexPluginSources` | class | roboco/services/optimal_brain/indexes/base.py:849 | Mixin of `BaseIndexPlugin` (5 methods): File sources: expanding a source into paths, ingesting each file, and recording each indexed file in the database. |
 | `LearningPropagationNotices` | class | roboco/services/learning.py:113 | Mixin of `LearningPropagationService` (7 methods): Telling agents about a learning: who to notify by its scope (never the author or a human), the notice's text, the in-memory queue and the persisted notifications, and an agent's pending notices and their acknowledgement. |
-| LessonInput | dataclass | roboco/services/memory_distiller.py:25 | Completed-task facts (title, ACs, dev/qa notes, commit messages) fed to the distiller |
-| _build_prompt | function | roboco/services/memory_distiller.py:40 | Render the fixed Problem/Approach/Gotcha <=120-word distillation prompt |
-| _chat | function | roboco/services/memory_distiller.py:62 | One OpenAI-compatible call to the local LLM (glm-5.3:cloud); None on non-success/empty |
-| MemoryDistiller.distill | method | roboco/services/memory_distiller.py:87 | Return a <=120-word lesson or None (NONE sentinel, failure, or over-limit truncation) |
+| LessonInput | dataclass | roboco/services/memory_distiller.py:28 | Completed-task facts (title, ACs, dev/qa notes, commit messages) fed to the distiller |
+| _build_prompt | function | roboco/services/memory_distiller.py:42 | Render the fixed Problem/Approach/Gotcha <=120-word distillation prompt |
+| _chat | function | roboco/services/memory_distiller.py:64 | One background-LLM call (`generate_background_text`, purpose `memory_distiller.lesson`); None when no backend answered |
+| MemoryDistiller.distill | method | roboco/services/memory_distiller.py:80 | Return a <=120-word lesson or None (NONE sentinel, failure, or over-limit truncation) |
 | _slugify | function | roboco/services/playbook.py:51 | Derive a unique <=80-char slug from the playbook title |
 | PlaybookService.draft | method | roboco/services/playbook.py:61 | Create a DRAFT playbook; savepoint-isolates the insert to convert slug-UNIQUE TOCTOU into a clean ConflictError |
 | PlaybookService.approve | method | roboco/services/playbook.py:119 | Auditor: draft->approved + stamps approver/at; flushes status ONLY (caller commits then index_approved) |
@@ -74,32 +74,32 @@ The organizational-memory + playbooks slice: captures cross-agent learnings and 
 | LearningPropagationService.get_learnings_for_agent | method | roboco/services/learning.py:426 | Role-shaped search_learnings + post-filter by scope visibility (personal/team) |
 | LearningPropagationService.search_similar_learnings | method | roboco/services/learning.py:562 | Similar-learnings search via OptimalService.search over LEARNINGS index |
 | get_learning_service | function | roboco/services/learning.py:599 | Process-wide singleton accessor for LearningPropagationService |
-| PLUGIN_REGISTRY | dict | roboco/services/optimal.py:206 | IndexType -> plugin class map (includes LEARNINGS, PLAYBOOKS) |
-| OptimalStartup | class | roboco/services/optimal.py:220 | Mixin of `OptimalService` (8 methods): Starting the service: initializing its plugins, warming the embedder, and indexing the docs on startup. |
-| OptimalPeriodicUpdate | class | roboco/services/optimal.py:570 | Mixin of `OptimalService` (10 methods): The periodic update: scanning the docs root for changed and deleted files, reconciling deletions, and re-indexing. |
-| OptimalDocsIndexing | class | roboco/services/optimal.py:832 | Mixin of `OptimalService` (13 methods): Indexing code, documentation, journal entries, playbooks and vault notes, the tracking rows for what is indexed, and unindexing. |
-| OptimalKnowledgeIndexing | class | roboco/services/optimal.py:1251 | Mixin of `OptimalService` (6 methods): Indexing what the company learns: errors, standards and the standards file, decisions, reviews and learnings. |
-| OptimalSearch | class | roboco/services/optimal.py:1442 | Mixin of `OptimalService` (12 methods): Searching: across indexes and one index, with gaps and citations, and the synthesized answer to a query. |
-| OptimalSpecializedSearch | class | roboco/services/optimal.py:1869 | Mixin of `OptimalService` (5 methods): Searches over one kind of knowledge: errors, standards, decisions, learnings, and a file's reviews. |
-| OptimalIndexStats | class | roboco/services/optimal.py:1944 | Mixin of `OptimalService` (8 methods): Index statistics and staleness: per-index and overall stats, stale source files, and when each index was last refreshed. |
-| OptimalPromptsAndHealth | class | roboco/services/optimal.py:2182 | Mixin of `OptimalService` (12 methods): Prompt templates, clearing and refreshing an index, listing its documents, and the embedding, LLM and vector store health checks. |
-| OptimalService.initialize | method | roboco/services/optimal.py:224 | Graceful-degradation init of all plugins; starts background auto-index + periodic tasks |
-| OptimalService.close | method | roboco/services/optimal.py:2420 | Cancel _indexing_task FIRST, then periodic task, then close plugins (prevent writes to closed plugins) |
-| OptimalService._get_plugin | method | roboco/services/optimal.py:2450 | Typed plugin lookup with a clear RuntimeError when missing/uninitialized |
-| OptimalService.index_playbook | method | roboco/services/optimal.py:1063 | Embed an approved playbook + write the indexed_documents tracking row |
-| OptimalService.unindex_playbook | method | roboco/services/optimal.py:1100 | Delete playbook chunks from vector store AND drop tracking row; both steps best-effort/idempotent |
-| OptimalService.record_learning | method | roboco/services/optimal.py:1385 | Embed a learning via LearningsIndexPlugin + write tracking row (source learn-{md5(full content)}) |
-| OptimalService.search | method | roboco/services/optimal.py:1474 | Embed-once fan-out: concurrent hybrid search across selected indexes; used by similar_memory |
-| OptimalService._aggregate_citations | method | roboco/services/optimal.py:1614 | Embed once + concurrent per-index search into an aggregation buffer for RAG query() |
-| OptimalService.search_learnings | method | roboco/services/optimal.py:1917 | LEARNINGS-only search with optional category/team filter (shareable_only=True default) |
-| get_optimal_service | function | roboco/services/optimal.py:2508 | The running loop's service, one per event loop (`_OptimalServiceHolder`); lock-guarded, published only after initialize() completes |
-| close_optimal_service | function | roboco/services/optimal.py:2539 | Closes the running loop's service; another loop's is that loop's owner's to close |
-| BaseIndexPlugin.ingest | method | roboco/services/optimal_brain/indexes/base.py:165 | Validate -> metadata -> source URI -> chunk/filter/embed/store pipeline |
-| BaseIndexPlugin._chunk_filter_embed_store | method | roboco/services/optimal_brain/indexes/base.py:243 | Chunk + quality-filter + embed + atomic replace_chunks/add_chunks; returns stored count |
-| BaseIndexPlugin._citations_to_results | method | roboco/services/optimal_brain/indexes/base.py:593 | Apply exact-match metadata filters to citations and cap to top_k SearchResults |
-| BaseIndexPlugin.search_with_embedding | method | roboco/services/optimal_brain/indexes/base.py:629 | Pre-computed-embedding hybrid search entry; LearningsIndexPlugin overrides to force shareable |
-| BaseIndexPlugin.search | method | roboco/services/optimal_brain/indexes/base.py:673 | Embed-then-search_with_embedding convenience entry |
-| BaseIndexPlugin.ask | method | roboco/services/optimal_brain/indexes/base.py:724 | Per-index RAG Q&A with 15s search timeout + 429-retried LLM synthesis |
+| PLUGIN_REGISTRY | dict | roboco/services/optimal.py:211 | IndexType -> plugin class map (includes LEARNINGS, PLAYBOOKS) |
+| OptimalStartup | class | roboco/services/optimal.py:225 | Mixin of `OptimalService` (8 methods): Starting the service: initializing its plugins, warming the embedder, and indexing the docs on startup. |
+| OptimalPeriodicUpdate | class | roboco/services/optimal.py:575 | Mixin of `OptimalService` (10 methods): The periodic update: scanning the docs root for changed and deleted files, reconciling deletions, and re-indexing. |
+| OptimalDocsIndexing | class | roboco/services/optimal.py:837 | Mixin of `OptimalService` (13 methods): Indexing code, documentation, journal entries, playbooks and vault notes, the tracking rows for what is indexed, and unindexing. |
+| OptimalKnowledgeIndexing | class | roboco/services/optimal.py:1256 | Mixin of `OptimalService` (6 methods): Indexing what the company learns: errors, standards and the standards file, decisions, reviews and learnings. |
+| OptimalSearch | class | roboco/services/optimal.py:1447 | Mixin of `OptimalService` (12 methods): Searching: across indexes and one index, with gaps and citations, and the synthesized answer to a query. |
+| OptimalSpecializedSearch | class | roboco/services/optimal.py:1821 | Mixin of `OptimalService` (5 methods): Searches over one kind of knowledge: errors, standards, decisions, learnings, and a file's reviews. |
+| OptimalIndexStats | class | roboco/services/optimal.py:1896 | Mixin of `OptimalService` (8 methods): Index statistics and staleness: per-index and overall stats, stale source files, and when each index was last refreshed. |
+| OptimalPromptsAndHealth | class | roboco/services/optimal.py:2134 | Mixin of `OptimalService` (12 methods): Prompt templates, clearing and refreshing an index, listing its documents, and the embedding, LLM and vector store health checks. |
+| OptimalService.initialize | method | roboco/services/optimal.py:229 | Graceful-degradation init of all plugins; starts background auto-index + periodic tasks |
+| OptimalService.close | method | roboco/services/optimal.py:2358 | Cancel _indexing_task FIRST, then periodic task, then close plugins (prevent writes to closed plugins) |
+| OptimalService._get_plugin | method | roboco/services/optimal.py:2388 | Typed plugin lookup with a clear RuntimeError when missing/uninitialized |
+| OptimalService.index_playbook | method | roboco/services/optimal.py:1068 | Embed an approved playbook + write the indexed_documents tracking row |
+| OptimalService.unindex_playbook | method | roboco/services/optimal.py:1105 | Delete playbook chunks from vector store AND drop tracking row; both steps best-effort/idempotent |
+| OptimalService.record_learning | method | roboco/services/optimal.py:1390 | Embed a learning via LearningsIndexPlugin + write tracking row (source learn-{md5(full content)}) |
+| OptimalService.search | method | roboco/services/optimal.py:1479 | Embed-once fan-out: concurrent hybrid search across selected indexes; used by similar_memory |
+| OptimalService._aggregate_citations | method | roboco/services/optimal.py:1619 | Embed once + concurrent per-index search into an aggregation buffer for RAG query() |
+| OptimalService.search_learnings | method | roboco/services/optimal.py:1869 | LEARNINGS-only search with optional category/team filter (shareable_only=True default) |
+| get_optimal_service | function | roboco/services/optimal.py:2446 | The running loop's service, one per event loop (`_OptimalServiceHolder`); lock-guarded, published only after initialize() completes |
+| close_optimal_service | function | roboco/services/optimal.py:2477 | Closes the running loop's service; another loop's is that loop's owner's to close |
+| BaseIndexPlugin.ingest | method | roboco/services/optimal_brain/indexes/base.py:156 | Validate -> metadata -> source URI -> chunk/filter/embed/store pipeline |
+| BaseIndexPlugin._chunk_filter_embed_store | method | roboco/services/optimal_brain/indexes/base.py:234 | Chunk + quality-filter + embed + atomic replace_chunks/add_chunks; returns stored count |
+| BaseIndexPlugin._citations_to_results | method | roboco/services/optimal_brain/indexes/base.py:584 | Apply exact-match metadata filters to citations and cap to top_k SearchResults |
+| BaseIndexPlugin.search_with_embedding | method | roboco/services/optimal_brain/indexes/base.py:620 | Pre-computed-embedding hybrid search entry; LearningsIndexPlugin overrides to force shareable |
+| BaseIndexPlugin.search | method | roboco/services/optimal_brain/indexes/base.py:664 | Embed-then-search_with_embedding convenience entry |
+| BaseIndexPlugin.ask | method | roboco/services/optimal_brain/indexes/base.py:715 | Per-index RAG Q&A with 15s search timeout + 429-retried LLM synthesis |
 | LearningsIndexPlugin.search_with_embedding | method | roboco/services/optimal_brain/indexes/learnings.py:44 | Force shareable=True filter unless include_private opt-in; prevents private reflections leaking into briefings |
 | LearningsIndexPlugin.search | method | roboco/services/optimal_brain/indexes/learnings.py:75 | Embed-then-search that threads include_private to search_with_embedding |
 | LearningsIndexPlugin.record_learning | method | roboco/services/optimal_brain/indexes/learnings.py:124 | Build lrn-{md5(content[:100])} doc_id + enriched content; ingest with category/role/team/shareable metadata |
@@ -124,7 +124,7 @@ The organizational-memory + playbooks slice: captures cross-agent learnings and 
 | `TextChunker` | class | `roboco/services/optimal_brain/text_chunker.py:86` | Character-based sliding-window chunker |
 
 ## Data Flow
-CAPTURE (task completion): TaskService._extract_completion_learnings (task.py:2837) is fire-and-forget on completion. With org_memory_enabled it calls _completion_learnings_for (task.py:2798) which runs MemoryDistiller().distill(LessonInput(...)) against the local LLM (memory_distiller.py) to produce ONE <=120-word lesson, else falls back to the legacy raw-notes _collect_completion_learnings. The lesson goes to LearningPropagationService.record_learning (learning.py:122) -> _index_learning -> OptimalService.record_learning (optimal.py:1061) -> LearningsIndexPlugin.record_learning (learnings.py:124), which embeds via the shared qwen3 embedder and stores chunks in the chunks_learnings pgvector table with metadata {category, agent_role, shareable, ...}. _create_notifications (learning.py:205) opens a separate DB session and creates formal KNOWLEDGE_SHARE notifications for same-scope non-author, non-human agents (CEO/prompter/secretary excluded via _HUMAN_ONLY_ROLES).
+CAPTURE (task completion): TaskService._extract_completion_learnings (task.py:2837) is fire-and-forget on completion. With org_memory_enabled it calls _completion_learnings_for (task.py:2798) which runs MemoryDistiller().distill(LessonInput(...)) against the background LLM client (memory_distiller.py) to produce ONE <=120-word lesson, else falls back to the legacy raw-notes _collect_completion_learnings. The lesson goes to LearningPropagationService.record_learning (learning.py:122) -> _index_learning -> OptimalService.record_learning (optimal.py:1061) -> LearningsIndexPlugin.record_learning (learnings.py:124), which embeds via the shared qwen3 embedder and stores chunks in the chunks_learnings pgvector table with metadata {category, agent_role, shareable, ...}. _create_notifications (learning.py:205) opens a separate DB session and creates formal KNOWLEDGE_SHARE notifications for same-scope non-author, non-human agents (CEO/prompter/secretary excluded via _HUMAN_ONLY_ROLES).
 
 PLAYBOOK CURATION: A delivery agent calls the draft_playbook content verb (do_server -> v1/do.py -> content_actions.draft_playbook -> PlaybookService.draft) which writes a DRAFT row with a slug-unique constraint (savepoint TOCTOU guard). The Auditor (gateway verb) or Auditor/CEO (panel route /api/playbooks) calls approve/reject/archive. The status flush and the RAG index write are deliberately split: approve() flushes status ONLY; the caller (api/routes/playbooks.py or content_actions._curate_playbook) commits the DB transaction FIRST, then calls index_approved() which -> OptimalService.index_playbook -> PlaybooksIndexPlugin.index_playbook -> BaseIndexPlugin.ingest -> chunk/embed/store in chunks_playbooks (+ a tracking row in indexed_documents). reject/archive similarly commit then call unindex_playbook -> OptimalService.unindex_playbook -> delete_playbook (vector store) + IndexedDocumentRepository.delete_by_source (tracking row).
 
@@ -190,7 +190,7 @@ erDiagram
 ```
 org-memory-playbooks
   Capture (completion)
-    MemoryDistiller (local LLM only)
+    MemoryDistiller (background LLM client)
       LessonInput -> _build_prompt -> _chat -> distill (<=120w or None)
     TaskService._completion_learnings_for [external, task.py]
       org_memory_enabled ? distill : legacy raw capture
@@ -219,7 +219,7 @@ org-memory-playbooks
 
 ## Dependencies
 - Internal: roboco.config.settings (org_memory_enabled, org_memory_top_k, org_memory_min_score, local_llm_*, default_embedding_model, embedding_dimensions, rag_*), roboco.db.tables.PlaybookTable / IndexedDocumentTable, roboco.db.get_db_context, roboco.models.base.PlaybookStatus, roboco.models.optimal.IndexType / SearchResult / SearchOutcome / QueryContext, roboco.models.playbook.PlaybookCreate / Playbook, roboco.services.base.BaseService / ConflictError / NotFoundError, roboco.services.exceptions (RateLimitError, parse_retry_after_header, HTTP_TOO_MANY_REQUESTS, MAX_RATE_LIMIT_RETRIES), roboco.services.optimal_brain.text_chunker (TextChunker, Chunk, Citation, Document), roboco.services.optimal_brain.shared_embedder.get_shared_embedder, roboco.services.gateway.evidence_repo.EvidenceRepo.similar_memory, roboco.services.gateway.evidence_builder.shape_memory_query, roboco.services.gateway.choreographer._impl._briefing_for / _institutional_memory, roboco.services.gateway.content_actions (draft/approve/reject/archive_playbook), roboco.services.task.TaskService._completion_learnings_for / _extract_completion_learnings, roboco.foundation.identity.Role, roboco.api.routes.playbooks (panel route), roboco.mcp.do_server (draft/approve/reject/archive_playbook verbs)
-- External: httpx (local LLM chat + RAG synthesis), structlog, sqlalchemy (select, delete, func, IntegrityError, AsyncSession), asyncpg (VectorStore pool + transaction), pgvector (vector column), dataclasses / enum / hashlib / re / asyncio
+- External: structlog, sqlalchemy (select, delete, func, IntegrityError, AsyncSession), asyncpg (VectorStore pool + transaction), pgvector (vector column), dataclasses / enum / hashlib / re / asyncio
 
 ## Entry Points
 
@@ -237,7 +237,7 @@ org-memory-playbooks
 - ROBOCO_ORG_MEMORY_ENABLED (default off) — gates the whole loop: distill-vs-legacy capture, index_approved/unindex_playbook no-op when off, _institutional_memory returns [] when off
 - ROBOCO_ORG_MEMORY_TOP_K (default 3, 1..10) — max institutional-memory items injected into a briefing
 - ROBOCO_ORG_MEMORY_MIN_SCORE (default 0.6, 0..1) — cosine-similarity floor; below it nothing is injected
-- ROBOCO_LOCAL_LLM_MODEL (default glm-5.3:cloud) + ROBOCO_LOCAL_LLM_BASE_URL — the distiller + RAG synthesis LLM endpoint
+- ROBOCO_LOCAL_LLM_MODEL (default glm-5.3-flash:cloud) + ROBOCO_LOCAL_LLM_BASE_URL: the Ollama side of the background LLM client the distiller and RAG synthesis call (Claude Haiku answers in Anthropic mode and when Ollama cannot)
 - ROBOCO_DEFAULT_EMBEDDING_MODEL (default qwen3-embedding:0.6b) + ROBOCO_EMBEDDING_DIMENSIONS — embedder for LEARNINGS/PLAYBOOKS chunks
 - ROBOCO_RAG_CHUNK_STRATEGY / ROBOCO_RAG_CHUNK_SIZE / ROBOCO_RAG_CHUNK_OVERLAP / ROBOCO_RAG_PERSIST_DIR / ROBOCO_RAG_STORE_URL — chunking + store DSN
 - ROBOCO_DATABASE_* (VectorStore.store_url derived) — required; missing store_url raises at plugin initialize()

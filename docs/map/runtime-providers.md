@@ -38,6 +38,7 @@ This slice is the agent-runtime + LLM-provider seam plus the in-container agent 
 | roboco/agent_sdk/__init__.py | Package docstring only | 10 |
 | roboco/agent_sdk/models.py | Pydantic models: A2A messages, budget/terminal/verb-circuit/token-usage request+status | 262 |
 | roboco/agent_sdk/prompt_guard.py | Prompt-injection detector (5 patterns) + CLI for grok entrypoint turn scan | 59 |
+| roboco/agent_sdk/haiku_turn.py | One locked-down Claude Haiku turn for the orchestrator's background LLM client, run as `python -I -m roboco.agent_sdk.haiku_turn` under the uid:gid that own the Claude Code login (never root): JSON `HaikuTurnRequest` on stdin, JSON `HaikuTurnOutcome` on stdout; `locked_down_haiku_options` builds the one-turn, no-tools, no-MCP, no-settings, `--safe-mode`, `--no-session-persistence` options | 128 |
 | roboco/agent_sdk/transcript_usage.py | Sum Claude Code JSONL transcript token usage, dedup by message.id | 85 |
 | roboco/agent_sdk/server.py | FastAPI SDK sidecar (port 9000): A2A send/receive/inbox, budget/loop/verb-circuit, token usage, post-mortem | 926 |
 | roboco/agent_sdk/intake_driver.py | IntakeDriver chat loop + SDK message normalization + draft/batch coercion + SDK options (Claude) | 644 |
