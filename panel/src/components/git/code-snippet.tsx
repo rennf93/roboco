@@ -65,7 +65,9 @@ export function CodeSnippet({
                     "bg-blue-500/15 ring-1 ring-inset ring-blue-500/30",
                 )}
               >
-                <HelpTip label={isActive ? "The line flagged in this finding" : ""}>
+                <HelpTip
+                  label={isActive ? "The line flagged in this finding" : ""}
+                >
                   <span className="select-none w-8 shrink-0 text-right text-muted-foreground/60">
                     {lineNo}
                   </span>
@@ -79,8 +81,8 @@ export function CodeSnippet({
       {data.truncated && (
         <HelpTip label="Only a window around the flagged line is loaded, not the whole file — widen `context` to see more.">
           <p className="border-t px-2 py-1 text-[10px] text-muted-foreground w-fit">
-            showing lines {data.start_line}–
-            {data.start_line + lines.length - 1} of {data.total_lines}
+            showing lines {data.start_line}–{data.start_line + lines.length - 1}{" "}
+            of {data.total_lines}
           </p>
         </HelpTip>
       )}

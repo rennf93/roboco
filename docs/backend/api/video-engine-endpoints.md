@@ -188,16 +188,25 @@ CEO-only (401 if not CEO).
 The `_resolve_preview_path` helper prevents directory-traversal attacks:
 
 ```python
-candidate = (root / file_path.lstrip("/")).resolve()
-if not candidate.is_relative_to(root) or not candidate.is_file():
+base = os.path.realpath(root)
+candidate = os.path.realpath(root / file_path.lstrip("/"))
+if not candidate.startswith(base + os.sep):
     return None
+resolved = Path(candidate)
+if not resolved.is_file():
+    return None
+return resolved
 ```
 
 Guarantees:
 - `../` sequences are resolved before confinement check
 - Absolute paths don't escape (resolved relative to root)
-- Symlinks are resolved and still held under confinement
+- Symlinks are resolved and still held under confinement, including a symlink inside the clone that points out of it
+- Containment compares whole path segments, so a sibling such as `clone-evil/` never passes for `clone/`
+- Both sides are compared as real paths, so a symlinked workspaces root still serves its own files
 - Only regular files served; directories return 404
+
+`os.path.realpath` with `startswith(base + os.sep)` is the containment idiom CodeQL's path-injection query recognises (`Path.resolve` with `is_relative_to` behaves the same, but CodeQL does not treat it as a barrier).
 
 ### Example
 

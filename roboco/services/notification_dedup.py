@@ -173,7 +173,7 @@ def _unacked_overlap_query(
     )
 
 
-async def duplicate_unacked_notification_exists(  # noqa: PLR0913
+async def duplicate_unacked_notification_exists(
     db: AsyncSession,
     *,
     from_agent: UUID,
@@ -216,8 +216,9 @@ async def duplicate_unacked_notification_exists(  # noqa: PLR0913
     built ``NotificationTable``, no params object) can share the one query
     instead of each growing a divergent copy. The extra ``subject``/``body``
     opt-in kwargs keep this the one shared query for both existing callers
-    (positional-contract kwargs like the rest, hence the targeted PLR0913
-    noqa rather than bundling the probe into an object no caller asked for).
+    (positional-contract kwargs like the rest, hence the file-scoped PLR0913
+    entry in pyproject.toml rather than bundling the probe into an object no
+    caller asked for).
     """
     if not ACK_REQUIRED_BY_TYPE.get(notification_type, True):
         return False

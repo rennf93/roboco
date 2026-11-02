@@ -46,11 +46,6 @@ class JournalEntry(TimestampMixin):
     timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
     tags: list[str] = Field(default_factory=list, description="Tags for categorization")
 
-    # Embedding for RAG search
-    embedding: list[float] | None = Field(
-        default=None, description="Vector embedding for search"
-    )
-
     # Sentiment/mood tracking (for growth analysis)
     sentiment: str | None = Field(
         default=None,

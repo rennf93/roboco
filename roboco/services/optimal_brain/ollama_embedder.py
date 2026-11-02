@@ -14,7 +14,7 @@ import asyncio
 import hashlib
 import time
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
@@ -27,18 +27,28 @@ from roboco.services.exceptions import (
 )
 from roboco.services.optimal_brain.text_chunker import Chunk
 
+if TYPE_CHECKING:
+    from roboco.services.optimal_brain._ollama_embedder_types import (
+        OllamaEmbedderSelf as _Base,
+    )
+else:
+    _Base = object
+
 logger = get_logger(__name__)
 
 # Retry configuration — ConnectError / Timeout (existing, unchanged)
 MAX_RETRIES = 3
-RETRY_DELAY_BASE = 0.5  # seconds, exponential backoff
+# Seconds, exponential backoff
+RETRY_DELAY_BASE = 0.5
 
 # Retry configuration — HTTP 429 / RateLimitError (new outer loop)
 RATE_LIMIT_MAX_RETRIES = 5
 
 # Parallel processing configuration
-MAX_CONCURRENT_BATCHES = 4  # Number of batches to process in parallel
-DEFAULT_BATCH_SIZE = 32  # default batch size for Ollama embedding requests
+# Number of batches to process in parallel
+MAX_CONCURRENT_BATCHES = 4
+# Default batch size for Ollama embedding requests
+DEFAULT_BATCH_SIZE = 32
 
 # Keep the embedding model resident in Ollama. It runs on CPU and Ollama's
 # default 5-min idle unload means a `dm` after an idle window pays a cold 2.4 GB
@@ -101,7 +111,8 @@ class EmbeddingCache:
         """Cache embedding for content."""
         key = self._hash_content(content)
         if key in self._cache:
-            return  # Already cached
+            # Already cached
+            return
 
         # Evict oldest if at capacity
         while len(self._cache) >= self._max_size:
@@ -146,147 +157,10 @@ class EmbeddingCache:
         }
 
 
-class OllamaEmbedder:
-    """
-    Embedding generator using Ollama's native API.
-
-    Features:
-    - Parallel batch processing (configurable concurrency)
-    - Content-based caching (avoids re-embedding identical content)
-    - Connection pooling for efficiency
-    - Retry logic with exponential backoff
-    """
-
-    def __init__(
-        self,
-        model: str = "qwen3-embedding:0.6b",
-        base_url: str | None = None,
-        timeout: float = 120.0,
-        max_concurrent: int = MAX_CONCURRENT_BATCHES,
-        cache_size: int = 10000,
-        batch_size: int = DEFAULT_BATCH_SIZE,
-    ):
-        """Initialize Ollama embedder.
-
-        Args:
-            model: Ollama model name for embeddings
-            base_url: Ollama API base URL (default: from settings)
-            timeout: Request timeout in seconds (default 120s for CPU embedding)
-            max_concurrent: Max concurrent batch requests (default 4)
-            cache_size: Max cached embeddings (default 10000)
-            batch_size: Default batch size for embed_chunks/aembed_chunks
-                (default 32); a per-call batch_size argument still overrides it.
-        """
-        self.model = model
-        self.base_url = base_url or settings.ollama_base_url
-        self.timeout = timeout
-        self.max_concurrent = max_concurrent
-        self.batch_size = batch_size
-        self._dimensions: int | None = None
-        self._cache = EmbeddingCache(max_size=cache_size)
-        # Reusable sync client (async clients created per-operation)
-        self._sync_client: httpx.Client | None = None
-        # Semaphore for limiting concurrent requests. Track the loop it was
-        # created on so we can rebuild when the loop rotates.
-        self._semaphore: asyncio.Semaphore | None = None
-        self._semaphore_loop: asyncio.AbstractEventLoop | None = None
-
-    def _embed_payload(self, input_data: str | list[str]) -> dict[str, object]:
-        """Build the /api/embed JSON body, pinning keep_alive so the model stays
-        resident in Ollama (see EMBED_KEEP_ALIVE)."""
-        return {
-            "model": self.model,
-            "input": input_data,
-            "keep_alive": EMBED_KEEP_ALIVE,
-        }
-
-    def _get_sync_client(self) -> httpx.Client:
-        """Get or create sync HTTP client with connection pooling."""
-        if self._sync_client is None or self._sync_client.is_closed:
-            timeout = httpx.Timeout(
-                connect=10.0,
-                read=self.timeout,
-                write=30.0,
-                pool=10.0,
-            )
-            self._sync_client = httpx.Client(
-                timeout=timeout,
-                limits=httpx.Limits(
-                    max_connections=self.max_concurrent * 2,
-                    max_keepalive_connections=self.max_concurrent,
-                ),
-            )
-        return self._sync_client
-
-    def _create_async_client(self) -> httpx.AsyncClient:
-        """Create a fresh async HTTP client.
-
-        Always creates a new client to avoid 'Event loop is closed' errors
-        that occur when a cached client is bound to a different/closed loop.
-        """
-        timeout = httpx.Timeout(
-            connect=10.0,
-            read=self.timeout,
-            write=30.0,
-            pool=10.0,
-        )
-        return httpx.AsyncClient(
-            timeout=timeout,
-            limits=httpx.Limits(
-                max_connections=self.max_concurrent * 2,
-                max_keepalive_connections=self.max_concurrent,
-            ),
-        )
-
-    def _get_semaphore(self) -> asyncio.Semaphore:
-        """Get or create semaphore for limiting concurrent requests.
-
-        asyncio.Semaphore binds to the event loop it was created in. If the
-        orchestrator's loop rotates (e.g. lifespan restart, test teardown),
-        a cached semaphore raises "bound to a different event loop". Detect
-        loop rotation by comparing the current running loop to the one we
-        recorded at creation time, and rebuild if they differ.
-        """
-        current_loop = asyncio.get_running_loop()
-        if self._semaphore is None or self._semaphore_loop is not current_loop:
-            self._semaphore = asyncio.Semaphore(self.max_concurrent)
-            self._semaphore_loop = current_loop
-        return self._semaphore
-
-    def close(self) -> None:
-        """Close HTTP clients and release resources."""
-        if self._sync_client and not self._sync_client.is_closed:
-            self._sync_client.close()
-        self._sync_client = None
-
-    async def aclose(self) -> None:
-        """Async close HTTP clients and release resources."""
-        # Async clients are now created per-request, nothing to close
-        self.close()
-
-    @property
-    def dimensions(self) -> int:
-        """Get embedding dimensions (cached after first call)."""
-        if self._dimensions is None:
-            test_embedding = self.embed_query("test")
-            self._dimensions = len(test_embedding)
-        return self._dimensions
-
-    def set_dimensions(self, dim: int) -> None:
-        """Pre-set dimensions to avoid blocking call."""
-        self._dimensions = dim
-
-    async def get_dimensions_async(self) -> int:
-        """Async-friendly way to get embedding dimensions."""
-        if self._dimensions is None:
-            test_embedding = await self.aembed_query("test")
-            self._dimensions = len(test_embedding)
-        return self._dimensions
-
-    @property
-    def cache_stats(self) -> dict[str, Any]:
-        """Get embedding cache statistics."""
-        return self._cache.stats
+class OllamaEmbedResponses(_Base):
+    """What comes back from /api/embed and what to do when it fails: validating and
+    extracting the embeddings, the 429 backoff and its log, mapping a request error
+    to the embedder's own, and the connect-retry sleeps, sync and async."""
 
     def _handle_embed_response(
         self, response: httpx.Response, input_count: int = 1
@@ -378,75 +252,11 @@ class OllamaEmbedder:
             )
             await asyncio.sleep(delay)
 
-    def embed_query(
-        self,
-        query: str,
-        task_instruction: str | None = None,
-    ) -> list[float]:
-        """Generate embedding for a single query.
 
-        Retry behaviour (two independent concerns, non-overlapping):
-        - ConnectError / TimeoutException: up to MAX_RETRIES=3 attempts with
-          0.5/1/2 s exponential backoff (existing behaviour, unchanged).
-        - HTTP 429 (rate limit): outer loop up to RATE_LIMIT_MAX_RETRIES=5,
-          respecting Retry-After header.  A 429 response does NOT trigger the
-          ConnectError path.
-        """
-        _ = task_instruction
-
-        # Check cache first
-        cached = self._cache.get(query)
-        if cached is not None:
-            return cached
-
-        client = self._get_sync_client()
-        last_rl_retry_after: float | None = None
-
-        for rl_attempt in range(RATE_LIMIT_MAX_RETRIES):
-            got_429 = False
-            last_error: Exception | None = None
-
-            # --- inner loop: ConnectError / Timeout (unchanged) ---
-            for attempt in range(MAX_RETRIES):
-                try:
-                    response = client.post(
-                        f"{self.base_url}/api/embed",
-                        json=self._embed_payload(query),
-                    )
-                    # 429 check — must NOT enter the ConnectError path
-                    if response.status_code == HTTP_TOO_MANY_REQUESTS:
-                        last_rl_retry_after = parse_retry_after_header(response)
-                        self._log_429(
-                            rl_attempt,
-                            self._rl_backoff(last_rl_retry_after, rl_attempt),
-                        )
-                        got_429 = True
-                        break  # break inner loop; outer loop will sleep + retry
-
-                    embeddings = self._handle_embed_response(response, input_count=1)
-                    result = embeddings[0]
-                    self._cache.put(query, result)
-                    return result
-
-                except (OllamaModelError, OllamaEmbedderError):
-                    raise
-                except Exception as e:
-                    last_error = self._map_embed_error(e, self.base_url)
-
-                self._sleep_connect_retry(
-                    attempt, last_error, "Ollama embed_query retry"
-                )
-            # --- end inner loop ---
-
-            if not got_429:
-                # ConnectError / Timeout exhausted — same behaviour as before
-                raise last_error or OllamaEmbedderError("Max retries exceeded")
-
-            # 429: sleep and try again (outer loop)
-            if rl_attempt < RATE_LIMIT_MAX_RETRIES - 1:
-                time.sleep(self._rl_backoff(last_rl_retry_after, rl_attempt))
-
-        raise RateLimitError(provider="ollama", retry_after=last_rl_retry_after)
+class OllamaDocumentEmbeddings(_Base):
+    """Embedding many documents: the cached and uncached split, sequential and
+    semaphore-limited parallel batches, merging and caching the results, and chunk
+    embedding with the default batch size."""
 
     def _embed_batch_sync(
         self, client: httpx.Client, batch: list[str], batch_index: int
@@ -782,6 +592,226 @@ class OllamaEmbedder:
 
         return chunks
 
+    async def aembed_documents(
+        self, documents: list[str], batch_size: int = DEFAULT_BATCH_SIZE
+    ) -> list[list[float]]:
+        """Async embed_documents - delegates to parallel implementation."""
+        return await self.aembed_documents_parallel(documents, batch_size=batch_size)
+
+
+class OllamaEmbedder(OllamaDocumentEmbeddings, OllamaEmbedResponses):
+    """
+    Embedding generator using Ollama's native API.
+
+    Features:
+    - Parallel batch processing (configurable concurrency)
+    - Content-based caching (avoids re-embedding identical content)
+    - Connection pooling for efficiency
+    - Retry logic with exponential backoff
+    """
+
+    def __init__(
+        self,
+        model: str = "qwen3-embedding:0.6b",
+        base_url: str | None = None,
+        timeout: float = 120.0,
+        max_concurrent: int = MAX_CONCURRENT_BATCHES,
+        cache_size: int = 10000,
+        batch_size: int = DEFAULT_BATCH_SIZE,
+    ):
+        """Initialize Ollama embedder.
+
+        Args:
+            model: Ollama model name for embeddings
+            base_url: Ollama API base URL (default: from settings)
+            timeout: Request timeout in seconds (default 120s for CPU embedding)
+            max_concurrent: Max concurrent batch requests (default 4)
+            cache_size: Max cached embeddings (default 10000)
+            batch_size: Default batch size for embed_chunks/aembed_chunks
+                (default 32); a per-call batch_size argument still overrides it.
+        """
+        self.model = model
+        self.base_url = base_url or settings.ollama_base_url
+        self.timeout = timeout
+        self.max_concurrent = max_concurrent
+        self.batch_size = batch_size
+        self._dimensions: int | None = None
+        self._cache = EmbeddingCache(max_size=cache_size)
+        # Reusable sync client (async clients created per-operation)
+        self._sync_client: httpx.Client | None = None
+        # Semaphore for limiting concurrent requests. Track the loop it was
+        # created on so we can rebuild when the loop rotates.
+        self._semaphore: asyncio.Semaphore | None = None
+        self._semaphore_loop: asyncio.AbstractEventLoop | None = None
+
+    def _embed_payload(self, input_data: str | list[str]) -> dict[str, object]:
+        """Build the /api/embed JSON body, pinning keep_alive so the model stays
+        resident in Ollama (see EMBED_KEEP_ALIVE)."""
+        return {
+            "model": self.model,
+            "input": input_data,
+            "keep_alive": EMBED_KEEP_ALIVE,
+        }
+
+    def _get_sync_client(self) -> httpx.Client:
+        """Get or create sync HTTP client with connection pooling."""
+        if self._sync_client is None or self._sync_client.is_closed:
+            timeout = httpx.Timeout(
+                connect=10.0,
+                read=self.timeout,
+                write=30.0,
+                pool=10.0,
+            )
+            self._sync_client = httpx.Client(
+                timeout=timeout,
+                limits=httpx.Limits(
+                    max_connections=self.max_concurrent * 2,
+                    max_keepalive_connections=self.max_concurrent,
+                ),
+            )
+        return self._sync_client
+
+    def _create_async_client(self) -> httpx.AsyncClient:
+        """Create a fresh async HTTP client.
+
+        Always creates a new client to avoid 'Event loop is closed' errors
+        that occur when a cached client is bound to a different/closed loop.
+        """
+        timeout = httpx.Timeout(
+            connect=10.0,
+            read=self.timeout,
+            write=30.0,
+            pool=10.0,
+        )
+        return httpx.AsyncClient(
+            timeout=timeout,
+            limits=httpx.Limits(
+                max_connections=self.max_concurrent * 2,
+                max_keepalive_connections=self.max_concurrent,
+            ),
+        )
+
+    def _get_semaphore(self) -> asyncio.Semaphore:
+        """Get or create semaphore for limiting concurrent requests.
+
+        asyncio.Semaphore binds to the event loop it was created in. If the
+        orchestrator's loop rotates (e.g. lifespan restart, test teardown),
+        a cached semaphore raises "bound to a different event loop". Detect
+        loop rotation by comparing the current running loop to the one we
+        recorded at creation time, and rebuild if they differ.
+        """
+        current_loop = asyncio.get_running_loop()
+        if self._semaphore is None or self._semaphore_loop is not current_loop:
+            self._semaphore = asyncio.Semaphore(self.max_concurrent)
+            self._semaphore_loop = current_loop
+        return self._semaphore
+
+    def close(self) -> None:
+        """Close HTTP clients and release resources."""
+        if self._sync_client and not self._sync_client.is_closed:
+            self._sync_client.close()
+        self._sync_client = None
+
+    async def aclose(self) -> None:
+        """Async close HTTP clients and release resources."""
+        # Async clients are now created per-request, nothing to close
+        self.close()
+
+    @property
+    def dimensions(self) -> int:
+        """Get embedding dimensions (cached after first call)."""
+        if self._dimensions is None:
+            test_embedding = self.embed_query("test")
+            self._dimensions = len(test_embedding)
+        return self._dimensions
+
+    def set_dimensions(self, dim: int) -> None:
+        """Pre-set dimensions to avoid blocking call."""
+        self._dimensions = dim
+
+    async def get_dimensions_async(self) -> int:
+        """Async-friendly way to get embedding dimensions."""
+        if self._dimensions is None:
+            test_embedding = await self.aembed_query("test")
+            self._dimensions = len(test_embedding)
+        return self._dimensions
+
+    @property
+    def cache_stats(self) -> dict[str, Any]:
+        """Get embedding cache statistics."""
+        return self._cache.stats
+
+    def embed_query(
+        self,
+        query: str,
+        task_instruction: str | None = None,
+    ) -> list[float]:
+        """Generate embedding for a single query.
+
+        Retry behaviour (two independent concerns, non-overlapping):
+        - ConnectError / TimeoutException: up to MAX_RETRIES=3 attempts with
+          0.5/1/2 s exponential backoff (existing behaviour, unchanged).
+        - HTTP 429 (rate limit): outer loop up to RATE_LIMIT_MAX_RETRIES=5,
+          respecting Retry-After header.  A 429 response does NOT trigger the
+          ConnectError path.
+        """
+        _ = task_instruction
+
+        # Check cache first
+        cached = self._cache.get(query)
+        if cached is not None:
+            return cached
+
+        client = self._get_sync_client()
+        last_rl_retry_after: float | None = None
+
+        for rl_attempt in range(RATE_LIMIT_MAX_RETRIES):
+            got_429 = False
+            last_error: Exception | None = None
+
+            # --- inner loop: ConnectError / Timeout (unchanged) ---
+            for attempt in range(MAX_RETRIES):
+                try:
+                    response = client.post(
+                        f"{self.base_url}/api/embed",
+                        json=self._embed_payload(query),
+                    )
+                    # 429 check — must NOT enter the ConnectError path
+                    if response.status_code == HTTP_TOO_MANY_REQUESTS:
+                        last_rl_retry_after = parse_retry_after_header(response)
+                        self._log_429(
+                            rl_attempt,
+                            self._rl_backoff(last_rl_retry_after, rl_attempt),
+                        )
+                        got_429 = True
+                        # Break inner loop; outer loop will sleep + retry
+                        break
+
+                    embeddings = self._handle_embed_response(response, input_count=1)
+                    result = embeddings[0]
+                    self._cache.put(query, result)
+                    return result
+
+                except (OllamaModelError, OllamaEmbedderError):
+                    raise
+                except Exception as e:
+                    last_error = self._map_embed_error(e, self.base_url)
+
+                self._sleep_connect_retry(
+                    attempt, last_error, "Ollama embed_query retry"
+                )
+            # --- end inner loop ---
+
+            if not got_429:
+                # ConnectError / Timeout exhausted — same behaviour as before
+                raise last_error or OllamaEmbedderError("Max retries exceeded")
+
+            # 429: sleep and try again (outer loop)
+            if rl_attempt < RATE_LIMIT_MAX_RETRIES - 1:
+                time.sleep(self._rl_backoff(last_rl_retry_after, rl_attempt))
+
+        raise RateLimitError(provider="ollama", retry_after=last_rl_retry_after)
+
     async def aembed_query(self, query: str) -> list[float]:
         """Async version of embed_query with retry logic and caching.
 
@@ -840,9 +870,3 @@ class OllamaEmbedder:
                 await asyncio.sleep(self._rl_backoff(last_rl_retry_after, rl_attempt))
 
         raise RateLimitError(provider="ollama", retry_after=last_rl_retry_after)
-
-    async def aembed_documents(
-        self, documents: list[str], batch_size: int = DEFAULT_BATCH_SIZE
-    ) -> list[list[float]]:
-        """Async embed_documents - delegates to parallel implementation."""
-        return await self.aembed_documents_parallel(documents, batch_size=batch_size)

@@ -8,15 +8,23 @@ on:
     # it's the redundant trigger for a required check that must not go
     # ABSENT on a fleet-authored PR revision.
     branches: [master, slave, 'feature/**', 'bug/**', 'chore/**', 'docs/**', 'hotfix/**']
+    # CodeQL analyzes every JavaScript/TypeScript and HTML file in the
+    # checkout, not only the files under these paths, so they list every
+    # directory that holds one: #1196's two motion/ alerts reached slave
+    # unseen because motion/ was missing. tests/unit/test_required_checks.py
+    # fails when a tracked file of these languages falls outside.
     paths:
       - 'panel/**'
+      - 'motion/**'
+      - 'video-renderer/**'
+      - 'docs-redirects/**'
       - '.github/workflows/codeql-js-ts.yml'
   pull_request:
     # Fleet PRs target the dev branch — see ci.yml's pull_request note.
     branches: [master, slave]
-    paths:
-      - 'panel/**'
-      - '.github/workflows/codeql-js-ts.yml'
+    # No `paths:` here: master's ruleset requires the `codeql-js-ts` check,
+    # and a workflow a paths filter skips never reports it. The job's first
+    # step applies the push trigger's paths instead (see ci.yml).
   schedule:
     - cron: '0 0 * * 1'
   workflow_dispatch:
@@ -28,37 +36,59 @@ on:
 # resolve to the SAME branch name, so the two event shapes share one group —
 # plain `github.ref` would NOT (it's `refs/pull/<n>/merge` for pull_request
 # vs `refs/heads/<branch>` for push, so it'd never collapse them).
+# Named after the required check, not the workflow, so a branch still on the
+# pre-rename definition never cancels this one (see ci.yml).
 concurrency:
-  group: ${{ github.workflow }}-${{ github.head_ref || github.ref_name }}
+  group: check-codeql-js-ts-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 
 jobs:
   analyze:
-    name: Analyze (${{ matrix.language }})
+    # Master's ruleset requires a check with exactly this name, and the fleet's
+    # PR gate maps it to the scope it analyzes (pr_gate_pass._CODEQL_CHECK_SCOPES).
+    name: codeql-js-ts
     runs-on: ubuntu-latest
     permissions:
       actions: read
       contents: read
       security-events: write
 
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - language: javascript-typescript
-            build-mode: none
-
+    # No matrix: GitHub appends a matrix job's values to its check name
+    # (`codeql-js-ts (javascript-typescript, none)`), and the ruleset needs
+    # the bare name. Each workflow analyzes one language, so the values are
+    # written inline.
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
+        with:
+          # The base commit (the PR merge commit's first parent) for the
+          # paths match below.
+          fetch-depth: 2
+
+      - name: Match the PR's files against the push trigger's paths
+        id: paths
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          # The push trigger's paths, verbatim (tests/unit/test_required_checks.py
+          # keeps the two lists equal).
+          PATHS: |
+            panel/**
+            motion/**
+            video-renderer/**
+            docs-redirects/**
+            .github/workflows/codeql-js-ts.yml
+        run: python3 .github/scripts/required_checks.py match-paths
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4.38.0
+        if: steps.paths.outputs.relevant == 'true'
+        uses: github/codeql-action/init@v4.39.1
         with:
-          languages: ${{ matrix.language }}
-          build-mode: ${{ matrix.build-mode }}
+          languages: javascript-typescript
+          build-mode: none
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v4.38.0
+        if: steps.paths.outputs.relevant == 'true'
+        uses: github/codeql-action/analyze@v4.39.1
         with:
-          category: "/language:${{ matrix.language }}"
+          category: "/language:javascript-typescript"

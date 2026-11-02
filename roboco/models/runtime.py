@@ -110,9 +110,9 @@ class WaitingRecord:
 
 # Model mapping for cost optimization
 MODEL_MAP: dict[str, str] = {
-    "opus": "claude-opus-5",
-    "sonnet": "claude-sonnet-5",
-    "haiku": "claude-haiku-4-5-20251001",
+    "opus": "claude-opus-5-5",
+    "sonnet": "claude-sonnet-5-5",
+    "haiku": "claude-haiku-5-5",
 }
 
 
@@ -131,7 +131,7 @@ ROLE_MODEL_MAP: dict[str, str] = {
     "documenter": "sonnet",
     "cell_pm": "sonnet",
     # Main PM — cost is dominated by cache read/write of a large coordination
-    # context; Sonnet 5's cache-write is ~12x cheaper than Opus. Experiment: watch
+    # context; Sonnet 5.5's cache read/write is half Opus 5.5's. Experiment: watch
     # rework + coordination quality; revert here or via a per-slug DB override.
     "main_pm": "sonnet",
     "auditor": "opus",
@@ -151,7 +151,7 @@ ROLE_MODEL_MAP: dict[str, str] = {
 # count; lowering it on roles that don't need deep multi-step reasoning cuts turns,
 # and turns drive the dominant cache-read cost. Delivery-critical reasoning roles
 # (developer, pr_reviewer) keep the model default; main_pm is left at default to
-# isolate its Opus→Sonnet-5 model experiment; Haiku roles (qa, documenter) ignore
+# isolate its Opus→Sonnet model experiment; Haiku roles (qa, documenter) ignore
 # effort. Conservative and revertible — watch coordination/triage quality on the
 # per-role panel and tune.
 ROLE_EFFORT_MAP: dict[str, str] = {

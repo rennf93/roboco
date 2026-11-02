@@ -387,19 +387,46 @@ def _stub_git_context(orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(orch, "_task_git_context", lambda _task: None)
 
 
+def _claimed_dispatch_orch(monkeypatch: pytest.MonkeyPatch) -> AgentOrchestrator:
+    """An orchestrator for ``_dispatch_claimed_without_agent``: the respawn
+    breaker runs for real (persistence and its audit lookup stubbed) and every
+    assignee holds no other work unless a test says otherwise."""
+    orch = _orch()
+    orch._tick_handled_tasks = set()
+    orch._pm_respawn_tracker = {}
+    orch._bg_tasks = set()
+    monkeypatch.setattr(orch, "_schedule_respawn_persist", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        orch, "_pm_made_rule_following_retry", AsyncMock(return_value=False)
+    )
+    monkeypatch.setattr(orch, "_pm_respawn_spawn_anyway", AsyncMock(return_value=False))
+    monkeypatch.setattr(orch, "_pm_trip_stall_notice", AsyncMock())
+    monkeypatch.setattr(orch, "_held_task_blocking_claim", AsyncMock(return_value=None))
+    _stub_git_context(orch, monkeypatch)
+    return orch
+
+
+def _launching_spawn(orch: AgentOrchestrator) -> AsyncMock:
+    """A ``spawn_agent`` whose container starts, as ``_launch_spawn`` reports
+    it to the respawn breaker."""
+
+    async def _spawn(*, agent_id: str, task_id: str, **_kw: Any) -> None:
+        orch._note_respawn_spawn_launched(agent_id, task_id)
+
+    return AsyncMock(side_effect=_spawn)
+
+
 @pytest.mark.asyncio
 async def test_dispatch_claimed_without_agent_spawns_at_most_one_per_tick(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    orch = _orch()
-    orch._tick_handled_tasks = set()
+    orch = _claimed_dispatch_orch(monkeypatch)
     stale_tasks = [
         {"id": f"t{i}", "status": "claimed", "assigned_to": AGENT_UUIDS["be-dev-1"]}
         for i in range(3)
     ]
     monkeypatch.setattr(orch, "_fetch_tasks", AsyncMock(return_value=stale_tasks))
     monkeypatch.setattr(orch, "_claimed_task_needs_agent", lambda _task: "be-dev-1")
-    _stub_git_context(orch, monkeypatch)
     spawn = AsyncMock()
     monkeypatch.setattr(orch, "spawn_agent", spawn)
 
@@ -410,21 +437,17 @@ async def test_dispatch_claimed_without_agent_spawns_at_most_one_per_tick(
 
 
 @pytest.mark.asyncio
-async def test_dispatch_claimed_without_agent_has_no_progress_backoff(
+async def test_dispatch_claimed_without_agent_respawns_are_bounded_by_the_breaker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Unlike `_dispatch_blocker_work` (every spawn gated through
-    `_pm_respawn_should_gate`), this dispatcher carries no respawn-loop
-    protection of its own — it unconditionally respawns an agentless
-    claimed/in_progress task every tick past the grace window. This is half
-    of why the escalate_up/unblock oscillation defeats the per-(agent, task)
-    breaker: the resolved side of the cycle (the PM restored to in_progress)
-    has no counter here to ever trip, so the loop's other half never runs out
-    of fuel on its own — only a task-scoped breaker that also covers this
-    path (by moving the task to `blocked` entirely, which this dispatcher
-    doesn't fetch) can stop it.
+    """This dispatcher used to carry no respawn-loop protection at all: it
+    respawned an agentless claimed/in_progress task's assignee every tick past
+    the grace window (live 2026-10-28: main-pm five times on claimed be2145b0
+    between 06:28 and 06:53, the task never leaving 'claimed'). It now goes
+    through the same per-(agent, task) breaker as every other task-keyed
+    spawn, so a task that never advances stops after the strike threshold.
     """
-    orch = _orch()
+    orch = _claimed_dispatch_orch(monkeypatch)
     task = {
         "id": "t1",
         "status": "in_progress",
@@ -432,18 +455,17 @@ async def test_dispatch_claimed_without_agent_has_no_progress_backoff(
         "updated_at": _STALE,
     }
     monkeypatch.setattr(orch, "_fetch_tasks", AsyncMock(return_value=[task]))
-    _stub_git_context(orch, monkeypatch)
     monkeypatch.setattr(orch, "_get_prompt_for_agent", AsyncMock(return_value="p"))
-    spawn = AsyncMock()
+    spawn = _launching_spawn(orch)
     monkeypatch.setattr(orch, "spawn_agent", spawn)
 
     cycles = 10
     for _ in range(cycles):
-        orch._tick_handled_tasks = set()  # a fresh dispatch tick each cycle
+        # A fresh dispatch tick each cycle.
+        orch._tick_handled_tasks = set()
         await orch._dispatch_claimed_without_agent(client=MagicMock())
 
-    # No cycle was ever refused — zero backoff anywhere in this call path.
-    assert spawn.await_count == cycles
+    assert spawn.await_count == orch._PM_RESPAWN_MAX_UNPRODUCTIVE
 
 
 @pytest.mark.asyncio
@@ -453,8 +475,7 @@ async def test_dispatch_claimed_without_agent_releases_unknown_without_spending_
     # The release-to-pending path spawns nothing and must NOT consume the
     # per-tick spawn budget — it keeps draining stale unknown claims, then
     # spawns the first task with a known assignee.
-    orch = _orch()
-    orch._tick_handled_tasks = set()
+    orch = _claimed_dispatch_orch(monkeypatch)
     tasks = [
         {"id": "u1", "status": "claimed", "assigned_to": "ghost-uuid"},
         {"id": "u2", "status": "claimed", "assigned_to": "ghost-uuid"},
@@ -466,7 +487,6 @@ async def test_dispatch_claimed_without_agent_releases_unknown_without_spending_
         return orch._resolve_agent_slug(str(task["assigned_to"]))
 
     monkeypatch.setattr(orch, "_claimed_task_needs_agent", _needs)
-    _stub_git_context(orch, monkeypatch)
     release = AsyncMock()
     monkeypatch.setattr(orch, "_release_claim_to_pending", release)
     spawn = AsyncMock()
@@ -474,9 +494,11 @@ async def test_dispatch_claimed_without_agent_releases_unknown_without_spending_
 
     await orch._dispatch_claimed_without_agent(client=MagicMock())
 
-    expected_releases = 2  # both ghost claims released
+    # both ghost claims released
+    expected_releases = 2
     assert release.await_count == expected_releases
-    spawn.assert_awaited_once()  # then one known assignee respawned
+    # then one known assignee respawned
+    spawn.assert_awaited_once()
 
 
 @pytest.mark.asyncio

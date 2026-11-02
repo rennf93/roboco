@@ -240,7 +240,9 @@ async def test_live_client_post_tweet_without_reply_target_omits_reply_key() -> 
     http_client = httpx.AsyncClient(transport=transport)
     client = LiveXClient(_CREDS, account_user_id="1", timeout=5.0, client=http_client)
     await client.post_tweet("hi")
-    assert "reply" not in captured["body"]  # type: ignore[operator]
+    body = captured["body"]
+    assert isinstance(body, dict)
+    assert "reply" not in body
     await http_client.aclose()
 
 

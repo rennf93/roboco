@@ -99,7 +99,7 @@ async def test_merge_retries_with_allowed_method_on_405(
         svc, "_get_project_token_or_raise", AsyncMock(return_value="tok")
     )
     monkeypatch.setattr(
-        svc, "_parse_github_remote", lambda _ws: RepoRef("owner", "repo")
+        svc, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("owner", "repo"))
     )
     monkeypatch.setattr(
         svc, "_delete_pr_branch_best_effort", AsyncMock(return_value=None)
@@ -140,7 +140,7 @@ async def test_merge_does_not_retry_when_method_allowed(
         svc, "_get_project_token_or_raise", AsyncMock(return_value="tok")
     )
     monkeypatch.setattr(
-        svc, "_parse_github_remote", lambda _ws: RepoRef("owner", "repo")
+        svc, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("owner", "repo"))
     )
     monkeypatch.setattr(
         svc, "_delete_pr_branch_best_effort", AsyncMock(return_value=None)
@@ -180,7 +180,7 @@ async def test_merge_already_merged_pr_is_idempotent_success(
         svc, "_get_project_token_or_raise", AsyncMock(return_value="tok")
     )
     monkeypatch.setattr(
-        svc, "_parse_github_remote", lambda _ws: RepoRef("owner", "repo")
+        svc, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("owner", "repo"))
     )
     delete_branch = AsyncMock(return_value=None)
     monkeypatch.setattr(svc, "_delete_pr_branch_best_effort", delete_branch)
@@ -225,7 +225,7 @@ async def test_merge_raises_when_not_merged_and_refused(
         svc, "_get_project_token_or_raise", AsyncMock(return_value="tok")
     )
     monkeypatch.setattr(
-        svc, "_parse_github_remote", lambda _ws: RepoRef("owner", "repo")
+        svc, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("owner", "repo"))
     )
     delete_branch = AsyncMock(return_value=None)
     monkeypatch.setattr(svc, "_delete_pr_branch_best_effort", delete_branch)

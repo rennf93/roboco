@@ -35,6 +35,9 @@ def _make_orchestrator() -> AgentOrchestrator:
     orch._tick_handled_tasks = set()
     orch._bg_tasks = set()
     orch._running = True
+    # No database here: the spawn chokepoint's dispatch-pause lookup would fail
+    # closed (paused) and refuse every spawn.
+    object.__setattr__(orch, "_is_paused", AsyncMock(return_value=False))
     return orch
 
 

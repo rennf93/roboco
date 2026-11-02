@@ -1,4 +1,6 @@
-# Object Storage (MinIO)
+# Object Storage (S3: RustFS, formerly MinIO)
+
+The server is RustFS (`rustfs/rustfs`, Apache-2.0) since 2026-10-15: MinIO's images were withdrawn from docker.io and quay.io. RustFS speaks the same S3 API, so the minio-py client, `roboco/services/minio_client.py` and the `ROBOCO_MINIO_*` settings are unchanged; only the compose services, container and volume names changed.
 
 ## What It Is
 
@@ -8,17 +10,17 @@ Rendered MP4s are written to a host bind mount (`ROBOCO_VIDEO_OUTPUT_DIR`, defau
 
 | Variable | Default | Effect |
 |----------|---------|--------|
-| `ROBOCO_MINIO_ENDPOINT` | `` (empty) | MinIO endpoint, e.g. `http://roboco-minio:9000`. Empty = disabled (the media route falls back to `FileResponse` from the local video-renders dir). |
+| `ROBOCO_MINIO_ENDPOINT` | `` (empty) | S3 endpoint, e.g. `http://roboco-rustfs:9000`. Empty = disabled (the media route falls back to `FileResponse` from the local video-renders dir). |
 | `ROBOCO_MINIO_ACCESS_KEY` | `` | Access key. Required when endpoint is set. |
 | `ROBOCO_MINIO_SECRET_KEY` | `` | Secret key. Required when endpoint is set. |
-| `ROBOCO_MINIO_BUCKET` | `roboco-video-renders` | Bucket for rendered videos. Created idempotently by the `minio-init` one-shot service. |
+| `ROBOCO_MINIO_BUCKET` | `roboco-video-renders` | Bucket for rendered videos. Created idempotently by the `rustfs-init` one-shot service (`aws s3 mb`). |
 | `ROBOCO_MINIO_REGION` | `us-east-1` | MinIO region. |
 
 Armed in the NAS compose (`docker-compose.yml` / `docker-compose.yaml`); intentionally omitted from `docker-compose.registry.yml` (NAS default-on, registry default-off).
 
 ## Current state (0.19.0 chunk 4 — serve path landed)
 
-Config fields, the `minio` dependency, and the compose services (`minio` + `minio-init`) are landed (chunk 1). Chunk 2 adds `roboco/services/minio_client.py` — a singleton `Minio` with an unconfigured guard (`get_client()` returns `None` when `minio_endpoint` is empty), plus `put_object`, `get_object_stream`, and `stat_object`. Chunk 3 wires the write path: `video_renderer_client._save` keeps the local write (the poster publish path in `x_video_client.py` / `tiktok_client.py` still reads `Path(mp4_path).read_bytes()`) and adds a MinIO `put_object` after it, guarded by `settings.minio_endpoint` and non-fatal — a failed PUT (MinIO down) is logged and the render still succeeds, since local disk is the source of truth. Key = `Path(mp4_path).name` (already `{render_key}-{orientation}.mp4`) — no schema change, no new marker field. Chunk 4 wires the serve path (now live): the media route (`roboco/api/routes/video.py`) keeps `_require_ceo(agent)` and returns a `StreamingResponse` wrapping `minio_client.get_object_stream(key)` when configured, falling back to `FileResponse` when unconfigured OR when the eager `minio_client.stat_object(key)` probe raises (missing object / MinIO down). The probe is eager because `get_object_stream` is a lazy generator — its `get_object` call runs on first iteration, after Starlette has started streaming and the response is no longer take-back-able; the probe runs inside the route's `try/except` so the `S3Error` fallback actually fires. The key is the basename, so the existing confinement check stays as defense-in-depth. With `minio_endpoint` empty, the serve path is byte-for-byte the pre-MinIO `FileResponse`. The `minio` service runs on the `data` network only (off the agent mesh); the orchestrator reaches it via its `data` NIC. Host ports `19000:9000` / `19001:9001` are published for debugging only.
+Config fields, the `minio` dependency, and the compose services (originally `minio` + `minio-init`, now `rustfs` + `rustfs-init`) are landed (chunk 1). Chunk 2 adds `roboco/services/minio_client.py`: a singleton `Minio` with an unconfigured guard (`get_client()` returns `None` when `minio_endpoint` is empty), plus `put_object`, `get_object_stream`, and `stat_object`. Chunk 3 wires the write path: `video_renderer_client._save` keeps the local write (the poster publish path in `x_video_client.py` / `tiktok_client.py` still reads `Path(mp4_path).read_bytes()`) and adds a MinIO `put_object` after it, guarded by `settings.minio_endpoint` and non-fatal: a failed PUT (MinIO down) is logged and the render still succeeds, since local disk is the source of truth. Key = `Path(mp4_path).name` (already `{render_key}-{orientation}.mp4`), so no schema change, no new marker field. Chunk 4 wires the serve path (now live): the media route (`roboco/api/routes/video.py`) keeps `_require_ceo(agent)` and returns a `StreamingResponse` wrapping `minio_client.get_object_stream(key)` when configured, falling back to `FileResponse` when unconfigured OR when the eager `minio_client.stat_object(key)` probe raises (missing object / MinIO down). The probe is eager because `get_object_stream` is a lazy generator: its `get_object` call runs on first iteration, after Starlette has started streaming and the response is no longer take-back-able; the probe runs inside the route's `try/except` so the `S3Error` fallback actually fires. The key is the basename, so the existing confinement check stays as defense-in-depth. With `minio_endpoint` empty, the serve path is byte-for-byte the pre-MinIO `FileResponse`. The `rustfs` service runs on the `data` network only (off the agent mesh); the orchestrator reaches it via its `data` NIC. `scripts/deploy-nas.sh` names `rustfs` and `rustfs-init` in its `up` because no app service depends on them. Host ports `19000:9000` / `19001:9001` are published for debugging only.
 
 ## Planned end state (later chunks)
 
