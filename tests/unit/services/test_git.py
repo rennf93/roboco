@@ -1605,6 +1605,67 @@ async def test_sync_target_branch_raises_when_origin_also_missing() -> None:
         await svc._sync_target_branch(Path("/tmp/ws"), "feature/backend/parent")
 
 
+@pytest.mark.asyncio
+async def test_sync_target_branch_syncs_the_worktree_that_holds_the_branch() -> None:
+    """A target branch checked out in one of the clone's worktrees is synced there.
+
+    Git refuses ``checkout <branch>`` in the clone root while another worktree
+    holds it, so the post-merge sync used to fail for the PM's own cell-branch
+    worktree and leave it stale.
+    """
+    svc = _service()
+    calls: list[tuple[Path, list[str]]] = []
+    porcelain = (
+        "worktree /tmp/ws\nHEAD aaa\nbranch refs/heads/main\n\n"
+        "worktree /tmp/ws/.git/wt/f03c38e0\nHEAD bbb\n"
+        "branch refs/heads/feature/backend/parent\n"
+    )
+
+    async def _run_git(workspace: Path, args: list[str], **_kw: object) -> object:
+        calls.append((workspace, args))
+        if args[:2] == ["worktree", "list"]:
+            return MagicMock(returncode=0, stdout=porcelain, stderr="")
+        if args[:2] == ["log", "-1"]:
+            return MagicMock(returncode=0, stdout="worktree-tip-sha", stderr="")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+    sha = await svc._sync_target_branch(Path("/tmp/ws"), "feature/backend/parent")
+    wt = Path("/tmp/ws/.git/wt/f03c38e0")
+    assert sha == "worktree-tip-sha"
+    assert (wt, ["fetch", "origin", "feature/backend/parent"]) in calls
+    assert (wt, ["reset", "--hard", "origin/feature/backend/parent"]) in calls
+    assert (wt, ["log", "-1", "--format=%H"]) in calls
+    assert not [a for _, a in calls if a[0] == "checkout"]
+
+
+@pytest.mark.asyncio
+async def test_sync_target_branch_checks_out_when_no_worktree_holds_it() -> None:
+    """With no worktree on the target branch the root checkout path is unchanged."""
+    svc = _service()
+    calls: list[tuple[Path, list[str]]] = []
+    porcelain = (
+        "worktree /tmp/ws\nHEAD aaa\nbranch refs/heads/main\n\n"
+        "worktree /tmp/ws/.git/wt/x\nHEAD bbb\nbranch refs/heads/feature/other\n"
+    )
+
+    async def _run_git(workspace: Path, args: list[str], **_kw: object) -> object:
+        calls.append((workspace, args))
+        if args[:2] == ["worktree", "list"]:
+            return MagicMock(returncode=0, stdout=porcelain, stderr="")
+        if args[:2] == ["log", "-1"]:
+            return MagicMock(returncode=0, stdout="root-tip-sha", stderr="")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+    sha = await svc._sync_target_branch(Path("/tmp/ws"), "feature/backend/parent")
+    root = Path("/tmp/ws")
+    assert sha == "root-tip-sha"
+    assert (root, ["checkout", "feature/backend/parent"]) in calls
+    assert (root, ["reset", "--hard", "origin/feature/backend/parent"]) in calls
+    assert all(w == root for w, _ in calls)
+
+
 # ---------------------------------------------------------------------------
 # _sync_target_branch_best_effort — post-merge local sync must never re-block
 # ---------------------------------------------------------------------------
@@ -1647,6 +1708,35 @@ async def test_sync_target_branch_best_effort_returns_sha_on_success() -> None:
         Path("/tmp/ws"), "feature/backend/parent"
     )
     assert result == "merged-tip-sha"
+
+
+@pytest.mark.asyncio
+async def test_sync_target_branch_best_effort_warning_carries_git_stderr() -> None:
+    """The warning keeps git's stderr, which ``str(exc)`` drops."""
+    svc = _service()
+    _bind(
+        svc,
+        "_sync_target_branch",
+        AsyncMock(
+            side_effect=GitError(
+                "Could not check out target branch 'feature/backend/parent'.",
+                {
+                    "target_branch": "feature/backend/parent",
+                    "checkout_stderr": "already used by worktree",
+                    "tracking_stderr": "branch already exists",
+                },
+            )
+        ),
+    )
+    log = MagicMock()
+    svc.log = log
+    result = await svc._sync_target_branch_best_effort(
+        Path("/tmp/ws"), "feature/backend/parent"
+    )
+    assert result is None
+    kwargs = log.warning.call_args.kwargs
+    assert kwargs["details"]["checkout_stderr"] == "already used by worktree"
+    assert kwargs["details"]["tracking_stderr"] == "branch already exists"
 
 
 # ---------------------------------------------------------------------------
