@@ -164,8 +164,10 @@ def workspace_git_env() -> dict[str, str]:
 class WorkspaceRepository:
     """Where a workspace's repository is, by layout alone."""
 
-    common_dir: Path  # <clone>/.git
-    git_dir: Path  # <clone>/.git, or <clone>/.git/worktrees/<id> for a worktree
+    # <clone>/.git
+    common_dir: Path
+    # <clone>/.git, or <clone>/.git/worktrees/<id> for a worktree
+    git_dir: Path
     work_tree: Path
 
 
@@ -637,7 +639,8 @@ def _write_as_workspace_user(
     )
 
 
-_CLONE_DEPTH = 3  # <slug>/<team>/<agent> under the workspaces root
+# <slug>/<team>/<agent> under the workspaces root
+_CLONE_DEPTH = 3
 
 
 def _clone_root_containing(path: Path) -> Path | None:
@@ -681,7 +684,8 @@ _ALLOWED_SUBSECTION_FIELDS = {"branch": frozenset({"remote", "merge"})}
 # Present in the file but pinned by workspace_git_overrides() on every run.
 _NEUTRALIZED_KEYS = frozenset(
     {
-        "core.hookspath",  # husky's `prepare` sets it in real clones
+        # husky's `prepare` sets it in real clones
+        "core.hookspath",
         "core.fsmonitor",
         "core.sshcommand",
         "core.askpass",
@@ -923,6 +927,47 @@ def _repair_clone_permissions(clone_root: Path) -> bool:
     return True
 
 
+def make_venv_site_packages_group_writable(clone_root: Path) -> bool:
+    """Give the agent group rw on the ``site-packages`` directories of a
+    clone's shared venv (those directories only, not their contents).
+
+    The worktree import hook is written there as the git user, and the clone
+    repair never descends into ``.venv``: a venv made before the git user
+    existed carries the host's group or mode 755, so the write is refused.
+    Same rules as the clone repair: drop required, workspaces root only, every
+    component opened by descriptor with ``O_NOFOLLOW`` (a symlinked ``.venv``,
+    ``lib`` or ``python*`` is skipped, never followed). Returns whether a
+    repair ran (so the caller retries).
+    """
+    if not git_user_drop_required() or not _is_agent_writable(clone_root):
+        return False
+    lib = Path(os.path.normpath(clone_root)) / ".venv" / "lib"
+    try:
+        lib_fd = _open_workspace_dir(lib, create=False)
+    except OSError:
+        return False
+    try:
+        with os.scandir(lib_fd) as entries:
+            for entry in entries:
+                if entry.name.startswith("python"):
+                    _regroup_site_packages_in(entry.name, lib_fd)
+    finally:
+        os.close(lib_fd)
+    return True
+
+
+def _regroup_site_packages_in(python_dir: str, lib_fd: int) -> None:
+    try:
+        python_fd = os.open(python_dir, _OPEN_DIRECTORY_NO_FOLLOW, dir_fd=lib_fd)
+    except OSError:
+        # a symlink or a file named python*: nothing to repair
+        return
+    try:
+        _regroup_entry("site-packages", python_fd, settings.agent_gid)
+    finally:
+        os.close(python_fd)
+
+
 def prepare_clone_parent(clone_root: Path) -> None:
     """Create the directories above a new clone, writable by the git user.
 
@@ -1047,7 +1092,8 @@ def _regroup_entry(name: str, dir_fd: int, gid: int) -> None:
     try:
         fd = os.open(name, _OPEN_NO_FOLLOW, dir_fd=dir_fd)
     except OSError:
-        return  # a symlink (ELOOP), a socket, or gone: nothing to repair
+        # a symlink (ELOOP), a socket, or gone: nothing to repair
+        return
     try:
         _regroup(fd, gid)
     finally:
