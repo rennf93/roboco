@@ -1,0 +1,12 @@
+# Global config of the orchestrator's own git in the dispatcher-owned
+# repositories under /data/private (the relays, the read, release and scratch
+# clones): the GIT_CONFIG_GLOBAL that roboco/services/git_relay.py sets.
+# Root-owned and read-only in the orchestrator image.
+#
+# Both deploy colors share /data/private, and the colors need not run as the
+# same uid, so its repositories need not be owned by the uid running git.
+# git honors safe.directory only from protected (system/global) config. No
+# agent container mounts /data/private, and neither agents nor the workspace
+# git user can write this file.
+[safe]
+	directory = *

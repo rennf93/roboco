@@ -2,8 +2,10 @@
 
 The read clone is hard-reset to the default branch on every refresh. The bug it
 fixes: the old refresh used a token-less fetch, so a private repo's clone stayed
-frozen at clone-time and never saw commits merged afterwards. This proves the
-refresh actually advances the clone to a post-clone commit.
+frozen at clone-time and never saw commits merged afterwards. The refresh now
+goes through the project's relay (which holds the token), and this proves it
+actually advances the clone to a post-clone commit — and that the token stays
+in the relay's process, never the read clone's.
 """
 
 from __future__ import annotations
@@ -11,15 +13,23 @@ from __future__ import annotations
 import base64
 import subprocess
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
-from unittest.mock import AsyncMock, MagicMock, patch
+from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock, patch
 
 import pytest
+from roboco.config import settings
+from roboco.services import git_relay
 from roboco.services import workspace as ws_mod
+from roboco.services.git_relay import GitRelay, read_clone_path
 from roboco.services.workspace import WorkspaceService
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+
+@pytest.fixture(autouse=True)
+def _private_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(settings, "private_data_root", str(tmp_path / "private"))
 
 
 def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
@@ -32,6 +42,10 @@ def _commit(repo: Path, message: str) -> str:
     _git(repo, "add", "-A")
     _git(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", message)
     return _git(repo, "rev-parse", "HEAD").stdout.strip()
+
+
+def _relay(origin: Path | str) -> GitRelay:
+    return GitRelay("p", f"file://{origin}", None, default_branch="master")
 
 
 def test_sync_read_clone_advances_to_a_post_clone_commit(tmp_path: Path) -> None:
@@ -50,9 +64,7 @@ def test_sync_read_clone_advances_to_a_post_clone_commit(tmp_path: Path) -> None
     second = _commit(origin, "second")
     assert first != second
 
-    # token=None: a file:// fetch needs no auth (mirrors a public-repo refresh);
-    # for a private https repo the token would be injected into the fetch URL.
-    WorkspaceService._sync_read_clone(clone, f"file://{origin}", "master", None)
+    WorkspaceService._sync_read_clone(clone, _relay(origin), "master")
 
     assert _git(clone, "rev-parse", "HEAD").stdout.strip() == second
     assert (clone / "NEW.txt").is_file()
@@ -78,7 +90,7 @@ def test_sync_read_clone_fetches_tags(tmp_path: Path) -> None:
     # signing config that would otherwise force an annotated (signed) tag.
     _git(origin, "-c", "tag.gpgsign=false", "tag", "v0.17.0")
 
-    WorkspaceService._sync_read_clone(clone, f"file://{origin}", "master", None)
+    WorkspaceService._sync_read_clone(clone, _relay(origin), "master")
 
     assert "v0.17.0" in _git(clone, "tag").stdout.split()
     assert _git(clone, "describe", "--tags", "--abbrev=0").stdout.strip() == "v0.17.0"
@@ -95,35 +107,42 @@ def test_sync_read_clone_is_best_effort_on_unreachable_origin(tmp_path: Path) ->
     head = _git(clone, "rev-parse", "HEAD").stdout.strip()
 
     # A bogus origin must not raise — the refresh logs and leaves the clone as-is.
-    WorkspaceService._sync_read_clone(clone, "file:///nonexistent/repo", "master", None)
+    WorkspaceService._sync_read_clone(clone, _relay("/nonexistent/repo"), "master")
     assert _git(clone, "rev-parse", "HEAD").stdout.strip() == head
 
 
-def test_sync_read_clone_with_token_uses_extraheader_not_url(tmp_path: Path) -> None:
-    """A private-repo refresh injects the PAT via ``-c http.extraheader``, never
-    URL-embedded into the fetch argv (mirrors the clone PAT-leak fix — H11)."""
+def test_a_private_refresh_keeps_the_token_in_the_relay(tmp_path: Path) -> None:
+    """A private-repo refresh authenticates in the relay's own process (a
+    host-scoped header in its environment); the read clone's fetch — from
+    the relay, on the local file transport — never carries the token in its
+    argv or environment."""
     clone = tmp_path / "clone"
     clone.mkdir()
     token = "ghp_SECRETARGV"
-    git_url = "https://github.com/o/r"
-    captured: list[list[str]] = []
+    basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    relay = GitRelay("p", "https://github.com/o/r.git", token)
+    relay.path.mkdir(parents=True)
+    (relay.path / "HEAD").write_text("ref: refs/heads/master\n")
+    calls: list[dict[str, Any]] = []
 
-    def _fake_run(argv: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
-        captured.append(list(argv))
+    def _fake_run(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        calls.append({"argv": list(argv), **kw})
         return subprocess.CompletedProcess(argv, 0, "", "")
 
-    with patch("roboco.services.workspace.subprocess.run", side_effect=_fake_run):
-        WorkspaceService._sync_read_clone(clone, git_url, "master", token)
+    with patch.object(git_relay.subprocess, "run", side_effect=_fake_run):
+        WorkspaceService._sync_read_clone(clone, relay, "master")
 
-    fetch_argv = next(a for a in captured if "fetch" in a)
-    # Token never appears in argv...
-    assert token not in fetch_argv
-    assert f"https://{token}@" not in fetch_argv
-    # ...the bare URL is the fetch ref...
-    assert git_url in fetch_argv
-    # ...and the basic-auth extraheader carries the encoded token.
-    expected = base64.b64encode(f"x-access-token:{token}".encode()).decode()
-    assert f"http.extraheader=Authorization: Basic {expected}" in fetch_argv
+    def _carries_token(call: dict[str, Any]) -> bool:
+        blob = " ".join([*call["argv"], *(call.get("env") or {}).values()])
+        return token in blob or basic in blob
+
+    relay_fetches = [c for c in calls if c.get("cwd") == str(relay.path)]
+    clone_calls = [c for c in calls if c.get("cwd") == str(clone)]
+    assert relay_fetches
+    assert clone_calls
+    assert all(not any(token in a or basic in a for a in c["argv"]) for c in calls)
+    assert any(_carries_token(c) for c in relay_fetches)
+    assert not any(_carries_token(c) for c in clone_calls)
 
 
 # --- ensure_read_clone force-refetch (M45) -------------------------------------
@@ -133,32 +152,32 @@ def test_sync_read_clone_with_token_uses_extraheader_not_url(tmp_path: Path) -> 
 # the TTL so conventions reads always see the current default-branch HEAD.
 
 
-def _read_clone_service(tmp_path: Path) -> WorkspaceService:
+def _read_clone_service() -> WorkspaceService:
     # AsyncMock, not MagicMock: ensure_read_clone's fetch/clone branches now
     # call session.commit() (_release_pool_connection, the pool-hold fix) -
     # a MagicMock session's .commit() isn't awaitable and would TypeError.
     svc = WorkspaceService(AsyncMock())
-    object.__setattr__(svc, "root", tmp_path)
+    object.__setattr__(svc, "_relay_for", AsyncMock(return_value=object()))
     return svc
 
 
-def _read_clone_workspace(svc: WorkspaceService, slug: str) -> Path:
-    workspace = svc.root / slug / "_meta" / "conventions"
+def _read_clone_workspace(slug: str) -> Path:
+    workspace = read_clone_path(slug)
     (workspace / ".git" / "objects").mkdir(parents=True)
     (workspace / ".git" / "HEAD").write_text("ref: refs/heads/master\n")
     return workspace
 
 
 @pytest.mark.asyncio
-async def test_ensure_read_clone_force_bypasses_ttl(tmp_path: Path) -> None:
+async def test_ensure_read_clone_force_bypasses_ttl() -> None:
     """force=True fetches even when the workspace was just synced (within TTL)."""
-    svc = _read_clone_service(tmp_path)
+    svc = _read_clone_service()
     slug = "p"
-    workspace = _read_clone_workspace(svc, slug)
+    workspace = _read_clone_workspace(slug)
     project = SimpleNamespace(
         slug=slug, default_branch="master", git_url="https://example/o/r"
     )
-    project_service = MagicMock()
+    project_service = AsyncMock()
     project_service.get_by_slug = AsyncMock(return_value=project)
     fetched: list[Path] = []
 
@@ -174,12 +193,6 @@ async def test_ensure_read_clone_force_bypasses_ttl(tmp_path: Path) -> None:
                 return_value=project_service,
             ),
             patch.object(WorkspaceService, "_is_workspace_healthy", return_value=True),
-            patch.object(
-                WorkspaceService,
-                "_read_clone_token",
-                new=staticmethod(AsyncMock(return_value=None)),
-            ),
-            patch.object(WorkspaceService, "_prune_broken_refs", return_value=None),
             patch.object(WorkspaceService, "_sync_read_clone", side_effect=_fake_sync),
         ):
             await svc.ensure_read_clone(slug, force=True)
@@ -190,15 +203,15 @@ async def test_ensure_read_clone_force_bypasses_ttl(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_ensure_read_clone_default_respects_ttl(tmp_path: Path) -> None:
+async def test_ensure_read_clone_default_respects_ttl() -> None:
     """Default force=False skips the fetch when the workspace was just synced."""
-    svc = _read_clone_service(tmp_path)
+    svc = _read_clone_service()
     slug = "p"
-    workspace = _read_clone_workspace(svc, slug)
+    workspace = _read_clone_workspace(slug)
     project = SimpleNamespace(
         slug=slug, default_branch="master", git_url="https://example/o/r"
     )
-    project_service = MagicMock()
+    project_service = AsyncMock()
     project_service.get_by_slug = AsyncMock(return_value=project)
     fetched: list[Path] = []
 
@@ -213,12 +226,6 @@ async def test_ensure_read_clone_default_respects_ttl(tmp_path: Path) -> None:
                 return_value=project_service,
             ),
             patch.object(WorkspaceService, "_is_workspace_healthy", return_value=True),
-            patch.object(
-                WorkspaceService,
-                "_read_clone_token",
-                new=staticmethod(AsyncMock(return_value=None)),
-            ),
-            patch.object(WorkspaceService, "_prune_broken_refs", return_value=None),
             patch.object(WorkspaceService, "_sync_read_clone", side_effect=_fake_sync),
         ):
             await svc.ensure_read_clone(slug)

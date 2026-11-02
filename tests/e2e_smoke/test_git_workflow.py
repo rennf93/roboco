@@ -54,6 +54,7 @@ from uuid import UUID, uuid4
 
 import httpx
 import pytest
+from roboco.config import settings
 from roboco.db.tables import (
     AgentTable,
     ProjectTable,
@@ -65,6 +66,7 @@ from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType
 from roboco.models.work_session import WorkSessionStatus
 from roboco.services.forge import RepoRef
 from roboco.services.git import GitService
+from roboco.services.git_relay import GitRelay
 from roboco.services.work_session import get_work_session_service
 from roboco.services.workspace import WorkspaceService
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -74,40 +76,50 @@ if TYPE_CHECKING:
 
 
 # ---------------------------------------------------------------------------
-# H11 — clone/fetch PAT injected via http.extraheader, not URL-embedded
+# H11 — a private refresh keeps the PAT in the relay: never argv, never a clone
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_h11_pat_not_in_argv(e2e_stack: E2EStack) -> None:
-    """H11: a private-repo refresh injects the PAT via
-    ``-c http.extraheader=Authorization: Basic <base64>``, never URL-embedded
-    into the fetch argv. The smoke origin is local-protocol (tokenless), so
-    this drives ``WorkspaceService._sync_read_clone`` with a fake HTTPS URL +
-    token and a ``subprocess.run`` capture — the same argv-shape contract the
-    production path honors (mirrors the unit test)."""
+async def test_h11_pat_not_in_argv(
+    e2e_stack: E2EStack, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """H11: a private-repo refresh authenticates in the relay's own root git
+    process (a host-scoped header in its environment), never URL-embedded or
+    in any argv; the read clone's fetch from the relay carries no token at
+    all. The smoke origin is local-protocol (tokenless), so this drives
+    ``WorkspaceService._sync_read_clone`` with a fake HTTPS relay + token and
+    a ``subprocess.run`` capture — the same contract the production path
+    honors (mirrors the unit test)."""
+    monkeypatch.setattr(settings, "private_data_root", str(e2e_stack.root / "private"))
     clone = e2e_stack.root / "h11-clone"
     clone.mkdir()
     token = "ghp_SMOKEARGV"
-    git_url = "https://github.com/o/r"
-    captured: list[list[str]] = []
+    basic = base64.b64encode(f"x-access-token:{token}".encode()).decode()
+    relay = GitRelay("h11", "https://github.com/o/r.git", token)
+    relay.path.mkdir(parents=True)
+    (relay.path / "HEAD").write_text("ref: refs/heads/master\n")
+    calls: list[dict[str, Any]] = []
 
-    def _fake_run(argv: list[str], **_kw: object) -> subprocess.CompletedProcess[str]:
-        captured.append(list(argv))
+    def _fake_run(argv: list[str], **kw: Any) -> subprocess.CompletedProcess[str]:
+        calls.append({"argv": list(argv), **kw})
         return subprocess.CompletedProcess(argv, 0, "", "")
 
-    with patch("roboco.services.workspace.subprocess.run", side_effect=_fake_run):
-        WorkspaceService._sync_read_clone(clone, git_url, "master", token)
+    with patch("roboco.services.git_relay.subprocess.run", side_effect=_fake_run):
+        WorkspaceService._sync_read_clone(clone, relay, "master")
 
-    fetch_argv = next(a for a in captured if "fetch" in a)
-    # Token never appears in argv (no /proc/<pid>/cmdline leak).
-    assert token not in fetch_argv
-    assert f"https://{token}@" not in fetch_argv
-    # The bare URL is the fetch ref (no token embedded in the URL).
-    assert git_url in fetch_argv
-    # The basic-auth extraheader carries the encoded token.
-    expected = base64.b64encode(f"x-access-token:{token}".encode()).decode()
-    assert f"http.extraheader=Authorization: Basic {expected}" in fetch_argv
+    def _env_has_token(call: dict[str, Any]) -> bool:
+        values = " ".join((call.get("env") or {}).values())
+        return token in values or basic in values
+
+    # Token never appears in any argv (no /proc/<pid>/cmdline leak).
+    for call in calls:
+        assert not any(token in a or basic in a for a in call["argv"])
+    relay_calls = [c for c in calls if c.get("cwd") == str(relay.path)]
+    clone_calls = [c for c in calls if c.get("cwd") == str(clone)]
+    assert any(_env_has_token(c) for c in relay_calls)
+    assert clone_calls
+    assert not any(_env_has_token(c) for c in clone_calls)
 
 
 # ---------------------------------------------------------------------------

@@ -29,6 +29,7 @@ from mcp.server.mcpserver import MCPServer
 from pydantic import BaseModel, Field
 
 from roboco.mcp.utils import ApiClient, configure_stdio_logging, format_error_response
+from roboco.models.optimal import SEARCHABLE_INDEX_TYPES
 
 # See flow_server.py: __name__ is already "__main__" at this point when run
 # as the real stdio server, so this guards a plain in-process test import
@@ -152,7 +153,8 @@ def _register_search_tools(mcp: MCPServer, client: ApiClient) -> None:
             project: Optional project filter
             task_id: Optional task filter
             index_types: Index types to search (documentation, decisions,
-                learnings, standards, errors, reviews, journals, conversations)
+                learnings, standards, errors, reviews, journals, playbooks,
+                vault_notes)
 
         Returns:
             Search results with relevance scores and source info
@@ -405,7 +407,7 @@ def _register_utility_tools(mcp: MCPServer, client: ApiClient) -> None:
     @mcp.tool()
     async def roboco_tokens_estimate(
         content: str,
-        model: str = "claude-sonnet-4-20250514",
+        model: str = "claude-sonnet-5-5",
     ) -> dict[str, Any]:
         """
         Estimate token count for content.
@@ -414,7 +416,7 @@ def _register_utility_tools(mcp: MCPServer, client: ApiClient) -> None:
 
         Args:
             content: Text content to estimate
-            model: Model to estimate for (default: claude-sonnet-4)
+            model: Model to estimate for (default: claude-sonnet-5-5)
 
         Returns:
             Token count estimate
@@ -993,23 +995,13 @@ def _register_index_management_tools(mcp: MCPServer, client: ApiClient) -> None:
         PERMISSION: Requires CLEAR_INDEX permission.
 
         Args:
-            index_type: One of: code, documentation, conversations, journals,
-                        errors, standards, decisions, reviews, learnings
+            index_type: One of: documentation, journals, errors, standards,
+                        decisions, reviews, learnings, playbooks, vault_notes
 
         Returns:
             Confirmation of cleared index
         """
-        valid_types = {
-            "code",
-            "documentation",
-            "conversations",
-            "journals",
-            "errors",
-            "standards",
-            "decisions",
-            "reviews",
-            "learnings",
-        }
+        valid_types = {t.value for t in SEARCHABLE_INDEX_TYPES}
         if index_type not in valid_types:
             return format_error_response(
                 "INVALID_INDEX_TYPE",

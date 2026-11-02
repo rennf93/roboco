@@ -140,6 +140,8 @@ def test_render_provider_block_has_api_env_npm() -> None:
     block = oc.render_provider_block("https://api.tokenfactory.nebius.com/v1")
     provider = block["nebius"]
     assert provider["api"] == "https://api.tokenfactory.nebius.com/v1"
+    # opencode reads the endpoint from options.baseURL, not api
+    assert provider["options"]["baseURL"] == "https://api.tokenfactory.nebius.com/v1"
     assert provider["name"] == "Nebius"
     assert "NEBIUS_API_KEY" in provider["env"]
     assert provider["npm"] == oc._NEBIUS_PROVIDER_NPM
@@ -165,9 +167,10 @@ def test_render_mcp_block_passthrough_with_env() -> None:
         "-m",
         "roboco.mcp.flow_server",
     ]
-    assert flow["env"]["ROBOCO_AGENT_TOKEN"] == "tok-123"
+    assert flow["environment"]["ROBOCO_AGENT_TOKEN"] == "tok-123"
+    assert "env" not in flow
     do = rendered["roboco-do"]
-    assert "env" not in do  # no env in source -> no env in rendered
+    assert "env" not in do and "environment" not in do
 
 
 def test_render_mcp_block_empty_servers() -> None:
@@ -352,6 +355,33 @@ def test_main_writes_opencode_json(
     assert "tool.execute.before" in plugin_path.read_text(encoding="utf-8")
 
 
+def test_main_creates_missing_config_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The agent image does not pre-create opencode's global config home, so
+    the render step must mkdir the parent itself (the openrouter twin's #1110
+    regression - this port predates it). Regression: every Nebius-routed spawn
+    exited 1 on FileNotFoundError before the CLI started. The plugin write
+    already mkdir'd its parents; the config write did not."""
+    mcp_path = tmp_path / "mcp-config.json"
+    mcp_path.write_text(json.dumps(_SAMPLE_MCP), encoding="utf-8")
+    config_path = tmp_path / ".config" / "opencode" / "opencode.json"
+    plugin_path = tmp_path / ".config" / "opencode" / "plugins" / "guard.js"
+    system_prompt = tmp_path / "system-prompt.md"
+    system_prompt.write_text("blueprint", encoding="utf-8")
+
+    monkeypatch.setattr(oc, "OPENCODE_CONFIG_PATH", config_path)
+    monkeypatch.setattr(oc, "OPENCODE_PLUGIN_PATH", plugin_path)
+    monkeypatch.setattr(oc, "SYSTEM_PROMPT_PATH", system_prompt)
+    monkeypatch.setenv("ROBOCO_AGENT_ID", "be-dev-1")
+    monkeypatch.setenv("ROBOCO_MCP_CONFIG", str(mcp_path))
+    monkeypatch.setenv("ROBOCO_AGENT_MODEL", "nvidia/nemotron-3-super-120b-a12b")
+
+    assert oc.main([]) == 0
+    assert config_path.exists()
+    json.loads(config_path.read_text(encoding="utf-8"))
+
+
 def test_main_check_flag_passes_when_key_set(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -368,3 +398,34 @@ def test_main_check_flag_fails_when_key_missing(
     monkeypatch.setattr(oc, "OPENCODE_CONFIG_PATH", tmp_path / "opencode.json")
     monkeypatch.delenv("NEBIUS_API_KEY", raising=False)
     assert oc.main(["--check"]) == 1
+
+
+def test_render_config_sets_mcp_timeout_above_slow_verb_budget() -> None:
+    cfg = oc.render_config("developer", "m", "https://x/v1", "/nonexistent.json")
+    assert "experimental" not in cfg  # no mcp servers -> no override
+    import json
+    import tempfile
+
+    with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+        json.dump(_SAMPLE_MCP, fh)
+    cfg = oc.render_config("developer", "m", "https://x/v1", fh.name)
+    budget_ms = (oc.settings.flow_verb_slow_timeout_seconds + 60) * 1000
+    assert cfg["experimental"]["mcp_timeout"] == budget_ms
+    # opencode's per-server default (5000 ms) also bounds startup; the gateway
+    # servers need longer, so every server carries the full budget.
+    assert cfg["mcp"]
+    assert all(block["timeout"] == budget_ms for block in cfg["mcp"].values())
+
+
+def test_render_config_declares_the_agent_model() -> None:
+    """opencode only resolves catalog-listed ids; the agent's own model is
+    declared so a served-but-unlisted id (Nemotron 3 Nano) still resolves."""
+    config = oc.render_config(
+        "documenter",
+        "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B",
+        "https://api.tokenfactory.nebius.com/v1",
+        "/nonexistent.json",
+    )
+    assert config["provider"]["nebius"]["models"] == {
+        "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B": {}
+    }

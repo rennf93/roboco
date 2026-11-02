@@ -51,7 +51,7 @@ def _build_image_args() -> list[str]:
     cmd: list[str] = []
     with patch(
         "roboco.runtime.orchestrator._resolve_agent_cli_model",
-        return_value="claude-sonnet-5",
+        return_value="claude-sonnet-5-5",
     ):
         AgentOrchestrator._append_image_and_claude_args(cmd, _make_dev_config(), None)
     return cmd

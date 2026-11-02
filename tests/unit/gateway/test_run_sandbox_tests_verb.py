@@ -11,7 +11,7 @@ from __future__ import annotations
 import tempfile
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytest
 from roboco.config import settings
@@ -45,6 +45,7 @@ def _task(project_id: object | None = uuid4()) -> MagicMock:
     t.id = uuid4()
     t.project_id = project_id
     t.status = "in_review"
+    t.branch_name = None  # HEAD fallback unless a test sets a branch
     return t
 
 
@@ -100,7 +101,9 @@ def _stub_archive_write(
     """Make the archive step succeed, writing ``payload`` to whatever random
     mkstemp path the verb chose (the real helper runs ``git archive -o``)."""
 
-    async def fake_git(_root: Path, archive: Path) -> tuple[bool, str]:
+    async def fake_git(
+        _root: Path, archive: Path, _ref: str = "HEAD"
+    ) -> tuple[bool, str]:
         archive.write_bytes(payload)
         return True, ""
 
@@ -365,3 +368,101 @@ def test_manifest_grants_run_sandbox_tests_to_dev_and_qa_only() -> None:
         "product_owner",
     ):
         assert "run_sandbox_tests" not in do_tools(role), role
+
+
+# ---------------------------------------------------------------------------
+# Archive ref: QA archives the fetched task branch, a dev worktree HEAD
+# ---------------------------------------------------------------------------
+
+
+_BRANCH = "feature/backend/ABC12345--DEF67890"
+
+
+def _wire_branch(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    head: str,
+    fetch_ok: bool,
+    fetch_raises: bool = False,
+) -> tuple[ContentActions, AsyncMock, AsyncMock, UUID]:
+    _arm(monkeypatch)
+    t = _task()
+    t.branch_name = _BRANCH
+    actions, _svc = _make_actions(task_obj=t)
+    actions._deps.workspace.get_worktree_path = MagicMock(return_value=tmp_path)
+    actions._deps.workspace.get_clone_root_path = MagicMock(return_value=tmp_path)
+    fetch = AsyncMock(return_value=tmp_path)
+    if fetch_raises:
+        fetch.side_effect = RuntimeError("no token")
+    actions._deps.workspace.fetch_branch_for_inspection = fetch
+    # FETCH_HEAD as git writes it: names the branch only on a real fetch.
+    (tmp_path / "FETCH_HEAD").write_text(
+        f"abc123\t\tbranch '{_BRANCH}' of https://example/r\n"
+        if fetch_ok
+        else "abc123\t\tbranch 'other' of https://example/r\n"
+    )
+
+    async def fake_capture(_root: Path, *args: str) -> tuple[bool, str, str]:
+        if args[0] == "rev-parse" and "--abbrev-ref" in args:
+            return True, head, ""
+        if args[0] == "rev-parse" and "--git-path" in args:
+            return True, str(tmp_path / "FETCH_HEAD"), ""
+        return True, "", ""
+
+    monkeypatch.setattr(ContentActions, "_git_capture", fake_capture)
+    archive = AsyncMock(return_value=(True, ""))
+    monkeypatch.setattr(ContentActions, "_git_archive_workspace", archive)
+    return actions, fetch, archive, uuid4()
+
+
+@pytest.mark.asyncio
+async def test_qa_root_archives_fetched_branch(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    actions, fetch, archive, agent_id = _wire_branch(
+        monkeypatch, tmp_path, head="master", fetch_ok=True
+    )
+    _stub_run(monkeypatch, {"exit_code": 0, "stdout": "", "stderr": ""})
+
+    env = await actions.run_sandbox_tests(agent_id=agent_id, command="pytest -q")
+
+    assert env.error is None
+    fetch.assert_awaited_once_with(agent_id=agent_id, branch_name=_BRANCH)
+    assert archive.await_args is not None
+    assert archive.await_args.args[2] == "FETCH_HEAD"
+
+
+@pytest.mark.asyncio
+async def test_dev_worktree_archives_head(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    actions, fetch, archive, _ = _wire_branch(
+        monkeypatch, tmp_path, head=_BRANCH, fetch_ok=True
+    )
+    _stub_run(monkeypatch, {"exit_code": 0, "stdout": "", "stderr": ""})
+
+    env = await actions.run_sandbox_tests(agent_id=uuid4(), command="pytest -q")
+
+    assert env.error is None
+    fetch.assert_not_awaited()
+    assert archive.await_args is not None
+    assert archive.await_args.args[2] == "HEAD"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("raises", [False, True])
+async def test_branch_fetch_failure_refused(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, raises: bool
+) -> None:
+    # raises=False: helper returns but FETCH_HEAD is stale (swallowed failure).
+    actions, _fetch, archive, _ = _wire_branch(
+        monkeypatch, tmp_path, head="master", fetch_ok=False, fetch_raises=raises
+    )
+
+    env = await actions.run_sandbox_tests(agent_id=uuid4(), command="pytest -q")
+
+    assert env.error == "invalid_state"
+    assert "could not fetch task branch" in (env.message or "")
+    assert "push" in (env.remediate or "")
+    archive.assert_not_awaited()

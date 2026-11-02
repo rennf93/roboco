@@ -21,7 +21,9 @@ describe("SidebarFooter active state (exact match)", () => {
     expect(linkFor(container, "/settings/ai-providers")?.className).not.toMatch(
       /bg-primary/,
     );
-    expect(linkFor(container, "/business")?.className).not.toMatch(/bg-primary/);
+    expect(linkFor(container, "/business")?.className).not.toMatch(
+      /bg-primary/,
+    );
   });
 
   it("does not double-highlight /settings when on /settings/ai-providers", () => {
@@ -30,6 +32,8 @@ describe("SidebarFooter active state (exact match)", () => {
     expect(linkFor(container, "/settings/ai-providers")?.className).toMatch(
       /bg-primary/,
     );
-    expect(linkFor(container, "/settings")?.className).not.toMatch(/bg-primary/);
+    expect(linkFor(container, "/settings")?.className).not.toMatch(
+      /bg-primary/,
+    );
   });
 });

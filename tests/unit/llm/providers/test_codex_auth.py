@@ -24,6 +24,14 @@ if TYPE_CHECKING:
     import pytest
 
 
+# auth.json must stay readable by its owner (the agent uid) alone.
+_OWNER_ONLY_MODE = 0o600
+
+# Bounds, in seconds, around a token expiring in ~54 minutes (3240 s).
+_ABOUT_54_MINUTES_MIN = 3100
+_ABOUT_54_MINUTES_MAX = 3300
+
+
 def _jwt(exp_unix: int) -> str:
     """Build a minimal JWT (header.payload.signature) carrying an ``exp`` claim."""
     payload = (
@@ -62,7 +70,7 @@ def test_seconds_until_expiry_and_is_valid(tmp_path: Path) -> None:
     _write(path, _bundle(token))
     remaining = ca.seconds_until_expiry(path)
     assert remaining is not None
-    assert 3100 < remaining < 3300  # noqa: PLR2004 — ~54 minutes
+    assert _ABOUT_54_MINUTES_MIN < remaining < _ABOUT_54_MINUTES_MAX
     assert ca.is_valid(path)
     assert not ca.is_valid(path, skew_seconds=3600)  # <1h left, 1h skew fails
 
@@ -228,3 +236,15 @@ def test_concurrent_refresh_does_not_double_rotate_single_use_token(
     assert len(posted) == 1  # exactly one grant POST — no double rotation
     assert all(r in ("refreshed", "fresh") for r in results)
     assert "refreshed" in results
+
+
+def test_refresh_rewrites_world_readable_auth_json_owner_only(tmp_path: Path) -> None:
+    path = tmp_path / "auth.json"
+    _write(path, _bundle(_jwt(_exp(timedelta(minutes=-5)))))
+    path.chmod(0o644)
+
+    def _post(_url: str, _form: dict[str, str]) -> dict[str, Any]:
+        return {"access_token": _jwt(_exp(timedelta(hours=6))), "refresh_token": "r2"}
+
+    assert ca.refresh_if_stale(path, post=_post) == "refreshed"
+    assert path.stat().st_mode & 0o777 == _OWNER_ONLY_MODE
