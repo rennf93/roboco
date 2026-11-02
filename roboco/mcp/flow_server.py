@@ -67,12 +67,12 @@ AGENT_ROLE = os.environ["ROBOCO_AGENT_ROLE"]
 # container), so the two server budgets are mirrored via env vars the
 # orchestrator injects at spawn from settings.flow_verb_timeout_seconds /
 # flow_verb_slow_timeout_seconds; the literal fallbacks match those settings'
-# own defaults (120 / 900).
+# own defaults (120 / 1500).
 _SERVER_TIMEOUT_SECONDS = float(
     os.environ.get("ROBOCO_FLOW_VERB_TIMEOUT_SECONDS", "120")
 )
 _SERVER_SLOW_TIMEOUT_SECONDS = float(
-    os.environ.get("ROBOCO_FLOW_VERB_SLOW_TIMEOUT_SECONDS", "900")
+    os.environ.get("ROBOCO_FLOW_VERB_SLOW_TIMEOUT_SECONDS", "1500")
 )
 _TIMEOUT = _SERVER_TIMEOUT_SECONDS + CLIENT_HEADROOM_SECONDS
 _SLOW_TIMEOUT = _SERVER_SLOW_TIMEOUT_SECONDS + CLIENT_HEADROOM_SECONDS

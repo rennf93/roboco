@@ -13,6 +13,7 @@ if TYPE_CHECKING:
 from uuid import uuid4
 
 import pytest
+from roboco.config import settings
 from roboco.services.gateway import quality_gate
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 from roboco.services.gateway.choreographer._impl import _IAmDoneContext
@@ -245,3 +246,18 @@ async def test_a_failing_check_reports_its_stderr_and_exit_status(
     assert not result.passed
     assert loader_error in result.output
     assert f"(exit {_COMMAND_FAILED})" in result.output
+
+
+_MS_PER_SECOND = 1000
+
+
+def test_the_gate_and_the_push_hook_fit_inside_the_i_am_done_wall() -> None:
+    """i_am_done runs the gate and then the pre-push hook under one server
+    wall, and a claim may hold its transaction that long: raising one budget
+    without the others turns a slow gate into a 504 or a killed session."""
+    gate_and_push = (
+        quality_gate._GATE_TIMEOUT_SECONDS + settings.project_hook_push_timeout_seconds
+    )
+    wall = settings.flow_verb_slow_timeout_seconds
+    assert gate_and_push < wall
+    assert settings.database_idle_in_transaction_timeout_ms > wall * _MS_PER_SECOND

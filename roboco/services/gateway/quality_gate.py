@@ -22,9 +22,12 @@ from roboco.services.workspace_container import (
 if TYPE_CHECKING:
     from pathlib import Path
 
-# A single check can be slow (mypy on a large tree); cap it generously but
-# never hang the submit verb forever.
-_GATE_TIMEOUT_SECONDS = 600
+# A single check can be slow (mypy on a large tree), and on the NAS it shares
+# the CPU with every agent's own test runs: live 2026-11-02, under load 35 on
+# 12 cores, make panel-gate hit 600 s five times in its 2-CPU container.
+# Cap it generously but never hang the submit verb forever; it must fit, with
+# the pre-push hook, inside flow_verb_slow_timeout_seconds.
+_GATE_TIMEOUT_SECONDS = 1200
 # Cap the remediate excerpt so a huge lint dump doesn't bloat the envelope.
 _OUTPUT_EXCERPT_CHARS = 2000
 
