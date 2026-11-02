@@ -197,7 +197,7 @@ class DocMixin(_Base):
         # "start") but doc_claim is the runtime-correct specialized form
         # that keeps status at AWAITING_DOCUMENTATION. See module docstring.
         #
-        # Durability boundary: commit the claim BEFORE the workspace checkout
+        # Durability boundary: commit the claim BEFORE the task worktree attach
         # and advisory evidence assembly — see claim_review (qa.py) for the
         # full rationale. Same-agent retry: if the task is already claimed by
         # THIS documenter, skip the re-claim and go straight to evidence.
@@ -220,11 +220,11 @@ class DocMixin(_Base):
             t = claimed
             await self.task.session.commit()
 
-        # The documenter's clone is separate from the dev's;
-        # the task branch already exists (dev created it) so no checkout
-        # ran in the doc's workspace. Put the doc on the task branch now
-        # so roboco_docs_write / commit don't fail BRANCH_MISMATCH.
-        # Best-effort — a checkout hiccup must not fail the claim. Bounded
+        # The documenter's clone is separate from the dev's; the task
+        # branch exists only there and on origin. Attach the task's worktree
+        # in the doc's clone now (F123: roboco_docs_write and commit work
+        # there), never a checkout in its clone root.
+        # Best-effort — a hiccup must not fail the claim. Bounded
         # against the SAME shared LegBudget the evidence legs below use
         # (one budget per build), so this leg + diff + list_changed_files
         # can never sum past the total evidence-assembly budget.
@@ -233,12 +233,12 @@ class DocMixin(_Base):
         if t.branch_name:
             with contextlib.suppress(Exception):
                 await run_bounded_leg(
-                    self.git.checkout_branch_in_agent_workspace(
+                    self.git.ensure_branch_worktree_for_agent(
                         t.branch_name, actor_agent_id=doc_agent_id
                     ),
                     default=None,
                     budget=budget,
-                    leg="workspace checkout",
+                    leg="task worktree",
                     hint=(
                         "the diff below may reflect a stale worktree; "
                         "re-run roboco_git_diff to confirm"

@@ -2,9 +2,29 @@ allowBuilds:
   esbuild: true
   puppeteer: true
 minimumReleaseAgeExclude:
-  - '@hyperframes/core@0.7.36'
-  - '@hyperframes/engine@0.7.36'
-  - '@hyperframes/lint@0.7.36'
-  - '@hyperframes/parsers@0.7.36'
-  - '@hyperframes/producer@0.7.36'
-  - '@hyperframes/studio-server@0.7.36'
+  - '@hyperframes/core@0.8.216'
+  - '@hyperframes/engine@0.8.216'
+  - '@hyperframes/lint@0.8.216'
+  - '@hyperframes/parsers@0.8.216'
+  - '@hyperframes/producer@0.8.216'
+  - '@hyperframes/studio-server@0.8.216'
+overrides:
+  # @hyperframes/engine pins undici to exactly 7.25.0, which carries 29
+  # advisories; 7.30.1 is the first 7.x release that fixes all of them. The
+  # minor bump keeps the 7.x API the engine imports.
+  undici: ^7.30.1
+  # @hyperframes/engine and /producer ask for puppeteer ~25.11.0 while their
+  # puppeteer-core (^25.11.0) resolves to 25.16.0. 25.11.0 brings a second
+  # puppeteer-core with chromium-bidi 17.0.2, whose zod 3.25.76 carries
+  # GHSA-mrhx-c7xc-m3w5 (fixed only in zod 4.6.6). Following puppeteer-core
+  # drops that tree, and the Chrome Headless Shell puppeteer downloads becomes
+  # the one puppeteer-core drives (156 instead of 153).
+  puppeteer: ^25.16.0
+# pmOnFail: ignore keeps pnpm-lock.yaml one YAML document. Without it pnpm 12
+# writes a packageManagerDependencies document at the top of the lockfile, and
+# GitHub's dependency graph reads only the first document
+# (dependabot-core#15904, open), which would silence and close the Dependabot
+# alerts on this lockfile. pnpm then no longer switches to the packageManager
+# pin itself; corepack still enforces it in Motion CI and
+# docker/video-renderer.Dockerfile.
+pmOnFail: ignore

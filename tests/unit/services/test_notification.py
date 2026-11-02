@@ -627,6 +627,7 @@ class _StatefulDedup:
 
     def __init__(self) -> None:
         self.seen: set[tuple[Any, Any, Any, frozenset[Any]]] = set()
+        self.contents: list[tuple[str | None, str | None]] = []
 
     async def __call__(
         self,
@@ -636,7 +637,9 @@ class _StatefulDedup:
         notification_type: Any,
         related_task_id: Any,
         to_agents: Any,
+        **content: str | None,
     ) -> bool:
+        self.contents.append((content.get("subject"), content.get("body")))
         key = (from_agent, notification_type, related_task_id, frozenset(to_agents))
         if key in self.seen:
             return True
@@ -738,3 +741,31 @@ async def test_other_callers_purpose_dedup_still_suppresses_duplicates(
         "the second same-purpose blocker notification must still be "
         "suppressed as a duplicate of the unacked first"
     )
+
+
+@pytest.mark.asyncio
+async def test_purpose_dedup_receives_the_notifications_subject_and_body(
+    svc: NotificationService,
+) -> None:
+    """The B12 semantic screen only runs when the dedup gets the new
+    notification's content: without it, an armed Decisions pilot could
+    never lift a suppression."""
+    aid = uuid4()
+    db = _FakeDb(agent_uuid=aid)
+    dedup = _StatefulDedup()
+    with (
+        _patch_db_context(db),
+        patch(
+            "roboco.services.notification.duplicate_unacked_notification_exists",
+            dedup,
+        ),
+    ):
+        await svc.send_blocker_notification(
+            task_id="t1",
+            blocker_reason="disk full",
+            from_agent="system",
+            to_pm="cell-pm",
+        )
+    (row,) = [r for r in db.added if r.type == NotificationType.BLOCKER_ESCALATION]
+    assert dedup.contents == [(row.subject, row.body)]
+    assert "disk full" in (row.body or "")

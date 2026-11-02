@@ -80,6 +80,10 @@ SUPERSEDE_COMMENT_POSTED = "supersede_comment_posted"
 BRANCH_CUT_FAILED = "branch_cut_failed"
 BRANCH_CUT_NEXT_RETRY_AT = "branch_cut_next_retry_at"
 BASE_BRANCH_FALLBACK = "base_branch_fallback"
+# Consecutive same-agent claim_review re-claims on one awaiting_qa task.
+# Reset on a fresh (cross-attempt) claim; drives the re-claim steering
+# warning + evidence skip in the QA choreographer.
+QA_RECLAIM_COUNT = "qa_reclaim_count"
 
 
 def get_marker(task: HasMarkers, key: str, default: Any = None) -> Any:

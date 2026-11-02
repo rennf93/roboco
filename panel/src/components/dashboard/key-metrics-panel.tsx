@@ -85,7 +85,11 @@ export function KeyMetricsPanel({ metrics, isLoading }: KeyMetricsProps) {
                       {m.label}
                     </div>
                     <span className="font-medium">
-                      {value != null ? (m.format ? m.format(value) : value) : "-"}
+                      {value != null
+                        ? m.format
+                          ? m.format(value)
+                          : value
+                        : "-"}
                     </span>
                   </div>
                 </HelpTip>

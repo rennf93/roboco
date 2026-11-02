@@ -1,0 +1,25 @@
+# SearXNG settings for the RoboCo web-research capability.
+#
+# Mounted read-only at /etc/searxng/settings.yml by docker-compose. Built on
+# use_default_settings so we override ONLY what RoboCo needs; everything else
+# (engines, upstream defaults) tracks the searxng/searxng image.
+#
+# Two overrides matter:
+# - search.formats must include json (SearXNG's format name, not the MIME
+#   type): the ResearchService's SearXNGProvider calls /search?format=json,
+#   and JSON output is disabled by default on stock instances (403).
+# - server.limiter must be false: the bot-detection limiter is for
+#   PUBLIC instances and blocks API-style queries (403s). This container is
+#   internal-only (roboco_default bridge, no host port, no nginx route), so
+#   there is nothing to rate-limit against.
+# Without use_default_settings the image treats this file as the WHOLE config
+# and every request dies on a missing default (KeyError: default_doi_resolver).
+use_default_settings: true
+server:
+  # secret_key comes from the SEARXNG_SECRET env var set in docker-compose.
+  limiter: false
+  image_proxy: false
+search:
+  formats:
+    - html
+    - json

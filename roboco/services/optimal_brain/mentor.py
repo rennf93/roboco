@@ -19,12 +19,10 @@ import re
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-import httpx
 import structlog
 
-from roboco.config import settings
 from roboco.models.base import AgentRole
 from roboco.models.optimal import (
     IndexType,
@@ -32,12 +30,18 @@ from roboco.models.optimal import (
     MentorResponse,
     SearchResult,
 )
-from roboco.services.exceptions import (
-    HTTP_TOO_MANY_REQUESTS,
-    MAX_RATE_LIMIT_RETRIES,
-    RateLimitError,
-    parse_retry_after_header,
+from roboco.services.background_llm import (
+    BackgroundPrompt,
+    BackgroundReply,
+    generate_background_reply,
 )
+
+if TYPE_CHECKING:
+    from roboco.services.optimal_brain._mentor_service_types import (
+        MentorServiceSelf as _Base,
+    )
+else:
+    _Base = object
 
 logger = structlog.get_logger()
 
@@ -177,28 +181,10 @@ DEFAULT_FOLLOWUPS = [
 ]
 
 
-class MentorService:
-    """
-    Personalized AI mentor for agents.
-
-    Unlike the generic RAG query, the mentor:
-    - Knows the agent's role, team, and capabilities
-    - Searches the agent's own journals for related past experiences
-    - Adapts explanations to the agent's level and focus area
-    - Generates role-specific follow-up suggestions
-    - Tracks learning across conversations
-    """
-
-    def __init__(self, redis_client: Any | None = None) -> None:
-        """Initialize MentorService."""
-        self._redis = redis_client
-        self._memory_store: dict[str, MentorConversation] = {}
-        self._optimal_service: Any = None
-
-    async def initialize(self, optimal_service: Any) -> None:
-        """Initialize with OptimalService reference."""
-        self._optimal_service = optimal_service
-        logger.info("MentorService initialized")
+class MentorConversations(_Base):
+    """A mentor conversation in Redis (or memory): its key, loading, saving and
+    starting one, the context its recent turns give, recording a turn, and reading
+    or clearing the history."""
 
     def _get_conversation_key(self, conversation_id: str) -> str:
         """Build Redis key for conversation."""
@@ -234,6 +220,85 @@ class MentorService:
             await self._redis.setex(key, CONVERSATION_TTL, data)
         else:
             self._memory_store[conversation.conversation_id] = conversation
+
+    def _build_context_from_turns(
+        self, turns: list[dict[str, Any]], max_turns: int = 5
+    ) -> str:
+        """Build context string from recent conversation turns."""
+        recent_turns = turns[-max_turns:] if len(turns) > max_turns else turns
+        context_parts = []
+        for turn in recent_turns:
+            role = turn.get("role", "unknown")
+            content = turn.get("content", "")
+            context_parts.append(f"{role.upper()}: {content}")
+        return "\n".join(context_parts)
+
+    async def _load_or_create_conversation(
+        self,
+        conversation_id: str | None,
+        agent_id: str,
+        domain: str | None,
+    ) -> MentorConversation:
+        """Load an existing conversation or start a fresh one."""
+        if conversation_id:
+            conversation = await self._load_conversation(conversation_id)
+            if conversation is not None:
+                return conversation
+
+        now_iso = datetime.now(UTC).isoformat()
+        return MentorConversation(
+            conversation_id=str(uuid.uuid4()),
+            agent_id=uuid.UUID(agent_id) if agent_id else uuid.uuid4(),
+            turns=[],
+            domain=domain,
+            created_at=now_iso,
+            updated_at=now_iso,
+        )
+
+    @staticmethod
+    def _append_turns(
+        conversation: MentorConversation,
+        question: str,
+        answer: str,
+        top_results: list[SearchResult],
+    ) -> None:
+        """Record the user question and mentor answer on the conversation."""
+        now = datetime.now(UTC).isoformat()
+        conversation.turns.append(
+            {"role": "user", "content": question, "timestamp": now}
+        )
+        conversation.turns.append(
+            {
+                "role": "mentor",
+                "content": answer,
+                "timestamp": now,
+                "sources": [s.source for s in top_results[:5]],
+            }
+        )
+        conversation.updated_at = now
+
+    async def get_conversation_history(
+        self, conversation_id: str
+    ) -> MentorConversation | None:
+        """Get the full conversation history."""
+        return await self._load_conversation(conversation_id)
+
+    async def clear_conversation(self, conversation_id: str) -> bool:
+        """Clear a conversation from storage."""
+        if self._redis:
+            key = self._get_conversation_key(conversation_id)
+            await self._redis.delete(key)
+            return True
+        if conversation_id in self._memory_store:
+            del self._memory_store[conversation_id]
+            return True
+        return False
+
+
+class MentorRetrieval(_Base):
+    """What an answer draws on: the agent's profile and its own journals, the
+    question enhanced with prior context, the indexes for its domain, and searching
+    them with the results deduplicated."""
 
     async def _get_agent_profile(self, agent_id: str) -> AgentProfile | None:
         """
@@ -308,7 +373,8 @@ class MentorService:
                     {
                         "type": entry.type.value,
                         "title": entry.title,
-                        "content": entry.content[:500],  # Truncate for context
+                        # Truncate for context
+                        "content": entry.content[:500],
                         "created_at": (
                             entry.created_at.isoformat() if entry.created_at else None
                         ),
@@ -323,88 +389,6 @@ class MentorService:
                 error=str(e),
             )
             return []
-
-    def _build_context_from_turns(
-        self, turns: list[dict[str, Any]], max_turns: int = 5
-    ) -> str:
-        """Build context string from recent conversation turns."""
-        recent_turns = turns[-max_turns:] if len(turns) > max_turns else turns
-        context_parts = []
-        for turn in recent_turns:
-            role = turn.get("role", "unknown")
-            content = turn.get("content", "")
-            context_parts.append(f"{role.upper()}: {content}")
-        return "\n".join(context_parts)
-
-    @staticmethod
-    def _add_source_type_followups(
-        followups: list[str], sources: list[SearchResult], max_followups: int
-    ) -> None:
-        """Append source-type-driven follow-up suggestions up to ``max_followups``."""
-        source_types = {s.index_type for s in sources}
-        suggestions = [
-            (IndexType.STANDARDS, "What are the exceptions to this rule?"),
-            (IndexType.DECISIONS, "What alternatives were considered?"),
-            (IndexType.JOURNALS, "What problems did others encounter?"),
-        ]
-        for index_type, suggestion in suggestions:
-            if len(followups) >= max_followups:
-                return
-            if index_type in source_types:
-                followups.append(suggestion)
-
-    @staticmethod
-    def _fill_default_followups(followups: list[str], max_followups: int) -> None:
-        """Fill ``followups`` with defaults until ``max_followups`` is reached."""
-        for default in DEFAULT_FOLLOWUPS:
-            if len(followups) >= max_followups:
-                return
-            if default not in followups:
-                followups.append(default)
-
-    def _generate_followups(
-        self,
-        _question: str,
-        _answer: str,
-        sources: list[SearchResult],
-        agent_role: AgentRole | None,
-    ) -> list[str]:
-        """Generate role-specific follow-up suggestions."""
-        followups: list[str] = []
-        max_followups = 3
-
-        if agent_role and agent_role in ROLE_FOLLOWUPS:
-            for suggestion in ROLE_FOLLOWUPS[agent_role]:
-                if len(followups) >= max_followups:
-                    break
-                followups.append(suggestion)
-
-        self._add_source_type_followups(followups, sources, max_followups)
-        self._fill_default_followups(followups, max_followups)
-
-        return followups[:max_followups]
-
-    async def _load_or_create_conversation(
-        self,
-        conversation_id: str | None,
-        agent_id: str,
-        domain: str | None,
-    ) -> MentorConversation:
-        """Load an existing conversation or start a fresh one."""
-        if conversation_id:
-            conversation = await self._load_conversation(conversation_id)
-            if conversation is not None:
-                return conversation
-
-        now_iso = datetime.now(UTC).isoformat()
-        return MentorConversation(
-            conversation_id=str(uuid.uuid4()),
-            agent_id=uuid.UUID(agent_id) if agent_id else uuid.uuid4(),
-            turns=[],
-            domain=domain,
-            created_at=now_iso,
-            updated_at=now_iso,
-        )
 
     async def _search_all_indexes(
         self,
@@ -451,104 +435,11 @@ class MentorService:
                 deduplicated.append(r)
         return deduplicated[: top_k * 2]
 
-    @staticmethod
-    def _append_turns(
-        conversation: MentorConversation,
-        question: str,
-        answer: str,
-        top_results: list[SearchResult],
-    ) -> None:
-        """Record the user question and mentor answer on the conversation."""
-        now = datetime.now(UTC).isoformat()
-        conversation.turns.append(
-            {"role": "user", "content": question, "timestamp": now}
-        )
-        conversation.turns.append(
-            {
-                "role": "mentor",
-                "content": answer,
-                "timestamp": now,
-                "sources": [s.source for s in top_results[:5]],
-            }
-        )
-        conversation.updated_at = now
-
     def _build_enhanced_query(self, question: str, context_str: str) -> str:
         """Combine prior context (if any) with the current question."""
         if context_str:
             return f"Previous context:\n{context_str}\n\nCurrent question: {question}"
         return question
-
-    async def ask(
-        self,
-        question: str,
-        agent_id: str,
-        conversation_id: str | None = None,
-        domain: str | None = None,
-        top_k: int = 5,
-    ) -> MentorResponse:
-        """
-        Ask the mentor a question with personalized, agent-aware response.
-
-        Unlike /rag/query, this:
-        1. Fetches the agent's profile (role, team)
-        2. Searches the agent's own journals for related context
-        3. Builds a role-specific prompt
-        4. Generates personalized follow-ups
-        """
-        if not self._optimal_service:
-            raise RuntimeError("MentorService not initialized")
-
-        agent_profile = await self._get_agent_profile(agent_id)
-        agent_role = agent_profile.role if agent_profile else None
-
-        logger.info(
-            "Mentor ask starting",
-            question=question[:50],
-            agent_id=agent_id,
-            agent_role=agent_role.value if agent_role else "unknown",
-        )
-
-        journal_context = await self._get_agent_journal_context(agent_id, question)
-        if journal_context:
-            logger.info("Found agent journal context", entries=len(journal_context))
-
-        conversation = await self._load_or_create_conversation(
-            conversation_id, agent_id, domain
-        )
-
-        context_str = self._build_context_from_turns(conversation.turns)
-        enhanced_query = self._build_enhanced_query(question, context_str)
-
-        all_results, search_stats, search_errors = await self._search_all_indexes(
-            self._get_indexes_for_domain(domain), enhanced_query, top_k
-        )
-        top_results = self._deduplicate_top_results(all_results, top_k)
-
-        answer = await self._synthesize_answer(
-            question=question,
-            sources=top_results,
-            conversation_context=context_str,
-            agent_profile=agent_profile,
-            journal_context=journal_context,
-        )
-
-        followups = self._generate_followups(question, answer, top_results, agent_role)
-
-        self._append_turns(conversation, question, answer, top_results)
-        await self._save_conversation(conversation)
-
-        return MentorResponse(
-            answer=answer,
-            sources=top_results,
-            conversation_id=conversation.conversation_id,
-            suggested_followups=followups,
-            search_stats=search_stats,
-            search_errors=search_errors,
-            agent_role=agent_profile.role.value if agent_profile else None,
-            agent_team=agent_profile.team if agent_profile else None,
-            journal_entries_used=len(journal_context),
-        )
 
     def _get_indexes_for_domain(self, domain: str | None) -> list[IndexType]:
         """Get relevant index types for a domain."""
@@ -603,6 +494,60 @@ class MentorService:
             top_k=top_k,
         )
         return list(results)
+
+
+class MentorAnswers(_Base):
+    """Turning sources into an answer: the knowledge-base context and the prompts,
+    the LLM synthesis with its extraction and the fallback, and the role-specific
+    follow-up suggestions."""
+
+    @staticmethod
+    def _add_source_type_followups(
+        followups: list[str], sources: list[SearchResult], max_followups: int
+    ) -> None:
+        """Append source-type-driven follow-up suggestions up to ``max_followups``."""
+        source_types = {s.index_type for s in sources}
+        suggestions = [
+            (IndexType.STANDARDS, "What are the exceptions to this rule?"),
+            (IndexType.DECISIONS, "What alternatives were considered?"),
+            (IndexType.JOURNALS, "What problems did others encounter?"),
+        ]
+        for index_type, suggestion in suggestions:
+            if len(followups) >= max_followups:
+                return
+            if index_type in source_types:
+                followups.append(suggestion)
+
+    @staticmethod
+    def _fill_default_followups(followups: list[str], max_followups: int) -> None:
+        """Fill ``followups`` with defaults until ``max_followups`` is reached."""
+        for default in DEFAULT_FOLLOWUPS:
+            if len(followups) >= max_followups:
+                return
+            if default not in followups:
+                followups.append(default)
+
+    def _generate_followups(
+        self,
+        _question: str,
+        _answer: str,
+        sources: list[SearchResult],
+        agent_role: AgentRole | None,
+    ) -> list[str]:
+        """Generate role-specific follow-up suggestions."""
+        followups: list[str] = []
+        max_followups = 3
+
+        if agent_role and agent_role in ROLE_FOLLOWUPS:
+            for suggestion in ROLE_FOLLOWUPS[agent_role]:
+                if len(followups) >= max_followups:
+                    break
+                followups.append(suggestion)
+
+        self._add_source_type_followups(followups, sources, max_followups)
+        self._fill_default_followups(followups, max_followups)
+
+        return followups[:max_followups]
 
     def _build_kb_context(self, sources: list[SearchResult]) -> str:
         """Build knowledge base context string from sources."""
@@ -695,28 +640,26 @@ class MentorService:
             "what you can based on what's available."
         )
 
-    def _answer_from_response(
+    def _answer_from_reply(
         self,
-        response: httpx.Response,
+        reply: BackgroundReply,
         sources: list[SearchResult],
         agent_profile: AgentProfile | None,
     ) -> str:
-        """Parse a successful LLM response into an answer, else fall back."""
-        if not response.is_success:
+        """The background LLM's answer with think tags handled, else the
+        fallback answer."""
+        if reply.text is None:
             logger.warning(
-                "LLM call failed in mentor",
-                status=response.status_code,
-                error=response.text[:200],
+                "LLM call failed in mentor", failures=reply.describe_failures()
             )
             return self._fallback_answer(sources, agent_profile)
-        data = response.json()
-        raw_answer: str = data["choices"][0]["message"]["content"]
-        answer = self._extract_answer(raw_answer)
+        answer = self._extract_answer(reply.text)
         if not answer:
             logger.warning(
                 "LLM response empty after extraction",
-                model=settings.local_llm_model,
-                original_length=len(raw_answer),
+                backend=reply.backend,
+                model=reply.model,
+                original_length=len(reply.text),
             )
             return self._fallback_answer(sources, agent_profile)
         return answer
@@ -729,74 +672,35 @@ class MentorService:
         agent_profile: AgentProfile | None,
         journal_context: list[dict[str, Any]],
     ) -> str:
-        """Synthesize a personalized answer using LLM.
+        """Synthesize a personalized answer with the background LLM client.
 
-        Retries the Ollama call up to MAX_RATE_LIMIT_RETRIES times on HTTP 429,
-        respecting the Retry-After header.  Each individual attempt is bounded by
-        a 120-second asyncio timeout so a slow model cannot block the loop.
+        Each backend attempt is bounded by 120 seconds; when no backend
+        answers, the answer is the role-aware fallback built from the sources.
         """
-        import asyncio
-
         if not sources and not journal_context:
             return (
                 "I couldn't find relevant information in the knowledge base. "
                 "Try rephrasing your question or asking about a different topic."
             )
 
-        system_prompt = self._select_system_prompt(agent_profile)
-
-        # Build user prompt
-        user_prompt = self._build_user_prompt(
-            question, sources, conversation_context, agent_profile, journal_context
+        reply = await generate_background_reply(
+            BackgroundPrompt(
+                purpose="mentor.answer",
+                system_prompt=self._select_system_prompt(agent_profile),
+                user_prompt=self._build_user_prompt(
+                    question,
+                    sources,
+                    conversation_context,
+                    agent_profile,
+                    journal_context,
+                ),
+                max_tokens=4096,
+                timeout_seconds=120.0,
+                temperature=0.5,
+                ollama_num_ctx=8192,
+            )
         )
-
-        llm_url = f"{settings.local_llm_base_url}/chat/completions"
-        payload = {
-            "model": settings.local_llm_model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "max_tokens": 4096,
-            "temperature": 0.5,
-            "options": {"num_ctx": 8192},
-        }
-
-        last_rl_retry_after: float | None = None
-
-        for rl_attempt in range(MAX_RATE_LIMIT_RETRIES):
-            # Each attempt gets its own 120-second timeout
-            try:
-                async with asyncio.timeout(120.0):
-                    async with httpx.AsyncClient(timeout=120.0) as client:
-                        response = await client.post(llm_url, json=payload)
-            except (TimeoutError, httpx.TimeoutException):
-                logger.warning("LLM call timed out in mentor (120s)")
-                return self._fallback_answer(sources, agent_profile)
-            except Exception as e:
-                logger.warning("LLM call failed in mentor", error=str(e))
-                return self._fallback_answer(sources, agent_profile)
-
-            if response.status_code == HTTP_TOO_MANY_REQUESTS:
-                retry_after = parse_retry_after_header(response)
-                last_rl_retry_after = retry_after
-                backoff = (
-                    retry_after if retry_after is not None else float(2**rl_attempt)
-                )
-                logger.warning(
-                    "Ollama rate limited (429), retrying",
-                    provider="ollama",
-                    attempt=rl_attempt + 1,
-                    max_retries=MAX_RATE_LIMIT_RETRIES,
-                    backoff_duration=backoff,
-                )
-                if rl_attempt < MAX_RATE_LIMIT_RETRIES - 1:
-                    await asyncio.sleep(backoff)
-                continue
-
-            return self._answer_from_response(response, sources, agent_profile)
-
-        raise RateLimitError(provider="ollama", retry_after=last_rl_retry_after)
+        return self._answer_from_reply(reply, sources, agent_profile)
 
     def _extract_answer(self, text: str) -> str:
         """Extract answer from LLM response, handling think tags."""
@@ -873,22 +777,100 @@ class MentorService:
         )
         return "\n".join(parts)
 
-    async def get_conversation_history(
-        self, conversation_id: str
-    ) -> MentorConversation | None:
-        """Get the full conversation history."""
-        return await self._load_conversation(conversation_id)
 
-    async def clear_conversation(self, conversation_id: str) -> bool:
-        """Clear a conversation from storage."""
-        if self._redis:
-            key = self._get_conversation_key(conversation_id)
-            await self._redis.delete(key)
-            return True
-        if conversation_id in self._memory_store:
-            del self._memory_store[conversation_id]
-            return True
-        return False
+class MentorService(MentorAnswers, MentorConversations, MentorRetrieval):
+    """
+    Personalized AI mentor for agents.
+
+    Unlike the generic RAG query, the mentor:
+    - Knows the agent's role, team, and capabilities
+    - Searches the agent's own journals for related past experiences
+    - Adapts explanations to the agent's level and focus area
+    - Generates role-specific follow-up suggestions
+    - Tracks learning across conversations
+    """
+
+    def __init__(self, redis_client: Any | None = None) -> None:
+        """Initialize MentorService."""
+        self._redis = redis_client
+        self._memory_store: dict[str, MentorConversation] = {}
+        self._optimal_service: Any = None
+
+    async def initialize(self, optimal_service: Any) -> None:
+        """Initialize with OptimalService reference."""
+        self._optimal_service = optimal_service
+        logger.info("MentorService initialized")
+
+    async def ask(
+        self,
+        question: str,
+        agent_id: str,
+        conversation_id: str | None = None,
+        domain: str | None = None,
+        top_k: int = 5,
+    ) -> MentorResponse:
+        """
+        Ask the mentor a question with personalized, agent-aware response.
+
+        Unlike /rag/query, this:
+        1. Fetches the agent's profile (role, team)
+        2. Searches the agent's own journals for related context
+        3. Builds a role-specific prompt
+        4. Generates personalized follow-ups
+        """
+        if not self._optimal_service:
+            raise RuntimeError("MentorService not initialized")
+
+        agent_profile = await self._get_agent_profile(agent_id)
+        agent_role = agent_profile.role if agent_profile else None
+
+        logger.info(
+            "Mentor ask starting",
+            question=question[:50],
+            agent_id=agent_id,
+            agent_role=agent_role.value if agent_role else "unknown",
+        )
+
+        journal_context = await self._get_agent_journal_context(agent_id, question)
+        if journal_context:
+            logger.info("Found agent journal context", entries=len(journal_context))
+
+        conversation = await self._load_or_create_conversation(
+            conversation_id, agent_id, domain
+        )
+
+        context_str = self._build_context_from_turns(conversation.turns)
+        enhanced_query = self._build_enhanced_query(question, context_str)
+
+        all_results, search_stats, search_errors = await self._search_all_indexes(
+            self._get_indexes_for_domain(domain), enhanced_query, top_k
+        )
+        top_results = self._deduplicate_top_results(all_results, top_k)
+
+        answer = await self._synthesize_answer(
+            question=question,
+            sources=top_results,
+            conversation_context=context_str,
+            agent_profile=agent_profile,
+            journal_context=journal_context,
+        )
+
+        followups = self._generate_followups(question, answer, top_results, agent_role)
+
+        self._append_turns(conversation, question, answer, top_results)
+        await self._save_conversation(conversation)
+
+        return MentorResponse(
+            answer=answer,
+            sources=top_results,
+            conversation_id=conversation.conversation_id,
+            suggested_followups=followups,
+            search_stats=search_stats,
+            search_errors=search_errors,
+            agent_role=agent_profile.role.value if agent_profile else None,
+            agent_team=agent_profile.team if agent_profile else None,
+            journal_entries_used=len(journal_context),
+        )
 
 
 class _MentorServiceHolder:

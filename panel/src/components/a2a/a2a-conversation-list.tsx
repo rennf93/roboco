@@ -117,9 +117,17 @@ function ConversationRow({
           </div>
         </div>
         <div className="flex flex-col items-end gap-1 shrink-0">
-          <HelpTip label={conversation.status === "active" ? "Actively exchanging messages" : "No longer active"}>
+          <HelpTip
+            label={
+              conversation.status === "active"
+                ? "Actively exchanging messages"
+                : "No longer active"
+            }
+          >
             <Badge
-              variant={conversation.status === "active" ? "default" : "secondary"}
+              variant={
+                conversation.status === "active" ? "default" : "secondary"
+              }
               className="text-xs w-fit"
             >
               {conversation.status}

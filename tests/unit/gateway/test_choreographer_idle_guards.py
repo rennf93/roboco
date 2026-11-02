@@ -61,6 +61,7 @@ async def test_i_am_idle_refuses_when_pending_assignment_exists() -> None:
     task_svc = AsyncMock()
     task_svc.list_assigned_for_agent.return_value = [pending]
     task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.held_task_blocking_claim.return_value = None
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
@@ -82,6 +83,7 @@ async def test_i_am_idle_lets_pm_through_with_pending_remediate() -> None:
     task_svc = AsyncMock()
     task_svc.list_assigned_for_agent.return_value = [pending]
     task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.held_task_blocking_claim.return_value = None
     task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
@@ -101,6 +103,7 @@ async def test_i_am_idle_lets_dev_through_with_pending_remediate() -> None:
     task_svc = AsyncMock()
     task_svc.list_assigned_for_agent.return_value = [pending]
     task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.held_task_blocking_claim.return_value = None
     task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
@@ -139,6 +142,7 @@ async def test_i_am_idle_with_no_assigned_tasks_proceeds_normally() -> None:
     task_svc = AsyncMock()
     task_svc.list_assigned_for_agent.return_value = []
     task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.held_task_blocking_claim.return_value = None
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
 
@@ -196,6 +200,7 @@ async def test_i_am_idle_allows_dev_owning_awaiting_pm_review() -> None:
     task_svc = AsyncMock()
     task_svc.list_assigned_for_agent.return_value = [review]
     task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.held_task_blocking_claim.return_value = None
     task_svc.agent_for.return_value = MagicMock(role="developer")
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
@@ -237,6 +242,7 @@ async def test_i_am_idle_allows_pm_with_full_coverage() -> None:
     task_svc = AsyncMock()
     task_svc.list_assigned_for_agent.return_value = [parent]
     task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.held_task_blocking_claim.return_value = None
     task_svc.agent_for.return_value = MagicMock(role="cell_pm")
     task_svc.unclaimed_parent_acceptance_criteria.return_value = []
     deps = _make_deps(task=task_svc)
@@ -256,6 +262,7 @@ async def test_i_am_idle_decomposition_guard_is_pm_only() -> None:
     task_svc = AsyncMock()
     task_svc.list_assigned_for_agent.return_value = [parent]
     task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.held_task_blocking_claim.return_value = None
     task_svc.agent_for.return_value = MagicMock(role="developer")
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
@@ -274,6 +281,7 @@ async def test_i_am_idle_lets_dev_idle_when_pending_is_lane_held() -> None:
     task_svc = AsyncMock()
     task_svc.list_assigned_for_agent.return_value = [pending]
     task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.held_task_blocking_claim.return_value = None
     task_svc.agent_for.return_value = MagicMock(role="developer")
     task_svc.has_earlier_incomplete_code_sibling.return_value = True
     deps = _make_deps(task=task_svc)
@@ -293,6 +301,7 @@ async def test_i_am_idle_still_blocks_dev_with_non_lane_held_pending() -> None:
     task_svc = AsyncMock()
     task_svc.list_assigned_for_agent.return_value = [pending]
     task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.held_task_blocking_claim.return_value = None
     task_svc.agent_for.return_value = MagicMock(role="developer")
     task_svc.has_earlier_incomplete_code_sibling.return_value = False
     deps = _make_deps(task=task_svc)
@@ -320,6 +329,7 @@ async def test_i_am_idle_soft_blocks_pending_ack_for_notify_ack_role() -> None:
     task_svc = AsyncMock()
     task_svc.list_assigned_for_agent.return_value = []
     task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.held_task_blocking_claim.return_value = None
     task_svc.agent_for.return_value = MagicMock(role="cell_pm")
     deps = _make_deps(task=task_svc)
     deps.evidence_repo.list_pending_notifications.return_value = [
@@ -345,6 +355,7 @@ async def test_i_am_idle_pending_ack_never_blocks_role_without_notify_ack() -> N
     task_svc = AsyncMock()
     task_svc.list_assigned_for_agent.return_value = []
     task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.held_task_blocking_claim.return_value = None
     task_svc.agent_for.return_value = MagicMock(role="pr_reviewer")
     deps = _make_deps(task=task_svc)
     deps.evidence_repo.list_pending_notifications.return_value = [
@@ -372,3 +383,73 @@ async def test_pending_ack_notifications_skips_role_lookup_when_empty() -> None:
     out = await c._pending_ack_notifications(agent_id, {"pending_notifications": []})
     assert out == []
     task_svc.agent_for.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_i_am_idle_releases_open_qa_claim_and_proceeds() -> None:
+    """A QA idling with an unsubmitted review claim RELEASES the claim back
+    to the review queue and the idle proceeds. fe-qa idled out of
+    99f61c8c's review (2026-09-28) and the held single-claimant lock made
+    the task unreviewable by anyone else, wedging the FE lane. Blocking the
+    exit was rejected: a reviewer that cannot honestly decide must be able
+    to leave without rubber-stamping, so the release is unconditional and
+    the respawn breaker stays the escalation for repeat no-op runs."""
+    agent_id = uuid4()
+    claimed_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.release_review_claims.return_value = [claimed_id]
+    task_svc.list_assigned_for_agent.return_value = []
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.held_task_blocking_claim.return_value = None
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_am_idle(agent_id)
+    body = env.as_dict()
+    assert body["error"] is None
+    assert body["status"] == "idle"
+    task_svc.release_review_claims.assert_awaited_once_with(agent_id)
+    assert str(claimed_id) in body["next"]
+    assert "review queue" in body["next"]
+    task_svc.mark_agent_idle.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_i_am_idle_release_names_every_released_task() -> None:
+    """All released claims (across QA / doc / gate lanes) are named in the
+    exit message so the agent's own record shows what left its hands."""
+    agent_id = uuid4()
+    qa_task, doc_task, gate_task = uuid4(), uuid4(), uuid4()
+    task_svc = AsyncMock()
+    task_svc.release_review_claims.return_value = [qa_task, doc_task, gate_task]
+    task_svc.list_assigned_for_agent.return_value = []
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.held_task_blocking_claim.return_value = None
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_am_idle(agent_id)
+    body = env.as_dict()
+    assert body["status"] == "idle"
+    for tid in (qa_task, doc_task, gate_task):
+        assert str(tid) in body["next"]
+
+
+@pytest.mark.asyncio
+async def test_i_am_idle_skips_release_when_no_open_claims() -> None:
+    """No open review claim: no release call, plain idle."""
+    agent_id = uuid4()
+    task_svc = AsyncMock()
+    task_svc.release_review_claims.return_value = []
+    task_svc.list_assigned_for_agent.return_value = []
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.held_task_blocking_claim.return_value = None
+    deps = _make_deps(task=task_svc)
+    c = Choreographer(deps)
+
+    env = await c.i_am_idle(agent_id)
+    body = env.as_dict()
+    assert body["error"] is None
+    assert body["status"] == "idle"
+    assert "released" not in body["next"]
+    task_svc.mark_agent_idle.assert_awaited_once()

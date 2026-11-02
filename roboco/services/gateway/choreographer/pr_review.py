@@ -200,14 +200,15 @@ class PRReviewerMixin(_Base):
         event: str,
         task_id: UUID,
     ) -> None:
-        """Post the review to GitHub + surface it to the CEO (both best-effort)."""
-        if slug and pr_number:
-            try:
-                await self.git.post_pr_review(slug, pr_number, post_body, event=event)
-            except Exception:
-                logger.exception(
-                    "post_pr_review GitHub post failed", task_id=str(task_id)
-                )
+        """Post the review to GitHub + surface it to the CEO (both best-effort).
+
+        The CEO is told when GitHub refused the post (a locked PR, a token
+        without pull-request write): the review stays saved on the task, but
+        the contributor never saw it.
+        """
+        post_error = await self._post_review_to_pr(
+            slug, pr_number, post_body, event, task_id
+        )
         if pr_number:
             try:
                 from roboco.services.notification import NotificationService
@@ -217,11 +218,30 @@ class PRReviewerMixin(_Base):
                     pr_number=pr_number,
                     pr_url=str(getattr(t, "pr_url", "") or ""),
                     task_title=getattr(t, "title", None),
+                    post_error=post_error,
                 )
             except Exception:
                 logger.exception(
                     "post_pr_review CEO notify failed", task_id=str(task_id)
                 )
+
+    async def _post_review_to_pr(
+        self,
+        slug: str | None,
+        pr_number: int | None,
+        post_body: str,
+        event: str,
+        task_id: UUID,
+    ) -> str | None:
+        """Post the review to the PR; why it was not posted, or None."""
+        if not slug or not pr_number:
+            return "the review task names no project or PR to post to"
+        try:
+            await self.git.post_pr_review(slug, pr_number, post_body, event=event)
+        except Exception as exc:
+            logger.exception("post_pr_review GitHub post failed", task_id=str(task_id))
+            return str(exc) or type(exc).__name__
+        return None
 
     async def post_pr_review(
         self,
@@ -597,21 +617,18 @@ class PRReviewerMixin(_Base):
 
     async def _project_slug_for(self, t: Any) -> str | None:
         """Resolve the project slug for a task (read-only PR API calls + the
-        in-path gate's PR comment). Delegates to the module-level resolver so
-        the unchanged-PR gate in ``_impl.py`` reuses the EXACT same path (it
-        can't see this mixin method — ``_LegacyChoreographer`` does not inherit
-        ``ChoreographerHelpers``). See ``resolve_task_project_slug``.
+        in-path gate's PR comment). The unchanged-PR gate in ``_impl.py`` calls
+        it too, so every gate path resolves the slug the same way. See
+        ``resolve_task_project_slug``.
         """
         return await resolve_task_project_slug(self.task.session, t)
 
 
 async def resolve_task_project_slug(session: Any, t: Any) -> str | None:
     """Resolve the project slug for a task (read-only PR API calls + the
-    in-path gate's PR comment). Module-level so it is shared by
-    ``PRReviewerMixin._project_slug_for`` and the unchanged-PR gate's
-    ``_current_root_pr_head_sha`` (in ``_impl.py``) — DRY, and the only way the
-    legacy choreographer class can reach the resolver without inheriting
-    ``ChoreographerHelpers``.
+    in-path gate's PR comment), behind ``PRReviewerMixin._project_slug_for``,
+    which the PR review verbs, the in-path gate and the unchanged-PR gate's
+    ``_current_pr_head_sha`` (in ``_impl.py``) all call.
 
     A normal task carries ``project_id``. A Main-PM coordination root — the
     only task a root→master PR ever sits on — often carries just a

@@ -85,7 +85,9 @@ export function MarkdownEditor({
         </HelpTip>
         {minLength && (
           <HelpTip label="Submission is blocked until the count reaches this minimum.">
-            <span className={value.length < minLength ? "text-destructive" : ""}>
+            <span
+              className={value.length < minLength ? "text-destructive" : ""}
+            >
               {value.length}/{minLength} min characters
             </span>
           </HelpTip>

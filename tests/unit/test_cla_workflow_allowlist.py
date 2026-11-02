@@ -22,13 +22,15 @@ import yaml
 #   parents[2] = <repo root>
 _WORKFLOW = Path(__file__).parents[2] / ".github" / "workflows" / "cla.yml"
 
+# The archived upstream's v2.6.1 with only its runtime moved to node24.
+_CLA_ACTION = "rennf93/cla-assistant-action"
+_CLA_ACTION_COMMIT = "2bd28a790d70e0cf12f9cd8b521f21979c695bd3"
+
 
 def _cla_step() -> dict[str, Any]:
     doc = cast("dict[str, Any]", yaml.safe_load(_WORKFLOW.read_text()))
     steps = doc["jobs"]["cla"]["steps"]
-    (step,) = [
-        s for s in steps if s.get("uses", "").startswith("contributor-assistant/")
-    ]
+    (step,) = [s for s in steps if s.get("uses", "").startswith(f"{_CLA_ACTION}@")]
     return cast("dict[str, Any]", step)
 
 
@@ -125,3 +127,9 @@ def test_workflow_has_actions_write_permission() -> None:
     # would silently break that self-retrigger even though the other three
     # permissions still let it read the PR and write the status/signature.
     assert _workflow_permissions()["actions"] == "write"
+
+
+def test_cla_action_is_pinned_to_the_reviewed_commit() -> None:
+    # The step runs on pull_request_target with contents/pull-requests write,
+    # so a moved tag or branch would run unreviewed code with those rights.
+    assert _cla_step()["uses"] == f"{_CLA_ACTION}@{_CLA_ACTION_COMMIT}"

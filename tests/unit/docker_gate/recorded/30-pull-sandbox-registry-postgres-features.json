@@ -1,0 +1,6 @@
+{
+  "body": null,
+  "method": "POST",
+  "source": "pull-sandbox-registry:postgres:features",
+  "target": "/v1.51/images/create?fromImage=ghcr.io%2Frennf93%2Froboco-sandbox-pg&tag=0.33.0"
+}
