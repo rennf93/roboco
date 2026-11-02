@@ -544,6 +544,12 @@ GROK_USAGE_DATA_DIR = os.environ.get("ROBOCO_GROK_USAGE_DIR", "/data/grok-usage"
 # Same shape for CODEX agents (roboco.llm.providers.codex_cli_usage writes
 # usage.json here; the finalizer reads it back — see _codex_usage_json).
 CODEX_USAGE_DATA_DIR = os.environ.get("ROBOCO_CODEX_USAGE_DIR", "/data/codex-usage")
+# Where the orchestrator sees the plugin dir every agent container binds over
+# ~/.claude/plugins (the host data dir's agent-claude-plugins), so the CLI in an
+# agent never reads or rewrites the CEO's own plugin state.
+AGENT_PLUGINS_DATA_DIR = os.environ.get(
+    "ROBOCO_AGENT_PLUGINS_DIR", "/data/agent-claude-plugins"
+)
 
 # Interactive Grok images (grok-CLI conversation drivers) — selected for the
 # intake / secretary roles when their route resolves to GROK, instead of the

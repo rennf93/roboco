@@ -470,6 +470,7 @@ class IntakeSessionEngine(_Base):
             "-v",
             f"{spec.hosts['claude']}:/home/agent/.claude",
         ]
+        AgentOrchestrator._append_agent_plugins_mount(cmd)
         AgentOrchestrator._append_claude_json_mount(cmd, spec.hosts)
         cmd.extend(
             [
@@ -1029,6 +1030,7 @@ class SecretarySessionEngine(_Base):
             "-v",
             f"{spec.hosts['claude']}:/home/agent/.claude",
         ]
+        AgentOrchestrator._append_agent_plugins_mount(cmd)
         AgentOrchestrator._append_claude_json_mount(cmd, spec.hosts)
         cmd.extend(
             [
