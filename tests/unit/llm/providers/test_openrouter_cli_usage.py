@@ -212,12 +212,12 @@ def test_capture_run_usage_writes_usage_json(tmp_path: Path) -> None:
     out = tmp_path / "usage.json"
     tokens = ou.capture_run_usage(
         run_log=log,
-        model="anthropic/claude-sonnet-4",
+        model="anthropic/claude-sonnet-5-5",
         out_path=out,
     )
     assert tokens == (100, 50, 10, 0)
     data = json.loads(out.read_text())
-    assert data["model"] == "anthropic/claude-sonnet-4"
+    assert data["model"] == "anthropic/claude-sonnet-5-5"
     assert data["tokens_input"] == 100
     assert data["tokens_output"] == 50
     assert data["tokens_cache_read"] == 10
@@ -249,7 +249,7 @@ def test_main_writes_usage_file(
     out = tmp_path / "usage.json"
     monkeypatch.setattr(ou, "USAGE_OUT_PATH", out)
     monkeypatch.setenv("ROBOCO_OPENROUTER_RUN_LOG", str(log))
-    monkeypatch.setenv("ROBOCO_AGENT_MODEL", "anthropic/claude-sonnet-4")
+    monkeypatch.setenv("ROBOCO_AGENT_MODEL", "anthropic/claude-sonnet-5-5")
 
     assert ou.main() == 0
     data = json.loads(out.read_text())

@@ -1,0 +1,19 @@
+{
+  "body": {
+    "AttachStderr": true,
+    "AttachStdin": false,
+    "AttachStdout": true,
+    "Cmd": [
+      "pg_isready"
+    ],
+    "DetachKeys": "",
+    "Env": null,
+    "Privileged": false,
+    "Tty": false,
+    "User": "",
+    "WorkingDir": ""
+  },
+  "method": "POST",
+  "source": "exec:sandbox",
+  "target": "/v1.51/containers/roboco-sandbox-pg-be-dev-1/exec"
+}

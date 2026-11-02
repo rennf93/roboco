@@ -7,7 +7,7 @@ Supports swimlanes, cross-cell views, and real-time updates.
 
 from collections.abc import Sequence
 from datetime import UTC, datetime
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 from uuid import UUID
 
 from sqlalchemy import func, select
@@ -26,24 +26,21 @@ from roboco.models.kanban import (
 from roboco.services.base import BaseService
 from roboco.utils.converters import require_uuid, to_python_uuid
 
+if TYPE_CHECKING:
+    from roboco.services._kanban_service_types import KanbanServiceSelf as _Base
+else:
+    _Base = object
+
 
 def _count(values: Sequence[Any] | None) -> int:
     """len() tolerant of NULL list columns on restored/imported rows."""
     return len(values) if values else 0
 
 
-class KanbanService(BaseService):
-    """
-    Service for generating kanban board views.
-
-    Provides:
-    - Role-specific board layouts
-    - Swimlane grouping (by priority, assignee)
-    - Cross-cell aggregation for Main PM
-    - Board-level roadmap view
-    """
-
-    service_name: ClassVar[str] = "kanban"
+class KanbanBoardLayout(_Base):
+    """How tasks become a board: each task as a card with its subtask count, laid
+    out in plain columns or in swimlanes by priority or assignee, with the board's
+    and each lane's title."""
 
     # =========================================================================
     # CARD CREATION
@@ -114,37 +111,6 @@ class KanbanService(BaseService):
             quick_context=task.quick_context,
             swimlane_key=swimlane_key,
         )
-
-    # =========================================================================
-    # DEV BOARD
-    # =========================================================================
-
-    async def get_dev_board(
-        self,
-        team: Team,
-        swimlane_by: str | None = None,  # "priority" or "assignee"
-    ) -> KanbanBoard:
-        """
-        Get the developer kanban board for a cell.
-
-        Columns:
-            Backlog → Assigned → In Progress → Blocked → QA Review → Documenting → Done
-        """
-        # Get all tasks for the team
-        result = await self.session.execute(
-            select(TaskTable)
-            .where(TaskTable.team == team)
-            .order_by(TaskTable.priority, TaskTable.created_at.desc())
-        )
-        tasks = result.scalars().all()
-
-        # Build the board
-        if swimlane_by:
-            return await self._build_swimlane_board(
-                tasks, team, KanbanBoardType.DEV, swimlane_by
-            )
-        else:
-            return await self._build_flat_board(tasks, team, KanbanBoardType.DEV)
 
     async def _build_flat_board(
         self,
@@ -338,6 +304,52 @@ class KanbanService(BaseService):
             last_updated=datetime.now(UTC),
         )
 
+
+class KanbanService(BaseService, KanbanBoardLayout):
+    """
+    Service for generating kanban board views.
+
+    Provides:
+    - Role-specific board layouts
+    - Swimlane grouping (by priority, assignee)
+    - Cross-cell aggregation for Main PM
+    - Board-level roadmap view
+    """
+
+    service_name: ClassVar[str] = "kanban"
+
+    # =========================================================================
+    # DEV BOARD
+    # =========================================================================
+
+    async def get_dev_board(
+        self,
+        team: Team,
+        # "priority" or "assignee"
+        swimlane_by: str | None = None,
+    ) -> KanbanBoard:
+        """
+        Get the developer kanban board for a cell.
+
+        Columns:
+            Backlog → Assigned → In Progress → Blocked → QA Review → Documenting → Done
+        """
+        # Get all tasks for the team
+        result = await self.session.execute(
+            select(TaskTable)
+            .where(TaskTable.team == team)
+            .order_by(TaskTable.priority, TaskTable.created_at.desc())
+        )
+        tasks = result.scalars().all()
+
+        # Build the board
+        if swimlane_by:
+            return await self._build_swimlane_board(
+                tasks, team, KanbanBoardType.DEV, swimlane_by
+            )
+        else:
+            return await self._build_flat_board(tasks, team, KanbanBoardType.DEV)
+
     # =========================================================================
     # QA BOARD
     # =========================================================================
@@ -385,8 +397,10 @@ class KanbanService(BaseService):
         # so the board shows only the documenter's own pipeline.
         doc_statuses = [
             TaskStatus.AWAITING_DOCUMENTATION,
-            TaskStatus.IN_PROGRESS,  # Gathering
-            TaskStatus.VERIFYING,  # Writing
+            # Gathering
+            TaskStatus.IN_PROGRESS,
+            # Writing
+            TaskStatus.VERIFYING,
             TaskStatus.COMPLETED,
         ]
 
@@ -554,7 +568,8 @@ class KanbanService(BaseService):
         # Board sees high-priority tasks and epics
         result = await self.session.execute(
             select(TaskTable)
-            .where(TaskTable.priority <= 1)  # P0 and P1 only
+            # P0 and P1 only
+            .where(TaskTable.priority <= 1)
             .order_by(TaskTable.priority, TaskTable.created_at.desc())
         )
         tasks = result.scalars().all()

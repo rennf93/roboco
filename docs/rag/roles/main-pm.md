@@ -35,17 +35,14 @@ i_will_plan(
     approach="...",
 )
 
-# 2. Record the decision as you go
-note(
-    text="Chose Option A over B because ...",
-    scope="decision",
-    title="Task breakdown for [feature]",
-)
-
-# 3. Delegate a subtask to each cell PM (parent must be in_progress).
-#    Args are flat keywords (no nested body=); the subtask inherits the
-#    parent's project — for a product-linked coordination root the cell->project
-#    map resolves it server-side, so you never pass project_id.
+# 2. Delegate a subtask to each cell PM (parent must be in_progress).
+#    delegate records "Delegating subtask '<title>': <description>" as your
+#    journal decision, so it needs no decision note first; keep
+#    note(scope="decision") for context no argument carries (a rejected
+#    breakdown). Args are flat keywords (no nested body=); the subtask
+#    inherits the parent's project — for a product-linked coordination
+#    root the cell->project map resolves it server-side, so you never pass
+#    project_id.
 delegate(
     parent_task_id=initiative_id,
     title="Backend: Implement API",
@@ -59,7 +56,7 @@ delegate(
     covers_parent_criteria=["<initiative-ac-id>", "..."],
 )
 
-# 4. Notify the Cell PMs (ack-required signal)
+# 3. Notify the Cell PMs (ack-required signal)
 notify(target="be-pm", text="New initiative assigned — see task", task_id=subtask_id)
 ```
 
@@ -121,7 +118,6 @@ head rung  ←  feature/main_pm/{root}   ←  feature/{cell}/{root}/{cell-pm}  �
 When a cell PM's parent lands in `awaiting_pm_review` and the work violates an acceptance criterion or scope boundary, reject it instead of completing it — same shape as the Cell PM's own reject path:
 
 ```python
-note(scope="decision", text="Rejecting — cross-cell contract violated")
 request_changes(
     task_id="<cell-pm-task>",
     findings=[
@@ -136,7 +132,7 @@ request_changes(
 )
 ```
 
-Persisted to the revision-findings ledger (`origin=pm`) and rendered into `pm_notes`; the task returns to `needs_revision`, routed to whoever owns the revision. **Never** `i_am_blocked`/`escalate_up` for a review problem — those have no revision routing and just loop. The old `issues=[...]` (plain strings) form still works this release but is deprecated.
+Persisted to the revision-findings ledger (`origin=pm`), rendered into `pm_notes`, and recorded as your journal decision (no separate decision note); the task returns to `needs_revision`, routed to whoever owns the revision. **Never** `i_am_blocked`/`escalate_up` for a review problem — those have no revision routing and just loop. The old `issues=[...]` (plain strings) form still works this release but is deprecated.
 - **The system may call `submit_root` for you.** When every cell's parent is terminal, the orchestrator's closure dispatcher tries `_try_auto_submit` first: unconditionally, with a branch + project on the root, it runs `submit_root` system-side as you — skipping your spawn for that turn, since the submit's substance is deterministic gate code, not judgment; there is no flag to turn this off. A gate rejection (freshness/integrity/AC-coverage/a subtask-terminal race) falls back to spawning you for the classic closure turn — that fallback is the only safety net — and your closure prompt carries the exact rejection reason, so `evidence(task_id)` confirms it rather than rediscovering it blind. Either way the root lands on `awaiting_pr_review` (or `needs_revision`) exactly as if you'd called it; an audited `task.auto_submitted` event marks the cut. A branchless coordination root (MegaTask umbrella) never auto-submits — it assembles no PR.
 - After `pr_pass`, `complete(root_task_id, notes)` escalates the root to the CEO (`awaiting_ceo_approval`) — it does **not** merge. A branchless coordination root (product fan-out, no repo) skips the gate and `complete` escalates directly.
 - The CEO approves and merges the root→master PR from the panel. Only the CEO ever merges to `master`.
@@ -146,6 +142,8 @@ Persisted to the revision-findings ledger (`origin=pm`) and rendered into `pm_no
 ```python
 dm(recipient="be-pm", text="Coordinating the API contract — ...", task_id="...")
 ```
+
+You dm the Cell PMs, the Board and each other PM, never a cell's developers, QA or documenter (cross-cell). To reach a developer about its task, dm that cell's PM on a task you hold (your root); the cell PM may dm the developer on the developer's task.
 
 ## Escalation
 

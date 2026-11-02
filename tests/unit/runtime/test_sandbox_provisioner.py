@@ -9,6 +9,7 @@ from __future__ import annotations
 import time
 
 import pytest
+from roboco.models.sandbox import SANDBOX_ENGINES, SANDBOX_PG_EXTENSIONS
 from roboco.runtime import sandbox as sandbox_module
 from roboco.runtime.sandbox import SandboxProvisioner, SandboxProvisionError
 
@@ -75,7 +76,10 @@ class _FakeRunner:
                 self.ps_output if self._ps_call_count == 1 else self.ps_live_output
             )
             rc, out, err = 0, listing, b""
-        elif verb == "inspect":
+        elif verb == "container":
+            # `container inspect --format={{.State.Running}} <name>`.
+            if args[1] != "inspect":
+                raise AssertionError(f"unexpected container subverb: {args[1]}")
             rc = self.inspect_rc
             out = b"true\n" if self.inspect_running else b"false\n"
             err = b""
@@ -209,7 +213,8 @@ async def test_provision_mongo_engine() -> None:
 
 @pytest.mark.asyncio
 async def test_provision_readiness_timeout_tears_down_and_raises() -> None:
-    runner = _FakeRunner(run_rc=0, exec_rc=1)  # container starts, never ready
+    # The container starts and is never ready.
+    runner = _FakeRunner(run_rc=0, exec_rc=1)
     provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
 
     with pytest.raises(SandboxProvisionError):
@@ -224,7 +229,8 @@ async def test_provision_readiness_timeout_tears_down_and_raises() -> None:
 
 @pytest.mark.asyncio
 async def test_provision_run_failure_tears_down_and_raises() -> None:
-    runner = _FakeRunner(run_rc=1)  # docker run itself fails
+    # docker run itself fails.
+    runner = _FakeRunner(run_rc=1)
     provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
 
     with pytest.raises(SandboxProvisionError):
@@ -244,7 +250,8 @@ async def test_provision_rejects_unknown_service() -> None:
 
 @pytest.mark.asyncio
 async def test_teardown_idempotent_on_missing_container() -> None:
-    runner = _FakeRunner(teardown_rc=1)  # "no such container" for every verb
+    # "No such container" for every verb.
+    runner = _FakeRunner(teardown_rc=1)
     provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
 
     # Must not raise even though every teardown call reports failure.
@@ -377,7 +384,7 @@ async def test_is_live_true_when_container_running() -> None:
 
     assert await provisioner.is_live("dev-10", ["postgres", "redis"]) is True
     expected_inspect_calls = 2
-    inspects = [c for c in runner.calls if c[0] == "inspect"]
+    inspects = [c for c in runner.calls if c[:2] == ["container", "inspect"]]
     assert len(inspects) == expected_inspect_calls
 
 
@@ -393,7 +400,7 @@ async def test_is_live_false_when_container_stopped() -> None:
 
 @pytest.mark.asyncio
 async def test_is_live_false_when_container_missing() -> None:
-    """Nonzero rc — `docker inspect` fails outright on a removed container."""
+    """Nonzero rc — `docker container inspect` fails on a removed container."""
     runner = _FakeRunner()
     runner.inspect_rc = 1
     provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
@@ -410,7 +417,7 @@ async def test_is_live_short_circuits_on_first_dead_service() -> None:
     provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
 
     assert await provisioner.is_live("dev-13", ["postgres", "redis"]) is False
-    inspects = [c for c in runner.calls if c[0] == "inspect"]
+    inspects = [c for c in runner.calls if c[:2] == ["container", "inspect"]]
     assert len(inspects) == 1
 
 
@@ -447,8 +454,8 @@ async def test_provision_pg_features_runs_enable_then_verify() -> None:
     execs = _exec_calls(runner, "psql")
     enable = next(c for c in execs if "CREATE EXTENSION" in " ".join(c))
     verify = next(c for c in execs if "pg_extension" in " ".join(c))
-    assert "CREATE EXTENSION IF NOT EXISTS vector" in " ".join(enable)
-    assert "CREATE EXTENSION IF NOT EXISTS postgis" in " ".join(enable)
+    assert 'CREATE EXTENSION IF NOT EXISTS "vector"' in " ".join(enable)
+    assert 'CREATE EXTENSION IF NOT EXISTS "postgis"' in " ".join(enable)
     assert "ON_ERROR_STOP=1" in enable
     assert "SELECT extname FROM pg_extension" in " ".join(verify)
 
@@ -464,7 +471,8 @@ async def test_provision_no_features_skips_enable_and_verify() -> None:
 
     assert info.services["postgres"].features == ()
     pg_execs = _exec_calls(runner, "pg_isready")
-    assert len(pg_execs) == 1  # readiness only
+    # Readiness only.
+    assert len(pg_execs) == 1
     assert _exec_calls(runner, "psql") == []
 
 
@@ -584,6 +592,63 @@ async def test_provision_redis_bare_uses_light_image() -> None:
     assert "redis/redis-stack-server:latest" not in joined
 
 
+@pytest.mark.asyncio
+async def test_registry_deploy_runs_the_published_kitchen_sink_image(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A registry deploy builds nothing: it pulls and runs the release's copy of
+    RoboCo's own image, the one docker-compose.registry.yml pre-pulls."""
+    monkeypatch.setattr(
+        sandbox_module.settings, "agent_image_registry", "ghcr.io/rennf93/"
+    )
+    monkeypatch.setattr(sandbox_module.settings, "agent_image_tag", "0.33.0")
+    runner = _FakeRunner(run_rc=0, exec_rc=0)
+    runner.exec_out = b"vector\n"
+    runner.image_present = False
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    await provisioner.provision(
+        "dev-pgreg", ["postgres"], features={"postgres": ["vector"]}
+    )
+
+    published = "ghcr.io/rennf93/roboco-sandbox-pg:0.33.0"
+    assert ["pull", published] in runner.calls
+    assert published in _run_call(runner)
+    assert "roboco-sandbox-pg:latest" not in _run_call(runner)
+
+
+@pytest.mark.asyncio
+async def test_registry_deploy_keeps_upstream_images(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        sandbox_module.settings, "agent_image_registry", "ghcr.io/rennf93"
+    )
+    monkeypatch.setattr(sandbox_module.settings, "agent_image_tag", "0.33.0")
+    runner = _FakeRunner(run_rc=0, exec_rc=0)
+    runner.exec_out = b"search\n99999\n"
+    provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
+
+    await provisioner.provision(
+        "dev-upstream", ["postgres", "redis"], features={"redis": ["search"]}
+    )
+
+    runs = [c for c in runner.calls if c[0] == "run"]
+    assert "postgres:16-alpine" in runs[0]
+    assert "redis/redis-stack-server:latest" in runs[1]
+
+
+def test_registry_without_a_tag_runs_latest(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        sandbox_module.settings, "agent_image_registry", "ghcr.io/rennf93"
+    )
+    monkeypatch.setattr(sandbox_module.settings, "agent_image_tag", "")
+    assert (
+        sandbox_module._deployed_image("roboco-sandbox-pg:latest")
+        == "ghcr.io/rennf93/roboco-sandbox-pg:latest"
+    )
+
+
 def test_engine_image_for_selects_kitchen_sink_iff_features() -> None:
     """Pure unit check on the registry: bare -> light image, features -> kitchen-sink;
     mongo (no activatable features) ignores features and returns its base image."""
@@ -626,7 +691,8 @@ async def test_provision_rejects_feature_for_unknown_service() -> None:
 async def test_provision_failed_enable_tears_down_and_raises() -> None:
     """A failed enable exec (e.g. typo'd module path) is fatal — the agent
     never receives creds for a db missing what it asked for."""
-    runner = _FakeRunner(run_rc=0, exec_rc=1)  # every exec fails (incl. ready probe)
+    # Every exec fails, the readiness probe included.
+    runner = _FakeRunner(run_rc=0, exec_rc=1)
     provisioner = SandboxProvisioner(network=_NETWORK, runner=runner)
 
     with pytest.raises(SandboxProvisionError):
@@ -677,3 +743,17 @@ async def test_as_payload_no_extensions_key_when_bare() -> None:
 
     payload = info.as_payload()
     assert "available_extensions" not in payload["postgres"]
+
+
+def test_pg_enable_step_quotes_every_allowlisted_extension() -> None:
+    """Unquoted, `CREATE EXTENSION IF NOT EXISTS uuid-ossp` is a syntax
+    error (checked on pgvector/pgvector:pg16), so every request for that
+    allowlisted extension failed. Each name is a quoted identifier."""
+    features = sorted(SANDBOX_PG_EXTENSIONS)
+    step = SANDBOX_ENGINES["postgres"].enable_step("unused", features)
+    assert step is not None
+    (argv,) = step
+    sql = argv[-1]
+    for name in features:
+        assert f'CREATE EXTENSION IF NOT EXISTS "{name}"' in sql
+    assert 'CREATE EXTENSION IF NOT EXISTS "uuid-ossp"' in sql

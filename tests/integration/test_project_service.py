@@ -894,3 +894,27 @@ async def test_check_agent_access_with_allowed_list_membership(
 async def test_get_project_service_factory(db_session: AsyncSession) -> None:
     svc = get_project_service(db_session)
     assert isinstance(svc, ProjectService)
+
+
+@pytest.mark.asyncio
+async def test_a_workspace_path_resolves_to_its_one_project(
+    project_setup: dict, db_session: AsyncSession
+) -> None:
+    """GitService serves git for an operator-configured path with the
+    project found here (its relay, its token): exactly one may claim it."""
+    svc = project_setup["svc"]
+    path = f"/srv/checkouts/{uuid4().hex[:8]}"
+    first = await svc.create(
+        _project_payload(uuid4().hex[:6]), project_setup["creator_id"]
+    )
+    first.workspace_path = path
+    await db_session.flush()
+    assert (await svc.get_by_workspace_path(path)) is first
+    assert await svc.get_by_workspace_path(f"{path}-other") is None
+
+    second = await svc.create(
+        _project_payload(uuid4().hex[:6]), project_setup["creator_id"]
+    )
+    second.workspace_path = path
+    await db_session.flush()
+    assert await svc.get_by_workspace_path(path) is None

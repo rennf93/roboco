@@ -32,6 +32,8 @@ def _make_orchestrator(
     orch._lock = asyncio.Lock()
     orch._bg_tasks = set()
     orch._running = True
+    # A launch reports the started container to the respawn breaker.
+    orch._pm_respawn_tracker = {}
     monkeypatch.setattr(orch, "_fire_audit", lambda **kw: captured.append(kw))
     monkeypatch.setattr(orch, "_record_spawn_session", AsyncMock(return_value=None))
     monkeypatch.setattr(orch, "_spawn_container", container_result)

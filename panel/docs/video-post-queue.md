@@ -179,6 +179,7 @@ requestVideo: async (body: {
 All three features integrate into `VideoPostRow` via:
 
 1. **Re-render button** appears in the header row (between the occasion badge and the edge):
+
    ```typescript
    const canRerender = !!post.source_task_id && !!post.composition_id;
 

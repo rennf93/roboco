@@ -10,10 +10,13 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from roboco.services.git import GitError, GitService
 
 _PR = 42
+# A self-review: the REQUEST_CHANGES attempt, then the one COMMENT retry.
+_SELF_REVIEW_POSTS = 2
 
 
 def _service() -> GitService:
@@ -31,7 +34,7 @@ def _resp(
 ) -> MagicMock:
     resp = MagicMock()
     resp.status_code = status_code
-    resp.is_success = 200 <= status_code < 300  # noqa: PLR2004
+    resp.is_success = httpx.codes.is_success(status_code)
     resp.json.return_value = json_payload or {}
     resp.text = text
     return resp
@@ -118,7 +121,7 @@ async def test_post_pr_review_self_review_falls_back_to_comment() -> None:
         patch("roboco.services.git.httpx.AsyncClient", return_value=client),
     ):
         out = await svc.post_pr_review("roboco", _PR, "Please fix X.")
-    assert client.post.await_count == 2  # noqa: PLR2004
+    assert client.post.await_count == _SELF_REVIEW_POSTS
     first, second = client.post.await_args_list
     assert first.kwargs["json"]["event"] == "REQUEST_CHANGES"
     assert second.kwargs["json"]["event"] == "COMMENT"
@@ -146,4 +149,4 @@ async def test_post_pr_review_self_review_comment_failure_raises() -> None:
         pytest.raises(GitError),
     ):
         await svc.post_pr_review("roboco", _PR, "body")
-    assert client.post.await_count == 2  # noqa: PLR2004
+    assert client.post.await_count == _SELF_REVIEW_POSTS

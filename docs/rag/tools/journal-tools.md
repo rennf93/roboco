@@ -6,7 +6,7 @@ There is **no** `roboco_journal_*` tool. Journaling is a single content tool on 
 note(
     text: str,                  # always: one-paragraph summary
     scope: str = "note",        # note | decision | reflect | learning | struggle
-    task_id: str | None = None, # auto-filled from your active task if omitted
+    task_id: str | None = None, # omitted: the one task you hold the claim on
     title: str | None = None,
     # decision-scope fields:
     context: str = "",
@@ -46,6 +46,8 @@ note(
 ```
 
 ## Decision Log
+
+The PM decision verbs write this entry for you: `delegate` records the subtask's title and description, `complete` / `submit_up` / `submit_root` their `notes`, `unblock` / `escalate_up` / `escalate_to_ceo` / `cancel_leaf` their `reason`, and `request_changes` its findings, as your `journal:decision`. Do not `note(scope="decision")` before them; put the rationale in that argument. A decision note is for context no verb argument carries, on a task you hold.
 
 ```python
 note(

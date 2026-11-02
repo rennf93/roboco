@@ -1,0 +1,31 @@
+# Intel integrated GPU for RoboCo's two model servers.
+#
+# scripts/deploy-nas.sh adds this file (-f) only when the host exposes
+# /dev/dri/renderD128, and exports ROBOCO_RENDER_GID from that device's
+# group. A host without the device runs both services on the CPU, unchanged.
+#
+# Measured on the NAS (Intel i5-1235U, Iris Xe), 2026-11-01:
+#   - decisions: Clef-Flash Q4_K_M 90 tok/s at 512 tokens, 73 at 4k on the
+#     GPU vs 15-16 on 12 CPU threads; real pilot payloads p50 3.6 s,
+#     p95 22.9 s (llama.cpp Vulkan backend, docker/decisions.Dockerfile).
+#   - ollama: qwen3-embedding:0.6b embeds a ~1k-token chunk in 1.2 s on the
+#     GPU vs 13.4 s on the CPU; a memory query that arrives during an
+#     indexing batch waited 41.5 s on the CPU (the 8 s institutional-memory
+#     search timed out on almost every claim) and 5 s on the GPU.
+services:
+  decisions:
+    devices:
+      - /dev/dri:/dev/dri
+    # The sidecar runs as uid 10001; the render node belongs to the host's
+    # render group, whose gid differs per host.
+    group_add:
+      - "${ROBOCO_RENDER_GID:?scripts/deploy-nas.sh sets it from /dev/dri/renderD128}"
+
+  ollama:
+    devices:
+      - /dev/dri:/dev/dri
+    environment:
+      # ollama's Vulkan backend, and its integrated-GPU opt-in: without it
+      # ollama logs "dropping integrated GPU" and stays on the CPU.
+      OLLAMA_VULKAN: "1"
+      OLLAMA_IGPU_ENABLE: "1"
