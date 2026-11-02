@@ -308,8 +308,10 @@ def _build_indexer_embedder() -> OllamaEmbedder:
     institutional memory); a full-concurrency indexing batch can hold every
     ollama slot and make a concurrent query embed time out. The indexer's own
     embedder runs at ``indexer_embed_concurrency``/``indexer_embed_batch_size``
-    (default 1 / 8) instead of the shared embedder's max_concurrent=4 / batch
-    32, so a query embed in another process always finds a free slot.
+    (default 1 / 1) instead of the shared embedder's max_concurrent=4 / batch
+    32. ollama serves one embed request at a time per model, so a query embed
+    in another process waits for the indexer's request in flight; one chunk
+    per request keeps that wait to a single chunk (see the setting).
     """
     from roboco.services.optimal_brain.ollama_embedder import OllamaEmbedder
 

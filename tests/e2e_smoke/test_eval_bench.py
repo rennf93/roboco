@@ -30,7 +30,6 @@ package's shared session-scoped ``e2e_stack`` fixture.
 from __future__ import annotations
 
 import asyncio
-import importlib
 import os
 import sys
 import types
@@ -47,7 +46,7 @@ from roboco.eval.runner import (
     _build_judge_prompt,
 )
 from tests.e2e_smoke.arcs import Company, dev_arc, doc_arc, qa_arc
-from tests.e2e_smoke.harness import ScriptedAgent, expect_error, expect_ok
+from tests.e2e_smoke.harness import ScriptedAgent, expect_ok
 
 if TYPE_CHECKING:
     import pytest
@@ -234,25 +233,9 @@ def _pm_delegate_arc(
             ],
         )
 
-    # The claim-time tracing gate demands a journal:decision before
-    # i_will_plan succeeds — same pattern as dev_arc's i_will_work_on retry.
-    expect_error(_plan(), "tracing_gap", "pm first i_will_plan")
-    expect_ok(
-        pm.do(
-            "note",
-            scope="decision",
-            task_id=tid,
-            text=(
-                "Delegation rationale: the off-by-one slice bound is a "
-                "single-file root cause and the fix is a one-line change, so "
-                "one backend developer child owns the whole fix and "
-                "self-verifies every acceptance criterion; no split needed."
-            ),
-            chosen="single backend developer child owns the whole fix",
-        ),
-        "pm decision note at claim",
-    )
-    expect_ok(_plan(), "pm i_will_plan retry")
+    # i_will_plan records its own plan as the claim-time journal:decision
+    # (write-then-gate), so the first call passes the post-claim gate.
+    expect_ok(_plan(), "pm i_will_plan")
 
     # The delegate verb also demands a resumption handoff (quick_context)
     # before delegating — leave it, then retry the delegation.
@@ -337,7 +320,13 @@ class _ScriptedBenchSpawner:
         # driving any arc.
         os.environ["ROBOCO_ORCHESTRATOR_URL"] = self._stack.base_url
         for name in ("roboco.mcp.do_server", "roboco.mcp.flow_server"):
-            module = sys.modules.get(name) or importlib.import_module(name)
+            module = sys.modules.get(name)
+            if module is None:
+                # Not imported yet: the harness imports it later (with the
+                # agent env it needs at import time, ROBOCO_AGENT_ID) and it
+                # reads the URL set above. Importing it here first raised
+                # KeyError whenever this module ran without an earlier arc.
+                continue
             if getattr(module, "ORCHESTRATOR_URL", None) != self._stack.base_url:
                 # Module dict (not a plain attribute) — mypy flags a ModuleType
                 # attribute assignment and B010 flags setattr-with-constant.

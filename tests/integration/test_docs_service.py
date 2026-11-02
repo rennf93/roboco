@@ -476,7 +476,7 @@ async def test_commit_doc_to_repo_returns_failed_on_git_error(
     await svc.session.flush()
 
     fake_git = MagicMock()
-    fake_git.get_workspace = AsyncMock(side_effect=RuntimeError("git boom"))
+    fake_git.ensure_task_worktree = AsyncMock(side_effect=RuntimeError("git boom"))
     with patch("roboco.services.git.get_git_service", return_value=fake_git):
         status = await svc._commit_doc_to_repo(
             "be-doc",
@@ -506,11 +506,11 @@ async def test_commit_doc_to_repo_returns_committed_on_success(
     await svc.session.flush()
 
     fake_git = MagicMock()
-    fake_git.get_workspace = AsyncMock(return_value=tmp_path)
+    fake_git.ensure_task_worktree = AsyncMock(return_value=tmp_path)
     fake_git.commit = AsyncMock(return_value={"oid": "abc"})
     with (
         patch("roboco.services.git.get_git_service", return_value=fake_git),
-        patch.object(svc, "_write_file", AsyncMock(return_value=None)),
+        patch("roboco.services.docs.write_workspace_file") as write_file,
     ):
         status = await svc._commit_doc_to_repo(
             str(docs_setup["agent_id"]),
@@ -524,6 +524,7 @@ async def test_commit_doc_to_repo_returns_committed_on_success(
             "api",
         )
     assert status == "committed"
+    write_file.assert_called_once_with(tmp_path / "docs/api/example.md", "# Hello")
 
 
 # ---------------------------------------------------------------------------
@@ -1098,12 +1099,13 @@ async def test_list_docs_for_team_shallow_path_infers_readme(
     """A .md file directly under the team folder (1 part after team) → readme.
 
     The filesystem scan returns the relative path including the team prefix
-    (e.g., 'backend/x.md'). Splitting that gives 2 parts — meeting the
-    `>= _MIN_PATH_PARTS_FOR_SUBFOLDER` check but `not has_subfolder` (since
-    `len(parts) > _MIN_PATH_PARTS_FOR_SUBFOLDER` is False with exactly 2).
-    The else-branch on line 604 runs when len(parts) < 2, which only happens
-    for a path with no separators — `_list_docs_for_team` always produces at
-    least `team/file`, so we patch DOCS_BASE_PATH to be the team dir itself.
+    (e.g., 'backend/x.md'), and `_infer_doc_type` types each file. Splitting
+    that gives 2 parts — meeting the `>= _MIN_PATH_PARTS_FOR_SUBFOLDER` check
+    but `not has_subfolder` (since `len(parts) > _MIN_PATH_PARTS_FOR_SUBFOLDER`
+    is False with exactly 2). Its final `return "readme"` runs when
+    len(parts) < 2, which only happens for a path with no separators — the
+    scan always produces at least `team/file`, so we patch DOCS_BASE_PATH to
+    be the team dir itself.
     """
     svc = docs_setup["svc"]
     # Place the docs root AT the team level so rel_path is just "x.md".
@@ -1120,13 +1122,37 @@ async def test_list_docs_for_team_shallow_path_infers_readme(
 
 
 @pytest.mark.asyncio
+async def test_list_docs_for_team_types_each_file_by_its_subfolder(
+    docs_setup: dict, tmp_path: Path
+) -> None:
+    """The scan types every file the way `_infer_doc_type` does: a file in
+    a known subfolder gets that subfolder's type, one at the team root is a
+    readme."""
+    svc = docs_setup["svc"]
+    (tmp_path / "backend" / "api").mkdir(parents=True)
+    (tmp_path / "backend" / "api" / "endpoints.md").write_text("# e", encoding="utf-8")
+    (tmp_path / "backend" / "overview.md").write_text("# o", encoding="utf-8")
+    with (
+        patch("roboco.services.docs.DOCS_BASE_PATH", tmp_path),
+        patch("roboco.services.docs.TEAM_PATHS", {"backend": "backend"}),
+    ):
+        docs = await svc._list_docs_for_team("backend")
+    by_path = {d.path: d.doc_type for d in docs}
+    assert by_path == {
+        "backend/api/endpoints.md": "api",
+        "backend/overview.md": "readme",
+    }
+
+
+@pytest.mark.asyncio
 async def test_commit_doc_to_repo_writes_into_workspace_and_commits(
     docs_setup: dict,
     db_session: AsyncSession,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A doc write also commits the file into the project repo on the task branch."""
+    """A doc write also commits the file into the project repo on the task
+    branch: written into the task's worktree, where the commit stages it."""
     svc = docs_setup["svc"]
     task_id = docs_setup["task_id"]
     agent_uuid = docs_setup["agent_id"]
@@ -1138,7 +1164,7 @@ async def test_commit_doc_to_repo_writes_into_workspace_and_commits(
     await db_session.flush()
 
     mock_git = MagicMock()
-    mock_git.get_workspace = AsyncMock(return_value=tmp_path)
+    mock_git.ensure_task_worktree = AsyncMock(return_value=tmp_path)
     mock_git.commit = AsyncMock(return_value={"sha": "deadbeef"})
     monkeypatch.setattr(
         "roboco.services.git.get_git_service", lambda _session: mock_git
@@ -1153,8 +1179,10 @@ async def test_commit_doc_to_repo_writes_into_workspace_and_commits(
     )
     await svc._commit_doc_to_repo(str(agent_uuid), req, "api")
 
-    # The doc landed in the workspace repo under docs/...
+    # The doc landed in the task's worktree under docs/...
     assert (tmp_path / "docs" / "api" / "guide.md").read_text() == "# API Guide\n"
+    worktree_args = mock_git.ensure_task_worktree.await_args.args
+    assert worktree_args[1:] == (agent_uuid, task)
     # ...and was committed onto the task branch.
     mock_git.commit.assert_awaited_once()
     kwargs = mock_git.commit.await_args.kwargs

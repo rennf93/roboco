@@ -29,6 +29,7 @@ from roboco.services.base import ConflictError
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 from roboco.services.task import SoftBlockInfo, TaskService, get_task_service
 from sqlalchemy import select, text
+from structlog.testing import capture_logs
 
 from tests.integration.conftest import cleanup_project_durable_rows
 
@@ -490,7 +491,8 @@ async def test_list_recent_for_project_respects_limit(task_setup: dict) -> None:
 
     tasks = [await svc.create(_req(task_setup, title=f"t{i}")) for i in range(3)]
     for i, t in enumerate(tasks):
-        t.created_at = now - timedelta(days=10 - i)  # t0 oldest, t2 newest
+        # T0 oldest, t2 newest
+        t.created_at = now - timedelta(days=10 - i)
         t.updated_at = None
     await db.flush()
 
@@ -1002,9 +1004,12 @@ async def test_update_acceptance_criteria_restamps_ids_1to1(
     updated = await svc.update(task.id, acceptance_criteria=["a", "c", "d"])
     assert updated is not None
     assert len(updated.acceptance_criteria_ids) == _N
-    assert updated.acceptance_criteria_ids[0] == old_ids[0]  # "a" unchanged
-    assert updated.acceptance_criteria_ids[1] == old_ids[2]  # "c" unchanged
-    assert updated.acceptance_criteria_ids[2] not in old_ids  # "d" is new
+    # "a" unchanged
+    assert updated.acceptance_criteria_ids[0] == old_ids[0]
+    # "c" unchanged
+    assert updated.acceptance_criteria_ids[1] == old_ids[2]
+    # "d" is new
+    assert updated.acceptance_criteria_ids[2] not in old_ids
     assert len(set(updated.acceptance_criteria_ids)) == _N
 
 
@@ -1182,7 +1187,8 @@ async def test_pause_returns_none_for_missing(task_setup: dict) -> None:
 @pytest.mark.asyncio
 async def test_pause_returns_none_when_not_in_progress(task_setup: dict) -> None:
     svc = task_setup["svc"]
-    task = await svc.create(_req(task_setup))  # PENDING — can't pause.
+    # PENDING — can't pause.
+    task = await svc.create(_req(task_setup))
     assert await svc.pause(task.id) is None
 
 
@@ -1210,7 +1216,8 @@ async def test_resume_returns_none_for_missing(task_setup: dict) -> None:
 @pytest.mark.asyncio
 async def test_resume_returns_none_when_not_paused(task_setup: dict) -> None:
     svc = task_setup["svc"]
-    task = await svc.create(_req(task_setup))  # PENDING — can't resume.
+    # PENDING — can't resume.
+    task = await svc.create(_req(task_setup))
     assert await svc.resume(task.id) is None
 
 
@@ -1326,7 +1333,8 @@ async def test_submit_for_verification_returns_none_when_not_in_progress(
     task_setup: dict,
 ) -> None:
     svc = task_setup["svc"]
-    task = await svc.create(_req(task_setup))  # PENDING.
+    # PENDING.
+    task = await svc.create(_req(task_setup))
     assert await svc.submit_for_verification(task.id) is None
 
 
@@ -1356,7 +1364,8 @@ async def test_pass_qa_returns_none_when_invalid_status(
     task_setup: dict,
 ) -> None:
     svc = task_setup["svc"]
-    task = await svc.create(_req(task_setup))  # PENDING — can't pass QA.
+    # PENDING — can't pass QA.
+    task = await svc.create(_req(task_setup))
     assert await svc.pass_qa(task.id, agent_role="qa") is None
 
 
@@ -1712,7 +1721,8 @@ async def test_fail_qa_returns_none_when_not_awaiting_qa(
     task_setup: dict,
 ) -> None:
     svc = task_setup["svc"]
-    task = await svc.create(_req(task_setup))  # PENDING
+    # PENDING
+    task = await svc.create(_req(task_setup))
     assert await svc.fail_qa(task.id, notes="x") is None
 
 
@@ -1943,7 +1953,8 @@ async def test_claim_pending_with_unmet_dependency_returns_none(
     task = await svc.create(_req(task_setup, title="wave-1 dependent"))
     task.branch_name = "feature/backend/abcd1234"
     await db_session.flush()
-    await svc.add_dependency(task.id, dep.id)  # task depends_on dep (still PENDING)
+    # Task depends_on dep (still PENDING)
+    await svc.add_dependency(task.id, dep.id)
 
     assert await svc.claim(task.id, task_setup["agent_id"]) is None
 
@@ -2056,6 +2067,27 @@ async def test_claim_blocked_by_lower_sequence_sibling_no_dependency_edge(
     assert claimed.status == TaskStatus.CLAIMED
 
 
+async def _second_backend_developer(db_session: AsyncSession) -> UUID:
+    """Parallel claims go to different developers: one developer holds a
+    single unfinished task at a time (the claim chokepoint refuses a second)."""
+    dev = AgentTable(
+        id=uuid4(),
+        name="Dev 2",
+        slug=f"be-dev-two-{uuid4().hex[:8]}",
+        role=AgentRole.DEVELOPER,
+        team=Team.BACKEND,
+        status=AgentStatus.ACTIVE,
+        model_config={},
+        system_prompt="dev",
+        capabilities=[],
+        permissions={},
+        metrics={},
+    )
+    db_session.add(dev)
+    await db_session.flush()
+    return cast("UUID", dev.id)
+
+
 @pytest.mark.asyncio
 async def test_claim_allows_equal_sequence_siblings_in_parallel(
     task_setup: dict, db_session: AsyncSession
@@ -2074,7 +2106,7 @@ async def test_claim_allows_equal_sequence_siblings_in_parallel(
     await db_session.flush()
 
     claimed_a = await svc.claim(a.id, task_setup["agent_id"])
-    claimed_b = await svc.claim(b.id, task_setup["agent_id"])
+    claimed_b = await svc.claim(b.id, await _second_backend_developer(db_session))
     assert claimed_a is not None
     assert claimed_b is not None
 
@@ -2150,7 +2182,8 @@ async def test_claim_sequence_zero_or_parentless_unaffected(
     await db_session.flush()
 
     assert (await svc.claim(seq0.id, task_setup["agent_id"])) is not None
-    assert (await svc.claim(lone.id, task_setup["agent_id"])) is not None
+    second_dev = await _second_backend_developer(db_session)
+    assert (await svc.claim(lone.id, second_dev)) is not None
 
 
 @pytest.mark.asyncio
@@ -2341,7 +2374,8 @@ async def test_list_pending_for_agent_sequence_bar_still_excludes_oldest(
     )
     blocker.status = TaskStatus.IN_PROGRESS
     now = datetime.now(UTC)
-    blocked.created_at = now - timedelta(days=2)  # oldest, but sequence-held
+    # Oldest, but sequence-held
+    blocked.created_at = now - timedelta(days=2)
     eligible.created_at = now - timedelta(days=1)
     await db_session.flush()
 
@@ -2606,7 +2640,8 @@ async def test_stamp_wave_sequence_independent_siblings_tie_and_claim_parallel(
     b.branch_name = "feature/backend/bbbb0002"
     await db_session.flush()
     assert await svc.claim(a.id, task_setup["agent_id"]) is not None
-    assert await svc.claim(b.id, task_setup["agent_id"]) is not None
+    second_dev = await _second_backend_developer(db_session)
+    assert await svc.claim(b.id, second_dev) is not None
 
 
 @pytest.mark.asyncio
@@ -2655,8 +2690,10 @@ async def test_stamp_wave_sequence_preserves_stamps_and_ignores_nonsibling_deps(
     )
     await svc.stamp_wave_sequence(new.id)
     authored_stamp = 3
-    assert new.sequence == 0  # non-sibling dep excluded from the wave
-    assert authored.sequence == authored_stamp  # PM-authored stamp untouched
+    # Non-sibling dep excluded from the wave
+    assert new.sequence == 0
+    # PM-authored stamp untouched
+    assert authored.sequence == authored_stamp
 
 
 @pytest.mark.asyncio
@@ -2686,8 +2723,10 @@ async def test_stamp_wave_sequence_after_collision_wiring_matches_delegate_flow(
     b = await _delegate("touches b.py", ["roboco/api/b.py"])
     c = await _delegate("touches a.py too", ["roboco/api/a.py"])
 
-    assert (a.sequence, b.sequence) == (0, 0)  # disjoint → parallel
-    assert c.sequence == 1  # collides with a → next wave
+    # Disjoint → parallel
+    assert (a.sequence, b.sequence) == (0, 0)
+    # Collides with a → next wave
+    assert c.sequence == 1
     assert await svc._claim_blocked_by_sequence(c) is not None
 
 
@@ -3458,7 +3497,8 @@ async def test_mark_pr_created_audit_attributed_to_developer(
     row.docs_complete = True
     row.pr_created = False
     row.branch_name = "feature/x"
-    row.claimed_by = None  # already cleared by submit_for_qa
+    # Already cleared by submit_for_qa
+    row.claimed_by = None
     await db_session.flush()
 
     dev_id = uuid4()
@@ -3496,3 +3536,28 @@ async def test_mark_pr_created_audit_attributed_to_developer(
     assert transition[0].agent_id == dev_id, (
         f"audit agent_id={transition[0].agent_id} != dev {dev_id} (L30)"
     )
+
+
+@pytest.mark.asyncio
+async def test_claim_probe_reports_a_dependency_hold_without_the_claim_warning(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    """The dispatcher re-probes every held task each tick; only a refused
+    claim should log "Cannot claim task - unmet dependencies" (live
+    2026-10-28: 221 such warnings in 100 minutes, all from the probe)."""
+    svc = task_setup["svc"]
+    dependency = await svc.create(_req(task_setup, title="still open"))
+    dependency.status = TaskStatus.IN_PROGRESS
+    held = await svc.create(_req(task_setup, title="waits on it"))
+    held.dependency_ids = [dependency.id]
+    held.branch_name = "feature/backend/ffff6666"
+    await db_session.flush()
+    warning = "Cannot claim task - unmet dependencies"
+
+    with capture_logs() as probe_logs:
+        assert await svc.is_pending_claim_blocked(held.id) is True
+    with capture_logs() as claim_logs:
+        assert await svc.claim(held.id, task_setup["agent_id"]) is None
+
+    assert not [e for e in probe_logs if e["event"] == warning]
+    assert [e for e in claim_logs if e["event"] == warning]

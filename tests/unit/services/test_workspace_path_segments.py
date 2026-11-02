@@ -54,3 +54,11 @@ def test_valid_segments_unchanged(tmp_path: Path) -> None:
     svc = _service(tmp_path)
     path = svc.get_workspace_path("guard-core", Team.BACKEND, "be-dev-1")
     assert path == tmp_path / "guard-core" / "backend" / "be-dev-1"
+
+
+def test_path_is_normalized_against_a_root_given_with_dot_segments(
+    tmp_path: Path,
+) -> None:
+    svc = _service(tmp_path / "ws" / ".." / "ws")
+    path = svc.get_workspace_path("guard-core", Team.BACKEND, "be-dev-1")
+    assert path == tmp_path / "ws" / "guard-core" / "backend" / "be-dev-1"

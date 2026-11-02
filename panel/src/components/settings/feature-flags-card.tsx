@@ -32,6 +32,7 @@ import {
 import { XCredentialsForm } from "@/components/settings/x-credentials-card";
 import { TikTokCredentialsForm } from "@/components/settings/tiktok-credentials-card";
 import { TelegramCredentialsForm } from "@/components/settings/telegram-credentials-card";
+import { EntireTrailsForm } from "@/components/settings/entire-trails-form";
 import { HelpTip } from "@/components/ui/help-tip";
 import { cn } from "@/lib/utils";
 import { Flag, ChevronDown, ChevronRight } from "lucide-react";
@@ -41,8 +42,10 @@ import { toast } from "sonner";
 const FLAG_DESCRIPTIONS: Record<string, string> = {
   decisions_enabled:
     "Master switch for the Decisions service (typed System One verdicts: choice / score / noul with calibrated confidence). Off = every decision point does exactly what it did before this service existed; nothing else decisions-related has any effect until this is on.",
+  decisions_tier_clef_enabled:
+    "Serve decisions from the self-hosted sidecar's Clef backend (27B llama.cpp, roboco-decisions container) when it is healthy: the built-in sweet-spot default tier, no key, no spend. Inert until that container exists and decisions_enabled above is on.",
   decisions_tier_laya_enabled:
-    "Serve decisions from the self-hosted Laya sidecar (roboco-decisions container) when it is healthy: the built-in default tier, no key, no spend. Inert until that container exists and decisions_enabled above is on.",
+    "Serve decisions from the self-hosted sidecar's Laya backend (421M, the cheap option) when the Clef backend is disabled or unhealthy: no key, no spend. Inert until that container exists and decisions_enabled above is on.",
   decisions_tier_openrouter_enabled:
     "Opt-in fallback tier: serve decisions through the OpenRouter Decisions API when the sidecar is disabled or unhealthy. Opting in is deliberate spend and requires an OpenRouter key on the AI Providers screen (a warning banner appears there while the key is missing).",
   external_pr_enabled:
@@ -65,6 +68,10 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
     "Enforce per-project monthly and per-task cost caps (USD). A claim is refused once a project's monthly budget is reached; an active task whose own explicitly-set budget is breached is stopped and blocked, and you're notified. Set the caps on the project edit dialog and a task's detail page — a project/task with no cap set is never capped.",
   devops_enabled:
     "Routes infra tasks to the floating DevOps agent (devops-1): PM delegation + board materialization pre-assignment spawn it, and it authors through the normal developer lifecycle (PR before QA). Off by default: the agent is seeded but inert: nothing spawns it.",
+  entire_enabled:
+    "Records each agent's Claude Code session with Entire (entire.io) so every task commit carries a redacted transcript checkpoint, pushed with the branch to the project's own repository: anyone who can read that repository can read the transcripts. Off by default: Entire's hooks do nothing in agent containers and RoboCo runs none for their commits.",
+  entire_trails_enabled:
+    "Mirrors the task trees of opted-in GitHub projects onto Entire trails: the root's plan is the trail, every branch a change, review findings trail findings, your approval a trail approval. RoboCo stays canonical and keeps merging. Needs an Entire token below and a per-project opt-in on each project's settings page; off by default, so nothing reaches Entire.",
   rag_auto_update_enabled:
     "Keep the knowledge base index refreshed automatically.",
   transcript_prune_enabled:
@@ -125,8 +132,10 @@ const FLAG_DESCRIPTIONS: Record<string, string> = {
 const FLAG_TOOLTIPS: Record<string, string> = {
   decisions_enabled:
     "Master switch for typed System One verdicts; off = tier 3 everywhere.",
+  decisions_tier_clef_enabled:
+    "Default self-hosted Clef tier (no key, no spend).",
   decisions_tier_laya_enabled:
-    "Serves decisions from the self-hosted sidecar (no key, no spend).",
+    "Cheap self-hosted Laya fallback when Clef is down.",
   decisions_tier_openrouter_enabled:
     "Falls back to the paid OpenRouter Decisions API when the sidecar is down.",
   external_pr_enabled:
@@ -147,6 +156,10 @@ const FLAG_TOOLTIPS: Record<string, string> = {
   task_budgets_enabled: "Caps agent spend per project (monthly) and per task.",
   devops_enabled:
     "Spawns the floating DevOps agent (devops-1) for assigned infra work.",
+  entire_enabled:
+    "Attaches each agent's redacted session transcript to its commits.",
+  entire_trails_enabled:
+    "Mirrors opted-in projects' task trees onto Entire trails.",
   rag_auto_update_enabled:
     "Keeps the RAG knowledge index automatically refreshed.",
   transcript_prune_enabled:
@@ -199,6 +212,7 @@ export function FeatureFlagsCard() {
   const [xCredsOpen, setXCredsOpen] = useState(false);
   const [tiktokCredsOpen, setTiktokCredsOpen] = useState(false);
   const [telegramCredsOpen, setTelegramCredsOpen] = useState(false);
+  const [entireTrailsOpen, setEntireTrailsOpen] = useState(false);
   // Off-transition awaiting operator confirm. Null = no dialog open.
   const [confirmFlag, setConfirmFlag] = useState<FeatureFlag | null>(null);
   // Every in-flight toggle key — added on mutate, removed on settle. Tracks
@@ -271,12 +285,17 @@ export function FeatureFlagsCard() {
             const isXEngine = flag.key === "x_engine_enabled";
             const isVideoEngine = flag.key === "video_engine_enabled";
             const isTelegram = flag.key === "telegram_enabled";
+            const isEntireTrails = flag.key === "entire_trails_enabled";
             return (
               <div
                 key={flag.key}
                 className={cn(
                   "rounded-lg border p-4",
-                  (isXEngine || isVideoEngine || isTelegram) && "md:col-span-2",
+                  (isXEngine ||
+                    isVideoEngine ||
+                    isTelegram ||
+                    isEntireTrails) &&
+                    "md:col-span-2",
                 )}
               >
                 <div className="flex items-start justify-between gap-4">
@@ -393,6 +412,35 @@ export function FeatureFlagsCard() {
                     </CollapsibleTrigger>
                     <CollapsibleContent className="pt-3">
                       <TelegramCredentialsForm />
+                    </CollapsibleContent>
+                  </Collapsible>
+                )}
+                {isEntireTrails && (
+                  <Collapsible
+                    open={entireTrailsOpen}
+                    onOpenChange={setEntireTrailsOpen}
+                    className="mt-3"
+                  >
+                    <CollapsibleTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="w-full justify-between px-2 text-muted-foreground"
+                      >
+                        <HelpTip label="The token and queue only matter once entire_trails_enabled above is on and a project has opted in.">
+                          <span className="text-sm">
+                            Entire token and queue
+                          </span>
+                        </HelpTip>
+                        {entireTrailsOpen ? (
+                          <ChevronDown className="h-4 w-4" />
+                        ) : (
+                          <ChevronRight className="h-4 w-4" />
+                        )}
+                      </Button>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent className="pt-3">
+                      <EntireTrailsForm />
                     </CollapsibleContent>
                   </Collapsible>
                 )}

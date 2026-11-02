@@ -80,9 +80,7 @@ async def test_already_ancestor_is_a_no_op() -> None:
         },
     )
 
-    result = await svc.merge_dependency_lineage(
-        _WORKSPACE, _TASK_ID, _BRANCH, _SOURCE, project_slug="roboco-api"
-    )
+    result = await svc.merge_dependency_lineage(_WORKSPACE, _TASK_ID, _BRANCH, _SOURCE)
 
     assert result == {"status": "already_ancestor"}
     assert not [c for c in calls if c[1][:1] == ["merge"]], (
@@ -97,9 +95,7 @@ async def test_missing_ref_short_circuits_before_touching_worktree() -> None:
     svc = _git_service()
     calls = _drive(svc, {("rev-parse", "--verify", "--quiet"): _result(returncode=1)})
 
-    result = await svc.merge_dependency_lineage(
-        _WORKSPACE, _TASK_ID, _BRANCH, _SOURCE, project_slug="roboco-api"
-    )
+    result = await svc.merge_dependency_lineage(_WORKSPACE, _TASK_ID, _BRANCH, _SOURCE)
 
     assert result == {"status": "missing_ref"}
     ensure = object.__getattribute__(svc, "_ensure_worktree_for_commit")
@@ -122,9 +118,7 @@ async def test_outside_lineage_merges_and_pushes_from_the_worktree() -> None:
         },
     )
 
-    result = await svc.merge_dependency_lineage(
-        _WORKSPACE, _TASK_ID, _BRANCH, _SOURCE, project_slug="roboco-api"
-    )
+    result = await svc.merge_dependency_lineage(_WORKSPACE, _TASK_ID, _BRANCH, _SOURCE)
 
     assert result == {"status": "merged"}
     merge_calls = [c for c in calls if c[1][:1] == ["merge"]]
@@ -152,9 +146,7 @@ async def test_merge_conflict_aborts_and_reports_files() -> None:
         },
     )
 
-    result = await svc.merge_dependency_lineage(
-        _WORKSPACE, _TASK_ID, _BRANCH, _SOURCE, project_slug="roboco-api"
-    )
+    result = await svc.merge_dependency_lineage(_WORKSPACE, _TASK_ID, _BRANCH, _SOURCE)
 
     assert result == {"status": "conflict", "files": ["src/a.py", "src/b.py"]}
     assert not [c for c in calls if c[1][:1] == ["push"]], (
@@ -178,8 +170,6 @@ async def test_merge_succeeds_but_push_fails_is_reported_distinctly() -> None:
         },
     )
 
-    result = await svc.merge_dependency_lineage(
-        _WORKSPACE, _TASK_ID, _BRANCH, _SOURCE, project_slug="roboco-api"
-    )
+    result = await svc.merge_dependency_lineage(_WORKSPACE, _TASK_ID, _BRANCH, _SOURCE)
 
     assert result == {"status": "merged_push_failed"}

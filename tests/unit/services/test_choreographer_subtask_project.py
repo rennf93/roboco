@@ -23,10 +23,7 @@ from uuid import UUID, uuid4
 import pytest
 from roboco.foundation.policy.task_completeness import TaskCompletenessError
 from roboco.models.base import Team
-from roboco.services.gateway.choreographer._impl import (
-    Choreographer,
-    DelegateInputs,
-)
+from roboco.services.gateway.choreographer import Choreographer, DelegateInputs
 
 
 def _inputs(*, team: Team, project_id: UUID | None = None) -> DelegateInputs:

@@ -30,6 +30,9 @@ from typing import TYPE_CHECKING, Any, Literal
 # (mirroring TaskService and the gateway access guard); config imports
 # nothing from roboco, so this stays cycle-free.
 from roboco.config import settings
+from roboco.foundation._validate_lifecycle import (
+    run_all_lifecycle_validators as _run_all_lifecycle_validators,
+)
 
 # Role enum is canonicalized in roboco/foundation/identity.py.
 # Re-exported here so callers can import `Role` from this module alongside
@@ -871,10 +874,22 @@ def _next_hint_continue_delegating(t: Any) -> str:
     )
 
 
-def _next_hint_qa_review(_t: Any) -> str:
+def _next_hint_qa_review(t: Any) -> str:
+    # Name the real verdict verbs with their real parameters and the exact
+    # task id: GLM-flash QA sessions pattern-match the short forms
+    # ("pass(notes)") onto whatever verb they last emitted and loop
+    # claim_review/give_me_work instead of ever issuing the verdict
+    # (2026-09-29 fleet wedge: 385 consecutive claim_review calls, zero
+    # pass_review calls). Spell the verdict call out in full.
+    task_id = getattr(t, "id", None)
     return (
-        "review the diff. Then call pass(notes) to accept or fail(issues) to"
-        " request changes."
+        "review the diff once, then issue ONE verdict (never re-claim):"
+        f" pass_review(task_id='{task_id}', notes='...',"
+        " criteria_verified=[{'criterion': '<AC id or exact text>',"
+        " 'evidence': '<how you verified it>'}, ...]) to accept, or"
+        f" fail_review(task_id='{task_id}',"
+        " findings=[{'file': '...', 'severity': '...', 'expected': '...',"
+        " 'actual': '...'}, ...]) to request changes"
     )
 
 
@@ -2178,8 +2193,7 @@ _KNOWN_UNMIGRATED_CONSUMERS: frozenset[str] = frozenset(
 # (a sibling of ``foundation/_validate.py`` for identity); placing them
 # alongside the identity validators would create an import cycle because
 # ``roboco.foundation.__init__`` eagerly imports ``foundation/_validate``.
-from roboco.foundation._validate_lifecycle import (  # noqa: E402
-    run_all_lifecycle_validators as _run_all_lifecycle_validators,
-)
-
+# Their import sits with the others at the top of this module: that module
+# defers every reference to this one to call time, so only this call has to
+# wait until every table above is defined.
 _run_all_lifecycle_validators()

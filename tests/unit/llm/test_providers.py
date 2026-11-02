@@ -31,6 +31,10 @@ from roboco.llm.providers import (
 from roboco.models.base import ModelProvider
 from roboco.models.runtime import OrchestratorAgentConfig
 from roboco.seeds.initial_data import AGENT_UUIDS
+from tests.unit.docker_cli_calls import (
+    docker_argv_env_assignments,
+    docker_run_cmd_with_env_values,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -229,7 +233,7 @@ async def test_grok_spawn_no_xai_key_and_no_anthropic_leak() -> None:
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_config(), initial_prompt="do the work")
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     # The CLI authenticates from the mounted ~/.grok — the xAI key is never used.
     assert not any(c.startswith("XAI_API_KEY=") for c in cmd)
     # The provider endpoint must NOT be injected as an Anthropic var.
@@ -248,7 +252,9 @@ async def test_grok_spawn_wires_gateway_env_and_image_last() -> None:
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         result = await provider.spawn(_config())
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
+    # Values ride the docker CLI's env, never argv (/proc/<pid>/cmdline).
+    assert docker_argv_env_assignments(exec_mock.call_args) == []
     # Gateway + operational env the grok-cli entrypoint + renderer consume.
     assert "ROBOCO_MCP_CONFIG=/app/mcp-config.json" in cmd
     assert "ROBOCO_AGENT_ID=be-dev-1" in cmd  # renderer computes per-role flags
@@ -292,7 +298,7 @@ async def test_grok_spawn_adds_compose_labels_before_image(
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_config())
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     assert "com.docker.compose.service=be-dev-1" in cmd
     assert cmd.index("com.docker.compose.service=be-dev-1") < cmd.index(
         "roboco-agent-grok:test"
@@ -308,7 +314,7 @@ async def test_grok_spawn_mounts_auth_when_present(_isolate_grok_auth: Path) -> 
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_config())
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     # mount the host ~/.grok DIRECTORY (ro), not the single auth.json file — a
     # single-file bind mount pins the inode, so the orchestrator's atomic
     # auth.json refresh (rename) never reaches a running container.
@@ -324,7 +330,7 @@ async def test_grok_spawn_omits_auth_mount_when_absent() -> None:
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_config())
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     assert not any("/home/agent/.grok-auth-ro" in c for c in cmd)
 
 
@@ -356,7 +362,7 @@ async def test_grok_spawn_prompt_is_injection_safe() -> None:
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_config(), initial_prompt=nasty)
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     # Passed only as an env value, never as a bare argv token.
     assert f"ROBOCO_INITIAL_PROMPT={nasty}" in cmd
     assert nasty not in cmd
@@ -420,7 +426,7 @@ async def test_codex_spawn_no_leaked_key_and_no_anthropic_leak() -> None:
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_codex_config(), initial_prompt="do the work")
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     assert not any(c.startswith("OPENAI_API_KEY=") for c in cmd)
     # The provider endpoint must NOT be injected as an Anthropic var.
     assert not any(c.startswith("ANTHROPIC_BASE_URL=") for c in cmd)
@@ -437,7 +443,9 @@ async def test_codex_spawn_wires_gateway_env_and_image_last() -> None:
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         result = await provider.spawn(_codex_config())
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
+    # Values ride the docker CLI's env, never argv (/proc/<pid>/cmdline).
+    assert docker_argv_env_assignments(exec_mock.call_args) == []
     assert "ROBOCO_MCP_CONFIG=/app/mcp-config.json" in cmd
     assert "ROBOCO_AGENT_ID=be-dev-1" in cmd
     assert "ROBOCO_AGENT_MODEL=gpt-5.3-codex" in cmd
@@ -470,7 +478,7 @@ async def test_codex_spawn_adds_compose_labels_before_image(
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_codex_config())
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     assert "com.docker.compose.service=be-dev-1" in cmd
     assert cmd.index("com.docker.compose.service=be-dev-1") < cmd.index(
         "roboco-agent-codex:test"
@@ -489,7 +497,7 @@ async def test_codex_spawn_mounts_auth_when_present(
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_codex_config())
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     # Mount the host ~/.codex DIRECTORY (ro), not the single auth.json file —
     # a single-file bind mount pins the inode (same concern grok documents).
     expected = f"{_isolate_codex_auth}:/home/agent/.codex-auth-ro:ro"
@@ -503,7 +511,7 @@ async def test_codex_spawn_omits_auth_mount_when_absent() -> None:
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_codex_config())
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     assert not any("/home/agent/.codex-auth-ro" in c for c in cmd)
 
 
@@ -530,7 +538,7 @@ async def test_codex_spawn_prompt_is_injection_safe() -> None:
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_codex_config(), initial_prompt=nasty)
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     assert f"ROBOCO_INITIAL_PROMPT={nasty}" in cmd
     assert nasty not in cmd
 
@@ -593,7 +601,7 @@ async def test_kimi_spawn_no_leaked_key_and_no_anthropic_leak() -> None:
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_kimi_config(), initial_prompt="do the work")
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     assert not any(c.startswith("MOONSHOT_API_KEY=") for c in cmd)
     # The provider endpoint must NOT be injected as an Anthropic var.
     assert not any(c.startswith("ANTHROPIC_BASE_URL=") for c in cmd)
@@ -610,7 +618,9 @@ async def test_kimi_spawn_wires_gateway_env_and_image_last() -> None:
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         result = await provider.spawn(_kimi_config())
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
+    # Values ride the docker CLI's env, never argv (/proc/<pid>/cmdline).
+    assert docker_argv_env_assignments(exec_mock.call_args) == []
     assert "ROBOCO_MCP_CONFIG=/app/mcp-config.json" in cmd
     assert "ROBOCO_AGENT_ID=be-dev-1" in cmd
     assert "ROBOCO_AGENT_MODEL=kimi-code/k3" in cmd
@@ -643,7 +653,7 @@ async def test_kimi_spawn_adds_compose_labels_before_image(
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_kimi_config())
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     assert "com.docker.compose.service=be-dev-1" in cmd
     assert cmd.index("com.docker.compose.service=be-dev-1") < cmd.index(
         "roboco-agent-kimi:test"
@@ -661,7 +671,7 @@ async def test_kimi_spawn_mounts_auth_when_present(_isolate_kimi_auth: Path) -> 
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_kimi_config())
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     # Mount the host ~/.kimi-code DIRECTORY read-write (rotation-with-grace,
     # not truly reusable — every container must share ONE chain with the
     # host, not a private copy) — the entrypoint symlinks credentials/ and
@@ -677,7 +687,7 @@ async def test_kimi_spawn_omits_auth_mount_when_absent() -> None:
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_kimi_config())
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     assert not any("/home/agent/.kimi-code-auth" in c for c in cmd)
 
 
@@ -704,7 +714,7 @@ async def test_kimi_spawn_prompt_is_injection_safe() -> None:
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_kimi_config(), initial_prompt=nasty)
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     assert f"ROBOCO_INITIAL_PROMPT={nasty}" in cmd
     assert nasty not in cmd
 
@@ -757,7 +767,7 @@ async def test_hummin_spawn_injects_zai_key_and_no_anthropic_leak() -> None:
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_hummin_config(), initial_prompt="do the work")
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     # The stored provider key rides as ZAI_API_KEY (the GLM Coding Plan
     # credential) — never as an Anthropic var.
     assert "ZAI_API_KEY=zk-stored-key" in cmd
@@ -777,7 +787,9 @@ async def test_hummin_spawn_wires_gateway_env_and_image_last() -> None:
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         result = await provider.spawn(_hummin_config())
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
+    # Values ride the docker CLI's env, never argv (/proc/<pid>/cmdline).
+    assert docker_argv_env_assignments(exec_mock.call_args) == []
     assert "ROBOCO_MCP_CONFIG=/app/mcp-config.json" in cmd
     # Auth identity is the agent's UUID, never the slug: the token HMAC signs
     # (uuid, role, team) and verify_agent_token does not normalize slugs, so a
@@ -811,7 +823,7 @@ async def test_hummin_spawn_no_auth_mount() -> None:
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_hummin_config())
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     assert not any("/home/agent/.hummin-auth" in c for c in cmd)
     assert not any("/home/agent/.kimi-code-auth" in c for c in cmd)
 
@@ -840,7 +852,7 @@ async def test_hummin_spawn_env_key_fallback(
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_hummin_config(provider_auth_token=None))
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     assert "ZAI_API_KEY=zk-env-fallback" in cmd
 
 
@@ -852,7 +864,7 @@ async def test_hummin_spawn_prompt_is_injection_safe() -> None:
         "asyncio.create_subprocess_exec", AsyncMock(return_value=_proc())
     ) as exec_mock:
         await provider.spawn(_hummin_config(), initial_prompt=nasty)
-    cmd = list(exec_mock.call_args.args)
+    cmd = docker_run_cmd_with_env_values(exec_mock.call_args)
     assert f"ROBOCO_INITIAL_PROMPT={nasty}" in cmd
     assert nasty not in cmd
 
