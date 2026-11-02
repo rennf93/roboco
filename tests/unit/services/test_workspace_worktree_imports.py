@@ -13,6 +13,7 @@ import sys
 from typing import TYPE_CHECKING
 
 import pytest
+from roboco.services import workspace as workspace_module
 from roboco.services.workspace import WorkspaceService
 from roboco.utils.worktree_imports import point_clone_root_paths_at_worktree
 
@@ -105,3 +106,55 @@ def test_the_hook_comes_back_into_a_venv_rebuilt_under_a_linked_worktree(
     WorkspaceService._link_shared_venv(worktree, clone)
 
     assert _imported_from(worktree) == "worktree"
+
+
+def _refused_once_then(
+    monkeypatch: pytest.MonkeyPatch, *, repaired: bool
+) -> tuple[list[Path], list[Path]]:
+    """The hook write refused with "Permission denied", then accepted; the
+    site-packages repair reports ``repaired``."""
+    writes: list[Path] = []
+    repairs: list[Path] = []
+
+    def fake_write(clone_root: Path, _source: str) -> subprocess.CompletedProcess[str]:
+        writes.append(clone_root)
+        if len(writes) == 1:
+            stderr = f"sh: 1: cannot create {clone_root}/x.pth: Permission denied"
+            return subprocess.CompletedProcess([], 2, "", stderr)
+        return subprocess.CompletedProcess([], 0, "", "")
+
+    def fake_repair(clone_root: Path) -> bool:
+        repairs.append(clone_root)
+        return repaired
+
+    monkeypatch.setattr(
+        WorkspaceService, "_write_worktree_import_hook", staticmethod(fake_write)
+    )
+    monkeypatch.setattr(
+        workspace_module, "make_venv_site_packages_group_writable", fake_repair
+    )
+    return writes, repairs
+
+
+def test_a_refused_hook_write_is_repaired_and_written_again(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Live 2026-11-02: every hook write on 5 clones failed with Permission
+    denied, so codegen in be-dev-1's worktree imported the clone root."""
+    writes, repairs = _refused_once_then(monkeypatch, repaired=True)
+
+    WorkspaceService._install_worktree_import_hook(tmp_path)
+
+    assert repairs == [tmp_path]
+    assert writes == [tmp_path, tmp_path]
+
+
+def test_without_a_repair_the_refused_hook_write_is_not_retried(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    writes, repairs = _refused_once_then(monkeypatch, repaired=False)
+
+    WorkspaceService._install_worktree_import_hook(tmp_path)
+
+    assert repairs == [tmp_path]
+    assert writes == [tmp_path]

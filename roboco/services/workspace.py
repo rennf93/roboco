@@ -59,6 +59,7 @@ from roboco.services.workspace_container import (
 )
 from roboco.services.workspace_git import (
     UnsafeWorkspaceGitConfigError,
+    make_venv_site_packages_group_writable,
     prepare_clone_parent,
     read_workspace_file,
     remove_workspace_tree,
@@ -457,11 +458,33 @@ class WorkspaceWorktrees(_Base):
         worktree's interpreter imported the clone root's code; the hook points
         those paths at the worktree the interpreter was started in. Written as
         the git user (the venv is agent-writable) into every
-        ``lib/python*/site-packages`` of ``clone_root/.venv``; a failure is
+        ``lib/python*/site-packages`` of ``clone_root/.venv``. A "Permission
+        denied" (a venv made before the git user existed) gets the
+        site-packages group-write repair and one retry; any other failure is
         logged and the worktree keeps the old behavior.
         """
         source = Path(worktree_imports.__file__).read_text(encoding="utf-8")
-        result = run_as_workspace_user(
+        result = WorkspaceService._write_worktree_import_hook(clone_root, source)
+        if (
+            result.returncode != 0
+            and "Permission denied" in (result.stderr or "")
+            and make_venv_site_packages_group_writable(clone_root)
+        ):
+            result = WorkspaceService._write_worktree_import_hook(clone_root, source)
+        if result.returncode != 0:
+            logger.warning(
+                "worktree import hook not written; worktrees import the clone root",
+                clone_root=str(clone_root),
+                stderr=(result.stderr or "").strip()[:500],
+            )
+
+    @staticmethod
+    def _write_worktree_import_hook(
+        clone_root: Path, source: str
+    ) -> subprocess.CompletedProcess[str]:
+        """Write the hook module and its ``.pth`` into every site-packages of
+        ``clone_root/.venv``, as the git user."""
+        return run_as_workspace_user(
             "sh",
             "-c",
             'for d in "$1"/.venv/lib/python*/site-packages; do '
@@ -476,12 +499,6 @@ class WorkspaceWorktrees(_Base):
             source,
             timeout=settings.git_command_timeout_seconds,
         )
-        if result.returncode != 0:
-            logger.warning(
-                "worktree import hook not written; worktrees import the clone root",
-                clone_root=str(clone_root),
-                stderr=(result.stderr or "").strip()[:500],
-            )
 
     async def ensure_worktree(
         self, clone_root: Path, worktree: Path, branch: str, base: str

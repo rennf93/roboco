@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import signal
+import stat
 import subprocess
 import tarfile
 import time
@@ -418,6 +419,83 @@ def test_with_the_drop_required_the_workspace_paths_go_by_descriptor(
 
     assert opened == [(clone.parent, True), (clone.parent, False)]
     assert repaired == [clone]
+
+
+# A venv made before the git user: directories 755, files 644.
+_PRE_GIT_USER_DIR_MODE = 0o755
+_PRE_GIT_USER_FILE_MODE = 0o644
+
+
+def _venv_site_packages(clone: Path, python: str = "python3.13") -> Path:
+    site_packages = clone / ".venv" / "lib" / python / "site-packages"
+    site_packages.mkdir(parents=True)
+    site_packages.chmod(_PRE_GIT_USER_DIR_MODE)
+    return site_packages
+
+
+def _site_packages_drop_required(monkeypatch: pytest.MonkeyPatch, root: Path) -> None:
+    monkeypatch.setattr(settings, "workspace_git_drop", "required")
+    monkeypatch.setattr(settings, "workspaces_root", str(root))
+    # This process's own group: the repair's chgrp is then a no-op and the
+    # mode change is what the test sees.
+    monkeypatch.setattr(settings, "agent_gid", os.getgid())
+
+
+def test_a_venv_made_before_the_git_user_gets_group_write_on_site_packages(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Live 2026-11-02: the worktree import hook was refused on 5 clones
+    because their venv's site-packages was mode 755 (some with group admin)."""
+    _site_packages_drop_required(monkeypatch, tmp_path)
+    clone = tmp_path / "proj" / "backend" / "be-dev-1"
+    site_packages = _venv_site_packages(clone)
+    inside = site_packages / "already-there.py"
+    inside.write_text("")
+    inside.chmod(_PRE_GIT_USER_FILE_MODE)
+
+    assert wg.make_venv_site_packages_group_writable(clone) is True
+
+    assert site_packages.stat().st_mode & stat.S_IRWXG == stat.S_IRWXG
+    assert stat.S_IMODE(inside.stat().st_mode) == _PRE_GIT_USER_FILE_MODE
+
+
+def test_the_site_packages_repair_never_follows_a_symlinked_venv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _site_packages_drop_required(monkeypatch, tmp_path / "workspaces")
+    outside = tmp_path / "outside"
+    target = _venv_site_packages(outside)
+    clone = tmp_path / "workspaces" / "proj" / "backend" / "be-dev-1"
+    clone.mkdir(parents=True)
+    (clone / ".venv").symlink_to(outside / ".venv")
+
+    assert wg.make_venv_site_packages_group_writable(clone) is False
+    assert stat.S_IMODE(target.stat().st_mode) == _PRE_GIT_USER_DIR_MODE
+
+
+def test_the_site_packages_repair_skips_a_symlinked_python_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    _site_packages_drop_required(monkeypatch, tmp_path / "workspaces")
+    target = _venv_site_packages(tmp_path / "outside")
+    clone = tmp_path / "workspaces" / "proj" / "backend" / "be-dev-1"
+    (clone / ".venv" / "lib").mkdir(parents=True)
+    (clone / ".venv" / "lib" / "python3.13").symlink_to(target.parent)
+
+    assert wg.make_venv_site_packages_group_writable(clone) is True
+    assert stat.S_IMODE(target.stat().st_mode) == _PRE_GIT_USER_DIR_MODE
+
+
+def test_with_the_drop_off_the_site_packages_repair_does_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(settings, "workspace_git_drop", "off")
+    monkeypatch.setattr(settings, "workspaces_root", str(tmp_path))
+    clone = tmp_path / "proj" / "backend" / "be-dev-1"
+    site_packages = _venv_site_packages(clone)
+
+    assert wg.make_venv_site_packages_group_writable(clone) is False
+    assert stat.S_IMODE(site_packages.stat().st_mode) == _PRE_GIT_USER_DIR_MODE
 
 
 # --------------------------------------------------------------------------- #
