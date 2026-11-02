@@ -37,7 +37,8 @@ def _make_orchestrator() -> AgentOrchestrator:
         orch = AgentOrchestrator.__new__(AgentOrchestrator)
     orch._instances = {}
     orch._bg_tasks = set()
-    orch._pm_respawn_tracker = {}  # #74: stop() flushes this after the drain
+    # #74: stop() flushes this after the drain.
+    orch._pm_respawn_tracker = {}
     # Every named background loop ``stop()`` cancels — None makes each a no-op
     # so the test exercises ONLY the _bg_tasks drain. The engine-loop slots
     # come from the REAL production initializer so a newly added engine loop
@@ -96,7 +97,8 @@ async def test_stop_does_not_hang_on_stuck_bg_task(
     orch = _make_orchestrator()
 
     async def _hangs() -> None:
-        await asyncio.Future()  # never resolves
+        # Never resolves.
+        await asyncio.Future()
 
     stuck = asyncio.create_task(_hangs())
     orch._bg_tasks.add(stuck)
@@ -127,9 +129,14 @@ async def test_stop_failing_agent_does_not_skip_drain() -> None:
 
     orch._bg_tasks.add(asyncio.create_task(_completes()))
 
-    await asyncio.wait_for(orch.stop(), timeout=5.0)
+    # The test console renderer draws logger.exception as a rich traceback with
+    # locals, synchronously on the loop; under coverage on CI that blocked the
+    # loop past the 5 s deadline before the drain ever ran (#1360).
+    with patch("roboco.runtime.orchestrator.logger") as log:
+        await asyncio.wait_for(orch.stop(), timeout=5.0)
 
     assert ran == [True], "failing stop_agent skipped the drain (data lost)"
+    log.exception.assert_called_once()
 
 
 @pytest.mark.asyncio
@@ -155,7 +162,8 @@ async def test_stop_is_idempotent_double_call_is_noop() -> None:
     assert drain_calls == 1, "first stop() drained the bg tasks"
     assert orch._stopped is True
 
-    await orch.stop()  # safety-net double-call (lifespan already stopped it)
+    # Safety-net double call: the lifespan already stopped it.
+    await orch.stop()
     assert drain_calls == 1, "second stop() must not re-drain (idempotent no-op)"
     assert orch._stopped is True
 
@@ -169,7 +177,8 @@ async def test_stop_is_idempotent_double_call_is_noop() -> None:
 
 _BE_PM_TID = "11111111-1111-1111-1111-111111111111"
 _FE_PM_TID = "22222222-2222-2222-2222-222222222222"
-_EXPECTED_FLUSHES = 2  # two seeded respawn rows → two shutdown persists
+# Two seeded respawn rows give two shutdown persists.
+_EXPECTED_FLUSHES = 2
 
 
 def _respawn_record(count: int) -> dict[str, Any]:
