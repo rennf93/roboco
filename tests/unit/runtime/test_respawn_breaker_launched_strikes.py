@@ -45,6 +45,7 @@ def _orchestrator(monkeypatch: pytest.MonkeyPatch) -> AgentOrchestrator:
     monkeypatch.setattr(orch, "_notify_stuck_agent", AsyncMock())
     monkeypatch.setattr(orch, "_coroner_wedged_postmortem", AsyncMock())
     monkeypatch.setattr(orch, "_readiness_gate", AsyncMock(return_value=None))
+    monkeypatch.setattr(orch, "_is_paused", AsyncMock(return_value=False))
     monkeypatch.setattr(
         orch, "_resolve_spawn_git_context", AsyncMock(return_value=None)
     )

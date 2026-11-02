@@ -9,6 +9,7 @@ real. The locked-down CLI options are tested with the worker module
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import dataclasses
 import json
@@ -629,3 +630,31 @@ async def test_haiku_gets_the_prompt_and_the_system_prompt(
     assert options.env["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == str(
         _ANSWER_BUDGET + _THINKING_HEADROOM
     )
+
+
+def _top_level_packages_imported_by(source: str) -> set[str]:
+    tree = ast.parse(source)
+    names = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    }
+    names |= {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+    return {name.split(".")[0] for name in names}
+
+
+def test_the_haiku_child_runs_from_source_without_the_roboco_package() -> None:
+    """The child runs as the login's owner, and the NAS image keeps /app/roboco
+    root-only (the deploy copy is owner-only): live on 2026-11-02, ``-m
+    roboco.agent_sdk.haiku_turn`` died on PermissionError for
+    /app/roboco/__init__.py. The child gets the module's source and imports no
+    roboco code."""
+    executable, isolated, flag, source = background_llm._HAIKU_TURN_COMMAND
+    assert (executable, isolated, flag) == (sys.executable, "-I", "-c")
+    assert "def main()" in source
+    assert "roboco" not in _top_level_packages_imported_by(source)

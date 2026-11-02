@@ -52,6 +52,7 @@ from typing import Any, Protocol
 import httpx
 import structlog
 
+from roboco.agent_sdk import haiku_turn
 from roboco.agent_sdk.haiku_turn import HaikuTurnOutcome, HaikuTurnRequest
 from roboco.config import settings
 from roboco.db.base import get_db_context
@@ -281,12 +282,14 @@ class OllamaBackend:
 
 
 # The child process that runs one Haiku turn (roboco/agent_sdk/haiku_turn.py).
-# ``-I``: no user site, no PYTHON* variables, no cwd on sys.path.
+# ``-I``: no user site, no PYTHON* variables, no cwd on sys.path. The child gets
+# the module's source, not its import path: it runs as the login's owner, who
+# cannot read /app/roboco when the image was built from an owner-only copy.
 _HAIKU_TURN_COMMAND: tuple[str, ...] = (
     sys.executable,
     "-I",
-    "-m",
-    "roboco.agent_sdk.haiku_turn",
+    "-c",
+    Path(haiku_turn.__file__).read_text(encoding="utf-8"),
 )
 
 # The variables the Haiku process keeps from the orchestrator's environment:

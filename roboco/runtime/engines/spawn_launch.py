@@ -316,7 +316,13 @@ class SpawnAgentEngine(_Base):
            launch a CEO container — the system acting as the human CEO.
         3. Spawn preflight (flag-gated): a non-gateway delivery role could never
            claim its work and would respawn forever — refuse + alert once.
+        4. The ``dispatch`` maintenance pause: no spawn of any kind while it is
+           on. Checked here, not per dispatch loop, because the respawn paths
+           (an agentless claim, an orphaned task, an assigned PM) never asked
+           it: live 2026-11-02, 14 agents spawned in 15 minutes while paused.
         """
+        from roboco.services.maintenance_pause import PauseScope
+
         AgentOrchestrator._safe_agent_path_segment(agent_id)
         task_id_str = str(task_id) if task_id else None
         _role = role_for_slug_or_none(agent_id)
@@ -343,6 +349,11 @@ class SpawnAgentEngine(_Base):
             if task_id_str:
                 await self._notify_stuck_agent(agent_id, task_id_str, None)
             raise AgentReadinessError(preflight_reason)
+        if await self._is_paused(PauseScope.DISPATCH):
+            raise AgentReadinessError(
+                f"dispatch is paused (maintenance pause): {agent_id} not spawned"
+                f" for task {task_id_str}; resume the pause to spawn"
+            )
 
     async def spawn_agent(
         self,
