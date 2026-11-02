@@ -63,12 +63,7 @@ const priorityLabels: Record<number, string> = {
 
 // Sorting types - exported for parent components
 export type SortField =
-  | "title"
-  | "status"
-  | "team"
-  | "priority"
-  | "assigned_to"
-  | "created_at";
+  "title" | "status" | "team" | "priority" | "assigned_to" | "created_at";
 export type SortDirection = "asc" | "desc";
 
 interface SortConfig {
@@ -541,8 +536,7 @@ const TaskTableCard = memo(function TaskTableCard({
         <ResponsiveTableCardRow label="Priority">
           <Badge
             className={
-              (priorityColors[task.priority] ?? priorityColors[2]) +
-              " text-xs"
+              (priorityColors[task.priority] ?? priorityColors[2]) + " text-xs"
             }
           >
             {priorityLabels[task.priority] ?? "P2 - Medium"}

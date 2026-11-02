@@ -99,6 +99,7 @@ function makeProject(overrides: Partial<Project> = {}): Project {
     ci_watch_enabled: false,
     ci_watch_workflow: null,
     video_engine_enabled: false,
+    entire_trails_enabled: false,
     dep_update_command: null,
     dep_update_paths: null,
     monthly_budget_usd: null,
@@ -186,7 +187,9 @@ describe("AccessCard", () => {
     api.post.mockResolvedValue({
       data: makeProject({
         access_restricted: true,
-        allowed_agents: [{ id: "uuid-bd2", slug: "be-dev-2", name: "Backend Developer 2" }],
+        allowed_agents: [
+          { id: "uuid-bd2", slug: "be-dev-2", name: "Backend Developer 2" },
+        ],
       }),
     });
     renderCard(makeProject());
@@ -195,9 +198,7 @@ describe("AccessCard", () => {
     await user.click(screen.getByRole("button", { name: /^Add$/i }));
 
     await waitFor(() =>
-      expect(api.post).toHaveBeenCalledWith(
-        "/projects/proj-1/access/uuid-bd2",
-      ),
+      expect(api.post).toHaveBeenCalledWith("/projects/proj-1/access/uuid-bd2"),
     );
     expect(toast.success).toHaveBeenCalledWith(
       "Backend Developer 2 can now access this project",
@@ -255,9 +256,7 @@ describe("AccessCard", () => {
     );
 
     await waitFor(() =>
-      expect(toast.error).toHaveBeenCalledWith(
-        "Failed to remove access: 403",
-      ),
+      expect(toast.error).toHaveBeenCalledWith("Failed to remove access: 403"),
     );
   });
 

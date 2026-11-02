@@ -865,7 +865,7 @@ async def _seed_portfolio_projects(
             agent_slug=f"be-dev-{uuid4().hex[:6]}",
             team="backend",
             role="developer",
-            model="claude-sonnet-4",
+            model="claude-sonnet-5-5",
             task_id=str(alpha_done_1.id),
             started_at=max(
                 now.replace(day=1, hour=0, minute=0, second=0, microsecond=0),

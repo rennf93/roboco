@@ -78,13 +78,13 @@ Wrap your page or layout in `PageRefreshProvider` from `@/components/providers` 
 
 The panel renders five core **coordination-event notification types** that signal task lifecycle transitions between agents:
 
-| Type | Icon | Color | Meaning |
-|------|------|-------|---------|
-| `TASK_ASSIGNMENT` | ListTodo | green | A task has been assigned to you |
-| `BLOCKER_ESCALATION` | AlertTriangle | red | A developer is blocked and escalated |
-| `REVIEW_REQUEST` | Check | purple | Your review is needed |
-| `DOCUMENTATION_REQUEST` | Info | blue | Documentation is needed |
-| `APPROVAL` | ShieldCheck | emerald | Board-level approval requested |
+| Type                    | Icon          | Color   | Meaning                              |
+| ----------------------- | ------------- | ------- | ------------------------------------ |
+| `TASK_ASSIGNMENT`       | ListTodo      | green   | A task has been assigned to you      |
+| `BLOCKER_ESCALATION`    | AlertTriangle | red     | A developer is blocked and escalated |
+| `REVIEW_REQUEST`        | Check         | purple  | Your review is needed                |
+| `DOCUMENTATION_REQUEST` | Info          | blue    | Documentation is needed              |
+| `APPROVAL`              | ShieldCheck   | emerald | Board-level approval requested       |
 
 Each notification optionally carries a `related_task_id` rendered as a deep-link to `/tasks/{id}`. For full details on types, icons, and adding new types, see [`docs/frontend/components/notification-types.md`](../docs/frontend/components/notification-types.md).
 

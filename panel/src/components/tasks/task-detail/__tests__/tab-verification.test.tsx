@@ -53,8 +53,7 @@ function setup(overrides: {
   usePrCiVerdict.mockReturnValue({
     data: overrides.ci ?? {
       available: false,
-      reason: "no route",
-      technicalDetail: "no route",
+      reason: "No CI verdict yet.",
     },
     isLoading: false,
   });
@@ -135,17 +134,34 @@ describe("TabVerification", () => {
     expect(screen.getByText("src/foo.ts:42")).toBeInTheDocument();
   });
 
-  it("renders the PR CI verdict as unavailable (the no-CI-repo case)", () => {
+  it("renders the PR CI verdict as unavailable when there is none yet", () => {
     setup({
       ci: {
         available: false,
-        reason: "Per-task PR CI verification isn't available yet.",
-        technicalDetail: "no REST route exists",
+        reason: "No CI verdict yet: the task has no pull request.",
       },
     });
 
     render(<TabVerification task={task} />);
 
     expect(screen.getByText("CI verdict unavailable")).toBeInTheDocument();
+  });
+
+  it("renders the PR head's CI verdict when there is one", () => {
+    setup({
+      ci: {
+        available: true,
+        state: "success",
+        headSha: "abc1234def",
+        failingChecks: [],
+      },
+    });
+
+    render(<TabVerification task={task} />);
+
+    expect(screen.getByText("CI passed")).toBeInTheDocument();
+    expect(
+      screen.queryByText("CI verdict unavailable"),
+    ).not.toBeInTheDocument();
   });
 });

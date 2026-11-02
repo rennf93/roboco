@@ -576,10 +576,10 @@ async def test_stop_agent_releases_claim_when_release_claim_true() -> None:
     instance.current_task_id = str(uuid4())
     orch._instances[_AGENT_ID] = instance
 
-    released: list[str] = []
+    released: list[tuple[str, str]] = []
 
     async def _fake_release(agent_id: str, task_id: str) -> None:
-        released.append((agent_id, task_id))  # type: ignore[arg-type]
+        released.append((agent_id, task_id))
 
     with ExitStack() as stack:
         for cm in _stop_agent_patches(orch):
@@ -607,10 +607,10 @@ async def test_stop_agent_does_not_release_claim_by_default() -> None:
     instance.current_task_id = str(uuid4())
     orch._instances[_AGENT_ID] = instance
 
-    released: list[str] = []
+    released: list[tuple[str, str]] = []
 
     async def _fake_release(agent_id: str, task_id: str) -> None:
-        released.append((agent_id, task_id))  # type: ignore[arg-type]
+        released.append((agent_id, task_id))
 
     with ExitStack() as stack:
         for cm in _stop_agent_patches(orch):
@@ -645,10 +645,10 @@ async def test_stop_agent_skips_release_for_provider_parked_agent() -> None:
         waiting_since=datetime.now(UTC),
     )
 
-    released: list[str] = []
+    released: list[tuple[str, str]] = []
 
     async def _fake_release(agent_id: str, task_id: str) -> None:
-        released.append((agent_id, task_id))  # type: ignore[arg-type]
+        released.append((agent_id, task_id))
 
     with ExitStack() as stack:
         for cm in _stop_agent_patches(orch):

@@ -299,16 +299,18 @@ def test_delegation_lane_devops_claims_and_delivers(
     env = expect_ok(devops.flow("give_me_work"), "devops give_me_work")
     assert env.get("task_id") == tid, f"expected task {tid}, got: {env}"
 
+    plan_text = (
+        "Add docker/roboco-sentinel.yml with the sentinel block, "
+        "commit it on the task branch, push, and open the PR against "
+        "the base branch; the file is declarative YAML with no "
+        "service or network changes."
+    )
+
     def _claim() -> dict:
         return devops.flow(
             "i_will_work_on",
             task_id=tid,
-            plan=(
-                "Add docker/roboco-sentinel.yml with the sentinel block, "
-                "commit it on the task branch, push, and open the PR against "
-                "the base branch; the file is declarative YAML with no "
-                "service or network changes."
-            ),
+            plan=plan_text,
             steps=[
                 {
                     "title": "Write the sentinel config",
@@ -336,23 +338,11 @@ def test_delegation_lane_devops_claims_and_delivers(
             open_questions=[],
         )
 
-    # Same claim-time tracing gate every author role walks.
-    expect_error(_claim(), "tracing_gap", "devops first i_will_work_on")
-    expect_ok(
-        devops.do(
-            "note",
-            scope="note",
-            task_id=tid,
-            text=(
-                "Initial assessment: a single additive YAML file under "
-                "docker/ satisfies the acceptance criteria; no compose "
-                "service, volume, or network is touched, so the infra risk "
-                "is minimal and the plan is a write/commit/PR sequence."
-            ),
-        ),
-        "devops note at claim",
+    # Same claim-time note every author role gets: the claim records its plan.
+    expect_ok(_claim(), "devops i_will_work_on")
+    assert stack.note_contents_on_task(tid) == [plan_text], (
+        "i_will_work_on did not record its plan as the at-claim note"
     )
-    expect_ok(_claim(), "devops i_will_work_on retry")
 
     workspace = stack.workspace_of(project_slug, "board", "devops-1")
     workdir = workspace / ".worktrees" / tid[:8]

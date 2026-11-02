@@ -1,0 +1,6 @@
+{
+  "body": null,
+  "method": "POST",
+  "source": "pull-sandbox:postgres:features",
+  "target": "/v1.51/images/create?fromImage=docker.io%2Flibrary%2Froboco-sandbox-pg&tag=latest"
+}

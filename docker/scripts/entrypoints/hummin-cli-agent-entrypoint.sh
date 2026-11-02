@@ -31,6 +31,9 @@
 #     sniff classification below decides rate-limit/auth parks, never the
 #     raw exit code alone.
 set -euo pipefail
+# Group-writable output: the orchestrator's workspace git user shares the
+# agent group and must be able to rewrite what this agent creates.
+umask 002
 
 command -v hummin >/dev/null || {
   echo "[hummin] hummin CLI not found on PATH — image build is broken." >&2
