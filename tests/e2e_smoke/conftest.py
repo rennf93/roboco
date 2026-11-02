@@ -40,28 +40,6 @@ def pytest_collection_modifyitems(
 
 
 @pytest.fixture(autouse=True)
-def _reset_lazy_db_holder() -> Iterator[None]:
-    """Drop the app's lazy ``_DbHolder`` engine/factory between e2e tests.
-
-    Async smoke tests that drive production code using the global lazy engine
-    (``get_db_context`` / ``get_session_factory``) rebind ``_DbHolder`` to
-    their own function-scoped event loop. If a test leaves the holder bound to
-    its (now-dead) loop, the next consumer on a different loop — the uvicorn
-    server thread handling the next test's API call, or the next test itself —
-    reuses a factory bound to a dead loop and asyncpg raises
-    ``RuntimeError: ... Future ... attached to a different loop``. Resetting
-    to ``None`` here makes every test start unbound so the first consumer
-    rebinds to its own loop. Disposal is intentionally not done here: an
-    engine bound to the uvicorn thread's loop cannot be awaited away from it.
-    """
-    yield
-    from roboco.db import base as db_base
-
-    db_base._DbHolder.engine = None
-    db_base._DbHolder.session_factory = None
-
-
-@pytest.fixture(autouse=True)
 def _isolate_per_test_tables(e2e_stack: E2EStack) -> Iterator[None]:
     """Wipe the e2e DB between tests so per-test seeds never leak across tests.
 

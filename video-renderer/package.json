@@ -2,7 +2,7 @@
   "name": "video-renderer",
   "version": "1.0.0",
   "private": true,
-  "packageManager": "pnpm@11.10.0",
+  "packageManager": "pnpm@12.16.1",
   "description": "Sidecar HTTP service: untars a motion/ composition source, renders one MP4 cut with HyperFrames, and streams the bytes back. Credential-free, git-free — reads only what it's POSTed.",
   "type": "module",
   "engines": {
@@ -13,11 +13,11 @@
     "test": "node --test"
   },
   "dependencies": {
-    "@hyperframes/engine": "^0.7.36",
-    "@hyperframes/producer": "0.7.36",
-    "express": "^5.0.0",
+    "@hyperframes/engine": "0.8.216",
+    "@hyperframes/producer": "0.8.216",
+    "express": "^5.3.0",
     "express-rate-limit": "^8.5.2",
-    "multer": "^2.0.0",
+    "multer": "^2.5.0",
     "tar": "^7.5.21"
   }
 }

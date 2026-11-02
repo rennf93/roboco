@@ -42,6 +42,7 @@ from typing import TYPE_CHECKING, Any
 import structlog
 
 from roboco.config import settings
+from roboco.foundation.identity import slug_for_uuid_or_none
 from roboco.foundation.policy import lifecycle as spec_module
 from roboco.foundation.policy import tracing as _tr
 from roboco.foundation.policy.content import (
@@ -103,8 +104,58 @@ def _extract_original_developer(task: Any) -> str | None:
     return markers.get_original_developer(task)
 
 
-class QAMixin(_Base):
-    """QA-role verbs."""
+class QAClaimMixin(_Base):
+    """``claim_review``: claiming a task for QA with its evidence (the
+    conventions findings, the video context) and the reclaim warning."""
+
+    def _review_spec_context(self, agent: Any, qa_agent_id: UUID, t: Any) -> Any:
+        """The spec Context claim_review evaluates against: actor identity,
+        team, and the original developer the task came in from (used by the
+        spec's self-review block)."""
+        return spec_module.Context(
+            actor_id=qa_agent_id,
+            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
+            agent_team=str(agent.team) if agent is not None and agent.team else None,
+            original_developer_slug=_extract_original_developer(t),
+        )
+
+    async def _reclaim_warning_and_evidence(
+        self, qa_agent_id: UUID, t: Any, task_id: UUID
+    ) -> tuple[str | None, dict[str, Any] | None]:
+        """Same-agent re-claim. Two shapes live here and the counter tells
+        them apart. Durability retry (count 1): the prior attempt
+        committed the claim but died before the agent could use the
+        evidence — re-attach it (that is what the retry is FOR, pinned by
+        test_claim_review_same_agent_retry_returns_evidence) with a
+        gentle steer. Loop re-claim (count 2+): the 2026-09-29 fleet
+        wedge, fe-qa re-claiming one task 385x — lean envelope, evidence
+        never rebuilt (the ~20k re-attach is the loop's fuel), firm
+        verdict steer."""
+        count = int(markers.get_marker(t, markers.QA_RECLAIM_COUNT, 0) or 0) + 1
+        markers.set_marker(t, markers.QA_RECLAIM_COUNT, count)
+        await self.task.session.commit()
+        if count == 1:
+            ev = await self._build_qa_claim_evidence(qa_agent_id, t, task_id)
+            return (
+                (
+                    "you ALREADY hold this review claim; the evidence below"
+                    " is re-attached in case your prior attempt was cut off."
+                    " Do NOT call claim_review again — issue the verdict:"
+                    " pass_review(...) to accept or fail_review(...) to"
+                    " request changes."
+                ),
+                ev.as_dict(),
+            )
+        return (
+            (
+                "claim_review ignored: you ALREADY hold this review claim"
+                f" (re-claim #{count}). No new review started, evidence"
+                " NOT rebuilt. Issue the verdict now — pass_review(...)"
+                " to accept or fail_review(...) to request changes — or"
+                " unclaim(...) to release the claim."
+            ),
+            None,
+        )
 
     async def claim_review(self, qa_agent_id: UUID, task_id: UUID) -> Envelope:
         """QA agent claims task in awaiting_qa for review.
@@ -148,12 +199,7 @@ class QAMixin(_Base):
                 task_id=task_id,
                 verb="claim_review",
             )
-        spec_ctx = spec_module.Context(
-            actor_id=qa_agent_id,
-            actor_slug=getattr(agent, "slug", None) if agent is not None else None,
-            agent_team=str(agent.team) if agent is not None and agent.team else None,
-            original_developer_slug=_extract_original_developer(t),
-        )
+        spec_ctx = self._review_spec_context(agent, qa_agent_id, t)
         decision = spec_module.can_invoke_intent(role, "claim_review", t, spec_ctx)
         if not decision.allowed:
             return await self._emit_rejection(
@@ -184,20 +230,34 @@ class QAMixin(_Base):
         # status requirement matches downstream. See module docstring.
         # Durability semantics (commit-before-assembly, same-agent retry
         # skip, not-authorized rejection) live in ``_claim_for_review``.
-        t, claim_rejection = await self._claim_for_review(
+        t, claim_rejection, reclaimed = await self._claim_for_review(
             qa_agent_id, task_id, t, briefing, role_str
         )
         if claim_rejection is not None:
             return claim_rejection
 
-        ev = await self._build_qa_claim_evidence(qa_agent_id, t, task_id)
-        return Envelope.ok(
+        # Same-agent re-claim shaping (durability retry vs fleet-loop lean
+        # envelope) lives in ``_reclaim_warning_and_evidence``.
+        warning: str | None = None
+        evidence: dict[str, Any] | None
+        if reclaimed:
+            warning, evidence = await self._reclaim_warning_and_evidence(
+                qa_agent_id, t, task_id
+            )
+        else:
+            ev = await self._build_qa_claim_evidence(qa_agent_id, t, task_id)
+            evidence = ev.as_dict()
+
+        env = Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
             next=spec_module._INTENT_VERBS["claim_review"].next_hint(t),
-            evidence=ev.as_dict(),
+            evidence=evidence,
             context_briefing=briefing,
         ).with_introspection(task=t, role=role_str)
+        if warning is not None:
+            env.warning = warning
+        return env
 
     async def _claim_for_review(
         self,
@@ -206,11 +266,12 @@ class QAMixin(_Base):
         t: Any,
         briefing: Any,
         role_str: str,
-    ) -> tuple[Any, Envelope | None]:
+    ) -> tuple[Any, Envelope | None, bool]:
         """Durability-boundary claim for ``claim_review``.
 
-        Returns ``(task, rejection)`` — the (possibly re-fetched) task plus
-        the first rejection, or ``None`` when the claim stands.
+        Returns ``(task, rejection, reclaimed)`` — the (possibly re-fetched)
+        task, the first rejection (or ``None`` when the claim stands), and
+        whether the task was ALREADY claimed by this same agent (re-claim).
 
         Durability boundary: commit the claim BEFORE the advisory evidence
         assembly begins. The evidence legs can take the whole 120s verb
@@ -225,24 +286,33 @@ class QAMixin(_Base):
         Same-agent retry: if the task is already claimed by THIS agent
         (a prior attempt committed the claim but the evidence assembly
         timed out), skip the re-claim and go straight to evidence rebuild.
+        A fresh claim resets the consecutive re-claim counter.
         """
         if to_python_uuid(t.active_claimant_id) != qa_agent_id:
             claimed = await self.task.qa_claim(qa_agent_id, task_id)
             if claimed is None:
-                return t, await self._emit_rejection(
-                    Envelope.not_authorized(
-                        message="this review task is already claimed by another agent",
-                        remediate="give_me_work for the next available task",
-                        context_briefing=briefing,
-                    ).with_introspection(task=t, role=role_str),
-                    agent_id=qa_agent_id,
-                    task_id=task_id,
-                    verb="claim_review",
+                return (
+                    t,
+                    await self._emit_rejection(
+                        Envelope.not_authorized(
+                            message=(
+                                "this review task is already claimed by another agent"
+                            ),
+                            remediate="give_me_work for the next available task",
+                            context_briefing=briefing,
+                        ).with_introspection(task=t, role=role_str),
+                        agent_id=qa_agent_id,
+                        task_id=task_id,
+                        verb="claim_review",
+                    ),
+                    False,
                 )
             t = claimed
+            markers.clear_marker(t, markers.QA_RECLAIM_COUNT)
             await self.task.mark_evidence_inspected(task_id)
             await self.task.session.commit()
-        return t, None
+            return t, None, False
+        return t, None, True
 
     async def _qa_convention_findings(
         self,
@@ -447,7 +517,8 @@ class QAMixin(_Base):
                 collision_context = build_collision_context(
                     task=t, siblings=siblings, actual_files=files_changed
                 )
-        except Exception as exc:  # best-effort enrichment, never breaks the verb
+        except Exception as exc:
+            # Best-effort enrichment, never breaks the verb
             logger.warning(
                 "qa_collision_context_skip", task_id=str(t.id), error=str(exc)
             )
@@ -464,6 +535,12 @@ class QAMixin(_Base):
             video_context=self._qa_video_context(t),
             evidence_gaps=evidence_gaps,
         )
+
+
+class QAReviewGatesMixin(_Base):
+    """The checks ``pass_review`` and ``fail_review`` share: the owner, spec
+    and review-text gates, the acceptance-criteria verdicts, and storing the
+    QA note."""
 
     async def _verify_qa_owner(
         self, qa_agent_id: UUID, task_id: UUID, verb: str
@@ -720,6 +797,11 @@ class QAMixin(_Base):
             task_id=task_id,
             verb=verb,
         )
+
+
+class QAPassMixin(_Base):
+    """``pass_review``: the criteria-verified entries it validates and records,
+    its final gates, and the hand-off to the documenter."""
 
     @staticmethod
     def _parse_criterion_entry(entry: Any, idx: int) -> tuple[str, str] | Envelope:
@@ -983,7 +1065,10 @@ class QAMixin(_Base):
             # would itself blow up instead of cleanly reaching the agent.
             async with self.task.session.begin_nested():
                 await findings_lib.stamp_addressed_verified(
-                    self.task.session, t.id, origin="qa"
+                    self.task.session,
+                    t.id,
+                    origin="qa",
+                    verified_by=slug_for_uuid_or_none(qa_agent_id),
                 )
             t = await runner.run_intent("pass_review", t, agent, spec_ctx)
         except Exception as exc:
@@ -1043,6 +1128,11 @@ class QAMixin(_Base):
                 f"failed ({exc}). Re-issue the notification via dm."
             )
         return None
+
+
+class QAFailMixin(_Base):
+    """``fail_review``: validating and attaching its findings, notifying the
+    developer, and the success envelope."""
 
     @staticmethod
     def _validate_fail_review_findings(
@@ -1304,3 +1394,8 @@ class QAMixin(_Base):
         if warnings:
             env.warning = " ".join(warnings)
         return env
+
+
+class QAMixin(QAClaimMixin, QAReviewGatesMixin, QAPassMixin, QAFailMixin):
+    """QA-role verbs: ``claim_review``, ``pass_review`` and ``fail_review``,
+    composed from the four mixins above."""

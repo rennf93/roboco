@@ -457,3 +457,41 @@ async def test_drop_access_denied_inert_without_project_dep() -> None:
 
     assert await c._drop_access_denied(tasks, uuid4()) == tasks
     deps.task.agent_for.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_explicit_assignee_passes_cross_cell_rule() -> None:
+    """Regression (fe-pm, 2026-09-27): the coordinator's explicit assignment
+    IS authorization. fe slices of the backend-assigned roboco-api project
+    were refused at i_will_plan four times — not_authorized on the assigned
+    cell — so fe-pm escalated five times, blocked all three roots itself,
+    and the frontend cell starved. The task's own assignee must pass the
+    access verdict without touching the rule (the POST /access grant surface
+    stays unable to widen an assigned cell)."""
+    project_id = uuid4()
+    agent_id = uuid4()
+    deps = _make_deps(check_agent_access_result=False)
+    c = Choreographer(deps)
+    deps.task.agent_for.return_value = MagicMock(id=agent_id, team="frontend")
+    task = _task_with_project(project_id)
+    task.assigned_to = agent_id
+
+    assert await c._agent_access_claim_guard(task, agent_id) is None
+    deps.project.check_agent_access.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_drop_access_denied_keeps_explicitly_assigned_cross_cell_task() -> None:
+    """The give_me_work offer pre-filter shares the access verdict, so the
+    assignee passthrough must keep an assigned cross-cell task offerable —
+    the offer-then-reject class must not reappear one layer down."""
+    deps = _make_deps(check_agent_access_result=False)
+    c = Choreographer(deps)
+    agent_id = uuid4()
+    deps.task.agent_for.return_value = MagicMock(id=agent_id, team="frontend")
+    offered = MagicMock(
+        status="pending", project=MagicMock(id=uuid4()), assigned_to=agent_id
+    )
+
+    assert await c._drop_access_denied([offered], agent_id) == [offered]
+    deps.project.check_agent_access.assert_not_awaited()

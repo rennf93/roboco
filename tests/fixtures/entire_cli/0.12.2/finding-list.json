@@ -1,0 +1,109 @@
+{
+  "counts": {
+    "Open": 0,
+    "OpenHigh": 0,
+    "OpenMedium": 0,
+    "OpenLow": 0,
+    "Resolved": 1,
+    "Dismissed": 1,
+    "Stale": 0
+  },
+  "findings": [
+    {
+      "id": "01M63Z9GX4EDM2N39FJY3AGNEC",
+      "trailId": "01M63Z91C8JH69PB5HXM2F50XH",
+      "repositoryId": "01M5ZAMQC0TBRT37110WN0S5GW",
+      "reviewId": "01M63Z9GJWJ3VYZCNRJQ3DHEYE",
+      "codeVersionId": "01M63Z97VT7FZBAXRA34ED2XX7",
+      "actorId": "01M5YQMXQRQCV3KA0GBSEACKYJ",
+      "title": null,
+      "body": "Contract finding 2: to be dismissed.",
+      "severity": "low",
+      "confidence": null,
+      "status": "dismissed",
+      "statusReason": "waived: contract",
+      "staleOutcome": "current",
+      "staleCheckedAt": null,
+      "staleCheckedCodeVersionId": null,
+      "clientId": "roboco-contract-1793282302-f2",
+      "clientIdHash": "6b740d229d0d75dfc5ab7d56649d2acc2c006df5a7a6bf749cc7027f40ba6d5a",
+      "createdAt": "2026-10-29T13:58:47.458Z",
+      "updatedAt": "2026-10-29T13:58:51.852Z",
+      "location": {
+        "id": "01M63Z9GX4BFKW2ZCRKH8V2BH6",
+        "reviewCommentId": "01M63Z9GX4EDM2N39FJY3AGNEC",
+        "codeVersionId": "01M63Z97VT7FZBAXRA34ED2XX7",
+        "granularity": "whole_change",
+        "filePath": null,
+        "startLine": null,
+        "startColumn": null,
+        "endLine": null,
+        "endColumn": null,
+        "selectedText": null,
+        "nearbyText": null,
+        "language": null
+      },
+      "discussionId": "01M63Z9GX4AB512Q15T4JV6A9N"
+    },
+    {
+      "id": "01M63Z985CEYZKAKWZRCDHPVRC",
+      "trailId": "01M63Z91C8JH69PB5HXM2F50XH",
+      "repositoryId": "01M5ZAMQC0TBRT37110WN0S5GW",
+      "reviewId": "01M63Z97W3R8TAT60F7J35RCYB",
+      "codeVersionId": "01M63Z97VT7FZBAXRA34ED2XX7",
+      "actorId": "01M5YQMXQRQCV3KA0GBSEACKYJ",
+      "title": null,
+      "body": "Contract finding: placeholder (addressed in abc1234).",
+      "severity": "high",
+      "confidence": null,
+      "status": "resolved",
+      "statusReason": "verified by contract at abc1234",
+      "staleOutcome": "current",
+      "staleCheckedAt": null,
+      "staleCheckedCodeVersionId": null,
+      "clientId": "roboco-contract-1793282302-f1",
+      "clientIdHash": "ec28d44d4bf06d68509f6f1862cbf30f4ef9eb24be12f58db378ae0bfac3e89a",
+      "createdAt": "2026-10-29T13:58:38.505Z",
+      "updatedAt": "2026-10-29T13:58:49.674Z",
+      "location": {
+        "id": "01M63Z985CVGC8ZHK54T9HW32X",
+        "reviewCommentId": "01M63Z985CEYZKAKWZRCDHPVRC",
+        "codeVersionId": "01M63Z97VT7FZBAXRA34ED2XX7",
+        "granularity": "whole_change",
+        "filePath": null,
+        "startLine": null,
+        "startColumn": null,
+        "endLine": null,
+        "endColumn": null,
+        "selectedText": null,
+        "nearbyText": null,
+        "language": null
+      },
+      "discussionId": "01M63Z985CQGCW949NMR0HR5M8"
+    }
+  ],
+  "has_more": false,
+  "trail": {
+    "id": "01M63Z8RQM7PZ41616VDVJEZR9",
+    "number": 27,
+    "url": "https://entire.com/gh/rennf93/roboco/trails/21",
+    "branch": "spike/entire-trails/contract",
+    "originalBranch": "spike/entire-trails/contract",
+    "base": "master",
+    "title": "spike/entire-trails/contract",
+    "status": "open",
+    "author": {
+      "id": "01M5YQMXQRQCV3KA0GBSEACKYJ",
+      "login": "rennf93"
+    },
+    "assignees": [
+      "rennf93"
+    ],
+    "createdAt": "2026-10-29T13:58:31.56Z",
+    "updatedAt": "2026-10-29T13:58:51.852Z",
+    "bodyDocument": {
+      "textSnapshot": "",
+      "etag": "W/\"2026-10-29T13:58:31.624486Z\""
+    }
+  }
+}

@@ -115,7 +115,7 @@ async def test_migration_096_downgrade_deletes_assignments_before_config(
         scope=AssignmentScope.AGENT_SLUG,
         scope_value=f"test-agent-{suffix}",
         provider_config_id=openrouter.id,
-        model_name="anthropic/claude-sonnet-5",
+        model_name="anthropic/claude-sonnet-5-5",
     )
     db_session.add(assignment)
     await db_session.flush()

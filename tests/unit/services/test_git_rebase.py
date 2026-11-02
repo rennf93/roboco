@@ -124,7 +124,6 @@ async def test_success_path_returns_rebased_and_does_not_call_abort(
         _WORKSPACE,
         head_branch=_HEAD,
         base_branch=_BASE,
-        git_token=_TOKEN,
     )
 
     assert result == {"status": "rebased", "unique_commits": 2}
@@ -184,7 +183,6 @@ async def test_conflict_path_calls_diff_then_abort_and_returns_conflict_files(
         _WORKSPACE,
         head_branch=_HEAD,
         base_branch=_BASE,
-        git_token=_TOKEN,
     )
 
     assert result == {"status": "conflicts", "files": ["src/a.py", "src/b.py"]}
@@ -258,7 +256,6 @@ async def test_resilience_when_both_rebase_and_abort_fail_returns_conflict_no_ex
         _WORKSPACE,
         head_branch=_HEAD,
         base_branch=_BASE,
-        git_token=_TOKEN,
     )
 
     assert result == {"status": "conflicts", "files": ["src/conflict.py"]}
@@ -306,7 +303,6 @@ async def test_diverged_path_returns_diverged_and_touches_nothing(
         _WORKSPACE,
         head_branch=_HEAD,
         base_branch=_BASE,
-        git_token=_TOKEN,
     )
 
     assert result == {"status": "diverged", "local_only": 2, "origin_only": 1}
@@ -665,9 +661,6 @@ async def test_pull_raises_validation_error_on_diverged_branch(
             ]
         ),
     )
-    monkeypatch.setattr(
-        GitService, "_token_for_workspace", AsyncMock(return_value=None)
-    )
     svc = _git_service()
     with pytest.raises(ValidationError, match="DIVERGED_BRANCH"):
         await svc.pull(_WORKSPACE)
@@ -695,9 +688,6 @@ async def test_pull_success_returns_post_pull_status(
         GitService,
         "_run_git",
         AsyncMock(side_effect=[_result(stdout=""), _result(returncode=0)]),
-    )
-    monkeypatch.setattr(
-        GitService, "_token_for_workspace", AsyncMock(return_value=None)
     )
     monkeypatch.setattr(GitService, "get_status", AsyncMock(return_value=_post_pull))
 

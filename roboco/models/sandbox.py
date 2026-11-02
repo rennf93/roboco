@@ -233,9 +233,11 @@ class _PostgresEngine(SandboxEngine):
         if not features:
             return None
         # Every name is allowlist-validated upstream; safe to interpolate as an
-        # identifier. IF NOT EXISTS so a re-provision of a warm container is a
-        # no-op rather than a not-error-but-noisy notice.
-        stmts = "; ".join(f"CREATE EXTENSION IF NOT EXISTS {f}" for f in features)
+        # identifier. Quoted, because an allowlisted name need not be a bare
+        # identifier: unquoted, uuid-ossp is a syntax error. IF NOT EXISTS so a
+        # re-provision of a warm container is a no-op rather than a
+        # not-error-but-noisy notice.
+        stmts = "; ".join(f'CREATE EXTENSION IF NOT EXISTS "{f}"' for f in features)
         return [
             [
                 "psql",
@@ -324,7 +326,19 @@ class _RedisEngine(SandboxEngine):
         return []
 
     def run_command(self, password: str) -> list[str]:
-        return ["redis-server", "--requirepass", password]
+        # --enable-module-command: MODULE LOAD is disabled by default since
+        # Redis 7. Without it every kitchen-sink MODULE LOAD dies with
+        # "MODULE command not allowed", redis-cli still exits 0 on the ERR
+        # reply so the enable step never raises, and the verify step reports
+        # the misleading "image may be missing the extension/module files"
+        # (2026-09-29: every QA redis sandbox provision failed on this).
+        return [
+            "redis-server",
+            "--requirepass",
+            password,
+            "--enable-module-command",
+            "yes",
+        ]
 
     def ready_probe(self, password: str) -> list[str]:
         return ["redis-cli", "-a", password, "ping"]

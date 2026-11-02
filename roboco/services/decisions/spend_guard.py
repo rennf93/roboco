@@ -1,7 +1,8 @@
 """The Decisions spend guard (spec 3.1, fleet-wide cost model).
 
-Only the OpenRouter fallback tier spends (the Laya sidecar is $0 by
-construction), so spend exposure is operational, not financial. Two alert
+Only the OpenRouter fallback tier spends (the self-hosted sidecar tiers,
+Clef and Laya, are $0 by construction), so spend exposure is operational,
+not financial. Two alert
 paths, both in-process (no DB, no Redis) and both fail-open (a notification
 failure must never break the decision flow):
 
@@ -12,8 +13,8 @@ failure must never break the decision flow):
 2. **Cumulative daily spend threshold.** Every successful call's
    ``usage.cost`` is summed per tier per UTC calendar day; when the
    OpenRouter total crosses ``settings.decisions_cost_alert_usd`` the CEO
-   gets ONE notification per day. The Laya tier's cost is still recorded
-   (as 0.0) but can never alert.
+   gets ONE notification per day. The self-hosted tiers' cost is still
+   recorded (as 0.0) but can never alert.
 
 State lives in a module-level dict (not bare ``global`` statements) and is
 per-process, mirroring the circuit breaker's in-memory doctrine.
@@ -85,8 +86,9 @@ def record_402(tier: str) -> None:
 def record_spend(tier: str, cost: float | None) -> None:
     """Record one successful Decisions call's ``usage.cost`` per tier per
     UTC calendar day and alert once per day when the OpenRouter cumulative
-    total crosses ``decisions_cost_alert_usd``. The Laya tier is $0 by
-    construction: recording it is free, alerting on it is impossible."""
+    total crosses ``decisions_cost_alert_usd``. The self-hosted tiers
+    (clef, laya) are $0 by construction: recording them is free, alerting
+    on them is impossible."""
     spend = float(cost or 0.0)
     today = datetime.now(UTC).date().isoformat()
     per_day = _STATE["spend_by_day"].setdefault(tier, {})
