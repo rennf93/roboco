@@ -20,7 +20,7 @@ from roboco.config import settings
 # the agent's 30 s client timeout.
 _AGENT_TOOL_PILOTS = frozenset({"preflight_diff", "triage_failure"})
 
-# Inside i_am_done / submit_up / submit_root (900 s walls), with a diff in
+# Inside i_am_done / submit_up / submit_root (1500 s walls), with a diff in
 # the state.
 _LONG_VERB_PILOTS = frozenset({"findings_mapping"})
 

@@ -486,6 +486,29 @@ def test_the_site_packages_repair_skips_a_symlinked_python_dir(
     assert stat.S_IMODE(target.stat().st_mode) == _PRE_GIT_USER_DIR_MODE
 
 
+def test_the_clone_repair_opens_a_pre_git_user_venv_for_the_agent(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Live 2026-11-02: the quality gate's ``uv sync``, run as the agent uid,
+    could not remove a dist-info file root had installed (dir 755)."""
+    _site_packages_drop_required(monkeypatch, tmp_path)
+    clone = tmp_path / "proj" / "backend" / "be-dev-1"
+    dist_info = _venv_site_packages(clone) / "decorator-5.3.1.dist-info"
+    dist_info.mkdir(mode=_PRE_GIT_USER_DIR_MODE)
+    installer = dist_info / "INSTALLER"
+    installer.write_text("uv")
+    installer.chmod(_PRE_GIT_USER_FILE_MODE)
+    package = clone / "node_modules" / "left-pad"
+    package.mkdir(parents=True, mode=_PRE_GIT_USER_DIR_MODE)
+    package.chmod(_PRE_GIT_USER_DIR_MODE)
+
+    wg.make_clone_group_writable(clone)
+
+    assert dist_info.stat().st_mode & stat.S_IRWXG == stat.S_IRWXG
+    assert installer.stat().st_mode & stat.S_IWGRP
+    assert stat.S_IMODE(package.stat().st_mode) == _PRE_GIT_USER_DIR_MODE
+
+
 def test_with_the_drop_off_the_site_packages_repair_does_nothing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
