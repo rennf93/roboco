@@ -1,7 +1,7 @@
 """``_institutional_memory``'s RAG search is bounded by
 ``institutional_memory_timeout_seconds`` — a saturated Ollama embedder must
 never eat the whole verb timeout budget and 504 a claim. See
-``roboco.services.gateway.choreographer._impl.Choreographer._institutional_memory``.
+``roboco.services.gateway.choreographer._impl.BriefingMixin._institutional_memory``.
 """
 
 from __future__ import annotations

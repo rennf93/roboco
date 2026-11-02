@@ -12,9 +12,7 @@ describe("TaskStatusChart", () => {
         ]}
       />,
     );
-    expect(
-      screen.getByText("Task Status Distribution"),
-    ).toBeInTheDocument();
+    expect(screen.getByText("Task Status Distribution")).toBeInTheDocument();
   });
 
   it("shows an empty state when every slice is zero", () => {
@@ -31,10 +29,7 @@ describe("TaskStatusChart", () => {
 
   it("does not show the empty state while loading", () => {
     render(
-      <TaskStatusChart
-        slices={[{ name: "Pending", value: 0 }]}
-        isLoading
-      />,
+      <TaskStatusChart slices={[{ name: "Pending", value: 0 }]} isLoading />,
     );
     expect(screen.queryByText("No tasks")).not.toBeInTheDocument();
   });

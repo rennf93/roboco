@@ -58,6 +58,7 @@ function makeProject(overrides: Partial<Project> = {}): Project {
     ci_watch_enabled: false,
     ci_watch_workflow: null,
     video_engine_enabled: false,
+    entire_trails_enabled: false,
     dep_update_command: null,
     dep_update_paths: null,
     monthly_budget_usd: null,
@@ -168,6 +169,7 @@ describe("BudgetOpsCard", () => {
       target: { value: "ci.yml" },
     });
     fireEvent.click(screen.getByRole("switch", { name: /Video engine/i }));
+    fireEvent.click(screen.getByRole("switch", { name: /Entire trails/i }));
     fireEvent.change(screen.getByLabelText(/Dependency-Update Command/i), {
       target: { value: "uv lock --upgrade" },
     });
@@ -188,6 +190,7 @@ describe("BudgetOpsCard", () => {
       ci_watch_enabled: true,
       ci_watch_workflow: "ci.yml",
       video_engine_enabled: true,
+      entire_trails_enabled: true,
       dep_update_command: "uv lock --upgrade",
       dep_update_paths: ["uv.lock", "pnpm-lock.yaml"],
       board_programs: [],

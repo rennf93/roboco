@@ -20,6 +20,9 @@ Deliberate Phase-2 postures (per the spec):
   equivalent; it returns a shaped 501 so ``_env_merge_status`` lands on its
   existing ``missing_ref`` branch. The shared local-git fallback is a
   follow-up, not silently faked here.
+- The server-side commit calls (``create_branch_ref``, ``update_branch_ref``,
+  ``create_commit_on_branch``) are shaped 501s too, so the release executor
+  pushes its commits with git, exactly as before GitHub's path existed.
 - Plain git (clone/fetch/push) needs no provider work: Gitea, like GitHub
   and GitLab, accepts a PAT as the Basic-auth password with the username
   ignored, so the existing ``x-access-token:<token>`` extraheader works.
@@ -35,11 +38,25 @@ import httpx
 
 from roboco.config import settings
 from roboco.exceptions import GitError
-from roboco.services.forge.base import GitProvider, RepoRef
-from roboco.services.forge.shaping import ShapedResponse
+from roboco.services.forge.base import (
+    ForgeBranches,
+    ForgeCI,
+    ForgePullRequests,
+    ForgeReleases,
+    ForgeRepository,
+    ForgeReviews,
+    GitProvider,
+    RepoRef,
+)
+from roboco.services.forge.shaping import ShapedResponse, not_implemented
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
+
+if TYPE_CHECKING:
+    from roboco.services.forge._gitea_provider_types import GiteaProviderSelf as _Base
+else:
+    _Base = object
 
 # Gitea review-event vocabulary differs from GitHub's by one word.
 _REVIEW_EVENT_MAP = {"APPROVE": "APPROVED"}
@@ -47,64 +64,17 @@ _REVIEW_EVENT_MAP = {"APPROVE": "APPROVED"}
 # Gitea commit-status states → GitHub check-run/workflow-run vocabulary.
 _STATUS_CONCLUSION = {"success": "success", "failure": "failure", "error": "failure"}
 
+_NO_SERVER_SIDE_COMMITS = (
+    "Gitea: server-side commits are not implemented; push with git"
+)
+
 
 def _default_timeout() -> int:
     return settings.git_command_timeout_seconds
 
 
-class GiteaProvider(GitProvider):
-    """Self-hosted Gitea transport, addressed by instance host.
-
-    ``scheme`` comes from the project's git_url via the registry — a LAN
-    instance serving plain http (no TLS terminator) is a real deployment
-    shape, not just a test convenience.
-    """
-
-    def __init__(self, host: str, scheme: str = "https") -> None:
-        self._host = host.strip().rstrip("/")
-        self._scheme = scheme
-        self._repo_url_re = re.compile(
-            re.escape(self._host)
-            + r"[:/]+(?P<owner>[^/]+)/(?P<repo>[^/\s]+?)(?:\.git)?$"
-        )
-
-    def _api_base(self) -> str:
-        return f"{self._scheme}://{self._host}/api/v1"
-
-    def _repo_url(self, repo: RepoRef, *segments: str) -> str:
-        base = f"{self._api_base()}/repos/{repo.owner}/{repo.repo}"
-        return "/".join([base, *segments]) if segments else base
-
-    @staticmethod
-    def _headers(token: str) -> dict[str, str]:
-        # Gitea classic PATs require the `token` scheme; Bearer is rejected.
-        return {"Authorization": f"token {token}", "Accept": "application/json"}
-
-    async def _send(
-        self,
-        method: str,
-        url: str,
-        *,
-        headers: Mapping[str, str],
-        json_body: dict[str, Any] | None = None,
-        params: dict[str, Any] | None = None,
-        client: httpx.AsyncClient | None = None,
-        timeout: float | None = None,
-    ) -> httpx.Response:
-        kwargs: dict[str, Any] = {"headers": headers}
-        if json_body is not None:
-            kwargs["json"] = json_body
-        if params is not None:
-            kwargs["params"] = params
-        if client is not None:
-            if timeout is not None:
-                kwargs["timeout"] = timeout
-            return cast("httpx.Response", await getattr(client, method)(url, **kwargs))
-        owned_timeout = timeout if timeout is not None else _default_timeout()
-        async with httpx.AsyncClient(timeout=owned_timeout) as owned_client:
-            return cast(
-                "httpx.Response", await getattr(owned_client, method)(url, **kwargs)
-            )
+class GiteaRepository(ForgeRepository, _Base):
+    """`ForgeRepository` over Gitea's REST API."""
 
     # -- identity ----------------------------------------------------------
 
@@ -116,6 +86,79 @@ class GiteaProvider(GitProvider):
                 {"host": self._host},
             )
         return RepoRef(match.group("owner"), match.group("repo"), host=self._host)
+
+    # -- repo / labels / branches / releases -------------------------------
+
+    async def get_repo(
+        self,
+        repo: RepoRef,
+        token: str,
+        *,
+        client: httpx.AsyncClient | None = None,
+        timeout: float | None = None,
+    ) -> Any:
+        """Gitea names the merge-method toggles differently — reshape onto
+        GitHub's ``allow_*`` keys the merge-method fallback reads."""
+        resp = await self._send(
+            "get",
+            self._repo_url(repo),
+            headers=self._headers(token),
+            client=client,
+            timeout=timeout,
+        )
+        if not resp.is_success:
+            return resp
+        data = resp.json()
+        if not isinstance(data, dict):
+            return resp
+        shaped = dict(data)
+        shaped["allow_merge_commit"] = data.get("allow_merge_commits", True)
+        shaped["allow_rebase_merge"] = data.get("allow_rebase", True)
+        shaped.setdefault("allow_squash_merge", True)
+        return ShapedResponse(resp, json_payload=shaped)
+
+    async def ensure_label(
+        self, repo: RepoRef, token: str, name: str, color: str
+    ) -> Any:
+        # Gitea wants the leading '#' on label colors; GitHub omits it.
+        hex_color = color if color.startswith("#") else f"#{color}"
+        return await self._send(
+            "post",
+            self._repo_url(repo, "labels"),
+            headers=self._headers(token),
+            json_body={"name": name, "color": hex_color},
+        )
+
+    async def create_org_repo(
+        self,
+        token: str,
+        org: str,
+        *,
+        name: str,
+        description: str,
+        private: bool,
+        auto_init: bool,
+        client: httpx.AsyncClient | None = None,
+        timeout: float | None = None,
+    ) -> Any:
+        return await self._send(
+            "post",
+            f"{self._api_base()}/orgs/{org}/repos",
+            headers=self._headers(token),
+            json_body={
+                "name": name,
+                "description": description,
+                "private": private,
+                "auto_init": auto_init,
+            },
+            client=client,
+            timeout=timeout,
+        )
+
+
+class GiteaPullRequests(ForgePullRequests, _Base):
+    """`ForgePullRequests` over Gitea's REST API, with the head/base filtering and
+    the GitHub-shaped pull rows it needs."""
 
     # -- pull requests -----------------------------------------------------
 
@@ -230,6 +273,21 @@ class GiteaProvider(GitProvider):
             json_body={"Do": merge_method},
         )
 
+    async def mark_pr_ready_for_review(
+        self, repo: RepoRef, token: str, pr_node_id: str
+    ) -> Any:
+        """Only GitHub-backed PRs are adopted from Entire, so nothing here
+        is ever un-drafted: a shaped 501."""
+        _ = (repo, token, pr_node_id)
+        return not_implemented(
+            f"https://{self._host}",
+            "Gitea: un-drafting a pull request is not supported",
+        )
+
+
+class GiteaReviews(ForgeReviews, _Base):
+    """`ForgeReviews` over Gitea's REST API."""
+
     async def request_reviewers(
         self, repo: RepoRef, token: str, pr_number: int, reviewers: list[str]
     ) -> Any:
@@ -250,19 +308,104 @@ class GiteaProvider(GitProvider):
             json_body={"body": body, "event": _REVIEW_EVENT_MAP.get(event, event)},
         )
 
+    async def add_labels(
+        self, repo: RepoRef, token: str, pr_number: int, labels: list[str]
+    ) -> Any:
+        return await self._send(
+            "post",
+            self._repo_url(repo, "issues", str(pr_number), "labels"),
+            headers=self._headers(token),
+            json_body={"labels": labels},
+        )
+
+    async def create_issue_comment(
+        self, repo: RepoRef, token: str, issue_number: int, body: str
+    ) -> Any:
+        return await self._send(
+            "post",
+            self._repo_url(repo, "issues", str(issue_number), "comments"),
+            headers=self._headers(token),
+            json_body={"body": body},
+        )
+
+
+class GiteaBranches(ForgeBranches, _Base):
+    """`ForgeBranches` over Gitea's REST API."""
+
     async def merge_branch(
         self, repo: RepoRef, token: str, *, base: str, head: str, commit_message: str
     ) -> Any:
         """No server-side merges API on Gitea — a shaped 501 lands
         ``_env_merge_status`` on its existing ``missing_ref`` branch."""
         _ = (repo, token, base, head, commit_message)
-        request = httpx.Request("post", f"https://{self._host}/unsupported")
-        real = httpx.Response(
-            httpx.codes.NOT_IMPLEMENTED,
-            request=request,
-            json={"message": "Gitea has no server-side branch-merge API"},
+        return not_implemented(
+            f"https://{self._host}", "Gitea has no server-side branch-merge API"
         )
-        return ShapedResponse(real)
+
+    # -- server-side commits -------------------------------------------------
+    # Not implemented for Gitea: the release executor pushes its commit with
+    # git instead. Gitea signs only the commits it creates itself, and only
+    # when the instance has a key configured (``[repository.signing]``).
+
+    async def create_branch_ref(
+        self, repo: RepoRef, token: str, branch: str, *, sha: str
+    ) -> Any:
+        _ = (repo, token, branch, sha)
+        return not_implemented(
+            f"https://{self._host}",
+            _NO_SERVER_SIDE_COMMITS,
+        )
+
+    async def update_branch_ref(
+        self, repo: RepoRef, token: str, branch: str, *, sha: str, force: bool
+    ) -> Any:
+        _ = (repo, token, branch, sha, force)
+        return not_implemented(
+            f"https://{self._host}",
+            _NO_SERVER_SIDE_COMMITS,
+        )
+
+    async def create_commit_on_branch(
+        self,
+        repo: RepoRef,
+        token: str,
+        branch: str,
+        *,
+        expected_head_oid: str,
+        headline: str,
+        additions: Mapping[str, bytes],
+        deletions: Sequence[str],
+        timeout: float | None = None,
+    ) -> Any:
+        _ = (
+            repo,
+            token,
+            branch,
+            expected_head_oid,
+            headline,
+            additions,
+            deletions,
+            timeout,
+        )
+        return not_implemented(
+            f"https://{self._host}",
+            _NO_SERVER_SIDE_COMMITS,
+        )
+
+    async def delete_branch_ref(
+        self, repo: RepoRef, token: str, branch: str, *, timeout: float | None = None
+    ) -> Any:
+        return await self._send(
+            "delete",
+            self._repo_url(repo, "branches", quote(branch, safe="")),
+            headers=self._headers(token),
+            timeout=timeout,
+        )
+
+
+class GiteaCI(ForgeCI, _Base):
+    """`ForgeCI` over Gitea's REST API, with commit statuses shaped as GitHub check
+    runs."""
 
     # -- CI ----------------------------------------------------------------
 
@@ -348,77 +491,9 @@ class GiteaProvider(GitProvider):
         real = httpx.Response(httpx.codes.OK, request=request, json={"total_count": 0})
         return ShapedResponse(real)
 
-    # -- repo / labels / branches / releases -------------------------------
 
-    async def get_repo(
-        self,
-        repo: RepoRef,
-        token: str,
-        *,
-        client: httpx.AsyncClient | None = None,
-        timeout: float | None = None,
-    ) -> Any:
-        """Gitea names the merge-method toggles differently — reshape onto
-        GitHub's ``allow_*`` keys the merge-method fallback reads."""
-        resp = await self._send(
-            "get",
-            self._repo_url(repo),
-            headers=self._headers(token),
-            client=client,
-            timeout=timeout,
-        )
-        if not resp.is_success:
-            return resp
-        data = resp.json()
-        if not isinstance(data, dict):
-            return resp
-        shaped = dict(data)
-        shaped["allow_merge_commit"] = data.get("allow_merge_commits", True)
-        shaped["allow_rebase_merge"] = data.get("allow_rebase", True)
-        shaped.setdefault("allow_squash_merge", True)
-        return ShapedResponse(resp, json_payload=shaped)
-
-    async def ensure_label(
-        self, repo: RepoRef, token: str, name: str, color: str
-    ) -> Any:
-        # Gitea wants the leading '#' on label colors; GitHub omits it.
-        hex_color = color if color.startswith("#") else f"#{color}"
-        return await self._send(
-            "post",
-            self._repo_url(repo, "labels"),
-            headers=self._headers(token),
-            json_body={"name": name, "color": hex_color},
-        )
-
-    async def add_labels(
-        self, repo: RepoRef, token: str, pr_number: int, labels: list[str]
-    ) -> Any:
-        return await self._send(
-            "post",
-            self._repo_url(repo, "issues", str(pr_number), "labels"),
-            headers=self._headers(token),
-            json_body={"labels": labels},
-        )
-
-    async def delete_branch_ref(
-        self, repo: RepoRef, token: str, branch: str, *, timeout: float | None = None
-    ) -> Any:
-        return await self._send(
-            "delete",
-            self._repo_url(repo, "branches", quote(branch, safe="")),
-            headers=self._headers(token),
-            timeout=timeout,
-        )
-
-    async def create_issue_comment(
-        self, repo: RepoRef, token: str, issue_number: int, body: str
-    ) -> Any:
-        return await self._send(
-            "post",
-            self._repo_url(repo, "issues", str(issue_number), "comments"),
-            headers=self._headers(token),
-            json_body={"body": body},
-        )
+class GiteaReleases(ForgeReleases, _Base):
+    """`ForgeReleases` over Gitea's REST API."""
 
     async def create_release(
         self,
@@ -444,28 +519,65 @@ class GiteaProvider(GitProvider):
             timeout=timeout,
         )
 
-    async def create_org_repo(
+
+class GiteaProvider(
+    GiteaBranches,
+    GiteaCI,
+    GiteaPullRequests,
+    GiteaReleases,
+    GiteaRepository,
+    GiteaReviews,
+    GitProvider,
+):
+    """Self-hosted Gitea transport, addressed by instance host.
+
+    ``scheme`` comes from the project's git_url via the registry — a LAN
+    instance serving plain http (no TLS terminator) is a real deployment
+    shape, not just a test convenience.
+    """
+
+    def __init__(self, host: str, scheme: str = "https") -> None:
+        self._host = host.strip().rstrip("/")
+        self._scheme = scheme
+        self._repo_url_re = re.compile(
+            re.escape(self._host)
+            + r"[:/]+(?P<owner>[^/]+)/(?P<repo>[^/\s]+?)(?:\.git)?$"
+        )
+
+    def _api_base(self) -> str:
+        return f"{self._scheme}://{self._host}/api/v1"
+
+    def _repo_url(self, repo: RepoRef, *segments: str) -> str:
+        base = f"{self._api_base()}/repos/{repo.owner}/{repo.repo}"
+        return "/".join([base, *segments]) if segments else base
+
+    @staticmethod
+    def _headers(token: str) -> dict[str, str]:
+        # Gitea classic PATs require the `token` scheme; Bearer is rejected.
+        return {"Authorization": f"token {token}", "Accept": "application/json"}
+
+    async def _send(
         self,
-        token: str,
-        org: str,
+        method: str,
+        url: str,
         *,
-        name: str,
-        description: str,
-        private: bool,
-        auto_init: bool,
+        headers: Mapping[str, str],
+        json_body: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
         client: httpx.AsyncClient | None = None,
         timeout: float | None = None,
-    ) -> Any:
-        return await self._send(
-            "post",
-            f"{self._api_base()}/orgs/{org}/repos",
-            headers=self._headers(token),
-            json_body={
-                "name": name,
-                "description": description,
-                "private": private,
-                "auto_init": auto_init,
-            },
-            client=client,
-            timeout=timeout,
-        )
+    ) -> httpx.Response:
+        kwargs: dict[str, Any] = {"headers": headers}
+        if json_body is not None:
+            kwargs["json"] = json_body
+        if params is not None:
+            kwargs["params"] = params
+        if client is not None:
+            if timeout is not None:
+                kwargs["timeout"] = timeout
+            return cast("httpx.Response", await getattr(client, method)(url, **kwargs))
+        owned_timeout = timeout if timeout is not None else _default_timeout()
+        async with httpx.AsyncClient(timeout=owned_timeout) as owned_client:
+            return cast(
+                "httpx.Response", await getattr(owned_client, method)(url, **kwargs)
+            )

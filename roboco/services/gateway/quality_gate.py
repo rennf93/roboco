@@ -4,22 +4,30 @@ Invoked by the developer's ``i_am_done`` submit so a red gate is caught at the
 dev's desk instead of surfacing in QA review or CI. The gate runs the project's
 configured *non-mutating* fast checks (lint, typecheck); the slow test suite
 intentionally stays on CI. The gate is fail-open on infrastructure errors (a
-missing workspace or absent toolchain never blocks a submit) and fail-closed on
-an actual check failure.
+missing workspace or a gate container that cannot start never blocks a submit)
+and fail-closed on an actual check failure. The commands run in a throwaway
+container as the agent uid: they execute the clone's own code.
 """
 
 from __future__ import annotations
 
-import asyncio
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
+
+from roboco.services.workspace_container import (
+    WorkspaceCommand,
+    run_in_workspace_container,
+)
 
 if TYPE_CHECKING:
     from pathlib import Path
 
-# A single check can be slow (mypy on a large tree); cap it generously but
-# never hang the submit verb forever.
-_GATE_TIMEOUT_SECONDS = 600
+# A single check can be slow (mypy on a large tree), and on the NAS it shares
+# the CPU with every agent's own test runs: live 2026-11-02, under load 35 on
+# 12 cores, make panel-gate hit 600 s five times in its 2-CPU container.
+# Cap it generously but never hang the submit verb forever; it must fit, with
+# the pre-push hook, inside flow_verb_slow_timeout_seconds.
+_GATE_TIMEOUT_SECONDS = 1200
 # Cap the remediate excerpt so a huge lint dump doesn't bloat the envelope.
 _OUTPUT_EXCERPT_CHARS = 2000
 
@@ -54,15 +62,16 @@ async def run_quality_commands(
 
     Every command runs (we don't stop at the first failure) so the developer
     sees all gate failures in one shot. A non-zero exit is a failure; its
-    combined stdout+stderr is captured for the remediate hint.
+    combined stdout+stderr and its exit status are captured for the
+    remediate hint.
     """
     if not commands:
         return GateResult(passed=True, skipped=True)
     failures: list[str] = []
     chunks: list[str] = []
     for name, command in commands:
-        return_code, out = await _run_one(workspace, command)
-        chunks.append(f"$ {command}\n{out.strip()}")
+        return_code, out = await _run_one(workspace, name, command)
+        chunks.append(_command_report(command, return_code, out))
         if return_code != 0:
             failures.append(name)
     return GateResult(
@@ -72,37 +81,28 @@ async def run_quality_commands(
     )
 
 
-async def _run_one(workspace: Path, command: str) -> tuple[int, str]:
-    """Run one operator-configured command string in the workspace shell."""
-    proc = await asyncio.create_subprocess_shell(
-        command,
-        cwd=str(workspace),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.STDOUT,
+def _command_report(command: str, return_code: int, output: str) -> str:
+    """``$ <command>``, what it printed, and its exit status when it failed."""
+    report = f"$ {command}\n{output.strip()}"
+    return report if return_code == 0 else f"{report}\n(exit {return_code})"
+
+
+async def _run_one(workspace: Path, name: str, command: str) -> tuple[int, str]:
+    """Run one operator-configured command string in the workspace shell.
+
+    The command executes the clone's own Makefile/tooling, which any agent
+    can rewrite, so it runs in a throwaway container as the agent uid, never
+    here as root (``roboco.services.workspace_container``). Its output is
+    everything the run printed (stdout and stderr merged in the container,
+    then whatever else reached stderr); a timeout keeps what it printed
+    before the deadline. A container that did not run the command raises
+    ``WorkspaceContainerError`` with the reason; the submit verb's gate
+    caller treats that as an infrastructure error and fails open.
+    """
+    result = await run_in_workspace_container(
+        workspace,
+        WorkspaceCommand(["sh", "-c", command], name),
+        timeout=_GATE_TIMEOUT_SECONDS,
+        merge_stderr=True,
     )
-    try:
-        stdout, _ = await asyncio.wait_for(
-            proc.communicate(), timeout=_GATE_TIMEOUT_SECONDS
-        )
-    except TimeoutError:
-        proc.kill()
-        # Reap the killed process and close the stdout/stderr pipe transports
-        # (communicate() was cancelled, so it never closed them). Without this
-        # the process lingers as a transient zombie and the FDs leak.
-        await proc.wait()
-        return 124, f"command timed out after {_GATE_TIMEOUT_SECONDS}s"
-    except asyncio.CancelledError:
-        # An outer cancellation (e.g. FlowVerbTimeoutMiddleware's own
-        # asyncio.timeout expiring around the whole submit) throws in here
-        # instead of the wait_for's own TimeoutError above — same orphaned
-        # child + leaked FDs if left unkilled. Kill/reap, then propagate.
-        proc.kill()
-        await proc.wait()
-        raise
-    rc = proc.returncode
-    if rc is None:
-        # communicate() returned without a recorded exit code (the process
-        # was terminated out-of-band). Fail closed — an unknown status must
-        # not pass the gate.
-        return 1, stdout.decode("utf-8", errors="replace")
-    return rc, stdout.decode("utf-8", errors="replace")
+    return result.returncode, result.output

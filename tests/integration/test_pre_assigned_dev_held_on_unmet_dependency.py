@@ -35,10 +35,7 @@ from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType
 from roboco.models.task import TaskCreateRequest
 from roboco.runtime.orchestrator import AgentOrchestrator
-from roboco.services.gateway.choreographer._impl import (
-    Choreographer,
-    ChoreographerDeps,
-)
+from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 from roboco.services.task import TaskService
 
 if TYPE_CHECKING:
@@ -352,7 +349,8 @@ async def test_claimed_dependency_blocked_task_is_released_to_pending(
 
     held = await svc.get(cast("UUID", dev_subtask.id))
     assert held is not None
-    owner = held.assigned_to  # capture before the guard releases the claim
+    # Capture before the guard releases the claim
+    owner = held.assigned_to
     assert owner is not None
     guard = await choreo._run_claim_guards(agent_id=fe_dev_db_id, task=held)
     assert guard is not None, "claim guard must still reject while UX is unmet"

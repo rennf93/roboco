@@ -54,14 +54,14 @@ def _split_url() -> tuple[str, str]:
     return (parts.scheme or "http"), host
 
 
-def _api(method: str, path: str, **kwargs: object) -> httpx.Response:
+def _api(method: str, path: str, json: object = None) -> httpx.Response:
     scheme, host = _split_url()
     return httpx.request(
         method,
         f"{scheme}://{host}/api/v1{path}",
         headers={"Authorization": f"token {_TOKEN}"},
         timeout=15.0,
-        **kwargs,  # type: ignore[arg-type]
+        json=json,
     )
 
 

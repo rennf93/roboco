@@ -4,12 +4,7 @@ import api from "./client";
 // TS<->Python parity test (tests/unit/foundation/policy/conventions/test_ts_parity.py).
 export type RuleLevel = "warn" | "block";
 export type DefinitionKind =
-  | "model"
-  | "route"
-  | "helper"
-  | "business_logic"
-  | "component"
-  | "other";
+  "model" | "route" | "helper" | "business_logic" | "component" | "other";
 
 export interface ConventionsModule {
   path: string;

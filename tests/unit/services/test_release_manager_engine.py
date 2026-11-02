@@ -402,6 +402,7 @@ async def test_production_assess_releases_pool_before_each_slow_io_call(
     a real, tightly-capped (size 1) pool."""
     monkeypatch.setattr(cfg, "self_heal_project_slug", SLUG)
     monkeypatch.setattr(cfg, "workspaces_root", str(tmp_path))
+    monkeypatch.setattr(cfg, "private_data_root", str(tmp_path / "private"))
 
     engine_db = create_async_engine(
         _test_database_url, pool_size=1, max_overflow=0, future=True
@@ -416,23 +417,14 @@ async def test_production_assess_releases_pool_before_each_slow_io_call(
 
         checkouts: dict[str, list[int]] = {"clone": [], "ci": []}
 
-        async def _fake_clone_repo(
-            _self: object,
-            workspace: Path,
-            _git_url: str,
-            _default_branch: str,
-            _git_token: str | None = None,
-            **_kwargs: object,  # absorbs the real signature's agent= kwarg
+        def _fake_create_read_clone(
+            _self: object, workspace: Path, _relay: object, _default_branch: str
         ) -> None:
             checkouts["clone"].append(_checkedout(engine_db))
             _init_fake_read_clone(workspace)
 
         def _fake_sync_read_clone(
-            _self: object,
-            _workspace: Path,
-            _git_url: str,
-            _default_branch: str,
-            _git_token: str | None,
+            _self: object, _workspace: Path, _relay: object, _default_branch: str
         ) -> None:
             # Already-cloned above; just record the checkout state at this
             # (also real, in production) subprocess boundary.
@@ -443,7 +435,9 @@ async def test_production_assess_releases_pool_before_each_slow_io_call(
         ) -> None:
             checkouts["ci"].append(_checkedout(engine_db))
 
-        monkeypatch.setattr(WorkspaceService, "_clone_repo", _fake_clone_repo)
+        monkeypatch.setattr(
+            WorkspaceService, "_create_read_clone", _fake_create_read_clone
+        )
         monkeypatch.setattr(WorkspaceService, "_sync_read_clone", _fake_sync_read_clone)
         monkeypatch.setattr(
             GitService, "_fetch_latest_ci_run", _fake_fetch_latest_ci_run
