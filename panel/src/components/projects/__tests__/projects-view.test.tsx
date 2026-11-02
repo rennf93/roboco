@@ -28,9 +28,10 @@ vi.mock("../project-card-grid", () => ({
 }));
 
 vi.mock("../project-table", async () => {
-  const actual = await vi.importActual<typeof import("../project-table")>(
-    "../project-table",
-  );
+  const actual =
+    await vi.importActual<typeof import("../project-table")>(
+      "../project-table",
+    );
   return {
     teamLabels: actual.teamLabels,
     ProjectTable: ({ projects }: { projects?: ProjectSummary[] }) => (
@@ -121,7 +122,11 @@ describe("sortProjects (pure)", () => {
   });
 
   it("desc preserves the relative order of ties (stable, not reversed)", () => {
-    const rows = [proj("A", "backend"), proj("B", "backend"), proj("C", "backend")];
+    const rows = [
+      proj("A", "backend"),
+      proj("B", "backend"),
+      proj("C", "backend"),
+    ];
     const out = sortProjects(rows, "cell", "desc");
     expect(out.map((r) => r.name)).toEqual(["A", "B", "C"]);
   });

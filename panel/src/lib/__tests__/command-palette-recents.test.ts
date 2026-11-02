@@ -23,7 +23,11 @@ describe("command-palette-recents", () => {
   it("moves a re-added entry to the front instead of duplicating it", () => {
     addRecent({ type: "task", id: "a", title: "Task A" });
     addRecent({ type: "task", id: "b", title: "Task B" });
-    const result = addRecent({ type: "task", id: "a", title: "Task A (renamed)" });
+    const result = addRecent({
+      type: "task",
+      id: "a",
+      title: "Task A (renamed)",
+    });
     expect(result).toEqual([
       { type: "task", id: "a", title: "Task A (renamed)" },
       { type: "task", id: "b", title: "Task B" },
@@ -36,7 +40,11 @@ describe("command-palette-recents", () => {
     }
     const result = loadRecents();
     expect(result).toHaveLength(10);
-    expect(result[0]).toEqual({ type: "agent", id: "agent-11", title: "Agent 11" });
+    expect(result[0]).toEqual({
+      type: "agent",
+      id: "agent-11",
+      title: "Agent 11",
+    });
     expect(result.find((r) => r.id === "agent-0")).toBeUndefined();
   });
 
@@ -48,7 +56,11 @@ describe("command-palette-recents", () => {
   it("filters out entries missing required shape", () => {
     window.localStorage.setItem(
       STORAGE_KEY,
-      JSON.stringify([{ type: "task", id: "ok", title: "Ok" }, { type: "bogus" }, null]),
+      JSON.stringify([
+        { type: "task", id: "ok", title: "Ok" },
+        { type: "bogus" },
+        null,
+      ]),
     );
     expect(loadRecents()).toEqual([{ type: "task", id: "ok", title: "Ok" }]);
   });

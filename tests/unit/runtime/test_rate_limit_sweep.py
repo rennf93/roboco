@@ -54,9 +54,11 @@ def _make_redis_mock(initial_store: dict[str, Any] | None = None) -> AsyncMock:
     async def _scan(
         _cursor: int,
         match: str = "*",
-        count: int = 100,  # noqa: ARG001
+        count: int = 100,
     ) -> tuple[int, list[bytes]]:
-        # Simple in-memory scan: return all matching keys in one shot
+        # Simple in-memory scan: return all matching keys in one shot, so the
+        # page-size hint the caller passes has nothing to bound.
+        del count
         matches = [k.encode() for k in store if fnmatch.fnmatch(k, match)]
         return (0, matches)
 
@@ -189,12 +191,10 @@ class TestProbeSuccessPath:
 
             await orch._probe_one_provider(provider, state)
 
-        # Only the two anthropic-parked agents should be resolved
-        assert resolve_mock.await_count == 2  # noqa: PLR2004
-        resolved_ids = {call.args[0] for call in resolve_mock.call_args_list}
-        assert agent1 in resolved_ids
-        assert agent2 in resolved_ids
-        assert "be-qa-1" not in resolved_ids
+        # Only the two anthropic-parked agents are resolved, once each; the
+        # agent parked on another provider is not.
+        resolved_ids = sorted(call.args[0] for call in resolve_mock.await_args_list)
+        assert resolved_ids == sorted([agent1, agent2])
 
     async def test_rate_limit_lifted_event_published(self) -> None:
         """RATE_LIMIT_LIFTED event is published to the bus on probe success."""

@@ -43,7 +43,10 @@ function IdentityCard({ slug }: { slug: string }) {
         <HelpTip label="Team this agent belongs to in the org hierarchy">
           <Badge
             variant="outline"
-            className={cn("text-[10px] mt-0.5 w-fit", TEAM_COLOR_CLASSES[teamColor])}
+            className={cn(
+              "text-[10px] mt-0.5 w-fit",
+              TEAM_COLOR_CLASSES[teamColor],
+            )}
           >
             {teamColor.replace("_", "/")}
           </Badge>
@@ -100,7 +103,9 @@ export function A2AContextPane({
             <div className="flex items-center justify-between gap-2">
               <HelpTip label="Current lifecycle status of the linked task">
                 <Badge
-                  variant={task.status === "completed" ? "default" : "secondary"}
+                  variant={
+                    task.status === "completed" ? "default" : "secondary"
+                  }
                   className="text-xs w-fit"
                 >
                   {task.status}

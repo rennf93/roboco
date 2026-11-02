@@ -14,9 +14,10 @@ by a specialized plugin that implements the BaseIndexPlugin interface.
 
 import asyncio
 import re
+import weakref
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, ClassVar
 from uuid import UUID
 
 import structlog
@@ -32,6 +33,11 @@ from roboco.models.optimal import (
     RAGResponse,
     SearchOutcome,
     SearchResult,
+)
+from roboco.services.background_llm import (
+    BackgroundPrompt,
+    generate_background_reply,
+    generate_background_text,
 )
 from roboco.services.optimal_brain.indexes import (
     BaseIndexPlugin,
@@ -53,6 +59,11 @@ from roboco.services.optimal_brain.indexes.playbooks import IndexPlaybookParams
 from roboco.services.optimal_brain.indexes.reviews import (
     RecordReviewParams as ReviewParams,
 )
+
+if TYPE_CHECKING:
+    from roboco.services._optimal_service_types import OptimalServiceSelf as _Base
+else:
+    _Base = object
 
 logger = structlog.get_logger()
 
@@ -134,7 +145,8 @@ class IndexingReport:
     total_attempted: int = 0
     successful: int = 0
     failed: int = 0
-    skipped: int = 0  # Already indexed or filtered out
+    # Already indexed or filtered out
+    skipped: int = 0
     failed_sources: list[tuple[str, str]] = field(default_factory=list)
     duration_seconds: float = 0.0
 
@@ -160,7 +172,8 @@ class IndexingReport:
             "skipped": self.skipped,
             "success_rate": round(self.success_rate, 1),
             "has_failures": self.has_failures,
-            "failed_sources": self.failed_sources[:10],  # Limit for API
+            # Limit for API
+            "failed_sources": self.failed_sources[:10],
             "duration_seconds": round(self.duration_seconds, 2),
         }
 
@@ -209,35 +222,9 @@ PLUGIN_REGISTRY: dict[IndexType, type[BaseIndexPlugin]] = {
 }
 
 
-class OptimalService:
-    """
-    Service for knowledge base operations and RAG queries.
-
-    Uses a plugin-based architecture over an in-house PostgreSQL/pgvector
-    vector store. Manages multiple indexes for different content types:
-
-    Existing:
-    - Code: Repositories, functions, classes
-    - Documentation: READMEs, API docs, guides
-    - Conversations: Extracted messages from agent streams
-    - Journals: Agent journal entries
-
-    New (Optimal Brain):
-    - Errors: Error patterns and solutions
-    - Standards: Coding standards, security policies, workflow rules
-    - Decisions: Architectural and design decisions
-    - Reviews: Code review feedback
-    - Learnings: Cross-agent learnings
-    """
-
-    def __init__(self) -> None:
-        self._initialized = False
-        self._plugins: dict[IndexType, BaseIndexPlugin] = {}
-        self._prompt_templates: dict[str, dict[str, Any]] = {}
-        self._indexing_task: Any = None  # Background indexing task
-        self._periodic_update_task: Any = None  # Periodic update task
-        self._file_mtimes: dict[str, float] = {}  # Track file modification times
-        self._docs_root: Path | None = None  # Cached docs root path
+class OptimalStartup(_Base):
+    """Starting the service: initializing its plugins, warming the embedder, and
+    indexing the docs on startup."""
 
     async def initialize(self) -> None:
         """
@@ -400,7 +387,8 @@ class OptimalService:
             AutoIndexReport with detailed results for each index type
         """
         report = AutoIndexReport()
-        report.code = None  # Code indexing deprecated
+        # Code indexing deprecated
+        report.code = None
 
         # Index documentation
         docs_report = await self._auto_index_docs(force=force)
@@ -434,7 +422,8 @@ class OptimalService:
         for path in possible_docs_roots:
             if path.exists() and path.is_dir():
                 docs_root = path
-                self._docs_root = path  # Cache for periodic updates
+                # Cache for periodic updates
+                self._docs_root = path
                 break
 
         if docs_root is None:
@@ -524,6 +513,69 @@ class OptimalService:
         else:
             await self.index_documentation([str(md_file)])
 
+    async def auto_index_on_startup(
+        self,
+        code_sources: list[str] | None = None,
+        docs_sources: list[str] | None = None,
+        force: bool = False,
+    ) -> dict[str, int]:
+        """
+        Auto-index docs if indexes are empty.
+
+        Called during bootstrap to ensure RAG has content to search.
+
+        NOTE: Code indexing has been deprecated.
+
+        Args:
+            code_sources: DEPRECATED - ignored
+            docs_sources: Paths to index for docs (default: auto-detect)
+            force: Force re-index even if not empty
+
+        Returns:
+            Dict with counts: {"code": 0, "docs": M}
+        """
+        # Deprecated
+        _ = code_sources
+        if not self._initialized:
+            await self.initialize()
+
+        if docs_sources is None:
+            # Try Docker paths first, then local
+            for path in ["/app/docs", "docs/"]:
+                if Path(path).exists():
+                    docs_sources = [path]
+                    break
+            docs_sources = docs_sources or ["docs/"]
+
+        # Code always 0 - deprecated
+        result = {"code": 0, "docs": 0}
+
+        # Check docs index
+        docs_plugin = self._get_plugin(IndexType.DOCUMENTATION)
+        docs_count = await docs_plugin.count()
+
+        if docs_count == 0 or force:
+            logger.info(
+                "Auto-indexing documentation",
+                sources=docs_sources,
+                reason="empty" if docs_count == 0 else "forced",
+            )
+            result["docs"] = await self.index_documentation(
+                docs_sources, project="roboco"
+            )
+
+        if result["docs"] > 0:
+            logger.info("Auto-indexing complete", doc_files=result["docs"])
+        else:
+            logger.info("Indexes already populated, skipping auto-index")
+
+        return result
+
+
+class OptimalPeriodicUpdate(_Base):
+    """The periodic update: scanning the docs root for changed and deleted files,
+    reconciling deletions, and re-indexing."""
+
     # =========================================================================
     # PERIODIC UPDATE (File Change Detection)
     # =========================================================================
@@ -567,7 +619,6 @@ class OptimalService:
                 break
             except Exception as e:
                 logger.error("Periodic update check failed", error=str(e))
-                # Continue running despite errors
 
     def _resolve_docs_root(self) -> Path | None:
         """Resolve and cache the docs root directory."""
@@ -782,64 +833,10 @@ class OptimalService:
                 deleted=total_deleted,
             )
 
-    async def close(self) -> None:
-        """Cleanup resources."""
-        import contextlib
 
-        # Cancel the startup indexing task FIRST — it can still be mid-flight
-        # (slow Ollama, large repo) and writes through the plugins cleared
-        # below. Cancelling before clearing prevents writes against closed
-        # plugins. Its tail also starts the periodic task, so cancel it first.
-        if self._indexing_task and not self._indexing_task.done():
-            self._indexing_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._indexing_task
-
-        # Cancel periodic update task
-        if self._periodic_update_task and not self._periodic_update_task.done():
-            self._periodic_update_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._periodic_update_task
-
-        for plugin in self._plugins.values():
-            await plugin.close()
-        self._plugins.clear()
-        self._initialized = False
-
-        # Close shared embedder
-        from roboco.services.optimal_brain.shared_embedder import close_shared_embedder
-
-        await close_shared_embedder()
-        logger.info("OptimalService closed")
-
-    def _get_plugin(self, index_type: IndexType) -> BaseIndexPlugin:
-        """Get the plugin for an index type.
-
-        Raises a clear error when a plugin is missing (e.g. removed or
-        failed to initialize), rather than leaking a bare KeyError.
-        """
-        if not self._initialized:
-            raise RuntimeError(
-                "OptimalService not initialized. Call initialize() first."
-            )
-        plugin = self._plugins.get(index_type)
-        if plugin is None:
-            available = sorted(t.value for t in self._plugins)
-            raise RuntimeError(
-                f"No plugin registered for index type '{index_type.value}'. "
-                f"Available: {available}. "
-                "This usually means the index is disabled or failed to initialize."
-            )
-        return plugin
-
-    def is_index_registered(self, index_type: IndexType) -> bool:
-        """Whether a live plugin is registered for *index_type*.
-
-        Distinguishes a valid-but-deprecated index (e.g. ``code``) from an
-        active one, so callers can return 404 instead of leaking a 500 from
-        :meth:`_get_plugin`.
-        """
-        return self._initialized and index_type in self._plugins
+class OptimalDocsIndexing(_Base):
+    """Indexing code, documentation, journal entries, playbooks and vault notes, the
+    tracking rows for what is indexed, and unindexing."""
 
     # =========================================================================
     # INDEXING OPERATIONS (Existing - Backwards Compatible)
@@ -858,7 +855,8 @@ class OptimalService:
         - Poor retrieval quality with current embedding model
         - Better results achieved by focusing on documentation/standards
         """
-        _ = sources, project, max_files  # Unused
+        # Unused
+        _ = sources, project, max_files
         logger.warning("index_code() is deprecated and does nothing")
         return 0
 
@@ -1254,6 +1252,11 @@ class OptimalService:
                 error=str(exc),
             )
 
+
+class OptimalKnowledgeIndexing(_Base):
+    """Indexing what the company learns: errors, standards and the standards file,
+    decisions, reviews and learnings."""
+
     # =========================================================================
     # INDEXING OPERATIONS (New - Optimal Brain)
     # =========================================================================
@@ -1440,6 +1443,11 @@ class OptimalService:
 
         return count
 
+
+class OptimalSearch(_Base):
+    """Searching: across indexes and one index, with gaps and citations, and the
+    synthesized answer to a query."""
+
     # =========================================================================
     # SEARCH OPERATIONS
     # =========================================================================
@@ -1563,7 +1571,8 @@ class OptimalService:
                     f"{index_type.value} unavailable: timed out after "
                     f"{_PER_INDEX_SEARCH_TIMEOUT:.0f}s"
                 )
-            buf.stats[index_type.value] = -1  # -1 indicates error
+            # -1 indicates error
+            buf.stats[index_type.value] = -1
             buf.errors[index_type.value] = (
                 f"Timed out after {_PER_INDEX_SEARCH_TIMEOUT:.0f}s"
             )
@@ -1578,7 +1587,8 @@ class OptimalService:
                 gaps.append(
                     f"{index_type.value} unavailable: failed: {type(e).__name__}"
                 )
-            buf.stats[index_type.value] = -1  # -1 indicates error
+            # -1 indicates error
+            buf.stats[index_type.value] = -1
             buf.errors[index_type.value] = f"failed: {type(e).__name__}: {e}"
             logger.warning(
                 "RAG search failed for index",
@@ -1597,7 +1607,8 @@ class OptimalService:
                     f"{index_type.value} unavailable: failed: "
                     f"{outcome.error_message or 'unknown error'}"
                 )
-            buf.stats[index_type.value] = -1  # -1 indicates error
+            # -1 indicates error
+            buf.stats[index_type.value] = -1
             buf.errors[index_type.value] = outcome.error_message or "Unknown"
             logger.warning(
                 "RAG search failed for index",
@@ -1773,91 +1784,43 @@ class OptimalService:
             "Provide a detailed, helpful response:"
         )
 
-    async def _handle_synthesis_response(
-        self,
-        resp: Any,
-        attempt: int,
-    ) -> tuple[str | None, bool]:
-        """Interpret an LLM response; returns (answer, should_retry).
-
-        - answer is the synthesized text if available, else None.
-        - should_retry is False for terminal errors, True if retry may help.
-        """
-        import httpx
-
-        if resp.is_success:
-            data = resp.json()
-            answer = self._strip_think_tags(data["choices"][0]["message"]["content"])
-            if answer:
-                return answer, False
-            logger.warning("LLM response was all thinking tags")
-            return None, False
-
-        if resp.status_code >= httpx.codes.INTERNAL_SERVER_ERROR:
-            logger.warning(
-                "Synthesis LLM server error",
-                status=resp.status_code,
-                attempt=attempt + 1,
-            )
-            return None, True
-
-        logger.warning("Synthesis LLM failed", status=resp.status_code)
-        return None, False
-
     async def _synthesize_from_citations(
         self,
         query: str,
         citations: list[SearchResult],
     ) -> str:
         """
-        Synthesize an answer from aggregated citations using the local LLM.
+        Synthesize an answer from aggregated citations with the background LLM.
 
         Called when individual indexes returned citations but no LLM answer
-        (e.g., due to timeouts or errors). Includes retry logic for transient
-        failures.
+        (e.g., due to timeouts or errors). The background LLM client falls
+        back from Ollama to Claude Haiku on its own; when neither answers, the
+        reply is a direct extract of the citations.
         """
-        import httpx
-
-        from roboco.config import settings
-
         if not citations:
             return ""
 
         context = self._build_synthesis_context(citations)
-        prompt = self._build_synthesis_prompt(query, context)
-
-        max_retries = 3
-        retry_delay_base = 0.5
-
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            for attempt in range(max_retries):
-                try:
-                    resp = await client.post(
-                        f"{settings.local_llm_base_url}/chat/completions",
-                        json={
-                            "model": settings.local_llm_model,
-                            "messages": [{"role": "user", "content": prompt}],
-                            "max_tokens": 4096,
-                            "options": {"num_ctx": 8192},
-                        },
-                    )
-                    answer, should_retry = await self._handle_synthesis_response(
-                        resp, attempt
-                    )
-                    if answer:
-                        return answer
-                    if not should_retry:
-                        break
-                except (httpx.TimeoutException, httpx.ConnectError) as e:
-                    logger.warning("Synthesis LLM error", attempt=attempt + 1, error=e)
-                except Exception as e:
-                    logger.warning("Synthesis failed", error=str(e))
-                    break
-
-                if attempt < max_retries - 1:
-                    await asyncio.sleep(retry_delay_base * (2**attempt))
-
+        reply_text = await generate_background_text(
+            BackgroundPrompt(
+                purpose="rag.synthesis",
+                user_prompt=self._build_synthesis_prompt(query, context),
+                max_tokens=4096,
+                timeout_seconds=30.0,
+                ollama_num_ctx=8192,
+            )
+        )
+        if reply_text is not None:
+            answer = self._strip_think_tags(reply_text)
+            if answer:
+                return answer
+            logger.warning("LLM response was all thinking tags")
         return self._build_fallback_summary(citations)
+
+
+class OptimalSpecializedSearch(_Base):
+    """Searches over one kind of knowledge: errors, standards, decisions, learnings,
+    and a file's reviews."""
 
     # =========================================================================
     # SPECIALIZED SEARCH (Optimal Brain)
@@ -1928,6 +1891,11 @@ class OptimalService:
             return await plugin.get_reviews_for_file(file_path, top_k)
         outcome = await plugin.search(query=f"review {file_path}", top_k=top_k)
         return outcome.results
+
+
+class OptimalIndexStats(_Base):
+    """Index statistics and staleness: per-index and overall stats, stale source
+    files, and when each index was last refreshed."""
 
     # =========================================================================
     # UTILITY OPERATIONS
@@ -2053,7 +2021,8 @@ class OptimalService:
         from datetime import UTC, datetime
 
         stale_files: list[str] = []
-        for source in indexed_sources[:100]:  # Limit check to 100 files
+        # Limit check to 100 files
+        for source in indexed_sources[:100]:
             source_path = Path(source)
             if not source_path.exists():
                 continue
@@ -2062,7 +2031,8 @@ class OptimalService:
                 if mtime > last_indexed:
                     stale_files.append(source)
             except OSError:
-                pass  # Skip files we can't stat
+                # Skip files we can't stat
+                pass
         return stale_files
 
     @staticmethod
@@ -2160,61 +2130,10 @@ class OptimalService:
         result["needs_reindex"] = len(result["stale_indexes"]) > 0
         return result
 
-    async def auto_index_on_startup(
-        self,
-        code_sources: list[str] | None = None,
-        docs_sources: list[str] | None = None,
-        force: bool = False,
-    ) -> dict[str, int]:
-        """
-        Auto-index docs if indexes are empty.
 
-        Called during bootstrap to ensure RAG has content to search.
-
-        NOTE: Code indexing has been deprecated.
-
-        Args:
-            code_sources: DEPRECATED - ignored
-            docs_sources: Paths to index for docs (default: auto-detect)
-            force: Force re-index even if not empty
-
-        Returns:
-            Dict with counts: {"code": 0, "docs": M}
-        """
-        _ = code_sources  # Deprecated
-        if not self._initialized:
-            await self.initialize()
-
-        if docs_sources is None:
-            # Try Docker paths first, then local
-            for path in ["/app/docs", "docs/"]:
-                if Path(path).exists():
-                    docs_sources = [path]
-                    break
-            docs_sources = docs_sources or ["docs/"]
-
-        result = {"code": 0, "docs": 0}  # code always 0 - deprecated
-
-        # Check docs index
-        docs_plugin = self._get_plugin(IndexType.DOCUMENTATION)
-        docs_count = await docs_plugin.count()
-
-        if docs_count == 0 or force:
-            logger.info(
-                "Auto-indexing documentation",
-                sources=docs_sources,
-                reason="empty" if docs_count == 0 else "forced",
-            )
-            result["docs"] = await self.index_documentation(
-                docs_sources, project="roboco"
-            )
-
-        if result["docs"] > 0:
-            logger.info("Auto-indexing complete", doc_files=result["docs"])
-        else:
-            logger.info("Indexes already populated, skipping auto-index")
-
-        return result
+class OptimalPromptsAndHealth(_Base):
+    """Prompt templates, clearing and refreshing an index, listing its documents,
+    and the embedding, LLM and vector store health checks."""
 
     # =========================================================================
     # PROMPT TEMPLATE MANAGEMENT
@@ -2327,39 +2246,25 @@ class OptimalService:
         return False
 
     async def _check_llm_health(self, details: dict[str, Any], timeout: float) -> bool:
-        """Test LLM (Ollama) connectivity; record result in `details`."""
-        import httpx
-
-        from roboco.config import settings
-
-        try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                resp = await client.post(
-                    f"{settings.local_llm_base_url}/chat/completions",
-                    json={
-                        "model": settings.local_llm_model,
-                        "messages": [{"role": "user", "content": "ping"}],
-                        "max_tokens": 5,
-                    },
-                )
-                if resp.is_success:
-                    details["llm_model"] = settings.local_llm_model
-                    details["llm_base_url"] = settings.local_llm_base_url
-                    return True
-                # A non-2xx (e.g. Ollama Cloud 429 weekly-limit) is NOT an
-                # httpx exception, so record the status + upstream message
-                # instead of returning a bare, diagnostic-less False.
-                reason = resp.text[:200]
-                try:
-                    body = resp.json()
-                    if isinstance(body, dict) and body.get("error"):
-                        reason = str(body["error"])
-                except Exception:
-                    pass
-                details["llm_error"] = f"HTTP {resp.status_code}: {reason}"
-        except Exception as e:
-            details["llm_error"] = str(e)
-        return False
+        """Ping the background LLM the way RAG synthesis reaches it; record in
+        `details` which backend answered, why any backend before it failed, or
+        why every backend failed."""
+        reply = await generate_background_reply(
+            BackgroundPrompt(
+                purpose="rag.health_check",
+                user_prompt="ping",
+                max_tokens=5,
+                timeout_seconds=timeout,
+            )
+        )
+        if reply.text is None:
+            details["llm_error"] = reply.describe_failures()
+            return False
+        details["llm_backend"] = reply.backend
+        details["llm_model"] = reply.model
+        if reply.failures:
+            details["llm_fallback_reason"] = reply.describe_failures()
+        return True
 
     async def _check_vector_store_health(
         self, details: dict[str, Any], timeout: float
@@ -2405,50 +2310,177 @@ class OptimalService:
         return embedding_ok, llm_ok, vector_ok, details
 
 
-class _OptimalServiceHolder:
-    """Holder for singleton OptimalService instance."""
-
-    instance: OptimalService | None = None
-    lock: asyncio.Lock | None = None
-
-
-def _get_init_lock() -> asyncio.Lock:
-    """Return the init lock, lazily bound to the running event loop.
-
-    The lock is created on first use (not at import time) so it binds to the
-    loop that is actually running; a lock created at import time would bind to
-    the wrong loop and raise "bound to a different event loop".
+class OptimalService(
+    OptimalDocsIndexing,
+    OptimalIndexStats,
+    OptimalKnowledgeIndexing,
+    OptimalPeriodicUpdate,
+    OptimalPromptsAndHealth,
+    OptimalSearch,
+    OptimalSpecializedSearch,
+    OptimalStartup,
+):
     """
-    if _OptimalServiceHolder.lock is None:
-        _OptimalServiceHolder.lock = asyncio.Lock()
-    return _OptimalServiceHolder.lock
+    Service for knowledge base operations and RAG queries.
+
+    Uses a plugin-based architecture over an in-house PostgreSQL/pgvector
+    vector store. Manages multiple indexes for different content types:
+
+    Existing:
+    - Code: Repositories, functions, classes
+    - Documentation: READMEs, API docs, guides
+    - Conversations: Extracted messages from agent streams
+    - Journals: Agent journal entries
+
+    New (Optimal Brain):
+    - Errors: Error patterns and solutions
+    - Standards: Coding standards, security policies, workflow rules
+    - Decisions: Architectural and design decisions
+    - Reviews: Code review feedback
+    - Learnings: Cross-agent learnings
+    """
+
+    def __init__(self) -> None:
+        self._initialized = False
+        self._plugins: dict[IndexType, BaseIndexPlugin] = {}
+        self._prompt_templates: dict[str, dict[str, Any]] = {}
+        # Background indexing task
+        self._indexing_task: Any = None
+        # Periodic update task
+        self._periodic_update_task: Any = None
+        # Track file modification times
+        self._file_mtimes: dict[str, float] = {}
+        # Cached docs root path
+        self._docs_root: Path | None = None
+
+    # Continue running despite errors
+
+    async def close(self) -> None:
+        """Cleanup resources."""
+        import contextlib
+
+        # Cancel the startup indexing task FIRST — it can still be mid-flight
+        # (slow Ollama, large repo) and writes through the plugins cleared
+        # below. Cancelling before clearing prevents writes against closed
+        # plugins. Its tail also starts the periodic task, so cancel it first.
+        if self._indexing_task and not self._indexing_task.done():
+            self._indexing_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._indexing_task
+
+        # Cancel periodic update task
+        if self._periodic_update_task and not self._periodic_update_task.done():
+            self._periodic_update_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._periodic_update_task
+
+        for plugin in self._plugins.values():
+            await plugin.close()
+        self._plugins.clear()
+        self._initialized = False
+
+        # Close shared embedder
+        from roboco.services.optimal_brain.shared_embedder import close_shared_embedder
+
+        await close_shared_embedder()
+        logger.info("OptimalService closed")
+
+    def _get_plugin(self, index_type: IndexType) -> BaseIndexPlugin:
+        """Get the plugin for an index type.
+
+        Raises a clear error when a plugin is missing (e.g. removed or
+        failed to initialize), rather than leaking a bare KeyError.
+        """
+        if not self._initialized:
+            raise RuntimeError(
+                "OptimalService not initialized. Call initialize() first."
+            )
+        plugin = self._plugins.get(index_type)
+        if plugin is None:
+            available = sorted(t.value for t in self._plugins)
+            raise RuntimeError(
+                f"No plugin registered for index type '{index_type.value}'. "
+                f"Available: {available}. "
+                "This usually means the index is disabled or failed to initialize."
+            )
+        return plugin
+
+    def is_index_registered(self, index_type: IndexType) -> bool:
+        """Whether a live plugin is registered for *index_type*.
+
+        Distinguishes a valid-but-deprecated index (e.g. ``code``) from an
+        active one, so callers can return 404 instead of leaking a 500 from
+        :meth:`_get_plugin`.
+        """
+        return self._initialized and index_type in self._plugins
+
+
+class _OptimalServiceHolder:
+    """The OptimalService of each event loop, and the lock that builds it.
+
+    A service's vector stores hold asyncpg pools, which belong to the loop
+    that opened them, as database engines do (``roboco.db.base._PoolEngines``).
+    Production runs one loop, so this holds one service. A test process runs
+    several (each test's loop, the e2e harness's uvicorn threads), and each
+    gets its own service instead of using, or closing, another loop's pools.
+    Whoever owns a loop closes its service before the loop ends
+    (``close_optimal_service``): once the loop is gone, nothing can.
+    """
+
+    instances: ClassVar[
+        weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, OptimalService]
+    ] = weakref.WeakKeyDictionary()
+    init_locks: ClassVar[
+        weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Lock]
+    ] = weakref.WeakKeyDictionary()
+
+
+def _get_init_lock(loop: asyncio.AbstractEventLoop) -> asyncio.Lock:
+    """``loop``'s init lock: an ``asyncio.Lock`` can only wait on one loop."""
+    lock = _OptimalServiceHolder.init_locks.get(loop)
+    if lock is None:
+        lock = _OptimalServiceHolder.init_locks[loop] = asyncio.Lock()
+    return lock
 
 
 async def get_optimal_service() -> OptimalService:
-    """Get or create the OptimalService instance.
+    """Get or create the running loop's OptimalService.
 
     The instance is only published *after* ``initialize()`` completes. A lock
     serializes concurrent first-callers so a second coroutine can never observe
     a half-built, ``_initialized == False`` singleton mid-initialization (which
     previously surfaced as "OptimalService not initialized" during indexing).
     """
-    if _OptimalServiceHolder.instance is not None:
-        return _OptimalServiceHolder.instance
+    loop = asyncio.get_running_loop()
+    service = _OptimalServiceHolder.instances.get(loop)
+    if service is not None:
+        return service
 
-    async with _get_init_lock():
+    async with _get_init_lock(loop):
         # Re-check under the lock: another coroutine may have built it while
         # we waited to acquire.
-        if _OptimalServiceHolder.instance is None:
+        service = _OptimalServiceHolder.instances.get(loop)
+        if service is None:
             service = OptimalService()
-            await service.initialize()
-            _OptimalServiceHolder.instance = service
-    return _OptimalServiceHolder.instance
+            try:
+                await service.initialize()
+            except BaseException:
+                # Unpublished, so close_optimal_service can't reach it: release
+                # the stores of the plugins that did initialize. A shutdown
+                # that cancels a first request's initialize lands here too.
+                await service.close()
+                raise
+            _OptimalServiceHolder.instances[loop] = service
+    return service
 
 
 async def close_optimal_service() -> None:
-    """Close the OptimalService instance."""
-    if _OptimalServiceHolder.instance is not None:
-        await _OptimalServiceHolder.instance.close()
-        _OptimalServiceHolder.instance = None
-    # Drop the lock so the next initialization rebinds to the running loop.
-    _OptimalServiceHolder.lock = None
+    """Close the running loop's OptimalService.
+
+    Another loop's is that loop's to close (see ``_OptimalServiceHolder``).
+    """
+    loop = asyncio.get_running_loop()
+    _OptimalServiceHolder.init_locks.pop(loop, None)
+    service = _OptimalServiceHolder.instances.pop(loop, None)
+    if service is not None:
+        await service.close()
