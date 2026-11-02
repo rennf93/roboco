@@ -4,7 +4,7 @@ In June 2026, ETR surveyed 21 enterprise technology leaders on Cursor spend. 12 
 
 Source: [ETR — The Cursor Trade: Seat Growth Meets the Agentic Shift](https://research.etr.ai/etr-data-drop/the-cursor-trade-seat-growth-meets-the-agentic-shift)
 
-**Response decision:** no product change is warranted. The README lede and Overview now lead with multi-agent orchestration instead of editing (the README edit is a sibling task, owned by fe-dev-1). RoboCo is not an IDE and does not compete as one. This note records what the signal says, what changed, and why, checked against this codebase rather than assumed.
+**Response decision:** no product change is warranted. Only the messaging changed: the README lede and Overview now lead with multi-agent orchestration (that edit ships in a sibling task, owned by fe-dev-1). RoboCo is not an IDE and does not compete as one. This note records what the signal says, what changed, and why, checked against this codebase rather than assumed.
 
 ## What changed
 
@@ -24,7 +24,7 @@ Source: [ETR — The Cursor Trade: Seat Growth Meets the Agentic Shift](https://
 2. **Orchestration is enforced in code.** The task lifecycle lives in `roboco/foundation/policy/lifecycle.py`. Every status transition is role-checked there, so a developer implements, QA reviews, and a PM merges, and no role can skip a stage.
 3. **Parallel work with dependency ordering.** Delegation stamps each sibling task's wave from the collision graph, so independent tasks tie and run in parallel while colliding tasks run in order (`stamp_wave_sequence`; sequence-drift fix #681 in the CHANGELOG). MegaTask batches sequence several tasks across projects the same way (`roboco/services/sequencing.py`).
 4. **Independent review before merge.** A separate QA role and a separate `pr_reviewer` role review each task, and the in-path PR-review gate (`awaiting_pr_review`) sits before the PM merge. Only the CEO approves a root PR into master (`awaiting_ceo_approval`).
-5. **Model choice is not locked to one vendor.** `roboco/llm/providers/` carries Claude Code, Grok, Gemini, Codex, Kimi, OpenRouter, Nebius, and Hummin provider implementations. Claude is the default, so Claude Code spend and RoboCo are not in conflict.
+5. **Model choice is not locked to one vendor.** `roboco/llm/providers/` carries Claude Code, Grok, Gemini, Codex, Kimi, OpenRouter, Nebius, and Hummin provider implementations. Claude is the default.
 6. **Self-hosted under AGPL-3.0.** The repository `LICENSE` is GNU AGPLv3.
 
 ## What we do not claim
