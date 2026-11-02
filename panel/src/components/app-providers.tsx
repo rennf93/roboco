@@ -7,6 +7,7 @@ import { useState } from "react";
 import { Toaster } from "@/components/ui/sonner";
 import { PageRefreshProvider } from "@/components/providers";
 import { useAgentRosterSync } from "@/hooks/use-agents";
+import { shouldRetryQuery } from "@/lib/query-retry";
 
 // Keeps the agent display-name resolver (agent-utils) in sync with the live
 // `/api/agents` roster. Must live inside QueryClientProvider. Renders nothing.
@@ -30,7 +31,9 @@ export function Providers({ children }: { children: React.ReactNode }) {
             refetchOnWindowFocus: false,
             // Don't refetch on reconnect by default
             refetchOnReconnect: false,
-            retry: 1,
+            // Replay only a request the server never answered (see
+            // shouldRetryQuery): an HTTP error is never replayed here.
+            retry: shouldRetryQuery,
           },
         },
       }),

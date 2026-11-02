@@ -10,7 +10,7 @@ There is **no** `roboco_message_*`, `roboco_notify_send`, or `roboco_session_*` 
 notify(target="be-dev-1", text="Task ready for you", priority="normal", task_id=task_id)
 ```
 
-`priority` is `normal | high | urgent`. `task_id` auto-injects from the active task when omitted.
+`priority` is `normal | high | urgent`. An omitted `task_id` is the one task whose claim you hold; holding several (or none while you have assigned work) is refused with `missing=['task_id']` and the candidates. A Board member's notification stays off-task when it is not about its one assigned task (a broadcast).
 
 `notify` rejects **human-only recipients** (`prompter`, `secretary`) — they have no agent ack path, so an ack-required alert to them would sit unacked forever. The CEO is allowed (acks via the panel).
 

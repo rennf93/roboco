@@ -236,6 +236,12 @@ class Project(TimestampMixin):
         description="Opt this project into the video engine (authoring into motion/)",
     )
 
+    # Entire trails opt-in (global ROBOCO_ENTIRE_TRAILS_ENABLED arms the bridge)
+    entire_trails_enabled: bool = Field(
+        default=False,
+        description="Mirror this GitHub project's task trees onto Entire trails",
+    )
+
     # Dependency-update bot opt-in
     dep_update_command: str | None = Field(
         default=None,
@@ -390,6 +396,7 @@ class ProjectUpdate(RobocoBase):
     ci_watch_enabled: bool | None = None
     ci_watch_workflow: str | None = None
     video_engine_enabled: bool | None = None
+    entire_trails_enabled: bool | None = None
     dep_update_command: str | None = None
     dep_update_paths: list[str] | None = None
     monthly_budget_usd: float | None = Field(default=None, gt=0)

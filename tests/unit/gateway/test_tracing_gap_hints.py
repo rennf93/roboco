@@ -183,3 +183,19 @@ async def test_acceptance_criteria_grouped_into_one_hint() -> None:
     assert "PR opened" in remediate
     # Single-hint case → no "Multiple requirements" preamble.
     assert "Multiple requirements missing" not in remediate
+
+
+def test_missing_decision_hint_points_at_the_verbs_own_argument() -> None:
+    """Every verb that requires journal:decision records its own reason /
+    notes / subtask / findings as the decision, so the key only goes missing
+    when that argument was empty. The old hint ("call note(scope='decision')
+    ... before complete") named complete for an unblock or escalate_up, and
+    sent the PM to a note the content gate refuses on a task it does not
+    hold (be-pm on 11a83407, main-pm on 86ed0eab, 2026-10-28)."""
+    hint = Choreographer._hint_for_missing_key("journal:decision", uuid4())
+
+    assert hint is not None
+    assert "note(" not in hint
+    assert "before complete" not in hint
+    for argument in ("reason", "notes", "findings"):
+        assert argument in hint

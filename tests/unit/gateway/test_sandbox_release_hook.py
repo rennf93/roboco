@@ -85,9 +85,11 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
 
 @pytest.mark.asyncio
 async def test_helper_noop_when_orchestrator_missing() -> None:
-    c = Choreographer(_make_deps())  # orchestrator defaults to None
+    # orchestrator defaults to None
+    c = Choreographer(_make_deps())
 
-    await c._teardown_sandbox_best_effort(uuid4())  # must not raise
+    # must not raise
+    await c._teardown_sandbox_best_effort(uuid4())
 
 
 @pytest.mark.asyncio
@@ -111,7 +113,8 @@ async def test_helper_swallows_release_failure_and_logs() -> None:
     c = Choreographer(_make_deps(orchestrator=orch))
 
     with capture_logs() as logs:
-        await c._teardown_sandbox_best_effort(agent_id)  # must not raise
+        # must not raise
+        await c._teardown_sandbox_best_effort(agent_id)
 
     assert any("sandbox_release_failed" in str(e.get("event", "")) for e in logs)
 
@@ -265,6 +268,7 @@ async def test_i_am_idle_success_releases_sandbox(
     task_svc = AsyncMock()
     task_svc.list_assigned_for_agent.return_value = []
     task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.held_task_blocking_claim.return_value = None
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
     release = AsyncMock()
@@ -305,6 +309,7 @@ async def test_i_am_idle_guard_rejection_does_not_release_sandbox(
     task_svc = AsyncMock()
     task_svc.list_assigned_for_agent.return_value = [pending]
     task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.held_task_blocking_claim.return_value = None
     deps = _make_deps(task=task_svc)
     c = Choreographer(deps)
     release = AsyncMock()

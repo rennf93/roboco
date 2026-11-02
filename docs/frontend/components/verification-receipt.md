@@ -25,38 +25,36 @@ Why `unresolved` exists: `pass_review`'s `criteria_verified` accepts a criterion
 
 This is a **heuristic**, not real id resolution: when multiple criteria are unmatched and only one orphan stamp exists, it can't tell which specific criterion the id-stamp belongs to — it only avoids asserting confident-unverified across all of them in that ambiguous case. Real id matching needs `acceptance_criteria_ids` added to the wire response (tracked separately, out of scope here).
 
-## `ReviewerChainList` — ledger-only scope
+## `ReviewerChainList` — every review round
 
-`buildReviewerChain(findings)` derives one entry per review round from the **findings ledger only** (`task_review_findings`) — there's no endpoint exposing `agent_spawn_sessions` per task, so this is the only reachable "review record." A round that passed clean (zero findings) never produces a ledger row and so never appears here.
+`buildReviewerChain(entries)` sorts the task-metrics `reviewer_chain` (`GET /dashboard/metrics/task/{task_id}`, sourced from `agent_spawn_sessions` by `roboco.services.metrics.reviewer_chains_for_tasks`) by round: one entry per review-layer spawn session (qa / pr_reviewer / cell_pm / main_pm), with the real model, including a round that passed clean. The empty state reads "No review rounds recorded yet for this task."
 
-Before this fix, both the empty state ("No review rounds recorded yet.") and the populated list read as "this is the complete review history" — an approver could misread a clean-passing round as "nobody reviewed this." Both states now say so explicitly:
-- **Empty state**: "No review rounds recorded yet. Only rounds that recorded findings appear here — a round that passed clean has no entry."
-- **Populated state**: the same caption renders above the list (not just in a tooltip), so an approver scanning the populated list sees the scope note without opening a `HelpTip`.
+## `PrCiVerdict` — the PR head's CI state
 
-## `PrCiVerdict` / `ReleaseMemberTaskIdsUnavailable` — reader-facing vs. technical copy
+`prCiVerdictFromAttestation(ci)` maps an attestation CI verdict (`roboco.services.attestation.pr_ci_verdict`, the same check-runs signal the in-path PR gate reads) onto `PrCiVerdict`: `available: true` with the state, head sha and failing checks for a known state, otherwise `PR_CI_VERDICT_NOT_AVAILABLE`. `PR_CI_VERDICT_UNREADABLE` is the copy when the read itself failed. Both `reason` strings are reader-facing and name no internals.
 
-Both `PR_CI_VERDICT_UNAVAILABLE` and `RELEASE_MEMBER_TASK_IDS_UNAVAILABLE` represent a genuine backend gap (no REST route exposes `GitService.get_pr_ci_status` per task; no endpoint exposes a release's member-task-id set) that's deliberately reported rather than invented. Each now splits into two fields instead of one:
+## Release rollup — two requests, never one per member
 
-```ts
-interface PrCiVerdict {
-  available: false;
-  reason: string;           // short sentence safe to render directly to the approver
-  technicalDetail: string;  // internal escalation detail — HelpTip/comment/docs only
-}
-```
+`ReleaseVerificationRollup` (`release-rollup.tsx`) lays the receipt out once per member task of the open release proposal. It reads every member through two bulk endpoints and nothing else:
 
-Before this fix, `reason` carried the internal escalation string verbatim (`"...needs a new endpoint; escalate rather than invent."`) and it rendered as the visible sentence in `release-rollup.tsx`'s `<p>` and the CI tooltip on task detail — naming internals (`GitService.get_pr_ci_status`, `ReleaseReport.change_summary`) the approver has no use for. Now:
-- `reason` is a short reader-facing sentence, e.g. `"Per-task PR CI verification isn't available yet."` / `"Per-task verification isn't available for this release yet."` — this is what renders in the UI.
-- `technicalDetail` carries the endpoint-level escalation detail — never rendered as the primary visible sentence; consumers put it in a `HelpTip`, code comment, or this doc.
+- `useReleaseVerification` → `GET /api/release/proposal/verification`: every member's acceptance criteria and `qa_notes`, findings ledger, conventions findings and reviewer chain, read server-side with a fixed number of queries (`roboco.services.release_verification.read_release_member_receipts`). `memberVerificationFromReceipt` applies the same derivations the task-detail tab uses.
+- `useReleaseCiVerdicts` → `GET /api/release/proposal/ci-verdicts`: every member PR's CI verdict, read from the forge four at a time on background-pool sessions; `memberCiVerdict` picks one member's.
+
+Until 2026-10-28 the rollup fired four requests per member (task, findings, task metrics, attestation). The 74-member release on the Overview card meant about 300 requests per render, repeated on every refetch of the `["tasks"]` prefix, and it exhausted the orchestrator's DB pool and the guard's Redis pool. The rollup's query keys live under `["release", …]` so a task mutation's `["tasks"]` invalidation no longer refetches them. A proposal with no member tasks renders `RELEASE_NO_MEMBER_TASKS_MESSAGE` and fetches nothing; a failed receipts read renders `RELEASE_ROLLUP_UNREADABLE_MESSAGE`.
+
+The app's query client (`app-providers.tsx`) retries through `shouldRetryQuery` (`panel/src/lib/query-retry.ts`): only a request that got no HTTP response is replayed, once. A 4xx or 5xx answer is final for the query client; a 429 is replayed after its `Retry-After` by the API client's own interceptor.
 
 ## Consumers
 
-- `panel/src/hooks/use-verification.ts` — `useAcVerificationStamps`, `usePrCiVerdict` wrap the above for the task-detail Verification tab.
-- `panel/src/components/tasks/task-detail/tab-verification.tsx` — renders `AcVerificationList`, `ReviewerChainList`, and the PR CI verdict for one task.
-- `panel/src/components/verification/release-rollup.tsx` (`ReleaseVerificationRollup`) — aggregates the same per-task primitives across a release's member tasks; when the member-task-id set is itself unavailable (`RELEASE_MEMBER_TASK_IDS_UNAVAILABLE`), it renders that reason and skips calling `useAcVerificationStamps` entirely.
+- `panel/src/hooks/use-verification.ts` — per-task hooks (`useAcVerificationStamps`, `useFindingsByRound`, `useReviewerChain`, `useTaskConventionFindings`, `usePrCiVerdict`) for the task-detail Verification tab; bulk hooks (`useReleaseVerification`, `useReleaseCiVerdicts`) for the release rollup.
+- `panel/src/components/tasks/task-detail/tab-verification.tsx` — renders the receipt for one task.
+- `panel/src/components/verification/release-rollup.tsx` (`ReleaseVerificationRollup`) — the release-level aggregation, mounted by `release-proposal-card.tsx` with the proposal's task id and member count.
 
 ## Tests
 
-- `panel/src/lib/api/__tests__/verification.test.ts` — `parseAcVerificationStamps` matched/unresolved/unverified cases, `PR_CI_VERDICT_UNAVAILABLE`/`RELEASE_MEMBER_TASK_IDS_UNAVAILABLE` reason-vs-technicalDetail split.
-- `panel/src/components/verification/__tests__/receipt.test.tsx` — `AcVerificationList`'s 3 rendered states, `ReviewerChainList`'s empty and populated scope captions.
-- `panel/src/components/verification/__tests__/release-rollup.test.tsx`, `panel/src/components/tasks/task-detail/__tests__/tab-verification.test.tsx`, `panel/src/components/dashboard/__tests__/release-proposal-card.test.tsx` — fixture shapes updated for the new fields; stale verbatim-technical-string assertions replaced with reader-facing-copy assertions.
+- `panel/src/lib/api/__tests__/verification.test.ts` — `parseAcVerificationStamps` matched/unresolved/unverified cases, round grouping, reviewer-chain order, CI verdict mapping, `memberVerificationFromReceipt`, `ciVerdictsByTask` / `memberCiVerdict`.
+- `panel/src/components/verification/__tests__/receipt.test.tsx` — the presentational pieces' rendered states.
+- `panel/src/components/verification/__tests__/release-rollup.test.tsx` — empty state (nothing fetched), mixed member state from the bulk read, unreadable receipts, unreadable CI.
+- `panel/src/components/dashboard/__tests__/release-proposal-card-fanout.test.tsx` — a 12-member release reads every member through exactly one `/verification` and one `/ci-verdicts` request and no per-member request.
+- `panel/src/components/__tests__/app-providers.test.tsx`, `panel/src/lib/__tests__/query-retry.test.ts` — the query client never replays an answered 429/5xx.
+- `tests/integration/test_release_verification_route.py` — the bulk receipts' content, a database statement count that does not grow with the member count, bounded CI lookup concurrency, the per-task findings cap.

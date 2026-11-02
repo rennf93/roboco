@@ -21,7 +21,8 @@ const statusColors: Record<TaskStatus, string> = {
 };
 
 const statusDescriptions: Record<TaskStatus, string> = {
-  [TaskStatus.BACKLOG]: "PM setup phase — dependencies or session not ready yet.",
+  [TaskStatus.BACKLOG]:
+    "PM setup phase — dependencies or session not ready yet.",
   [TaskStatus.PENDING]: "Ready for work — the orchestrator can spawn an agent.",
   [TaskStatus.CLAIMED]: "An agent has locked this task.",
   [TaskStatus.IN_PROGRESS]: "Active development in progress.",
@@ -35,7 +36,8 @@ const statusDescriptions: Record<TaskStatus, string> = {
     "Documentation phase — the documenter is writing docs.",
   [TaskStatus.AWAITING_PR_REVIEW]:
     "PR-review gate: a reviewer checks the assembled PR before the PM merges.",
-  [TaskStatus.AWAITING_PM_REVIEW]: "Docs complete; the PM is reviewing and merging.",
+  [TaskStatus.AWAITING_PM_REVIEW]:
+    "Docs complete; the PM is reviewing and merging.",
   [TaskStatus.AWAITING_CEO_APPROVAL]: "Escalated for the CEO's final approval.",
   [TaskStatus.COMPLETED]: "Terminal — work done and merged.",
   [TaskStatus.CANCELLED]: "Terminal — work cancelled.",

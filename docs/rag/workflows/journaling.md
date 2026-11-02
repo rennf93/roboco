@@ -19,6 +19,10 @@ Journaling is a single content tool: `note(text, scope, ...)` on the `roboco-do`
 | `learning` | New knowledge gained |
 | `struggle` | Problems and solutions |
 
+## Journal on a task you have claimed
+
+A `note` with a `task_id` needs your claim on that task, so the claim verb comes first: a note on a task you have not claimed yet is refused (the refusal names the claim verb to call). The claim verbs record their own plan as the entry the claim requires: `i_will_work_on` writes your `plan` as the at-claim `note`, and `i_will_plan` writes the plan's `approach` as the PM's planning `decision`. Add your own `decision` right after the claim; a developer's counts toward the mid-work journal gate on `i_am_done`. The PM decision verbs (`delegate`, `complete`, `submit_up`, `submit_root`, `unblock`, `escalate_up`, `escalate_to_ceo`, `cancel_leaf`, `request_changes`) record their own subtask, `notes`, `reason` or findings as the `decision`, so they need no decision note first.
+
 ## Creating Entries
 
 ```python

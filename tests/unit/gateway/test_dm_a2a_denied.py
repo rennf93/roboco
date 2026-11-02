@@ -52,7 +52,8 @@ async def test_dm_a2a_denied_returns_envelope_not_authorized() -> None:
 
     task_svc = AsyncMock()
     task_svc.agent_for.return_value = MagicMock(role="qa")
-    task_svc.get_journal_context_task_for_agent.return_value = task_obj
+    task_svc.list_tasks_claimed_by.return_value = [task_obj]
+    task_svc.list_journal_context_tasks_for_agent.return_value = [task_obj]
     task_svc.get_active_task_for_agent.return_value = task_obj
     task_svc.get.return_value = task_obj
 

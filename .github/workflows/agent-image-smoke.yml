@@ -1,10 +1,12 @@
 name: Agent Image Smoke (Playwright)
 
-# Builds the two images that carry Playwright + chromium-headless-shell
-# (agent-qa-fe, agent-ux) with a real Docker daemon, verifies a headless
+# Builds the three images that carry Playwright + chromium-headless-shell
+# (agent-qa-fe, agent-ux, and agent-pm, whose Product Owner dogfood walk gets
+# the same browser tools) with a real Docker daemon, verifies a headless
 # chromium launch actually works inside each, verifies the `playwright` MCP
-# server (registered for fe-qa/ux-qa only, see orchestrator.py
-# _generate_mcp_config) is installed and wired to the baked browser, takes a
+# server (registered for fe-qa/ux-qa and the dogfood spawn only, see
+# orchestrator.py _generate_mcp_config) is installed and wired to the baked
+# browser, takes a
 # real headless screenshot of a live panel page from inside the ux-qa image,
 # and reports the real before/after image size delta against origin/master.
 # This exists because dev/QA agent sandboxes have no Docker daemon of their
@@ -15,10 +17,12 @@ on:
   push:
     paths:
       - 'docker/agent-base.Dockerfile'
+      - 'docker/npm/agent-base/**'
       - 'docker/agent-qa-fe.Dockerfile'
       - 'docker/agent-ux.Dockerfile'
+      - 'docker/agent-pm.Dockerfile'
       - 'docker/agent-devops.Dockerfile'
-      - 'docker/scripts/playwright-mcp-entrypoint.sh'
+      - 'docker/scripts/entrypoints/playwright-mcp-entrypoint.sh'
       - '.github/workflows/agent-image-smoke.yml'
   pull_request:
     # No `branches:` filter — this repo's task hierarchy opens dev-level
@@ -27,37 +31,76 @@ on:
     # master, so a `branches: [master]` filter here would only ever fire
     # once the assembled PR reaches root->master — too late to give QA/PM
     # real evidence at the dev-PR review stage this task exists for.
-    paths:
-      - 'docker/agent-base.Dockerfile'
-      - 'docker/agent-qa-fe.Dockerfile'
-      - 'docker/agent-ux.Dockerfile'
-      - 'docker/agent-devops.Dockerfile'
-      - 'docker/scripts/playwright-mcp-entrypoint.sh'
-      - '.github/workflows/agent-image-smoke.yml'
+    # No `paths:` either: master's ruleset requires the `agent-image-smoke`
+    # check, and a workflow a paths filter skips never reports it. The
+    # `paths` job applies the push trigger's paths instead (see ci.yml).
   workflow_dispatch:
 
+# Every step runs under pipefail (`shell: bash` = bash -eo pipefail). The
+# checks below pipe `docker run ...` through `tee`; under the default
+# `bash -e` a failing check exited 0 through the pipe, and the wrapper
+# chromium-path assertion failed silently (seen 2026-10-28).
+defaults:
+  run:
+    shell: bash
+
 jobs:
+  paths:
+    name: Match the PR's files against the push trigger's paths
+    runs-on: ubuntu-latest
+    outputs:
+      relevant: ${{ steps.paths.outputs.relevant }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7.0.1
+        with:
+          # The base commit (the PR merge commit's first parent) for the
+          # paths match below.
+          fetch-depth: 2
+
+      - name: Match the PR's files against the push trigger's paths
+        id: paths
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          # The push trigger's paths, verbatim (tests/unit/test_required_checks.py
+          # keeps the two lists equal).
+          PATHS: |
+            docker/agent-base.Dockerfile
+            docker/npm/agent-base/**
+            docker/agent-qa-fe.Dockerfile
+            docker/agent-ux.Dockerfile
+            docker/agent-pm.Dockerfile
+            docker/agent-devops.Dockerfile
+            docker/scripts/entrypoints/playwright-mcp-entrypoint.sh
+            .github/workflows/agent-image-smoke.yml
+        run: python3 .github/scripts/required_checks.py match-paths
+
   playwright-smoke:
     name: Build QA images, verify headless chromium launch + size delta
+    needs: paths
+    if: needs.paths.outputs.relevant == 'true'
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           # Need origin/master reachable to diff this branch's Dockerfiles
           # against the pre-change baseline for the size-delta report below.
           fetch-depth: 0
 
-      - name: Build agent-base (shared FROM target for both variants)
+      - name: Build agent-base (shared FROM target for every variant)
         run: docker build -f docker/agent-base.Dockerfile -t roboco-agent-base .
 
       - name: Build "after" images (this branch)
         run: |
           docker build -f docker/agent-qa-fe.Dockerfile -t agent-qa-fe:after .
           docker build -f docker/agent-ux.Dockerfile -t agent-ux:after .
+          docker build -f docker/agent-pm.Dockerfile -t agent-pm:after .
 
       - name: Build "before" images (origin/master baseline)
         run: |
@@ -68,6 +111,7 @@ jobs:
           git worktree add /tmp/before-src origin/master
           docker build -f /tmp/before-src/docker/agent-qa-fe.Dockerfile -t agent-qa-fe:before /tmp/before-src
           docker build -f /tmp/before-src/docker/agent-ux.Dockerfile -t agent-ux:before /tmp/before-src
+          docker build -f /tmp/before-src/docker/agent-pm.Dockerfile -t agent-pm:before /tmp/before-src
 
       - name: Report real before/after image size delta
         run: |
@@ -76,7 +120,7 @@ jobs:
             echo
             echo "| image | before | after | delta |"
             echo "|---|---|---|---|"
-            for name in agent-qa-fe agent-ux; do
+            for name in agent-qa-fe agent-ux agent-pm; do
               before_bytes=$(docker inspect -f '{{.Size}}' "${name}:before")
               after_bytes=$(docker inspect -f '{{.Size}}' "${name}:after")
               delta_mb=$(( (after_bytes - before_bytes) / 1024 / 1024 ))
@@ -91,7 +135,7 @@ jobs:
             echo "### Headless chromium launch smoke check"
             echo
           } | tee -a /tmp/smoke-report.md
-          for name in agent-qa-fe agent-ux; do
+          for name in agent-qa-fe agent-ux agent-pm; do
             echo "::group::${name} headless launch smoke"
             docker run --rm --entrypoint /app/.venv/bin/python "${name}:after" -c '
           from playwright.sync_api import sync_playwright
@@ -113,22 +157,27 @@ jobs:
             echo "### Playwright MCP server smoke check"
             echo
           } | tee -a /tmp/smoke-report.md
-          for name in agent-qa-fe agent-ux; do
+          for name in agent-qa-fe agent-ux agent-pm; do
             echo "::group::${name} playwright-mcp binary"
             docker run --rm --entrypoint playwright-mcp "${name}:after" --version | tee -a /tmp/smoke-report.md
-            # Confirms the exact chromium-headless-shell path the wrapper
-            # entrypoint (docker/scripts/playwright-mcp-entrypoint.sh) will
-            # resolve and pass to `playwright-mcp --executable-path` is a
-            # real, executable file baked into this image — not a second,
-            # separately-downloaded browser.
+            # The exact chromium-headless-shell path the wrapper entrypoint
+            # (docker/scripts/entrypoints/playwright-mcp-entrypoint.sh) hands
+            # `playwright-mcp --executable-path`: the wrapper exits non-zero
+            # unless exactly one executable headless shell is baked into this
+            # image. Then launch a browser from that very binary, which is
+            # what the MCP server will do.
+            path=$(docker run --rm \
+              --entrypoint /app/scripts/entrypoints/playwright-mcp-entrypoint.sh \
+              "${name}:after" --print-executable-path)
+            echo "RESOLVED_HEADLESS_SHELL: ${path}" | tee -a /tmp/smoke-report.md
             docker run --rm --entrypoint /app/.venv/bin/python "${name}:after" -c '
-          import os
+          import sys
           from playwright.sync_api import sync_playwright
           with sync_playwright() as p:
-              path = p.chromium.executable_path
-              assert os.path.isfile(path) and os.access(path, os.X_OK), f"not executable: {path}"
-              print("RESOLVED_CHROMIUM_PATH_OK:", path)
-          ' | tee -a /tmp/smoke-report.md
+              browser = p.chromium.launch(executable_path=sys.argv[1])
+              browser.close()
+          print("MCP_EXECUTABLE_LAUNCH_OK")
+          ' "${path}" | tee -a /tmp/smoke-report.md
             echo "::endgroup::"
           done
 
@@ -143,11 +192,11 @@ jobs:
       - name: Build & start the panel (headless browser verification target)
         working-directory: panel
         env:
-          # pnpm 11 prompts for confirmation on modules-purge unless CI=true
-          # (matches docker/panel.Dockerfile's build stage).
+          # pnpm's CI mode, as in docker/panel.Dockerfile's build stage
+          # (GitHub Actions also sets CI=true for every step).
           CI: 'true'
         run: |
-          pnpm install --frozen-lockfile --shamefully-hoist
+          pnpm install --frozen-lockfile
           pnpm build
           nohup pnpm start -p 3000 > /tmp/panel.log 2>&1 &
           npx --yes wait-on http://localhost:3000/login -t 60000
@@ -205,6 +254,8 @@ jobs:
             });
   devops-toolchain-smoke:
     name: Build devops image, verify the pinned infra toolchain runs
+    needs: paths
+    if: needs.paths.outputs.relevant == 'true'
     runs-on: ubuntu-latest
     permissions:
       # The PR-comment step below posts the smoke report on the PR — same
@@ -214,7 +265,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Build agent-base (devops FROM target)
         run: docker build -f docker/agent-base.Dockerfile -t roboco-agent-base .
@@ -228,6 +279,8 @@ jobs:
         # compose-level registry pins check STRINGS, this checks reality.
         # docker CLI is present for `docker compose config` validation only:
         # no daemon is mounted, so anything needing a socket must fail here.
+        # That includes `docker version`, which always asks the daemon too;
+        # `docker --version` reads the client alone.
         run: |
           {
             echo
@@ -235,7 +288,7 @@ jobs:
             echo
           } | tee -a /tmp/devops-smoke-report.md
           docker run --rm --entrypoint /bin/sh agent-devops:smoke -c '
-            docker version --format "docker-cli {{.Client.Version}}" || exit 1
+            docker --version || exit 1
             docker compose version || exit 1
             kubectl version --client=true --output=yaml | head -2 || exit 1
             helm version --short || exit 1
@@ -263,3 +316,28 @@ jobs:
               issue_number: context.issue.number,
               body: `## DevOps image toolchain smoke results\n\n${body}`,
             });
+
+  agent-image-smoke:
+    # Master's ruleset requires a check with exactly this name. The two smoke
+    # jobs keep their own names, so this job reports for both: it passes when
+    # they passed (the PR touches their paths) or were skipped (it doesn't).
+    # A result job is safe here, unlike in the single-job workflows, because
+    # this workflow has no concurrency group: no run is ever cancelled, so no
+    # cancelled run's verdict can stand in for a newer one (see ci.yml).
+    # tests/unit/test_required_checks.py fails if a concurrency group is added.
+    name: agent-image-smoke
+    needs: [paths, playwright-smoke, devops-toolchain-smoke]
+    if: always()
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7.0.1
+        with:
+          sparse-checkout: .github/scripts
+
+      - name: Check each smoke job ended the way the paths match expects
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          PATHS_JOB: paths
+        run: python3 .github/scripts/required_checks.py verdict
