@@ -6,9 +6,9 @@ import { describe, expect, it } from "vitest";
 // HTML-structure smoke test for the release-recap composition - mirrors
 // panel-demo.test.js (this clip extends the same pk-* kit). We parse the
 // HTML as text and assert structural invariants: dimensions, props.js
-// wiring, the kit stylesheet link, the structural-only clip-window
-// allowlist, the three-release beats (card + chip + pill flip each), the
-// cursor, the toast/outro, the offline constraint, and the captions.json
+// wiring, the kit stylesheet link, the structural-only clip allowlist, the
+// three-release beats (card + chip + pill flip each), the cursor, the
+// toast/outro, the offline constraint, and the captions.json
 // schema/limits/copy regressions the CEO's revision called out on the prior
 // text-card composition.
 
@@ -57,13 +57,12 @@ describe("release-recap composition", () => {
     // register, not the text-card register).
     expect(html).toContain('href="../../kit/kit.css"');
 
-    // Clip windows are for structural layers only (motion/README.md's
-    // clip-window rule - the renderer's per-clip scheduler drifts behind the
-    // encoded timeline on long compositions and silently drops the tail).
-    // Only the cold-open hero, the full-length panel frame, and its
-    // duration-matching status indicator may carry class="clip"; every beat
-    // (intake, cards, pill swaps, cursor, stats, toast, outro) drives via
-    // base-hidden + delayed CSS animation instead.
+    // Only structural layers carry class="clip" (motion/README.md's
+    // animation clock rule): the cold-open hero, and the full-length panel
+    // frame and its status indicator, both from data-start 0. Every beat
+    // (intake, cards, pill swaps, cursor, stats, toast, outro) has no
+    // data-start of its own and enters by base-hidden + delayed CSS
+    // animation, so its delay is composition time.
     const clipClasses = [...html.matchAll(/class="([^"]*\bclip\b[^"]*)"/g)].map((m) => m[1]);
     expect(clipClasses.length).toBe(3);
     expect(new Set(clipClasses)).toEqual(new Set(["rc-hero clip", "pk-frame clip", "pk-frame__status clip"]));

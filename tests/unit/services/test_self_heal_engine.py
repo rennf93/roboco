@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, cast
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
@@ -47,10 +47,19 @@ def _sample(value: float) -> TelemetrySample:
     )
 
 
+def _session() -> AsyncMock:
+    """An AsyncSession double. AsyncMock, not MagicMock: run_cycle awaits
+    session.commit() to release the pool connection right after the telemetry
+    fetch. The Result that execute() returns reads rows synchronously, as
+    SQLAlchemy's does, so the CI-history write and the outcome labeler see no
+    rows instead of an un-awaited coroutine."""
+    session = AsyncMock()
+    session.execute.return_value = MagicMock(all=MagicMock(return_value=[]))
+    return session
+
+
 def _engine(samples: list[TelemetrySample]) -> SelfHealEngine:
-    # AsyncMock, not MagicMock: run_cycle now awaits session.commit() to
-    # release the pool connection right after the telemetry fetch.
-    return SelfHealEngine(AsyncMock(), source=_FakeSource(samples))
+    return SelfHealEngine(_session(), source=_FakeSource(samples))
 
 
 @pytest.mark.asyncio
@@ -59,7 +68,8 @@ async def test_assess_breach_yields_observation() -> None:
     assert len(obs) == 1
     assert obs[0].repo_hint == "roboco"
     assert obs[0].signal_name == "ci_conclusion:roboco"
-    assert obs[0].fingerprint  # non-empty stable hash
+    # Non-empty stable hash
+    assert obs[0].fingerprint
 
 
 @pytest.mark.asyncio
@@ -161,7 +171,8 @@ async def test_run_cycle_dedupes_repeated_fingerprint_across_cycles(
     monkeypatch.setattr(engine, "_open_self_heal_task_ids_by_fp", _open_map)
 
     await engine.run_cycle()
-    await engine.run_cycle()  # same red state — must NOT re-notify
+    # Same red state — must NOT re-notify
+    await engine.run_cycle()
 
     send.assert_awaited_once()
 
@@ -458,4 +469,5 @@ async def test_labeler_db_failure_never_breaks_the_sweep(
     )
     obs = await engine.run_cycle()
     assert len(obs) == 1
-    send.assert_not_awaited()  # dedupe held; the sweep itself completed
+    # Dedupe held; the sweep itself completed
+    send.assert_not_awaited()

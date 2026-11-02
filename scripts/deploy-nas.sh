@@ -11,12 +11,14 @@
 # green services carry profiles: [green]. The ACTIVE color lives only in
 # front/active-upstreams.conf, applied to the running nginx with
 # `nginx -s reload`. The stopped color = the rollback (re-run with its
-# color). Never `down -v`: the minio named volume is the only thing a
-# volumes prune would delete.
+# color). Never `down -v`: the rustfs-data named volume (rendered-video
+# object storage, replaced MinIO 2026-10-15) is the only thing a volumes
+# prune would delete.
 #
 # Two NAS-compose landmines baked into this script:
 # 1. `up --wait` aborts when a one-shot container completes, even exit 0
-#    (minio-init killed a run mid-deploy while everything was healthy) ->
+#    (minio-init, now rustfs-init, killed a run mid-deploy while everything
+#    was healthy) ->
 #    `up -d` + poll docker health per container instead.
 # 2. If nginx ever started before front/active-upstreams.conf existed,
 #    docker bind-mounts a DIRECTORY at that path; the script detects and
@@ -26,7 +28,12 @@
 
 set -euo pipefail
 
-cd "${STACK_DIR:-/volume1/roboco}"
+# Default to the checkout this script lives in, never a hardcoded path: a copy
+# at /volume1/roboco-panel run without STACK_DIR used to cd into production's
+# /volume1/roboco and deploy ITS compose (2026-10-15).
+STACK_DIR="${STACK_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+cd "$STACK_DIR"
+echo "[deploy] stack dir: $STACK_DIR"
 
 COLOR=blue
 SKIP_BUILD=0
@@ -76,16 +83,90 @@ wait_healthy() { # wait_healthy <container> [exit0]
 
 COMPOSE=(docker compose -f docker-compose.yaml)
 
-echo "[deploy] app/$COLOR: building images..."
-if [ "$SKIP_BUILD" -eq 0 ]; then
-  # Non-fatal: a total image wipe also takes roboco-agent-base down with the
-  # app images (2026-09-25); the ensure passes below rebuild everything in
-  # dependency order. Killing the deploy here would defeat that.
-  # decisions rides along on every deploy: it is a color-INDEPENDENT
-  # singleton sidecar (like ollama), not part of the blue/green pairs.
-  "${COMPOSE[@]}" build "orchestrator-$COLOR" "panel-$COLOR" decisions ||
-    echo "[deploy] WARNING: app/$COLOR pre-build failed; the ensure pass below will rebuild" >&2
+# The host's Intel iGPU serves the decisions sidecar (Clef-Flash) and
+# ollama's embedder when the host exposes it (docker-compose.igpu.yaml has
+# the measurements: ~5x and ~11x faster than the CPU on the NAS). A host
+# without the device keeps both on the CPU.
+if [ -c /dev/dri/renderD128 ]; then
+  ROBOCO_RENDER_GID="$(stat -c %g /dev/dri/renderD128)"
+  export ROBOCO_RENDER_GID
+  COMPOSE+=(-f docker-compose.igpu.yaml)
+  echo "[deploy] Intel iGPU found (/dev/dri/renderD128, group $ROBOCO_RENDER_GID): decisions and ollama run on it"
 fi
+
+# Host-specific .env values (ensure_env_secret): written once, never
+# replacing a value already declared.
+# shellcheck source=scripts/deploy-env.sh
+source "$STACK_DIR/scripts/deploy-env.sh"
+ensure_env_secret ROBOCO_REDIS_PASSWORD
+
+echo "[deploy] app/$COLOR: content-gated image builds..."
+# ---------------------------------------------------------------------------
+# Content-aware rebuild gating (2026-09-28). The 02ec8b4c always-rebuild rule
+# fixed the stale-image outage by rebuilding EVERYTHING on every deploy -
+# correct, but a zero-change redeploy re-ran the whole 25-image agent matrix
+# and a panel-only change rebuilt agents that had nothing to do with it. Now
+# every image family carries a content hash of its REAL inputs, persisted
+# per-image in .deploy-cache/, and a build is skipped when the image exists
+# AND its recorded hash matches the checkout:
+#   - roboco/ + pyproject + uv.lock changes  -> orchestrator family + all
+#     agent images rebuild (they bake the roboco venv) - panel does NOT.
+#   - panel/ changes -> panel rebuilds only.
+#   - docker/ changes (Dockerfiles, entrypoints) -> everything rebuilds.
+#     The Docker gate (docker/docker-gate/) reads nothing else, so it
+#     rebuilds on docker/ changes alone.
+# Missing images always build (the fixpoint pass below is unchanged, so the
+# 2026-09-25 total-wipe recovery still works). The global CONTEXT_HASH label
+# stamped on builds stays as provenance; freshness is decided here, per
+# family, from the hash files. Under-inclusive hashes would rot images, so
+# the families are deliberately coarse: docker/ as ONE input covers every
+# Dockerfile and entrypoint, at the cost of a docker-only change rebuilding
+# the matrix - rare, and always safe.
+# ---------------------------------------------------------------------------
+CACHE_DIR="$STACK_DIR/.deploy-cache"
+mkdir -p "$CACHE_DIR"
+
+hash_paths() { # hash_paths <paths...> -> 16-hex over every file's bytes
+  local h
+  h="$(find "$@" -type f \
+      -not -path '*/__pycache__/*' -not -path '*/node_modules/*' \
+      -not -path '*/.next/*' -not -path '*/.git/*' -not -name '*.pyc' \
+      -print0 2>/dev/null | LC_ALL=C sort -z | xargs -0 -r cat 2>/dev/null \
+      | sha256sum | cut -c1-16 || true)"
+  echo "${h:-unknown}"
+}
+ROBOCO_HASH=$(hash_paths roboco pyproject.toml uv.lock README.md)
+PANEL_HASH=$(hash_paths panel)
+DOCKER_HASH=$(hash_paths docker)
+echo "[deploy] content hashes: roboco=$ROBOCO_HASH panel=$PANEL_HASH docker=$DOCKER_HASH"
+
+family_hash() { # family_hash <agent|orch|panel|gate>
+  case "$1" in
+    agent) printf '%s' "agent $ROBOCO_HASH $DOCKER_HASH" ;;
+    orch)  printf '%s' "orch $ROBOCO_HASH $DOCKER_HASH" ;;
+    panel) printf '%s' "panel $PANEL_HASH $DOCKER_HASH" ;;
+    gate)  printf '%s' "gate $DOCKER_HASH" ;;
+  esac | sha256sum | cut -c1-16
+}
+
+image_family() { # image_family <name-without-roboco-prefix>
+  case "$1" in
+    panel*) echo panel ;;
+    orchestrator*|indexer*|dispatcher*|decisions*|video-renderer*|sandbox*)
+      echo orch ;;
+    docker-gate*) echo gate ;;
+    *) echo agent ;;
+  esac
+}
+
+image_fresh() { # image_fresh <img> <name>: exit 0 = up to date, 1 = build
+  docker image inspect "$img" >/dev/null 2>&1 || return 1
+  local f="$CACHE_DIR/$name.hash" expected
+  expected=$(family_hash "$(image_family "$name")")
+  [ -f "$f" ] && [ "$(cat "$f" 2>/dev/null)" = "$expected" ]
+}
+
+record_fresh() { family_hash "$(image_family "$name")" > "$CACHE_DIR/$name.hash"; }
 
 # Ensure ALL needed images exist BEFORE the new color comes up: the overlap
 # window (old color serving, new color starting) must never stretch into
@@ -117,21 +198,10 @@ while IFS= read -r img; do
   # handles it (or the build step above already did).
 done < <("${COMPOSE[@]}" config --images)
 
-echo "[deploy] ensuring images: build pass (locally-built images, always rebuilt from the checkout)..."
-# ALWAYS rebuild locally-built images from the current checkout. The old
-# existence-only checks ("image present, skipping") left stale agent images
-# serving days-old code after every deploy: a rebuilt base never propagated
-# to dependents, and new roboco/ or entrypoint code never reached a running
-# fleet until someone deleted images by hand (2026-09-27 hummin outage).
-# Layer caching makes an unchanged rebuild a cached no-op; only real source
-# changes pay.
-#
-# Provenance stamp is a CONTENT hash of the build inputs, deliberately NOT a
-# git ref: the deploy checkout carries no meaningful branch identity
-# (master/slave/feature flow through it), and the only question worth
-# answering is whether an image was built from exactly these files. Same
-# files => same label; a label that differs from a fresh hash of the
-# checkout means the image is stale.
+echo "[deploy] ensuring images: content-gated build pass (only stale or missing)..."
+# Provenance stamp: a CONTENT hash of the checkout, deliberately NOT a git
+# ref (the deploy checkout carries no branch identity). Stamped on builds so
+# a running image can always be traced to the bytes that produced it.
 # Null-delimited end to end: the checkout contains human files with spaces
 # (roboco/vault_assets/meta/"Sync to your Mac.md") and whitespace-splitting
 # xargs turned each word into a missing file, failing the hash - which under
@@ -143,46 +213,112 @@ CONTEXT_HASH="$(find roboco docker pyproject.toml uv.lock README.md \
 [ -n "$CONTEXT_HASH" ] || CONTEXT_HASH="unknown"
 HASH_LABEL="--label org.opencontainers.image.checkout=$CONTEXT_HASH"
 echo "[deploy] checkout content hash: $CONTEXT_HASH"
-echo "[deploy] building roboco-agent-base (root of the agent image DAG) ..."
-docker build -q -t roboco-agent-base:latest $HASH_LABEL -f docker/agent-base.Dockerfile . ||
-  docker build -q -t roboco-agent-base:latest $HASH_LABEL -f docker/agent-base.Dockerfile .
-build_local_image() {
-  img="$1"; shift
-  old="$(docker image inspect "$img" --format '{{.Id}}' 2>/dev/null || true)"
-  docker build -q -t "$img:latest" $HASH_LABEL "$@" . ||
-    docker build -q -t "$img:latest" $HASH_LABEL "$@" . ||
-    { echo "[deploy] WARNING: build failed for $img" >&2; return 0; }
-  new="$(docker image inspect "$img" --format '{{.Id}}' 2>/dev/null || true)"
-  if [ -n "$old" ] && [ "$old" = "$new" ]; then
-    echo "[deploy] $img unchanged (layer cache)"
+if [ "$SKIP_BUILD" -eq 0 ]; then
+  # agent-base is the root of the agent image DAG: build it first when stale
+  # so every dependent's build sees the fresh base (compose config --images
+  # ordering is not trusted for this).
+  if image_fresh roboco-agent-base agent-base; then
+    echo "[deploy] roboco-agent-base up to date, skipping"
   else
-    echo "[deploy] $img REBUILT ($CONTEXT_HASH)"
+    echo "[deploy] building roboco-agent-base (root of the agent image DAG) ..."
+    docker build -q -t roboco-agent-base:latest $HASH_LABEL -f docker/agent-base.Dockerfile . ||
+      docker build -q -t roboco-agent-base:latest $HASH_LABEL -f docker/agent-base.Dockerfile .
+    name="agent-base"
+    record_fresh
   fi
+  while IFS= read -r img; do
+    [ -z "$img" ] && continue
+    # The rollback color's app images are rebuilt by its own re-run.
+    case "$img" in *"-$OTHER") continue ;; esac
+    case "$img" in
+      roboco-*)
+        name="${img#roboco-}"
+        case "$name" in
+          # Bare blue names are built by their own deploy run.
+          orchestrator|panel) continue ;;
+        esac
+        df="${name%-blue}"
+        df="docker/${df%-green}.Dockerfile"
+        if [ ! -f "$df" ]; then
+          continue # registry-pulled or compose-shared image (e.g. dispatcher)
+        fi
+        if image_fresh "$img" "$name"; then
+          echo "[deploy] $img up to date, skipping"
+          continue
+        fi
+        case "$name" in
+          orchestrator-*|panel-*|docker-gate-*)
+            # Compose-defined builds (the live color's app services).
+            echo "[deploy] building $img (compose) ..."
+            if "${COMPOSE[@]}" build "$name" || "${COMPOSE[@]}" build "$name"; then
+              record_fresh
+            else
+              echo "[deploy] WARNING: compose build failed for $img" >&2
+            fi
+            ;;
+          *)
+            build_stale_parents_of "$df"
+            echo "[deploy] building $img ..."
+            if docker build -q -t "$img:latest" $HASH_LABEL -f "$df" . ||
+               docker build -q -t "$img:latest" $HASH_LABEL -f "$df" .; then
+              record_fresh
+            else
+              echo "[deploy] WARNING: build failed for $img" >&2
+            fi
+            ;;
+        esac
+        ;;
+    esac
+  done < <("${COMPOSE[@]}" config --images)
+else
+  echo "[deploy] --skip-build: trusting existing images (fixpoint still recovers missing)"
+fi
+
+# The -live (interactive chat) images are spawned by the orchestrator at
+# runtime, never referenced by a compose service, so the compose passes never
+# see them - they silently rotted (roboco-agent-hummin-live served Sep 18 code
+# for 10 days while the orchestrator moved ahead, 2026-09-28 intake outage).
+# Every -live Dockerfile builds FROM a provider agent image, so a live build is
+# only attempted when that base exists locally: after a wipe the fixpoint below
+# rebuilds the bases first, and a base that survived all its rounds is a loud,
+# named skip instead of a cryptic docker.io "pull access denied" (2026-09-28
+# Deploy #2: the live pass sat between the content and fixpoint passes, ran
+# while the wiped provider bases were still missing, and every FROM fell
+# through to docker.io). Callers must run after HASH_LABEL is set (it stamps
+# the builds); $name is set globally because record_fresh reads it.
+
+live_base_of() { # live_base_of <dockerfile> -> the FROM target
+  awk '/^FROM/{print $2; exit}' "$1"
 }
-while IFS= read -r img; do
-  [ -z "$img" ] && continue
-  # The rollback color's app images are rebuilt by its own re-run.
-  case "$img" in *"-$OTHER") continue ;; esac
-  case "$img" in
-    roboco-*)
-      name="${img#roboco-}"
-      case "$name" in
-        # Bare blue names are built by their own deploy run.
-        orchestrator|panel) continue ;;
-        orchestrator-*|panel-*)
-          echo "[deploy] building $img (compose) ..."
-          "${COMPOSE[@]}" build "$name" || "${COMPOSE[@]}" build "$name" ||
-            echo "[deploy] WARNING: compose build failed for $img" >&2
-          ;;
-        *)
-          if [ -f "docker/$name.Dockerfile" ]; then
-            build_local_image "$img" -f "docker/$name.Dockerfile"
-          fi
-          ;;
-      esac
-      ;;
-  esac
-done < <("${COMPOSE[@]}" config --images)
+
+live_build_one() { # live_build_one <dockerfile> <gate|missing>
+  local df="$1" mode="$2" img base
+  name="${df#docker/}"
+  name="${name%.Dockerfile}" # e.g. agent-hummin-live
+  img="roboco-$name"
+  if [ "$mode" = missing ] && docker image inspect "$img" >/dev/null 2>&1; then
+    return 0 # present: only the content gate rebuilds stale live images
+  fi
+  if image_fresh "$img" "$name"; then
+    echo "[deploy] $img up to date, skipping"
+    return 0
+  fi
+  base=$(live_base_of "$df")
+  if [ "${base#roboco-}" != "$base" ] &&
+     ! docker image inspect "$base" >/dev/null 2>&1; then
+    echo "[deploy] WARNING: $img deferred: base $base missing (fixpoint must build it first)" >&2
+    return 1
+  fi
+  echo "[deploy] building $img (live chat) ..."
+  if docker build -q -t "$img:latest" $HASH_LABEL -f "$df" . ||
+     docker build -q -t "$img:latest" $HASH_LABEL -f "$df" .; then
+    record_fresh
+    return 0
+  fi
+  echo "[deploy] WARNING: build failed for $img" >&2
+  return 1
+}
+
 echo "[deploy] ensuring images: fixpoint pass (wipe recovery: retry anything still missing)..."
 for round in 1 2 3 4 5 6; do
   built=0
@@ -195,9 +331,10 @@ for round in 1 2 3 4 5 6; do
         name="${img#roboco-}"
         case "$name" in
           orchestrator|panel) continue ;;
-          orchestrator-*|panel-*)
+          orchestrator-*|panel-*|docker-gate-*)
             echo "[deploy] building $img (compose, round $round) ..."
             if "${COMPOSE[@]}" build "$name" || "${COMPOSE[@]}" build "$name"; then
+              record_fresh
               built=$((built + 1))
             else
               echo "[deploy] WARNING: compose build failed for $img (retried next round)" >&2
@@ -208,6 +345,7 @@ for round in 1 2 3 4 5 6; do
               echo "[deploy] building $img (round $round) ..."
               if docker build -q -t "$img:latest" $HASH_LABEL -f "docker/$name.Dockerfile" . ||
                  docker build -q -t "$img:latest" $HASH_LABEL -f "docker/$name.Dockerfile" .; then
+                record_fresh
                 built=$((built + 1))
               else
                 echo "[deploy] WARNING: build failed for $img (retried next round)" >&2
@@ -220,8 +358,34 @@ for round in 1 2 3 4 5 6; do
         ;;
     esac
   done < <("${COMPOSE[@]}" config --images)
+  # -live images are not in compose config --images: recover them in the same
+  # rounds, so a live-chat spawn never finds its image missing after this
+  # deploy (and --skip-build still recovers them after a wipe).
+  for df in docker/agent-*-live.Dockerfile; do
+    [ -e "$df" ] || continue
+    name="${df#docker/}"
+    name="${name%.Dockerfile}"
+    img="roboco-$name"
+    docker image inspect "$img" >/dev/null 2>&1 && continue
+    if live_build_one "$df" missing &&
+       docker image inspect "$img" >/dev/null 2>&1; then
+      built=$((built + 1))
+    fi
+  done
   [ "$built" -eq 0 ] && break
 done
+
+if [ "$SKIP_BUILD" -eq 0 ]; then
+  # AFTER the fixpoint, not wedged between the content and fixpoint passes
+  # (see live_build_one above): every provider base is by now rebuilt or
+  # loudly failed, so a live build here either succeeds, skips as fresh, or
+  # skips with a named missing base.
+  echo "[deploy] ensuring images: live-chat pass (runtime-spawned, not in compose)..."
+  for df in docker/agent-*-live.Dockerfile; do
+    [ -e "$df" ] || continue
+    live_build_one "$df" gate || true
+  done
+fi
 
 echo "[deploy] ensuring images: reconciliation..."
 while IFS= read -r img; do
@@ -231,28 +395,47 @@ while IFS= read -r img; do
     echo "[deploy] WARNING: $img still missing after pull+build passes" >&2
   fi
 done < <("${COMPOSE[@]}" config --images)
+for df in docker/agent-*-live.Dockerfile; do
+  [ -e "$df" ] || continue
+  name="${df#docker/}"
+  name="${name%.Dockerfile}"
+  docker image inspect "roboco-$name" >/dev/null 2>&1 ||
+    echo "[deploy] WARNING: roboco-$name still missing after pull+build passes (live-chat spawns will fail)" >&2
+done
 
 echo "[deploy] bringing up $COLOR ..."
 # Named-service up: starts ONLY this generation (+ its dependencies: core,
 # agent builders). Blue (no-profile) is in every model, so a plain
 # `--profile green up` would reconcile blue too - recreating it with new
 # code and destroying rollback honesty. nginx joins the blue list (first
-# deploy) and is ensured for green (it is the reload target).
+# deploy) and is ensured for green (it is the reload target). rustfs, its
+# bucket one-shot and searxng are named explicitly: no app service depends_on
+# them, so a named-service up would otherwise never start the store
+# ROBOCO_MINIO_ENDPOINT points at or the default research provider.
 if [ "$COLOR" = "green" ]; then
-  "${COMPOSE[@]}" up -d --build orchestrator-green dispatcher-green indexer-green panel-green decisions
+  "${COMPOSE[@]}" up -d --build docker-gate-green orchestrator-green dispatcher-green indexer-green panel-green decisions rustfs rustfs-init searxng
   "${COMPOSE[@]}" up -d nginx
 else
-  "${COMPOSE[@]}" up -d --build orchestrator-blue dispatcher-blue indexer-blue panel-blue decisions nginx
+  "${COMPOSE[@]}" up -d --build docker-gate-blue orchestrator-blue dispatcher-blue indexer-blue panel-blue decisions rustfs rustfs-init searxng nginx
 fi
+wait_healthy "roboco-docker-gate-$COLOR"
 wait_healthy "roboco-orchestrator-$COLOR"
 wait_healthy roboco-postgres
 wait_healthy roboco-ollama
 wait_healthy roboco-decisions
 wait_healthy roboco-ollama-init exit0
+wait_healthy roboco-rustfs
+wait_healthy roboco-rustfs-init exit0
 
 echo "[deploy] schema migrations (idempotent)..."
-"${COMPOSE[@]}" exec -T "orchestrator-$COLOR" alembic upgrade head ||
-  echo "[deploy] WARNING: alembic failed; traffic NOT flipped, investigate before flipping"
+# The flip is GATED on migrations: the message below used to say "traffic
+# NOT flipped" and then flip anyway - a failed upgrade deployed the new
+# color against an unmigrated schema (the exact deploy-bites-back class
+# this script exists to prevent). Old color keeps serving; re-run deploys.
+if ! "${COMPOSE[@]}" exec -T "orchestrator-$COLOR" alembic upgrade head; then
+  echo "[deploy] FATAL: alembic upgrade failed; traffic NOT switched (old color still serving). Investigate, then re-run." >&2
+  exit 1
+fi
 
 echo "[deploy] switching traffic to $COLOR..."
 mkdir -p front
@@ -323,7 +506,7 @@ fi
 # finished handing off, so stopping it now drops nothing.
 if [ -n "$("${COMPOSE[@]}" ps -q "orchestrator-$OTHER")" ]; then
   echo "[deploy] stopping $OTHER (kept for rollback: re-run with --color $OTHER)..."
-  "${COMPOSE[@]}" stop "orchestrator-$OTHER" "dispatcher-$OTHER" "indexer-$OTHER" "panel-$OTHER"
+  "${COMPOSE[@]}" stop "orchestrator-$OTHER" "dispatcher-$OTHER" "indexer-$OTHER" "panel-$OTHER" "docker-gate-$OTHER"
 fi
 
 wait_healthy roboco-nginx || wait_healthy roboco-nginx

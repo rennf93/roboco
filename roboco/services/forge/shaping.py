@@ -4,7 +4,8 @@ Adapters translate a forge's native wire contract back into the GitHub
 shapes ``GitService`` classifies; :class:`ShapedResponse` is the stand-in
 they return. Callers only ever read ``status_code`` / ``is_success`` /
 ``text`` / ``json()`` (the seam's documented contract), so that is the
-whole surface.
+whole surface. :func:`not_implemented` is the shaped 501 an adapter answers
+for a GitHub operation its forge has no API for.
 """
 
 from __future__ import annotations
@@ -49,3 +50,17 @@ class ShapedResponse:
         if self._json is not None:
             return self._json
         return self._real.json()
+
+
+def not_implemented(origin: str, message: str) -> ShapedResponse:
+    """A shaped 501 for an operation this forge's API does not offer.
+
+    ``origin`` is the forge's ``scheme://host``. Callers with a local-git
+    fallback (the env-sync merge, the release commit) read the 501 as "take
+    that path"; the rest surface it like any other refused call.
+    """
+    request = httpx.Request("post", f"{origin}/unsupported")
+    real = httpx.Response(
+        httpx.codes.NOT_IMPLEMENTED, request=request, json={"message": message}
+    )
+    return ShapedResponse(real)

@@ -37,9 +37,9 @@ from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Tea
 from roboco.services.base import BaseService
 from roboco.services.board_programs import program_armed
 from roboco.services.project import get_project_service
+from roboco.services.shipped_work_digest import shipped_work_digest
 from roboco.services.task import MEGAPHONE_SOURCE, TaskCreateRequest, get_task_service
 from roboco.services.x_credentials import get_x_credentials_service
-from roboco.utils.shipped_work_digest import shipped_work_digest
 
 if TYPE_CHECKING:
     from uuid import UUID

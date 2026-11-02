@@ -4,15 +4,13 @@
 // state, findings by round, CI verdict, conventions findings, reviewer
 // chain) the task-detail Verification tab renders, composed once per member
 // task and laid out together so the CEO sees the whole release trust story
-// in one place instead of opening every task individually. This file only
-// arranges repeated instances of the shared hooks + presentational pieces —
-// nothing here re-implements or forks them.
+// in one place instead of opening every task individually. Every member's
+// receipt arrives in ONE request and every CI verdict in one more
+// (`useReleaseVerification` / `useReleaseCiVerdicts`): never a request per
+// member. This file only arranges the shared presentational pieces.
 import {
-  useAcVerificationStamps,
-  useFindingsByRound,
-  usePrCiVerdict,
-  useReviewerChain,
-  useTaskConventionFindings,
+  useReleaseCiVerdicts,
+  useReleaseVerification,
 } from "@/hooks/use-verification";
 import {
   AcVerificationList,
@@ -23,38 +21,58 @@ import {
 } from "@/components/verification/receipt";
 import { CollapsibleSection } from "@/components/ui/collapsible-section";
 import { Badge } from "@/components/ui/badge";
-import { RELEASE_NO_MEMBER_TASKS_MESSAGE } from "@/lib/api/verification";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  memberCiVerdict,
+  RELEASE_NO_MEMBER_TASKS_MESSAGE,
+  RELEASE_ROLLUP_UNREADABLE_MESSAGE,
+  type MemberVerification,
+  type PrCiVerdict,
+} from "@/lib/api/verification";
 
 interface ReleaseVerificationRollupProps {
+  /** The open release proposal's task id: keys the rollup's two reads. */
+  proposalTaskId: string;
   /**
-   * The release proposal's member task ids (GET /release/proposal's
-   * `member_task_ids`, always present — an empty list means this release
-   * genuinely carries no member tasks, see RELEASE_NO_MEMBER_TASKS_MESSAGE).
+   * How many member tasks GET /release/proposal reported
+   * (`member_task_ids.length`). Zero means this release genuinely carries no
+   * member tasks (RELEASE_NO_MEMBER_TASKS_MESSAGE) and nothing is fetched.
    */
-  taskIds: string[];
-  /** Optional display title per task id — falls back to the bare id. */
-  taskTitles?: Record<string, string>;
+  memberCount: number;
 }
 
 export function ReleaseVerificationRollup({
-  taskIds,
-  taskTitles,
+  proposalTaskId,
+  memberCount,
 }: ReleaseVerificationRollupProps) {
-  if (taskIds.length === 0) {
+  const hasMembers = memberCount > 0;
+  const receipts = useReleaseVerification(proposalTaskId, hasMembers);
+  const ci = useReleaseCiVerdicts(proposalTaskId, hasMembers);
+
+  if (!hasMembers) {
     return (
       <p className="text-sm text-muted-foreground">
         {RELEASE_NO_MEMBER_TASKS_MESSAGE}
       </p>
     );
   }
+  if (receipts.isLoading) return <Skeleton className="h-24 w-full" />;
+  if (receipts.isError || !receipts.data) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        {RELEASE_ROLLUP_UNREADABLE_MESSAGE}
+      </p>
+    );
+  }
 
   return (
     <div className="divide-y divide-border">
-      {taskIds.map((taskId) => (
+      {receipts.data.map((member) => (
         <MemberTaskVerification
-          key={taskId}
-          taskId={taskId}
-          title={taskTitles?.[taskId]}
+          key={member.taskId}
+          member={member}
+          ci={memberCiVerdict(ci.data, ci.isError, member.taskId)}
+          ciLoading={ci.isLoading}
         />
       ))}
     </div>
@@ -62,26 +80,20 @@ export function ReleaseVerificationRollup({
 }
 
 function MemberTaskVerification({
-  taskId,
-  title,
+  member,
+  ci,
+  ciLoading,
 }: {
-  taskId: string;
-  title?: string;
+  member: MemberVerification;
+  ci: PrCiVerdict;
+  ciLoading: boolean;
 }) {
-  const ac = useAcVerificationStamps(taskId);
-  const findings = useFindingsByRound(taskId);
-  const ci = usePrCiVerdict(taskId);
-  const conventions = useTaskConventionFindings(taskId);
-  const reviewers = useReviewerChain(taskId);
-
-  const verifiedCount = ac.data?.filter((s) => s.verified).length ?? 0;
-  const totalCount = ac.data?.length ?? 0;
-  const openFindingsCount =
-    findings.data?.reduce(
-      (n, round) =>
-        n + round.findings.filter((f) => f.status === "open").length,
-      0,
-    ) ?? 0;
+  const verifiedCount = member.ac.filter((s) => s.verified).length;
+  const totalCount = member.ac.length;
+  const openFindingsCount = member.findings.reduce(
+    (n, round) => n + round.findings.filter((f) => f.status === "open").length,
+    0,
+  );
 
   return (
     <CollapsibleSection
@@ -91,9 +103,9 @@ function MemberTaskVerification({
       title={
         <span className="flex min-w-0 flex-wrap items-center gap-2 tabular-nums">
           <code className="shrink-0 text-xs text-muted-foreground">
-            {taskId.slice(0, 8)}
+            {member.taskId.slice(0, 8)}
           </code>
-          <span className="truncate text-sm">{title ?? taskId}</span>
+          <span className="truncate text-sm">{member.title}</span>
           <Badge variant="outline">
             {verifiedCount}/{totalCount} AC verified
           </Badge>
@@ -102,7 +114,7 @@ function MemberTaskVerification({
               {openFindingsCount} open
             </Badge>
           )}
-          <CiVerdictBadge data={ci.data} isLoading={ci.isLoading} />
+          <CiVerdictBadge data={ci} isLoading={ciLoading} />
         </span>
       }
     >
@@ -111,7 +123,7 @@ function MemberTaskVerification({
           Acceptance criteria
         </h4>
         <div className="mt-1">
-          <AcVerificationList data={ac.data} isLoading={ac.isLoading} />
+          <AcVerificationList data={member.ac} isLoading={false} />
         </div>
       </section>
       <section>
@@ -119,10 +131,7 @@ function MemberTaskVerification({
           Findings by review round
         </h4>
         <div className="mt-1">
-          <FindingsByRoundList
-            data={findings.data}
-            isLoading={findings.isLoading}
-          />
+          <FindingsByRoundList data={member.findings} isLoading={false} />
         </div>
       </section>
       <section>
@@ -131,8 +140,8 @@ function MemberTaskVerification({
         </h4>
         <div className="mt-1">
           <ConventionsFindingsList
-            data={conventions.data}
-            isLoading={conventions.isLoading}
+            data={member.conventions}
+            isLoading={false}
           />
         </div>
       </section>
@@ -141,10 +150,7 @@ function MemberTaskVerification({
           Reviewer chain
         </h4>
         <div className="mt-1">
-          <ReviewerChainList
-            data={reviewers.data}
-            isLoading={reviewers.isLoading}
-          />
+          <ReviewerChainList data={member.reviewers} isLoading={false} />
         </div>
       </section>
     </CollapsibleSection>

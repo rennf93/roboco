@@ -62,12 +62,12 @@ def test_aggregate_sums_across_multiple_turn_completed_events(tmp_path: Path) ->
         ],
     )
     agg = cu.aggregate_usage_from_jsonl(log)
-    assert agg["input_tokens"] == 1500  # noqa: PLR2004
-    assert agg["cached_input_tokens"] == 300  # noqa: PLR2004
-    assert agg["cache_write_input_tokens"] == 50  # noqa: PLR2004
-    assert agg["output_tokens"] == 180  # noqa: PLR2004
-    assert agg["reasoning_output_tokens"] == 20  # noqa: PLR2004
-    assert agg["turns"] == 2  # noqa: PLR2004
+    assert agg["input_tokens"] == 1500
+    assert agg["cached_input_tokens"] == 300
+    assert agg["cache_write_input_tokens"] == 50
+    assert agg["output_tokens"] == 180
+    assert agg["reasoning_output_tokens"] == 20
+    assert agg["turns"] == 2
 
 
 def test_aggregate_ignores_turn_failed_and_bad_lines(tmp_path: Path) -> None:
@@ -81,7 +81,7 @@ def test_aggregate_ignores_turn_failed_and_bad_lines(tmp_path: Path) -> None:
         ],
     )
     agg = cu.aggregate_usage_from_jsonl(log)
-    assert agg["input_tokens"] == 10  # noqa: PLR2004
+    assert agg["input_tokens"] == 10
     assert agg["turns"] == 1
 
 
@@ -102,9 +102,9 @@ def test_usage_and_cost_treats_cached_as_subset_of_input() -> None:
         "reasoning_output_tokens": 50,
     }
     tin, tout, cr, cw, cost = cu.usage_and_cost("gpt-5.3-codex", agg)
-    assert tin == 700  # 1000 - 300  # noqa: PLR2004
-    assert tout == 250  # output + reasoning folded in  # noqa: PLR2004
-    assert cr == 300  # noqa: PLR2004
+    assert tin == 700  # 1000 - 300
+    assert tout == 250  # output + reasoning folded in
+    assert cr == 300
     assert cw == 0
     assert cost > 0.0
 
@@ -129,8 +129,8 @@ def test_capture_run_usage_writes_usage_json(tmp_path: Path) -> None:
     assert tokens == (100, 50, 0, 0)
     data = json.loads(out.read_text())
     assert data["model"] == "gpt-5.3-codex"
-    assert data["tokens_input"] == 100  # noqa: PLR2004
-    assert data["tokens_output"] == 50  # noqa: PLR2004
+    assert data["tokens_input"] == 100
+    assert data["tokens_output"] == 50
     assert data["turns"] == 1
     assert data["cost_usd"] > 0.0
 
@@ -146,8 +146,8 @@ def test_main_writes_usage_file(
     monkeypatch.setenv("ROBOCO_AGENT_MODEL", "gpt-5.3-codex")
     assert cu.main() == 0
     data = json.loads(out.read_text())
-    assert data["tokens_input"] == 200  # noqa: PLR2004
-    assert data["tokens_output"] == 100  # noqa: PLR2004
+    assert data["tokens_input"] == 200
+    assert data["tokens_output"] == 100
 
 
 def test_main_warns_when_run_log_env_missing(

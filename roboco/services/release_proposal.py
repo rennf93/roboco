@@ -41,6 +41,13 @@ if TYPE_CHECKING:
 
     from roboco.services.release_readiness import ReleaseReadinessReport
 
+if TYPE_CHECKING:
+    from roboco.services._release_proposal_types import (
+        ReleaseProposalServiceSelf as _Base,
+    )
+else:
+    _Base = object
+
 logger = logging.getLogger(__name__)
 
 
@@ -78,7 +85,8 @@ class ReleaseRejectRefused(Exception):
 # it while the execute owns the lock, and a fencing token makes the release
 # compare-and-del so a late first-finally can't delete a usurper's lock.
 _RELEASE_LOCK_PREFIX = "roboco:release_proposal:"
-_RELEASE_LOCK_TTL_SECONDS = 3000  # 50 min > 40 min CI ceiling; crash backstop
+# 50 min > 40 min CI ceiling; crash backstop
+_RELEASE_LOCK_TTL_SECONDS = 3000
 _RELEASE_LOCK_HEARTBEAT_SECONDS = 60.0
 # Only delete/extend the lock when its value still equals our fencing token.
 _RELEASE_LOCK_RELEASE_SCRIPT = """
@@ -97,16 +105,10 @@ end
 """
 
 
-class ReleaseProposalService(BaseService):
-    """Find / approve / reject the single open release proposal."""
-
-    service_name = "release_proposal"
-
-    def __init__(self, session: AsyncSession) -> None:
-        super().__init__(session)
-        # One shared redis client per approve, closed once in approve()'s finally
-        # (replaces a from_url pool per heartbeat tick — ~40 pools per release).
-        self._redis: redis.Redis | None = None
+class ReleaseProposalLock(_Base):
+    """The release mutex in Redis: one shared connection per approval, taking the
+    lock with a fencing token, heartbeating its TTL while the executor runs, and
+    releasing it only while it is still ours."""
 
     async def _redis_conn(self) -> redis.Redis:
         if self._redis is None:
@@ -117,6 +119,218 @@ class ReleaseProposalService(BaseService):
         if self._redis is not None:
             await self._redis.aclose()
             self._redis = None
+
+    async def _finalize_release_lock(
+        self,
+        heartbeat_task: asyncio.Task[None] | None,
+        execute_task: asyncio.Task[ReleaseResult] | None,
+        lock_key: str,
+        lock_token: str,
+    ) -> None:
+        """Cancel the heartbeat/execute tasks and release the mutex (best-effort)."""
+        if heartbeat_task is not None:
+            heartbeat_task.cancel()
+            await asyncio.gather(heartbeat_task, return_exceptions=True)
+        if execute_task is not None and not execute_task.done():
+            execute_task.cancel()
+            await asyncio.gather(execute_task, return_exceptions=True)
+        await self._release_release_lock(lock_key, lock_token)
+
+    async def _acquire_release_lock(self, lock_key: str) -> str | None:
+        """``SET NX EX`` the release mutex with a fencing-token value.
+
+        Returns the token if acquired, None if held (a concurrent approve owns
+        it). Raises :class:`ReleaseLockUnavailable` if Redis itself is
+        unreachable so the caller can distinguish an infra failure from a
+        concurrent-approve conflict (both stay fail-closed).
+        """
+        token = uuid4().hex
+        try:
+            conn = await self._redis_conn()
+            acquired = await conn.set(
+                lock_key, token, nx=True, ex=_RELEASE_LOCK_TTL_SECONDS
+            )
+            # redis-py returns True on SET NX success, None on conflict.
+            return token if acquired else None
+        except Exception as exc:
+            logger.warning("release lock acquire failed (redis): %s", exc)
+            raise ReleaseLockUnavailable(str(exc)) from exc
+
+    async def _release_release_lock(self, lock_key: str, token: str) -> None:
+        """Compare-and-del the release mutex (only if we still own it)."""
+        try:
+            conn = await self._redis_conn()
+            await conn.eval(_RELEASE_LOCK_RELEASE_SCRIPT, 1, lock_key, token)
+        except Exception as exc:
+            logger.warning("release lock release failed (redis): %s", exc)
+
+    async def _heartbeat_release_lock(self, lock_key: str, token: str) -> bool:
+        """Compare-and-expire the release mutex. True if we still own it."""
+        conn = await self._redis_conn()
+        res = await conn.eval(
+            _RELEASE_LOCK_HEARTBEAT_SCRIPT,
+            1,
+            lock_key,
+            token,
+            _RELEASE_LOCK_TTL_SECONDS,
+        )
+        return bool(res)
+
+    async def _heartbeat_loop(
+        self,
+        lock_key: str,
+        token: str,
+        execute_task: asyncio.Task[ReleaseResult],
+        lock_lost: asyncio.Event,
+    ) -> None:
+        """Refresh the lock TTL while the execute owns it.
+
+        Refreshes before the first sleep so a fast execute still extends the
+        TTL. A refresh error logs and continues (never crashes the execute); if
+        the lock is no longer ours (returned 0 — only reachable after a >TTL
+        Redis outage lets the mutex expire mid-execute) we CANCEL the in-flight
+        execute fail-closed rather than ``return`` silently and leave it running
+        unguarded — otherwise a concurrent approve (once Redis returns) can
+        acquire the lock and ``_prepare_release_clone`` ``rm -rf``'s the shared
+        release clone while the first execute is still mid-``run_gate``. The
+        fencing token still prevents the first finally from deleting the
+        usurper's lock; this prevents the usurper's rm -rf from corrupting the
+        first execute.
+        """
+        while True:
+            try:
+                if not await self._heartbeat_release_lock(lock_key, token):
+                    logger.critical(
+                        "release lock no longer owned during execute — "
+                        "aborting execute fail-closed so a concurrent approve"
+                        " cannot rm -rf the in-flight release clone"
+                    )
+                    lock_lost.set()
+                    execute_task.cancel()
+                    return
+            except Exception as exc:
+                logger.warning("release lock heartbeat failed (redis): %s", exc)
+            await asyncio.sleep(_RELEASE_LOCK_HEARTBEAT_SECONDS)
+
+
+class ReleaseProposalDrafts(_Base):
+    """What a just-published release hands on, each held for the CEO: the X post,
+    the War Room brief, the video, the docs update, and a Dogfood walk."""
+
+    async def _draft_x_post(
+        self, report: ReleaseReadinessReport, project_id: UUID | None
+    ) -> None:
+        """Hand the just-published release to the X engine for a held
+        announcement draft (best-effort — never raises into approve(); a
+        drafting failure must not affect the release's already-succeeded
+        publish). Off/no-creds is itself a no-op inside the engine. The
+        proposal task's project scopes the draft to the released project."""
+        try:
+            from roboco.services.x_engine import changelog_highlights, get_x_engine
+
+            # Prefer the curated CHANGELOG's feature headlines over raw
+            # per-commit subjects — the latter made the announcement caption
+            # parrot the top commit ("docs: curate the Unreleased body…").
+            highlights = changelog_highlights(report.drafted_changelog) or list(
+                report.change_summary
+            )
+            await get_x_engine(self.session).draft_release_post(
+                version=report.proposed_version,
+                highlights=highlights,
+                project_id=project_id,
+            )
+        except Exception as exc:
+            logger.warning("x-post draft failed (best-effort): %s", exc)
+
+    async def _draft_war_room(
+        self, report: ReleaseReadinessReport, project_id: UUID | None
+    ) -> None:
+        """Hand the just-published release to the War Room engine for a held
+        campaign-planning exploration (best-effort — never raises into
+        approve(); an origination failure must not affect the release's
+        already-succeeded publish). Off/no-creds/dedup-blocked is itself a
+        no-op inside the engine (``WarRoomEngine.open_for_release``), mirrors
+        ``_draft_x_post``. Reuses the same curated highlights as the release
+        post so the campaign's brief and the announcement tweet never
+        disagree on what shipped."""
+        try:
+            from roboco.services.war_room_engine import get_war_room_engine
+            from roboco.services.x_engine import changelog_highlights
+
+            highlights = changelog_highlights(report.drafted_changelog) or list(
+                report.change_summary
+            )
+            await get_war_room_engine(self.session).open_for_release(
+                version=report.proposed_version,
+                highlights=highlights,
+                project_id=project_id,
+            )
+        except Exception as exc:
+            logger.warning(
+                "war-room campaign origination failed (best-effort): %s", exc
+            )
+
+    async def _draft_video(
+        self, report: ReleaseReadinessReport, project_id: UUID | None
+    ) -> None:
+        """Hand the just-published release to the video engine for a held
+        UX/UI authoring task (best-effort — never raises into approve(); a
+        drafting failure must not affect the release's already-succeeded
+        publish). Off/no-sub-switch is itself a no-op inside the engine. The
+        proposal task's project scopes the draft to the released project."""
+        try:
+            from roboco.services.video_engine import get_video_engine
+
+            await get_video_engine(self.session).draft_release_video(
+                version=report.proposed_version,
+                changelog=report.drafted_changelog,
+                project_id=project_id,
+            )
+        except Exception as exc:
+            logger.warning("video draft failed (best-effort): %s", exc)
+
+    async def _draft_docs_update(self, report: ReleaseReadinessReport) -> None:
+        """Hand the just-published release to the docs-sync engine for a
+        docs-update task (best-effort — never raises into approve(); an
+        origination failure must not affect the release's already-succeeded
+        publish). Off or a missing roboco-website project is itself a no-op
+        inside the engine."""
+        try:
+            from roboco.services.docs_sync_engine import get_docs_sync_engine
+
+            await get_docs_sync_engine(self.session).originate_docs_update(
+                version=report.proposed_version,
+                changelog=report.drafted_changelog,
+            )
+        except Exception as exc:
+            logger.warning("docs-sync task origination failed (best-effort): %s", exc)
+
+    async def _draft_dogfood_walk(self) -> None:
+        """Trigger a Dogfood board-program cycle off a just-published release
+        (best-effort — never raises into approve(); a trigger failure must
+        not affect the release's already-succeeded publish). Armed, scope,
+        and one-open-cycle dedup all live in ``BoardProgramEngine.
+        open_program_cycle`` — a Dogfood cycle rotates across opted-in
+        projects on its own (see ``DogfoodEngine.run_cycle``), so this hook
+        carries no project targeting, unlike the release-scoped drafts above."""
+        try:
+            from roboco.services.board_programs import get_board_program_engine
+
+            await get_board_program_engine(self.session).open_program_cycle("dogfood")
+        except Exception as exc:
+            logger.warning("dogfood walk trigger failed (best-effort): %s", exc)
+
+
+class ReleaseProposalService(BaseService, ReleaseProposalDrafts, ReleaseProposalLock):
+    """Find / approve / reject the single open release proposal."""
+
+    service_name = "release_proposal"
+
+    def __init__(self, session: AsyncSession) -> None:
+        super().__init__(session)
+        # One shared redis client per approve, closed once in approve()'s finally
+        # (replaces a from_url pool per heartbeat tick — ~40 pools per release).
+        self._redis: redis.Redis | None = None
 
     async def open_proposal(self) -> TaskTable | None:
         """The single held release proposal awaiting the CEO, or None."""
@@ -320,201 +534,6 @@ class ReleaseProposalService(BaseService):
                 heartbeat_task, execute_task, lock_key, lock_token
             )
             await self._close_redis()
-
-    async def _draft_x_post(
-        self, report: ReleaseReadinessReport, project_id: UUID | None
-    ) -> None:
-        """Hand the just-published release to the X engine for a held
-        announcement draft (best-effort — never raises into approve(); a
-        drafting failure must not affect the release's already-succeeded
-        publish). Off/no-creds is itself a no-op inside the engine. The
-        proposal task's project scopes the draft to the released project."""
-        try:
-            from roboco.services.x_engine import changelog_highlights, get_x_engine
-
-            # Prefer the curated CHANGELOG's feature headlines over raw
-            # per-commit subjects — the latter made the announcement caption
-            # parrot the top commit ("docs: curate the Unreleased body…").
-            highlights = changelog_highlights(report.drafted_changelog) or list(
-                report.change_summary
-            )
-            await get_x_engine(self.session).draft_release_post(
-                version=report.proposed_version,
-                highlights=highlights,
-                project_id=project_id,
-            )
-        except Exception as exc:
-            logger.warning("x-post draft failed (best-effort): %s", exc)
-
-    async def _draft_war_room(
-        self, report: ReleaseReadinessReport, project_id: UUID | None
-    ) -> None:
-        """Hand the just-published release to the War Room engine for a held
-        campaign-planning exploration (best-effort — never raises into
-        approve(); an origination failure must not affect the release's
-        already-succeeded publish). Off/no-creds/dedup-blocked is itself a
-        no-op inside the engine (``WarRoomEngine.open_for_release``), mirrors
-        ``_draft_x_post``. Reuses the same curated highlights as the release
-        post so the campaign's brief and the announcement tweet never
-        disagree on what shipped."""
-        try:
-            from roboco.services.war_room_engine import get_war_room_engine
-            from roboco.services.x_engine import changelog_highlights
-
-            highlights = changelog_highlights(report.drafted_changelog) or list(
-                report.change_summary
-            )
-            await get_war_room_engine(self.session).open_for_release(
-                version=report.proposed_version,
-                highlights=highlights,
-                project_id=project_id,
-            )
-        except Exception as exc:
-            logger.warning(
-                "war-room campaign origination failed (best-effort): %s", exc
-            )
-
-    async def _draft_video(
-        self, report: ReleaseReadinessReport, project_id: UUID | None
-    ) -> None:
-        """Hand the just-published release to the video engine for a held
-        UX/UI authoring task (best-effort — never raises into approve(); a
-        drafting failure must not affect the release's already-succeeded
-        publish). Off/no-sub-switch is itself a no-op inside the engine. The
-        proposal task's project scopes the draft to the released project."""
-        try:
-            from roboco.services.video_engine import get_video_engine
-
-            await get_video_engine(self.session).draft_release_video(
-                version=report.proposed_version,
-                changelog=report.drafted_changelog,
-                project_id=project_id,
-            )
-        except Exception as exc:
-            logger.warning("video draft failed (best-effort): %s", exc)
-
-    async def _draft_docs_update(self, report: ReleaseReadinessReport) -> None:
-        """Hand the just-published release to the docs-sync engine for a
-        docs-update task (best-effort — never raises into approve(); an
-        origination failure must not affect the release's already-succeeded
-        publish). Off or a missing roboco-website project is itself a no-op
-        inside the engine."""
-        try:
-            from roboco.services.docs_sync_engine import get_docs_sync_engine
-
-            await get_docs_sync_engine(self.session).originate_docs_update(
-                version=report.proposed_version,
-                changelog=report.drafted_changelog,
-            )
-        except Exception as exc:
-            logger.warning("docs-sync task origination failed (best-effort): %s", exc)
-
-    async def _draft_dogfood_walk(self) -> None:
-        """Trigger a Dogfood board-program cycle off a just-published release
-        (best-effort — never raises into approve(); a trigger failure must
-        not affect the release's already-succeeded publish). Armed, scope,
-        and one-open-cycle dedup all live in ``BoardProgramEngine.
-        open_program_cycle`` — a Dogfood cycle rotates across opted-in
-        projects on its own (see ``DogfoodEngine.run_cycle``), so this hook
-        carries no project targeting, unlike the release-scoped drafts above."""
-        try:
-            from roboco.services.board_programs import get_board_program_engine
-
-            await get_board_program_engine(self.session).open_program_cycle("dogfood")
-        except Exception as exc:
-            logger.warning("dogfood walk trigger failed (best-effort): %s", exc)
-
-    async def _finalize_release_lock(
-        self,
-        heartbeat_task: asyncio.Task[None] | None,
-        execute_task: asyncio.Task[ReleaseResult] | None,
-        lock_key: str,
-        lock_token: str,
-    ) -> None:
-        """Cancel the heartbeat/execute tasks and release the mutex (best-effort)."""
-        if heartbeat_task is not None:
-            heartbeat_task.cancel()
-            await asyncio.gather(heartbeat_task, return_exceptions=True)
-        if execute_task is not None and not execute_task.done():
-            execute_task.cancel()
-            await asyncio.gather(execute_task, return_exceptions=True)
-        await self._release_release_lock(lock_key, lock_token)
-
-    async def _acquire_release_lock(self, lock_key: str) -> str | None:
-        """``SET NX EX`` the release mutex with a fencing-token value.
-
-        Returns the token if acquired, None if held (a concurrent approve owns
-        it). Raises :class:`ReleaseLockUnavailable` if Redis itself is
-        unreachable so the caller can distinguish an infra failure from a
-        concurrent-approve conflict (both stay fail-closed).
-        """
-        token = uuid4().hex
-        try:
-            conn = await self._redis_conn()
-            acquired = await conn.set(
-                lock_key, token, nx=True, ex=_RELEASE_LOCK_TTL_SECONDS
-            )
-            # redis-py returns True on SET NX success, None on conflict.
-            return token if acquired else None
-        except Exception as exc:
-            logger.warning("release lock acquire failed (redis): %s", exc)
-            raise ReleaseLockUnavailable(str(exc)) from exc
-
-    async def _release_release_lock(self, lock_key: str, token: str) -> None:
-        """Compare-and-del the release mutex (only if we still own it)."""
-        try:
-            conn = await self._redis_conn()
-            await conn.eval(_RELEASE_LOCK_RELEASE_SCRIPT, 1, lock_key, token)
-        except Exception as exc:
-            logger.warning("release lock release failed (redis): %s", exc)
-
-    async def _heartbeat_release_lock(self, lock_key: str, token: str) -> bool:
-        """Compare-and-expire the release mutex. True if we still own it."""
-        conn = await self._redis_conn()
-        res = await conn.eval(
-            _RELEASE_LOCK_HEARTBEAT_SCRIPT,
-            1,
-            lock_key,
-            token,
-            _RELEASE_LOCK_TTL_SECONDS,
-        )
-        return bool(res)
-
-    async def _heartbeat_loop(
-        self,
-        lock_key: str,
-        token: str,
-        execute_task: asyncio.Task[ReleaseResult],
-        lock_lost: asyncio.Event,
-    ) -> None:
-        """Refresh the lock TTL while the execute owns it.
-
-        Refreshes before the first sleep so a fast execute still extends the
-        TTL. A refresh error logs and continues (never crashes the execute); if
-        the lock is no longer ours (returned 0 — only reachable after a >TTL
-        Redis outage lets the mutex expire mid-execute) we CANCEL the in-flight
-        execute fail-closed rather than ``return`` silently and leave it running
-        unguarded — otherwise a concurrent approve (once Redis returns) can
-        acquire the lock and ``_prepare_release_clone`` ``rm -rf``'s the shared
-        release clone while the first execute is still mid-``run_gate``. The
-        fencing token still prevents the first finally from deleting the
-        usurper's lock; this prevents the usurper's rm -rf from corrupting the
-        first execute.
-        """
-        while True:
-            try:
-                if not await self._heartbeat_release_lock(lock_key, token):
-                    logger.critical(
-                        "release lock no longer owned during execute — "
-                        "aborting execute fail-closed so a concurrent approve"
-                        " cannot rm -rf the in-flight release clone"
-                    )
-                    lock_lost.set()
-                    execute_task.cancel()
-                    return
-            except Exception as exc:
-                logger.warning("release lock heartbeat failed (redis): %s", exc)
-            await asyncio.sleep(_RELEASE_LOCK_HEARTBEAT_SECONDS)
 
     async def reject(self, task_id: UUID, required_changes: str) -> TaskTable | None:
         """Record the CEO's required changes and cancel the proposal.

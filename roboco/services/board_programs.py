@@ -56,6 +56,13 @@ if TYPE_CHECKING:
 
     from roboco.foundation.policy.board_programs import BoardProgram
 
+if TYPE_CHECKING:
+    from roboco.services._board_program_engine_types import (
+        BoardProgramEngineSelf as _Base,
+    )
+else:
+    _Base = object
+
 _TERMINAL_STATUSES = (TaskStatus.COMPLETED, TaskStatus.CANCELLED)
 
 logger = structlog.get_logger()
@@ -395,7 +402,7 @@ class _QueueItemShape(NamedTuple):
     task marker payload. ``list_key`` is None for Coroner, whose payload
     carries a single ``process_change`` dict rather than a list."""
 
-    getter: Any  # Callable[[TaskTable], dict[str, Any] | None]
+    getter: Callable[[TaskTable], dict[str, Any] | None]
     list_key: str | None
     title_field: str
     evidence_field: str | None
@@ -575,7 +582,257 @@ async def program_armed(session: AsyncSession, key: str) -> bool:
     )
 
 
-class BoardProgramEngine(BaseService):
+class BoardProgramDecisions(_Base):
+    """Recording a program cycle's decision: resolving its cycle and snapshot, the
+    decision or nothing-to-propose, the dedup state, and closing the cycle."""
+
+    async def _resolve_decision_cycle(
+        self, program_key: str, exploration_task_id: UUID | None
+    ) -> BoardProgramCycleTable | None:
+        """The exact cycle for ``exploration_task_id`` when it resolves,
+        else the most-recent cycle for ``program_key`` (or None); see
+        ``record_decision``'s docstring for the attribution rationale."""
+        if exploration_task_id is not None:
+            cycle = await self._cycle_for_exploration(program_key, exploration_task_id)
+            if cycle is not None:
+                return cycle
+        return await self._latest_cycle(program_key)
+
+    async def _resolve_decision_snapshot(
+        self,
+        cycle: BoardProgramCycleTable,
+        program_key: str,
+        item_ref: str,
+        item_payload: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """An explicit ``item_payload`` wins (capped); otherwise a queue-
+        shaped program auto-resolves its snapshot from the exploration
+        task's own marker payload; see ``record_decision``'s docstring."""
+        snapshot = _cap_item_payload(item_payload)
+        if snapshot is not None or cycle.exploration_task_id is None:
+            return snapshot
+        task = await get_task_service(self.session).get(
+            cast("UUID", cycle.exploration_task_id)
+        )
+        if task is None:
+            return None
+        return _resolve_queue_item_snapshot(task, program_key, item_ref)
+
+    async def record_decision(
+        self,
+        program_key: str,
+        item_ref: str,
+        verdict: str,
+        reason: str | None = None,
+        *,
+        exploration_task_id: UUID | None = None,
+        item_payload: dict[str, Any] | None = None,
+    ) -> None:
+        """Accrue one CEO approve/reject onto a cycle for this program.
+
+        When ``exploration_task_id`` is given, targets the cycle row for
+        THAT exploration task exactly (regardless of open/closed) — the
+        caller holds the real originating task in hand (e.g. RoadmapService,
+        reading the item off its own exploration task), so attribution stays
+        exact even when a newer cycle has since opened for the same program
+        (e.g. the CEO's decision lands after the original cycle auto-closed
+        with undecided items — the admin-cancel edge — and a fresh cycle
+        already opened in the meantime). Falls back to the most RECENT cycle
+        (open or closed) when omitted or unresolved — x_post_service's X
+        drafts don't carry their originating exploration task id, so this is
+        the original, unchanged fallback for that caller. A best-effort
+        no-op when no matching cycle exists.
+
+        ``item_payload``, when given, is stamped (bounded) onto the decision
+        entry as ``item_snapshot``: the caller already holds the full item
+        (an X draft task, a playbook row) in hand. When omitted, a queue-
+        shaped program (roadmap/pest_control/spackle/mirror/dogfood/scales/
+        sentinel/periscope/coroner) auto-resolves its own snapshot from the
+        exploration task's marker payload (see ``_resolve_queue_item_
+        snapshot``), which is what makes the cycle history stand alone once
+        ``TaskService.delete`` removes the exploration task the payload used
+        to live exclusively on.
+        """
+        cycle = await self._resolve_decision_cycle(program_key, exploration_task_id)
+        if cycle is None:
+            return
+        snapshot = await self._resolve_decision_snapshot(
+            cycle, program_key, item_ref, item_payload
+        )
+        # Savepoint: every one of this method's callers (the per-program
+        # `_record_learn` family) wraps this call in its own best-effort
+        # try/except with no rollback — a mid-flush failure here would
+        # otherwise poison the caller's shared session (e.g. RoadmapService.
+        # approve_item does an UNGUARDED session.flush() right after this
+        # returns). Fixed once at the source instead of in every caller.
+        async with self.session.begin_nested():
+            cycle.items_proposed += 1
+            if verdict == "approved":
+                cycle.items_approved += 1
+            else:
+                cycle.items_rejected += 1
+            entry: dict[str, Any] = {
+                "item_ref": item_ref,
+                "verdict": verdict,
+                "reason": reason,
+            }
+            if snapshot:
+                entry["item_snapshot"] = snapshot
+            cycle.decisions = [*cycle.decisions, entry]
+            self.session.add(
+                AuditLogTable(
+                    event_type="board_program.decision",
+                    target_type="board_program_cycle",
+                    target_id=cycle.id,
+                    severity="info",
+                    details={
+                        "program_key": program_key,
+                        "item_ref": item_ref[:200],
+                        "verdict": verdict,
+                        "reason": (reason or "")[:300],
+                    },
+                )
+            )
+            if cycle.closed_at is None:
+                await self._maybe_close(cycle)
+            await self.session.flush()
+
+    async def record_nothing_to_propose(
+        self, program_key: str, exploration_task_id: UUID, reason: str
+    ) -> None:
+        """Record an explorer's "genuinely nothing worth proposing this
+        cycle" verdict onto the cycle row for THIS exploration task, so the
+        next cycle's LEARN context explains a proposed-0 cycle instead of
+        rendering a bare "proposed 0, approved 0" (see ``_render_cycle``).
+
+        Unlike ``record_decision`` this never touches items_proposed/
+        approved/rejected or ``decisions`` — no item was proposed. Does NOT
+        close the row; that stays ``_maybe_close``'s job once the (already
+        COMPLETED, by the time this runs) exploration task is observed
+        terminal. A best-effort no-op when no cycle row matches — mirrors
+        every ``record_decision`` producer's own best-effort wrapping.
+        """
+        cycle = await self._cycle_for_exploration(program_key, exploration_task_id)
+        if cycle is None:
+            return
+        # Savepoint: same reasoning as record_decision above — every caller
+        # here also wraps this in its own best-effort try/except.
+        async with self.session.begin_nested():
+            cycle.nothing_to_propose_reason = reason
+            await self.session.flush()
+
+    async def _dedup_state(self, key: str) -> tuple[bool, datetime | None]:
+        """(blocked, last_opened_at) — blocked when a still-genuinely-open
+        cycle row exists after an attempted auto-close."""
+        latest = await self._latest_cycle(key)
+        if latest is None:
+            return False, None
+        if latest.closed_at is None and not await self._maybe_close(latest):
+            return True, latest.opened_at
+        return False, latest.opened_at
+
+    async def _maybe_close(self, cycle: BoardProgramCycleTable) -> bool:
+        """Close ``cycle`` when its exploration task is terminal (or gone);
+        returns whether it is now closed."""
+        if cycle.exploration_task_id is None:
+            cycle.closed_at = datetime.now(UTC)
+            await self.session.flush()
+            return True
+        task = await get_task_service(self.session).get(
+            cast("UUID", cycle.exploration_task_id)
+        )
+        if task is None or task.status in _TERMINAL_STATUSES:
+            cycle.closed_at = datetime.now(UTC)
+            await self.session.flush()
+            return True
+        return False
+
+
+class BoardProgramCycles(_Base):
+    """Reading program cycles: one cycle's state, listing them, the prior cycles'
+    context, rendering one, the latest, and the cycle an exploration belongs to."""
+
+    async def cycle_state(self, key: str) -> tuple[bool, datetime | None]:
+        """(open_cycle, last_opened_at) — reconciled via the same auto-close
+        dedup logic ``run_due_programs``/``open_program_cycle`` consult, so a
+        reader (the API/panel) sees exactly what a "run now" call would."""
+        return await self._dedup_state(key)
+
+    async def list_cycles(
+        self, program_key: str, *, limit: int = 20
+    ) -> list[BoardProgramCycleTable]:
+        """Every recorded cycle for ``program_key``, newest-opened-first,
+        capped 1-100: the durable LEARN-history read surface (``GET
+        /board-programs/{key}/cycles``). Each cycle's ``decisions`` carries
+        its own bounded ``item_snapshot`` where ``record_decision`` resolved
+        one, so this reads back complete even once the exploration task
+        behind an old cycle has been deleted."""
+        result = await self.session.execute(
+            select(BoardProgramCycleTable)
+            .where(BoardProgramCycleTable.program_key == program_key)
+            .order_by(BoardProgramCycleTable.opened_at.desc())
+            .limit(max(1, min(limit, 100)))
+        )
+        return list(result.scalars().all())
+
+    async def prior_cycle_context(self, program_key: str, limit: int = 2) -> str:
+        """Render the last ``limit`` CLOSED cycles for prompt injection, oldest
+        first; empty string when none exist yet."""
+        result = await self.session.execute(
+            select(BoardProgramCycleTable)
+            .where(
+                BoardProgramCycleTable.program_key == program_key,
+                BoardProgramCycleTable.closed_at.isnot(None),
+            )
+            .order_by(BoardProgramCycleTable.closed_at.desc())
+            .limit(limit)
+        )
+        cycles = list(result.scalars().all())
+        if not cycles:
+            return ""
+        return "\n".join(self._render_cycle(c) for c in reversed(cycles))
+
+    def _render_cycle(self, cycle: BoardProgramCycleTable) -> str:
+        if cycle.items_proposed == 0 and cycle.nothing_to_propose_reason:
+            return f"proposed 0 — nothing to propose: {cycle.nothing_to_propose_reason}"
+        line = f"proposed {cycle.items_proposed}, approved {cycle.items_approved}"
+        rejected = [d for d in cycle.decisions if d.get("verdict") == "rejected"]
+        reasons = "; ".join(
+            f"{d.get('item_ref')} — {d.get('reason')}"
+            for d in rejected
+            if d.get("reason")
+        )
+        if reasons:
+            line += f"; rejected: {reasons}"
+        return line
+
+    async def _latest_cycle(self, key: str) -> BoardProgramCycleTable | None:
+        result = await self.session.execute(
+            select(BoardProgramCycleTable)
+            .where(BoardProgramCycleTable.program_key == key)
+            .order_by(BoardProgramCycleTable.opened_at.desc())
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def _cycle_for_exploration(
+        self, key: str, exploration_task_id: UUID
+    ) -> BoardProgramCycleTable | None:
+        """The cycle row that opened FOR this exact exploration task, or None
+        — used by ``record_decision`` for exact attribution over the
+        most-recent fallback."""
+        result = await self.session.execute(
+            select(BoardProgramCycleTable)
+            .where(
+                BoardProgramCycleTable.program_key == key,
+                BoardProgramCycleTable.exploration_task_id == exploration_task_id,
+            )
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+
+class BoardProgramEngine(BaseService, BoardProgramCycles, BoardProgramDecisions):
     """Trigger/dedup/originate/LEARN over every registered Board Program."""
 
     service_name = "board_program_engine"
@@ -724,247 +981,7 @@ class BoardProgramEngine(BaseService):
             if project_participates(program, p.board_programs)
         ]
 
-    async def cycle_state(self, key: str) -> tuple[bool, datetime | None]:
-        """(open_cycle, last_opened_at) — reconciled via the same auto-close
-        dedup logic ``run_due_programs``/``open_program_cycle`` consult, so a
-        reader (the API/panel) sees exactly what a "run now" call would."""
-        return await self._dedup_state(key)
-
-    async def _resolve_decision_cycle(
-        self, program_key: str, exploration_task_id: UUID | None
-    ) -> BoardProgramCycleTable | None:
-        """The exact cycle for ``exploration_task_id`` when it resolves,
-        else the most-recent cycle for ``program_key`` (or None); see
-        ``record_decision``'s docstring for the attribution rationale."""
-        if exploration_task_id is not None:
-            cycle = await self._cycle_for_exploration(program_key, exploration_task_id)
-            if cycle is not None:
-                return cycle
-        return await self._latest_cycle(program_key)
-
-    async def _resolve_decision_snapshot(
-        self,
-        cycle: BoardProgramCycleTable,
-        program_key: str,
-        item_ref: str,
-        item_payload: dict[str, Any] | None,
-    ) -> dict[str, Any] | None:
-        """An explicit ``item_payload`` wins (capped); otherwise a queue-
-        shaped program auto-resolves its snapshot from the exploration
-        task's own marker payload; see ``record_decision``'s docstring."""
-        snapshot = _cap_item_payload(item_payload)
-        if snapshot is not None or cycle.exploration_task_id is None:
-            return snapshot
-        task = await get_task_service(self.session).get(
-            cast("UUID", cycle.exploration_task_id)
-        )
-        if task is None:
-            return None
-        return _resolve_queue_item_snapshot(task, program_key, item_ref)
-
-    async def record_decision(
-        self,
-        program_key: str,
-        item_ref: str,
-        verdict: str,
-        reason: str | None = None,
-        *,
-        exploration_task_id: UUID | None = None,
-        item_payload: dict[str, Any] | None = None,
-    ) -> None:
-        """Accrue one CEO approve/reject onto a cycle for this program.
-
-        When ``exploration_task_id`` is given, targets the cycle row for
-        THAT exploration task exactly (regardless of open/closed) — the
-        caller holds the real originating task in hand (e.g. RoadmapService,
-        reading the item off its own exploration task), so attribution stays
-        exact even when a newer cycle has since opened for the same program
-        (e.g. the CEO's decision lands after the original cycle auto-closed
-        with undecided items — the admin-cancel edge — and a fresh cycle
-        already opened in the meantime). Falls back to the most RECENT cycle
-        (open or closed) when omitted or unresolved — x_post_service's X
-        drafts don't carry their originating exploration task id, so this is
-        the original, unchanged fallback for that caller. A best-effort
-        no-op when no matching cycle exists.
-
-        ``item_payload``, when given, is stamped (bounded) onto the decision
-        entry as ``item_snapshot``: the caller already holds the full item
-        (an X draft task, a playbook row) in hand. When omitted, a queue-
-        shaped program (roadmap/pest_control/spackle/mirror/dogfood/scales/
-        sentinel/periscope/coroner) auto-resolves its own snapshot from the
-        exploration task's marker payload (see ``_resolve_queue_item_
-        snapshot``), which is what makes the cycle history stand alone once
-        ``TaskService.delete`` removes the exploration task the payload used
-        to live exclusively on.
-        """
-        cycle = await self._resolve_decision_cycle(program_key, exploration_task_id)
-        if cycle is None:
-            return
-        snapshot = await self._resolve_decision_snapshot(
-            cycle, program_key, item_ref, item_payload
-        )
-        # Savepoint: every one of this method's callers (the per-program
-        # `_record_learn` family) wraps this call in its own best-effort
-        # try/except with no rollback — a mid-flush failure here would
-        # otherwise poison the caller's shared session (e.g. RoadmapService.
-        # approve_item does an UNGUARDED session.flush() right after this
-        # returns). Fixed once at the source instead of in every caller.
-        async with self.session.begin_nested():
-            cycle.items_proposed += 1
-            if verdict == "approved":
-                cycle.items_approved += 1
-            else:
-                cycle.items_rejected += 1
-            entry: dict[str, Any] = {
-                "item_ref": item_ref,
-                "verdict": verdict,
-                "reason": reason,
-            }
-            if snapshot:
-                entry["item_snapshot"] = snapshot
-            cycle.decisions = [*cycle.decisions, entry]
-            self.session.add(
-                AuditLogTable(
-                    event_type="board_program.decision",
-                    target_type="board_program_cycle",
-                    target_id=cycle.id,
-                    severity="info",
-                    details={
-                        "program_key": program_key,
-                        "item_ref": item_ref[:200],
-                        "verdict": verdict,
-                        "reason": (reason or "")[:300],
-                    },
-                )
-            )
-            if cycle.closed_at is None:
-                await self._maybe_close(cycle)
-            await self.session.flush()
-
-    async def record_nothing_to_propose(
-        self, program_key: str, exploration_task_id: UUID, reason: str
-    ) -> None:
-        """Record an explorer's "genuinely nothing worth proposing this
-        cycle" verdict onto the cycle row for THIS exploration task, so the
-        next cycle's LEARN context explains a proposed-0 cycle instead of
-        rendering a bare "proposed 0, approved 0" (see ``_render_cycle``).
-
-        Unlike ``record_decision`` this never touches items_proposed/
-        approved/rejected or ``decisions`` — no item was proposed. Does NOT
-        close the row; that stays ``_maybe_close``'s job once the (already
-        COMPLETED, by the time this runs) exploration task is observed
-        terminal. A best-effort no-op when no cycle row matches — mirrors
-        every ``record_decision`` producer's own best-effort wrapping.
-        """
-        cycle = await self._cycle_for_exploration(program_key, exploration_task_id)
-        if cycle is None:
-            return
-        # Savepoint: same reasoning as record_decision above — every caller
-        # here also wraps this in its own best-effort try/except.
-        async with self.session.begin_nested():
-            cycle.nothing_to_propose_reason = reason
-            await self.session.flush()
-
-    async def list_cycles(
-        self, program_key: str, *, limit: int = 20
-    ) -> list[BoardProgramCycleTable]:
-        """Every recorded cycle for ``program_key``, newest-opened-first,
-        capped 1-100: the durable LEARN-history read surface (``GET
-        /board-programs/{key}/cycles``). Each cycle's ``decisions`` carries
-        its own bounded ``item_snapshot`` where ``record_decision`` resolved
-        one, so this reads back complete even once the exploration task
-        behind an old cycle has been deleted."""
-        result = await self.session.execute(
-            select(BoardProgramCycleTable)
-            .where(BoardProgramCycleTable.program_key == program_key)
-            .order_by(BoardProgramCycleTable.opened_at.desc())
-            .limit(max(1, min(limit, 100)))
-        )
-        return list(result.scalars().all())
-
-    async def prior_cycle_context(self, program_key: str, limit: int = 2) -> str:
-        """Render the last ``limit`` CLOSED cycles for prompt injection, oldest
-        first; empty string when none exist yet."""
-        result = await self.session.execute(
-            select(BoardProgramCycleTable)
-            .where(
-                BoardProgramCycleTable.program_key == program_key,
-                BoardProgramCycleTable.closed_at.isnot(None),
-            )
-            .order_by(BoardProgramCycleTable.closed_at.desc())
-            .limit(limit)
-        )
-        cycles = list(result.scalars().all())
-        if not cycles:
-            return ""
-        return "\n".join(self._render_cycle(c) for c in reversed(cycles))
-
-    def _render_cycle(self, cycle: BoardProgramCycleTable) -> str:
-        if cycle.items_proposed == 0 and cycle.nothing_to_propose_reason:
-            return f"proposed 0 — nothing to propose: {cycle.nothing_to_propose_reason}"
-        line = f"proposed {cycle.items_proposed}, approved {cycle.items_approved}"
-        rejected = [d for d in cycle.decisions if d.get("verdict") == "rejected"]
-        reasons = "; ".join(
-            f"{d.get('item_ref')} — {d.get('reason')}"
-            for d in rejected
-            if d.get("reason")
-        )
-        if reasons:
-            line += f"; rejected: {reasons}"
-        return line
-
     # ---- dedup / ledger plumbing --------------------------------------
-
-    async def _dedup_state(self, key: str) -> tuple[bool, datetime | None]:
-        """(blocked, last_opened_at) — blocked when a still-genuinely-open
-        cycle row exists after an attempted auto-close."""
-        latest = await self._latest_cycle(key)
-        if latest is None:
-            return False, None
-        if latest.closed_at is None and not await self._maybe_close(latest):
-            return True, latest.opened_at
-        return False, latest.opened_at
-
-    async def _maybe_close(self, cycle: BoardProgramCycleTable) -> bool:
-        """Close ``cycle`` when its exploration task is terminal (or gone);
-        returns whether it is now closed."""
-        if cycle.exploration_task_id is None:
-            cycle.closed_at = datetime.now(UTC)
-            await self.session.flush()
-            return True
-        task = await get_task_service(self.session).get(
-            cast("UUID", cycle.exploration_task_id)
-        )
-        if task is None or task.status in _TERMINAL_STATUSES:
-            cycle.closed_at = datetime.now(UTC)
-            await self.session.flush()
-            return True
-        return False
-
-    async def _latest_cycle(self, key: str) -> BoardProgramCycleTable | None:
-        result = await self.session.execute(
-            select(BoardProgramCycleTable)
-            .where(BoardProgramCycleTable.program_key == key)
-            .order_by(BoardProgramCycleTable.opened_at.desc())
-            .limit(1)
-        )
-        return result.scalar_one_or_none()
-
-    async def _cycle_for_exploration(
-        self, key: str, exploration_task_id: UUID
-    ) -> BoardProgramCycleTable | None:
-        """The cycle row that opened FOR this exact exploration task, or None
-        — used by ``record_decision`` for exact attribution over the
-        most-recent fallback."""
-        result = await self.session.execute(
-            select(BoardProgramCycleTable)
-            .where(
-                BoardProgramCycleTable.program_key == key,
-                BoardProgramCycleTable.exploration_task_id == exploration_task_id,
-            )
-            .limit(1)
-        )
-        return result.scalar_one_or_none()
 
     async def _originate_and_record(self, key: str) -> TaskTable | None:
         """The shared origination chokepoint every registered program's cron

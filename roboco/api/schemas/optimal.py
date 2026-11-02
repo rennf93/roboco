@@ -204,7 +204,7 @@ class TokenEstimateRequest(BaseModel):
     """Request to estimate token count."""
 
     content: str = Field(..., min_length=1, description="Content to estimate")
-    model: str = Field("claude-sonnet-4-20250514", description="Model")
+    model: str = Field("claude-sonnet-5-5", description="Model")
 
 
 class TokenEstimateResponse(BaseModel):

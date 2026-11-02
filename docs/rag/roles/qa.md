@@ -69,7 +69,7 @@ Before deciding, gather evidence:
 3. Inspect the diff: `roboco_git_diff(project_slug=...)` against the PR head.
 4. Run the suite if relevant:
    - Backend: `uv run pytest`, `uv run ruff check .`, `uv run mypy roboco/`
-   - Frontend: `pnpm test`, `pnpm lint`, `pnpm typecheck`
+   - Frontend: `pnpm test`, `pnpm format:check`, `pnpm lint`, `pnpm typecheck`
 5. Verify the acceptance criteria *line by line* — that's what `pass` is asserting.
 6. `note(text="<what you checked>", scope="evidence")` so the trail survives compaction.
 
