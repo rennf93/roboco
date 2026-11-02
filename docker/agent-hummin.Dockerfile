@@ -12,10 +12,10 @@
 # prompt / manifest / mcp-config, exactly as on the kimi/grok/codex paths.
 #
 # V1 scope: no interactive intake/secretary variant of this image exists —
-# hummin is one-shot delivery roles only for now. hummin has NO MCP client
-# (see roboco.llm.providers.hummin's module docstring): the mounted
-# mcp-config.json rides along inert and the RoboCo gateway is unreachable
-# in V1.
+# hummin is one-shot delivery roles only for now. The gateway travels over
+# hummin's native MCP client: the entrypoint arms the hummin-mcp extension
+# bridge from the mounted mcp-config.json (server connects complete during
+# extension load so the role's verbs are mounted from the first turn).
 # =============================================================================
 
 FROM roboco-agent-base

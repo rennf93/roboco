@@ -100,7 +100,9 @@ export function ApproveAndStartButton({ task }: ApproveAndStartButtonProps) {
 
           <div className="space-y-2">
             <HelpTip label="Fetched live only while this dialog is open — read it before approving.">
-              <Label>Board review (Product Owner &amp; Head of Marketing)</Label>
+              <Label>
+                Board review (Product Owner &amp; Head of Marketing)
+              </Label>
             </HelpTip>
             {boardLoading ? (
               <p className="text-xs text-muted-foreground">

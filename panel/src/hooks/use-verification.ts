@@ -1,17 +1,26 @@
-// Data-fetching hooks for the verification receipt (task-detail Verification
-// tab; release-proposal rollup). Every hook rides an existing query
-// (`useTask` / `useTaskFindings` / `conventionsApi.findings`) — no new query
-// path is introduced anywhere in this file.
+// Data-fetching hooks for the verification receipt. The task-detail
+// Verification tab reads one task through the per-task endpoints (`useTask` /
+// `useTaskFindings` / `conventionsApi.findings` / `tasksApi.getAttestation`);
+// the release-proposal rollup reads every member task through two bulk
+// requests (`useReleaseVerification` / `useReleaseCiVerdicts`), never per
+// member.
 import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { conventionsApi, type ConventionFinding } from "@/lib/api/conventions";
 import { dashboardApi } from "@/lib/api/dashboard";
+import { releaseApi } from "@/lib/api/release";
+import { tasksApi } from "@/lib/api/tasks";
 import {
   buildReviewerChain,
+  ciVerdictsByTask,
   groupFindingsByRound,
+  memberVerificationFromReceipt,
   parseAcVerificationStamps,
-  PR_CI_VERDICT_UNAVAILABLE,
+  prCiVerdictFromAttestation,
+  PR_CI_VERDICT_NOT_AVAILABLE,
+  PR_CI_VERDICT_UNREADABLE,
   type AcVerificationStamp,
+  type MemberVerification,
   type PrCiVerdict,
   type ReviewerChainEntry,
   type ReviewRoundFindings,
@@ -98,15 +107,81 @@ export function useTaskConventionFindings(taskId: string): {
   return { data: filtered, isLoading: isTaskLoading || isFindingsLoading };
 }
 
-// The PR CI verdict bound to the task's PR head commit. Always reads
-// unavailable — see `PR_CI_VERDICT_UNAVAILABLE` for why (no backend route
-// exists to fetch it). Shaped as a hook, not a bare constant, so both UI
-// leaves consume one uniform {data, isLoading} shape across every
-// verification data source, and the day a real endpoint ships only this
-// hook's body changes.
-export function usePrCiVerdict(_taskId: string): {
+// The PR CI verdict bound to the task's PR head commit, off
+// GET /tasks/{id}/attestation's `ci`. The attestation endpoint resolves the
+// task's project, PR and git service server-side, so the panel needs no
+// dedicated CI route; a failed load reads as unavailable, never as a pass.
+export function usePrCiVerdict(taskId: string): {
   data: PrCiVerdict;
-  isLoading: false;
+  isLoading: boolean;
 } {
-  return { data: PR_CI_VERDICT_UNAVAILABLE, isLoading: false };
+  const { data, isLoading, isError } = useQuery({
+    queryKey: ["task-attestation", taskId],
+    queryFn: () => tasksApi.getAttestation(taskId),
+  });
+  const verdict = useMemo(() => {
+    if (isError) return PR_CI_VERDICT_UNREADABLE;
+    return data
+      ? prCiVerdictFromAttestation(data.ci)
+      : PR_CI_VERDICT_NOT_AVAILABLE;
+  }, [data, isError]);
+  return { data: verdict, isLoading };
+}
+
+// The rollup's query keys live under ["release", ...], never under ["tasks"]:
+// the panel invalidates the ["tasks"] prefix on every task mutation, and a
+// rollup keyed there would refetch with each one.
+export const releaseVerificationKeys = {
+  receipts: (proposalTaskId: string) =>
+    ["release", "verification", proposalTaskId] as const,
+  ciVerdicts: (proposalTaskId: string) =>
+    ["release", "ci-verdicts", proposalTaskId] as const,
+};
+
+// Every member task's receipt for the open release proposal from ONE request
+// (GET /release/proposal/verification), shaped for the receipt pieces. The
+// rollup used to fire four per-task requests for each member, about 300 for
+// the 74-member release that exhausted the orchestrator's DB pool on
+// 2026-10-28.
+export function useReleaseVerification(
+  proposalTaskId: string,
+  enabled: boolean,
+): {
+  data: MemberVerification[] | undefined;
+  isLoading: boolean;
+  isError: boolean;
+} {
+  const { data, isLoading, isError } = useQuery({
+    queryKey: releaseVerificationKeys.receipts(proposalTaskId),
+    queryFn: () => releaseApi.getVerification(),
+    enabled,
+  });
+  const members = useMemo(
+    () => data?.members.map(memberVerificationFromReceipt),
+    [data],
+  );
+  return { data: members, isLoading, isError };
+}
+
+// Every member PR's CI verdict for the open release proposal from ONE request
+// (GET /release/proposal/ci-verdicts), keyed by member task id. Separate from
+// the receipts so the forge round-trips never hold the receipts back.
+export function useReleaseCiVerdicts(
+  proposalTaskId: string,
+  enabled: boolean,
+): {
+  data: Record<string, PrCiVerdict> | undefined;
+  isLoading: boolean;
+  isError: boolean;
+} {
+  const { data, isLoading, isError } = useQuery({
+    queryKey: releaseVerificationKeys.ciVerdicts(proposalTaskId),
+    queryFn: () => releaseApi.getCiVerdicts(),
+    enabled,
+  });
+  const verdicts = useMemo(
+    () => (data ? ciVerdictsByTask(data.verdicts) : undefined),
+    [data],
+  );
+  return { data: verdicts, isLoading, isError };
 }

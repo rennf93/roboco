@@ -1,0 +1,6 @@
+{
+  "body": null,
+  "method": "POST",
+  "source": "pull-sandbox:redis:features",
+  "target": "/v1.51/images/create?fromImage=docker.io%2Fredis%2Fredis-stack-server&tag=latest"
+}

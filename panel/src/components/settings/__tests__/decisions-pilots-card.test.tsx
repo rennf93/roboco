@@ -1,6 +1,12 @@
 import React from "react";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
@@ -35,7 +41,9 @@ vi.mock("@/components/ui/select", () => {
       onValueChange?: (v: string) => void;
       children: React.ReactNode;
     }) => (
-      <Ctx.Provider value={{ value, onValueChange: onValueChange ?? (() => {}) }}>
+      <Ctx.Provider
+        value={{ value, onValueChange: onValueChange ?? (() => {}) }}
+      >
         {children}
       </Ctx.Provider>
     ),
@@ -122,9 +130,7 @@ describe("DecisionsPilotsCard", () => {
     expect(ALL_PILOTS).toHaveLength(50);
     for (const pilot of ALL_PILOTS) {
       expect(await screen.findByText(pilot.label)).toBeInTheDocument();
-      expect(
-        screen.getByTestId(`pilot-row-${pilot.slug}`),
-      ).toBeInTheDocument();
+      expect(screen.getByTestId(`pilot-row-${pilot.slug}`)).toBeInTheDocument();
     }
     const triggers = screen.getAllByRole("combobox");
     expect(triggers).toHaveLength(50);
@@ -138,9 +144,7 @@ describe("DecisionsPilotsCard", () => {
     // the per-section counts match the spec (8 Tier A, 9 cognition, 33 Tier B).
     const slugs = ALL_PILOTS.map((p) => p.slug);
     expect(new Set(slugs).size).toBe(50);
-    expect(
-      PILOT_SECTIONS.map((s) => s.pilots.length),
-    ).toEqual([8, 9, 33]);
+    expect(PILOT_SECTIONS.map((s) => s.pilots.length)).toEqual([8, 9, 33]);
   });
 
   it("shows stored values from the settings map for dotted pilot keys", async () => {
@@ -163,12 +167,13 @@ describe("DecisionsPilotsCard", () => {
     render(withQueryClient(<DecisionsPilotsCard />));
 
     const row = screen.getByTestId("pilot-row-self_heal");
-    fireEvent.click(
-      await within(row).findByRole("option", { name: "shadow" }),
-    );
+    fireEvent.click(await within(row).findByRole("option", { name: "shadow" }));
 
     await waitFor(() =>
-      expect(update).toHaveBeenCalledWith("decisions.pilot.self_heal", "shadow"),
+      expect(update).toHaveBeenCalledWith(
+        "decisions.pilot.self_heal",
+        "shadow",
+      ),
     );
   });
 
