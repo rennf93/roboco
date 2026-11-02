@@ -1203,17 +1203,25 @@ class DoneChecksMixin(_Base):
         """Run the project's fast quality gate (lint + typecheck) in the dev's
         workspace before the task reaches QA, so a red gate is caught at the
         dev's desk instead of in QA review or CI. The full test suite stays on
-        CI. Fail-open: a gate-infrastructure error (missing workspace or
-        toolchain) is logged and never blocks the submit; only an actual check
-        failure blocks.
+        CI. A gate that could not run (workspace or container failure) refuses
+        the submit too: a gate that did not run is not a pass. A project with
+        no gate commands still passes (``GateResult(skipped=True)``).
         """
         try:
             result = await self.git.run_pre_submit_quality_gate(ctx.agent_id, ctx.task)
         except Exception as exc:
             logger.warning(
-                "quality_gate_skipped", task_id=str(ctx.task_id), error=str(exc)
+                "quality_gate_could_not_run", task_id=str(ctx.task_id), error=str(exc)
             )
-            return None
+            return Envelope.invalid_state(
+                message=f"quality gate could not run: {exc}",
+                remediate=(
+                    "The gate failed before any check ran (its workspace or "
+                    "container, not your code). Call i_am_done again; if it "
+                    "keeps failing, escalate."
+                ),
+                context_briefing=ctx.briefing,
+            )
         if result.passed:
             return None
         return Envelope.invalid_state(

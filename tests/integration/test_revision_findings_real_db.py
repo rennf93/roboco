@@ -30,6 +30,7 @@ from roboco.models.base import (
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.base import ValidationError
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
+from roboco.services.gateway.quality_gate import GateResult
 from roboco.services.repositories.review_findings import (
     STATUS_ADDRESSED,
     STATUS_OPEN,
@@ -82,6 +83,12 @@ class _StubGit:
     def __init__(self, session: Any, task: TaskTable) -> None:
         self._session = session
         self._task = task
+
+    async def run_pre_submit_quality_gate(
+        self, _actor_agent_id: Any, _task: Any
+    ) -> GateResult:
+        """No gate commands configured: the skipped pass GitService returns."""
+        return GateResult(passed=True, skipped=True)
 
     async def commit(
         self,
