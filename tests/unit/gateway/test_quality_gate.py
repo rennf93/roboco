@@ -224,8 +224,8 @@ async def test_gate_refuses_the_submit_when_it_cannot_run() -> None:
     env = await _choreo(git)._check_quality_gate(_ctx())
     assert env is not None
     assert env.error == "invalid_state"
-    assert "could not run" in env.message
-    assert "did not run the command" in env.message
+    assert "could not run" in (env.message or "")
+    assert "did not run the command" in (env.message or "")
 
 
 _COMMAND_FAILED = 127
