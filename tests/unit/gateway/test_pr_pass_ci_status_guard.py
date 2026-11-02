@@ -136,7 +136,8 @@ async def test_pr_pass_blocked_on_failing_ci() -> None:
     assert "CI is failing" in (env.message or "")
     assert "tests" in (env.message or "")
     assert "pr_fail" in (env.remediate or "")
-    c.task.get.assert_not_called()  # never reached the runner
+    # Never reached the runner.
+    c.task.get.assert_not_called()
     cc: Any = c
     cc._record_gate_verdict.assert_not_called()
 
@@ -281,7 +282,7 @@ async def test_scope_relaxation_drift_writes_findings_ledger(
     write is skipped — this test catches that regression."""
     insert_mock = AsyncMock()
     monkeypatch.setattr(
-        "roboco.services.gateway.choreographer.pr_gate.findings_lib.insert_and_render",
+        "roboco.services.gateway.choreographer.pr_gate_pass.findings_lib.insert_and_render",
         insert_mock,
     )
     reviewer_id = uuid4()
@@ -331,7 +332,7 @@ async def test_scope_relaxation_drift_checked_without_colliding_sibling(
     )
     c.git.list_changed_files = AsyncMock(return_value=["roboco/services/hack.py"])
     monkeypatch.setattr(
-        "roboco.services.gateway.choreographer.pr_gate.build_collision_context",
+        "roboco.services.gateway.choreographer.pr_gate_evidence.build_collision_context",
         lambda **_kw: None,
     )
 

@@ -71,6 +71,7 @@ uv run mypy roboco/
 
 # Frontend
 pnpm test
+pnpm format:check
 pnpm lint
 pnpm typecheck
 ```

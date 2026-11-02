@@ -6,12 +6,16 @@ unit test can't prove actually executes as real SQL. This also pins the
 open-session live-token pricing fix: a still-open session's
 estimated_cost_usd is null until close, so it must be priced from its token
 columns via calculate_cost, not silently summed as $0.
+
+The tests and the service share one pinned, mid-month "now": against the wall
+clock, a session started "an hour ago" belongs to last month during the first
+hours of every month, and the month filter rightly drops it.
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING
+from datetime import UTC, datetime, timedelta, tzinfo
+from typing import TYPE_CHECKING, Self
 from uuid import UUID, uuid4
 
 import pytest
@@ -31,7 +35,21 @@ from roboco.services.task import TaskService
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-_MODEL = "claude-sonnet-5"
+_MODEL = "claude-sonnet-5-5"
+_NOW = datetime(2026, 6, 15, 12, 0, tzinfo=UTC)
+
+
+class _PinnedClock(datetime):
+    """``datetime`` whose ``now`` is always ``_NOW``."""
+
+    @classmethod
+    def now(cls, tz: tzinfo | None = None) -> Self:
+        return cls.fromtimestamp(_NOW.timestamp(), tz)
+
+
+@pytest.fixture(autouse=True)
+def _pin_service_clock(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("roboco.services.task.datetime", _PinnedClock)
 
 
 async def _seed_project(session: AsyncSession) -> tuple[UUID, UUID]:
@@ -119,7 +137,7 @@ async def test_sums_closed_and_prices_open_session(db_session: AsyncSession) -> 
     price (calculate_cost) — not the open session silently counted as $0."""
     project_id, agent_id = await _seed_project(db_session)
     task_id = await _seed_task(db_session, project_id, agent_id)
-    now = datetime.now(UTC)
+    now = _NOW
 
     db_session.add(
         _spawn_session(
@@ -158,9 +176,7 @@ async def test_excludes_last_months_session(db_session: AsyncSession) -> None:
     count, even though its cost is closed and non-zero."""
     project_id, agent_id = await _seed_project(db_session)
     task_id = await _seed_task(db_session, project_id, agent_id)
-    month_start = datetime.now(UTC).replace(
-        day=1, hour=0, minute=0, second=0, microsecond=0
-    )
+    month_start = _NOW.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
     last_month = month_start - timedelta(days=1)
 
     db_session.add(
@@ -187,7 +203,7 @@ async def test_join_excludes_other_projects_tasks(db_session: AsyncSession) -> N
     other_project_id, other_agent_id = await _seed_project(db_session)
     my_task_id = await _seed_task(db_session, project_id, agent_id)
     other_task_id = await _seed_task(db_session, other_project_id, other_agent_id)
-    now = datetime.now(UTC)
+    now = _NOW
 
     db_session.add(
         _spawn_session(

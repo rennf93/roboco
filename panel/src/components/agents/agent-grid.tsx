@@ -38,7 +38,9 @@ export function AgentGrid({
             {title}
           </h2>
         </HelpTip>
-        <HelpTip label={`${agents.length} agent${agents.length === 1 ? "" : "s"} in this section`}>
+        <HelpTip
+          label={`${agents.length} agent${agents.length === 1 ? "" : "s"} in this section`}
+        >
           <Badge variant="secondary" className="text-xs">
             {agents.length}
           </Badge>

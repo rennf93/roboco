@@ -9,17 +9,20 @@ and drop/close.
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import Request
+from roboco.db import base as db_base
 from roboco.db.base import (
     _db_has_alembic_version,
     _db_has_tables,
-    _DbHolder,
     _InitState,
+    _LoopEngine,
+    _PoolEngines,
     close_db,
     drop_db,
     get_db,
@@ -29,26 +32,31 @@ from roboco.db.base import (
     get_session_factory,
     init_db,
     run_migrations,
+    run_then_close_db,
 )
 
 if TYPE_CHECKING:
     from collections.abc import Generator
 
-    from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
+    from sqlalchemy.ext.asyncio import AsyncEngine
 
 
 @pytest.fixture(autouse=True)
-def _reset_holder() -> Generator[None]:
-    """Snapshot/restore the singleton so tests don't poison the live engine."""
-    saved_engine = _DbHolder.engine
-    saved_factory = _DbHolder.session_factory
-    saved_loop = _DbHolder.loop
+def _fresh_engines(monkeypatch: pytest.MonkeyPatch) -> Generator[None]:
+    """Empty engine registries per test, so no test reaches or leaves behind
+    a real engine."""
+    monkeypatch.setattr(db_base, "_PRIMARY_ENGINES", _PoolEngines())
+    monkeypatch.setattr(db_base, "_BACKGROUND_ENGINES", _PoolEngines())
     _InitState.completed_url = None
     yield
-    _DbHolder.engine = saved_engine
-    _DbHolder.session_factory = saved_factory
-    _DbHolder.loop = saved_loop
     _InitState.completed_url = None
+
+
+def _install(engine: object, pool: db_base._DbPool = "primary") -> None:
+    """Make ``engine`` the running loop's engine for ``pool``."""
+    db_base._engines_for(pool).install(
+        _LoopEngine(engine=cast("AsyncEngine", engine), session_factory=MagicMock())
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -57,7 +65,6 @@ def _reset_holder() -> Generator[None]:
 
 
 def test_get_engine_creates_and_caches() -> None:
-    _DbHolder.engine = None
     fake_engine = MagicMock()
     with patch("roboco.db.base.create_async_engine", return_value=fake_engine) as ce:
         eng1 = get_engine()
@@ -68,14 +75,10 @@ def test_get_engine_creates_and_caches() -> None:
     assert ce.call_count == 1
 
 
-def test_get_engine_rebinds_on_a_different_event_loop() -> None:
-    """The cached engine is per-loop: an access from a second loop discards
-    the first loop's engine (whose pooled connections are loop-bound) and
-    builds a fresh one, instead of dying later with 'Future attached to a
-    different loop' — the e2e/eval-bench multi-loop failure mode."""
-    _DbHolder.engine = None
-    _DbHolder.session_factory = None
-    _DbHolder.loop = None
+def test_each_event_loop_gets_its_own_engine() -> None:
+    """Pooled asyncpg connections belong to the loop that opened them, so a
+    second loop gets its own engine instead of reusing the first's (which
+    dies with 'Future attached to a different loop')."""
     engines = [MagicMock(), MagicMock()]
     with patch("roboco.db.base.create_async_engine", side_effect=engines) as ce:
 
@@ -85,15 +88,46 @@ def test_get_engine_rebinds_on_a_different_event_loop() -> None:
         loop_a_engine = asyncio.run(_grab())
         loop_b_engine = asyncio.run(_grab())
     assert loop_a_engine is engines[0]
-    # Loop B must NOT reuse loop A's engine.
     assert loop_b_engine is engines[1]
     assert ce.call_count == len(engines)
 
 
+@pytest.mark.asyncio
+async def test_another_running_loop_keeps_its_engine() -> None:
+    """A loop's engine stays its own while another loop uses the DB: taking
+    it over (and disposing it) dropped the connections its work still held,
+    which then leaked."""
+    theirs = MagicMock()
+    theirs.dispose = AsyncMock()
+    ours = MagicMock()
+
+    async def _grab() -> object:
+        return get_engine()
+
+    with _LoopThread() as other:
+        with patch("roboco.db.base.create_async_engine", return_value=theirs):
+            assert asyncio.run_coroutine_threadsafe(_grab(), other).result(5) is theirs
+        with patch("roboco.db.base.create_async_engine", return_value=ours):
+            assert get_engine() is ours
+        assert asyncio.run_coroutine_threadsafe(_grab(), other).result(5) is theirs
+    theirs.dispose.assert_not_awaited()
+
+
+def test_an_engine_built_with_no_loop_is_claimed_by_the_first_loop() -> None:
+    """No connection opens until a loop uses the engine, so the first loop to
+    do so takes it; a later loop builds its own."""
+    engines = [MagicMock(), MagicMock()]
+    with patch("roboco.db.base.create_async_engine", side_effect=engines):
+        built_without_loop = get_engine()
+
+        async def _grab() -> object:
+            return get_engine()
+
+        assert asyncio.run(_grab()) is built_without_loop
+        assert asyncio.run(_grab()) is engines[1]
+
+
 def test_get_engine_same_loop_keeps_the_cache() -> None:
-    _DbHolder.engine = None
-    _DbHolder.session_factory = None
-    _DbHolder.loop = None
     fake_engine = MagicMock()
     with patch("roboco.db.base.create_async_engine", return_value=fake_engine) as ce:
 
@@ -107,8 +141,6 @@ def test_get_engine_same_loop_keeps_the_cache() -> None:
 
 
 def test_get_session_factory_creates_and_caches() -> None:
-    _DbHolder.engine = None
-    _DbHolder.session_factory = None
     fake_engine = MagicMock()
     fake_factory = MagicMock()
     with (
@@ -494,8 +526,10 @@ async def test_init_db_fresh_db_runs_migrations() -> None:
     ):
         await init_db()
 
-    rm.assert_awaited_once()  # full chain from base -> schema + seeds
-    fake_conn.run_sync.assert_not_awaited()  # no bare create_all on the fresh path
+    # Full chain from base -> schema + seeds
+    rm.assert_awaited_once()
+    # No bare create_all on the fresh path
+    fake_conn.run_sync.assert_not_awaited()
     fake_engine.dispose.assert_awaited_once()
 
 
@@ -614,26 +648,90 @@ async def test_drop_db_runs_drop_all() -> None:
 
 
 @pytest.mark.asyncio
-async def test_close_db_disposes_and_clears_singletons() -> None:
-    fake_engine = MagicMock()
-    fake_engine.dispose = AsyncMock()
-    _DbHolder.engine = fake_engine
-    _DbHolder.session_factory = MagicMock()
+async def test_close_db_disposes_the_running_loops_engines() -> None:
+    primary = MagicMock()
+    primary.dispose = AsyncMock()
+    background = MagicMock()
+    background.dispose = AsyncMock()
+    _install(primary)
+    _install(background, pool="background")
 
     await close_db()
 
-    fake_engine.dispose.assert_awaited_once()
-    engine_after = cast("AsyncEngine | None", _DbHolder.engine)
-    factory_after = cast(
-        "async_sessionmaker[AsyncSession] | None", _DbHolder.session_factory
-    )
-    assert engine_after is None
-    assert factory_after is None
+    primary.dispose.assert_awaited_once()
+    background.dispose.assert_awaited_once()
+    assert db_base._PRIMARY_ENGINES.current() is None
+    assert db_base._BACKGROUND_ENGINES.current() is None
+
+
+class _LoopThread:
+    """A second event loop running in its own thread, as the e2e harness's
+    uvicorn server runs."""
+
+    def __enter__(self) -> asyncio.AbstractEventLoop:
+        self.loop = asyncio.new_event_loop()
+        self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
+        self.thread.start()
+        return self.loop
+
+    def __exit__(self, *_exc: object) -> None:
+        self.loop.call_soon_threadsafe(self.loop.stop)
+        self.thread.join(5)
+        self.loop.close()
+
+
+@pytest.mark.asyncio
+async def test_close_db_leaves_another_loops_engine_alone() -> None:
+    """Another loop's connections can't be closed from this one; that loop's
+    owner closes them (the e2e server's lifespan, for one)."""
+    theirs = MagicMock()
+    theirs.dispose = AsyncMock()
+
+    async def _install_theirs() -> None:
+        _install(theirs)
+
+    async def _current() -> _LoopEngine | None:
+        return db_base._PRIMARY_ENGINES.current()
+
+    with _LoopThread() as other:
+        asyncio.run_coroutine_threadsafe(_install_theirs(), other).result(5)
+        await close_db()
+        still_theirs = asyncio.run_coroutine_threadsafe(_current(), other).result(5)
+    assert still_theirs is not None
+    assert still_theirs.engine is theirs
+    theirs.dispose.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_close_db_when_no_engine_is_noop() -> None:
-    _DbHolder.engine = None
-    _DbHolder.session_factory = None
-    await close_db()  # Should not raise.
-    assert _DbHolder.engine is None
+    await close_db()
+    assert db_base._PRIMARY_ENGINES.current() is None
+
+
+@pytest.mark.asyncio
+async def test_run_then_close_db_closes_the_loops_engines_after_the_work() -> None:
+    engine = MagicMock()
+    engine.dispose = AsyncMock()
+    _install(engine)
+
+    async def _work() -> str:
+        engine.dispose.assert_not_awaited()
+        return "done"
+
+    assert await run_then_close_db(_work()) == "done"
+    engine.dispose.assert_awaited_once()
+    assert db_base._PRIMARY_ENGINES.current() is None
+
+
+@pytest.mark.asyncio
+async def test_run_then_close_db_closes_the_engines_when_the_work_raises() -> None:
+    engine = MagicMock()
+    engine.dispose = AsyncMock()
+    _install(engine)
+
+    async def _work() -> None:
+        raise RuntimeError("boom")
+
+    with pytest.raises(RuntimeError, match="boom"):
+        await run_then_close_db(_work())
+    engine.dispose.assert_awaited_once()

@@ -46,6 +46,8 @@ CI_WATCH_SOURCE = "ci_watch"
 
 _COST_TOL = 0.005
 _TOKENS_FLOOR = 1
+# The spend and velocity series cover the trailing week, one point per day.
+_SERIES_DAYS = 7
 
 
 def _spawn_session(
@@ -144,8 +146,8 @@ async def test_today_brief_shape(db_session: AsyncSession) -> None:
     brief = await get_tg_cockpit_service(db_session).today()
 
     assert set(brief) == {"needs_you", "fleet", "spend", "velocity", "ship"}
-    assert len(brief["spend"]["series"]) == 7  # noqa: PLR2004
-    assert len(brief["velocity"]["series"]) == 7  # noqa: PLR2004
+    assert len(brief["spend"]["series"]) == _SERIES_DAYS
+    assert len(brief["velocity"]["series"]) == _SERIES_DAYS
     needs = brief["needs_you"]
     assert needs["total"] == (
         needs["awaiting_ceo_count"]
@@ -236,7 +238,9 @@ async def test_session_metrics_by_day_buckets_by_display_timezone(
     (winter, CET = UTC+1) — the exact 'evening activity lands on the wrong
     display day' bug this fix targets."""
     started = datetime(2026, 1, 15, 23, 30, tzinfo=UTC)
-    session_row = _spawn_session(started_at=started, model="claude-sonnet-5", cost=1.23)
+    session_row = _spawn_session(
+        started_at=started, model="claude-sonnet-5-5", cost=1.23
+    )
     db_session.add(session_row)
     await db_session.flush()
 
