@@ -405,3 +405,120 @@ async def test_error_when_workflows_request_times_out() -> None:
     ):
         out = await _service().get_pr_ci_status("roboco", _PR)
     assert out == {"state": "error", "head_sha": _SHA}
+
+
+# ---------------------------------------------------------------------------
+# Approval gates are not CI: Entire's check fails on every fleet PR (it waits
+# for the CEO's trail approval, which a cell/root PR never gets), so pr_pass
+# judges the PR on its CI check-runs only (PR #1324, 2026-11-01).
+# ---------------------------------------------------------------------------
+
+
+def _app_check_run(
+    name: str, app: str, *, status: str, conclusion: str | None
+) -> dict[str, Any]:
+    return {
+        **_check_run(name, status=status, conclusion=conclusion),
+        "app": {"slug": app},
+    }
+
+
+def _entire_gates(
+    *, status: str = "completed", conclusion: str | None = "failure"
+) -> dict[str, Any]:
+    return _app_check_run(
+        "Entire Gates", "entire", status=status, conclusion=conclusion
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_failing_entire_gates_check_does_not_fail_green_ci() -> None:
+    checks = _resp(
+        200,
+        json_payload={
+            "check_runs": [
+                _entire_gates(),
+                _app_check_run(
+                    "Python quality gate",
+                    "github-actions",
+                    status="completed",
+                    conclusion="success",
+                ),
+                _app_check_run(
+                    "GitGuardian Security Checks",
+                    "gitguardian",
+                    status="completed",
+                    conclusion="success",
+                ),
+            ]
+        },
+    )
+    client = _client(_pr_head_resp(), checks)
+    with (
+        _patch_project(),
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+    ):
+        out = await _service().get_pr_ci_status("roboco", _PR)
+    assert out == {"state": "success", "head_sha": _SHA}
+
+
+@pytest.mark.asyncio
+async def test_a_pending_entire_gates_check_does_not_hold_green_ci_pending() -> None:
+    checks = _resp(
+        200,
+        json_payload={
+            "check_runs": [
+                _entire_gates(status="in_progress", conclusion=None),
+                _app_check_run(
+                    "tests", "github-actions", status="completed", conclusion="success"
+                ),
+            ]
+        },
+    )
+    client = _client(_pr_head_resp(), checks)
+    with (
+        _patch_project(),
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+    ):
+        out = await _service().get_pr_ci_status("roboco", _PR)
+    assert out == {"state": "success", "head_sha": _SHA}
+
+
+@pytest.mark.asyncio
+async def test_real_ci_failure_still_fails_next_to_entire_gates() -> None:
+    checks = _resp(
+        200,
+        json_payload={
+            "check_runs": [
+                _entire_gates(),
+                _app_check_run(
+                    "Python quality gate",
+                    "github-actions",
+                    status="completed",
+                    conclusion="failure",
+                ),
+            ]
+        },
+    )
+    client = _client(_pr_head_resp(), checks)
+    with (
+        _patch_project(),
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+    ):
+        out = await _service().get_pr_ci_status("roboco", _PR)
+    assert out is not None
+    assert out["state"] == "failure"
+    assert out["failing_checks"] == ["Python quality gate"]
+
+
+@pytest.mark.asyncio
+async def test_only_entire_gates_counts_as_no_check_runs_yet() -> None:
+    checks = _resp(200, json_payload={"check_runs": [_entire_gates()]})
+    workflows = _resp(200, json_payload={"total_count": 3})
+    client = _client(_pr_head_resp(), checks, workflows)
+    with (
+        _patch_project(),
+        patch("roboco.services.git.httpx.AsyncClient", return_value=client),
+    ):
+        out = await _service().get_pr_ci_status("roboco", _PR)
+    assert out == {"state": "pending_not_scheduled", "head_sha": _SHA}

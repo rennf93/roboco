@@ -258,7 +258,7 @@ class SentinelEngine(BaseService):
 
     async def _latency_section(self) -> list[str]:
         """Slowest gateway verbs by p95, flagging any whose p95 crosses its
-        matching server-side timeout (120s normal, 900s for ``SLOW_VERBS``).
+        matching server-side timeout (120s normal, 1500s for ``SLOW_VERBS``).
         Catches DB errors and returns an empty list so a telemetry gap never
         blocks the spawn."""
         from roboco.foundation.policy.flow_timeouts import SLOW_VERBS

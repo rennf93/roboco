@@ -1,9 +1,14 @@
 import { describe, it, expect } from "vitest";
 import {
   buildReviewerChain,
+  ciVerdictsByTask,
   groupFindingsByRound,
+  memberCiVerdict,
+  memberVerificationFromReceipt,
   parseAcVerificationStamps,
-  PR_CI_VERDICT_UNAVAILABLE,
+  prCiVerdictFromAttestation,
+  PR_CI_VERDICT_NOT_AVAILABLE,
+  PR_CI_VERDICT_UNREADABLE,
   RELEASE_NO_MEMBER_TASKS_MESSAGE,
   type ReviewerChainEntry,
 } from "../verification";
@@ -77,8 +82,20 @@ describe("parseAcVerificationStamps", () => {
   it("marks every criterion unverified when qa_notes is null", () => {
     const stamps = parseAcVerificationStamps(["A", "B"], null);
     expect(stamps).toEqual([
-      { criterion: "A", matched: false, verified: false, unresolved: false, evidence: null },
-      { criterion: "B", matched: false, verified: false, unresolved: false, evidence: null },
+      {
+        criterion: "A",
+        matched: false,
+        verified: false,
+        unresolved: false,
+        evidence: null,
+      },
+      {
+        criterion: "B",
+        matched: false,
+        verified: false,
+        unresolved: false,
+        evidence: null,
+      },
     ]);
   });
 
@@ -88,7 +105,13 @@ describe("parseAcVerificationStamps", () => {
       "[AC] A — verified: yep";
     const stamps = parseAcVerificationStamps(["A"], qaNotes);
     expect(stamps).toEqual([
-      { criterion: "A", matched: true, verified: true, unresolved: false, evidence: "yep" },
+      {
+        criterion: "A",
+        matched: true,
+        verified: true,
+        unresolved: false,
+        evidence: "yep",
+      },
     ]);
   });
 
@@ -182,13 +205,66 @@ describe("buildReviewerChain", () => {
   });
 });
 
-describe("PR_CI_VERDICT_UNAVAILABLE", () => {
-  it("reports unavailable with a short reader-facing reason distinct from the technical escalation detail", () => {
-    expect(PR_CI_VERDICT_UNAVAILABLE.available).toBe(false);
-    expect(PR_CI_VERDICT_UNAVAILABLE.reason.length).toBeGreaterThan(0);
-    expect(PR_CI_VERDICT_UNAVAILABLE.reason).not.toMatch(/endpoint|escalate/i);
-    expect(PR_CI_VERDICT_UNAVAILABLE.technicalDetail).toMatch(
-      /endpoint|escalate/i,
+describe("prCiVerdictFromAttestation", () => {
+  it.each([
+    "success",
+    "failure",
+    "pending",
+    "pending_not_scheduled",
+    "no_ci_configured",
+    "error",
+  ])("carries get_pr_ci_status's %s state through as available", (state) => {
+    expect(
+      prCiVerdictFromAttestation({
+        state,
+        head_sha: "abc1234def",
+        failing_checks: [],
+      }),
+    ).toEqual({
+      available: true,
+      state,
+      headSha: "abc1234def",
+      failingChecks: [],
+    });
+  });
+
+  it("keeps the failing checks by name", () => {
+    const verdict = prCiVerdictFromAttestation({
+      state: "failure",
+      head_sha: "abc1234def",
+      failing_checks: ["Python quality gate", "Panel (Next.js)"],
+    });
+    expect(verdict).toMatchObject({
+      available: true,
+      failingChecks: ["Python quality gate", "Panel (Next.js)"],
+    });
+  });
+
+  it("reads a missing head sha as null", () => {
+    expect(
+      prCiVerdictFromAttestation({ state: "pending", failing_checks: [] }),
+    ).toMatchObject({ available: true, headSha: null });
+  });
+
+  it.each(["not_available", "unknown", ""])(
+    "reads the attestation's %j state as no verdict, never as a pass",
+    (state) => {
+      expect(
+        prCiVerdictFromAttestation({
+          state,
+          head_sha: null,
+          failing_checks: [],
+        }),
+      ).toBe(PR_CI_VERDICT_NOT_AVAILABLE);
+    },
+  );
+
+  it("gives the approver a reason that names no internals", () => {
+    expect(PR_CI_VERDICT_NOT_AVAILABLE.available).toBe(false);
+    if (PR_CI_VERDICT_NOT_AVAILABLE.available) return;
+    expect(PR_CI_VERDICT_NOT_AVAILABLE.reason.length).toBeGreaterThan(0);
+    expect(PR_CI_VERDICT_NOT_AVAILABLE.reason).not.toMatch(
+      /endpoint|escalate|attestation|get_pr_ci_status/i,
     );
   });
 });
@@ -198,6 +274,72 @@ describe("RELEASE_NO_MEMBER_TASKS_MESSAGE", () => {
     expect(RELEASE_NO_MEMBER_TASKS_MESSAGE.length).toBeGreaterThan(0);
     expect(RELEASE_NO_MEMBER_TASKS_MESSAGE).not.toMatch(
       /available yet|endpoint|escalate/i,
+    );
+  });
+});
+
+describe("memberVerificationFromReceipt", () => {
+  it("applies the task-detail derivations to one bulk-read receipt", () => {
+    const member = memberVerificationFromReceipt({
+      task_id: "t1",
+      title: "Thin routes",
+      acceptance_criteria: ["Criterion A", "Criterion B"],
+      qa_notes: "[AC] Criterion A — verified: file.ts:10",
+      findings: [
+        finding({ id: "f2", round: 2 }),
+        finding({ id: "f1", round: 1, status: "addressed" }),
+      ],
+      conventions_findings: [],
+      reviewer_chain: [
+        {
+          round: 2,
+          role: "pr_reviewer",
+          agent_slug: "pr-1",
+          model: "m",
+          started_at: "2026-09-02T00:00:00Z",
+        },
+        {
+          round: 1,
+          role: "qa",
+          agent_slug: "qa-1",
+          model: "m",
+          started_at: "2026-09-01T00:00:00Z",
+        },
+      ],
+    });
+    expect(member.taskId).toBe("t1");
+    expect(member.ac.map((a) => a.verified)).toEqual([true, false]);
+    expect(member.findings.map((r) => r.round)).toEqual([2, 1]);
+    expect(member.reviewers.map((r) => r.round)).toEqual([1, 2]);
+  });
+});
+
+describe("ciVerdictsByTask / memberCiVerdict", () => {
+  const verdicts = ciVerdictsByTask([
+    {
+      task_id: "t1",
+      ci: { state: "success", head_sha: "abc", failing_checks: [] },
+    },
+  ]);
+
+  it("keys each member's verdict by its task id", () => {
+    expect(memberCiVerdict(verdicts, false, "t1")).toEqual({
+      available: true,
+      state: "success",
+      headSha: "abc",
+      failingChecks: [],
+    });
+  });
+
+  it("reads a member missing from the bulk read as not available", () => {
+    expect(memberCiVerdict(verdicts, false, "t2")).toBe(
+      PR_CI_VERDICT_NOT_AVAILABLE,
+    );
+  });
+
+  it("reads every member as unreadable when the bulk read failed", () => {
+    expect(memberCiVerdict(undefined, true, "t1")).toBe(
+      PR_CI_VERDICT_UNREADABLE,
     );
   });
 });

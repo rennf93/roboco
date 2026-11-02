@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 from roboco.runtime.engines import interactive_sessions
-from roboco.runtime.engines.interactive_sessions import InteractiveSessionsEngine
+from roboco.runtime.engines.interactive_sessions import LiveChatContainerEngine
 
 
 @pytest.mark.parametrize(
@@ -18,7 +18,7 @@ from roboco.runtime.engines.interactive_sessions import InteractiveSessionsEngin
     ],
 )
 def test_live_mcp_config_module_names(role: str, name: str, module: str) -> None:
-    path = InteractiveSessionsEngine._write_live_mcp_config(role, "sid", "http://x")
+    path = LiveChatContainerEngine._write_live_mcp_config(role, "sid", "http://x")
     server = json.loads(Path(path).read_text())["mcpServers"][name]
     assert server["args"][-1] == module
 
@@ -35,7 +35,7 @@ def test_live_mcp_config_written_to_mount_returns_host_path(
     monkeypatch.setattr(interactive_sessions, "DATA_HOST_PATH", str(host_data))
     monkeypatch.setattr(interactive_sessions, "_LIVE_MCP_WRITE_DIR", tmp_path / "mount")
 
-    path = InteractiveSessionsEngine._write_live_mcp_config("intake", "sid", "http://x")
+    path = LiveChatContainerEngine._write_live_mcp_config("intake", "sid", "http://x")
 
     assert path == f"{host_data}/mcp-configs/live-intake-sid.json"
     written = tmp_path / "mount" / "live-intake-sid.json"

@@ -4,7 +4,7 @@ A dependency-light FastAPI PROXY in front of two llama.cpp decision
 servers (llama.cpp PR #29818, first tag carrying the endpoint: b11361),
 each started by docker/decisions/entrypoint.sh in this container:
 
-  - clef (default sweet spot): ggml-org/Clef-GGUF, a 27B decision model
+  - clef tier (default): ggml-org/Clef-Flash-GGUF, a 9B decision model
     (Apache-2.0), llama-server on 127.0.0.1:8110;
   - laya (cheap option): ggml-org/Laya-GGUF, a 421M ModernBERT decision
     model (Apache-2.0), llama-server on 127.0.0.1:8111.
@@ -30,16 +30,27 @@ probability) is load-bearing regression surface: the orchestrator's
 parser rejects booleans on purpose, and an entropy-style summary
 confidence would permanently fail every 0.6-0.8 gating floor.
 
+Admission control: each llama-server serves ONE input at a time and keeps
+no KV cache, so an input cannot be paused or cancelled once it runs. The
+proxy queues per backend and admits an input only when its estimated
+finish (the queue ahead of it plus its own estimated service time) falls
+inside the caller's deadline (``x-decisions-deadline-s``); otherwise it
+answers 503 ``busy:`` at once, which the orchestrator's client reads as no
+verdict WITHOUT counting a backend failure. Estimates start from the
+throughput measured on the NAS and are learned from every answered call.
+
 The proxy needs no llama.cpp at import time: tests import this file
 directly and stub the upstream with an httpx.MockTransport.
 """
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
 import math
 import os
+import time
 import uuid
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -62,7 +73,7 @@ DECISIONS_API_KEY = os.environ.get(
 # Legacy LAYA_* fallbacks ride one release after the env rename.
 HOST = os.environ.get("DECISIONS_HOST", os.environ.get("LAYA_HOST", "0.0.0.0"))
 PORT = int(os.environ.get("DECISIONS_PORT", os.environ.get("LAYA_PORT", "8100")))
-UPSTREAM_TIMEOUT_S = float(os.environ.get("UPSTREAM_TIMEOUT_S", "120.0"))
+UPSTREAM_TIMEOUT_S = float(os.environ.get("UPSTREAM_TIMEOUT_S", "180.0"))
 HEALTH_TIMEOUT_S = 2.0
 
 
@@ -83,11 +94,15 @@ class _Backend:
 
 CLEF = _Backend(
     key="clef",
-    model_id=os.environ.get("CLEF_MODEL_ID", "ggml-org/Clef-GGUF:Q4_K_M"),
+    model_id=os.environ.get("CLEF_MODEL_ID", "ggml-org/Clef-Flash-GGUF:Q4_K_M"),
     upstream_url=os.environ.get("CLEF_UPSTREAM_URL", "http://127.0.0.1:8110").rstrip(
         "/"
     ),
-    state_char_cap=40_000,
+    # Two chars per token of the input cap: the orchestrator's client trims
+    # every clef state to the same budget (decisions/client.py), and
+    # real pilot payloads ran 2.3 chars per token (median of 45, NAS
+    # 2026-11-01), so a state under this cap fits the backend's batch.
+    state_char_cap=2 * int(os.environ.get("CLEF_MAX_INPUT_TOKENS", "8192")),
     enabled=_enabled("CLEF_ENABLED"),
 )
 LAYA = _Backend(
@@ -150,6 +165,134 @@ def _route(model: Any) -> _Backend:
     if "laya" in name:
         return LAYA
     return CLEF
+
+
+# ---------------------------------------------------------------------------
+# Admission control
+# ---------------------------------------------------------------------------
+
+DEADLINE_HEADER = "x-decisions-deadline-s"
+# Median chars per token over 45 real pilot payloads (state + questions JSON
+# against llama.cpp's reported input_tokens), NAS 2026-11-01.
+_CHARS_PER_TOKEN_START = 2.3
+# How far one answered call moves a learned estimate.
+_LEARNING_WEIGHT = 0.2
+
+
+def _blend(old: float, new: float) -> float:
+    return old + _LEARNING_WEIGHT * (new - old)
+
+
+@dataclass
+class ServiceTime:
+    """How long one input takes on a backend: a per-token time learned from
+    answered calls, never below the backend's minimum call time."""
+
+    seconds_per_token: float
+    min_call_s: float
+    chars_per_token: float = _CHARS_PER_TOKEN_START
+
+    def estimate_s(self, chars: int) -> float:
+        tokens = chars / self.chars_per_token
+        return max(self.min_call_s, tokens * self.seconds_per_token)
+
+    def learn(self, chars: int, tokens: int, seconds: float) -> None:
+        if tokens <= 0 or seconds <= 0:
+            return
+        self.chars_per_token = _blend(self.chars_per_token, chars / tokens)
+        # A call near the minimum call time says nothing about the rate.
+        if seconds > 2 * self.min_call_s:
+            self.seconds_per_token = _blend(self.seconds_per_token, seconds / tokens)
+
+
+class BackendBusy(Exception):
+    """The input cannot finish before its caller's deadline."""
+
+    def __init__(self, wait_s: float, estimate_s: float, deadline_s: float) -> None:
+        super().__init__(
+            f"busy: about {wait_s:.0f}s of queued work plus about "
+            f"{estimate_s:.0f}s for this input exceeds the {deadline_s:.0f}s deadline"
+        )
+
+
+class AdmissionQueue:
+    """One input at a time on a backend, admitted only when it can finish
+    before its caller's deadline."""
+
+    def __init__(self, service_time: ServiceTime) -> None:
+        self.service_time = service_time
+        self._lock = asyncio.Lock()
+        self._waiting_s = 0.0
+        self._running_until = 0.0
+
+    def expected_wait_s(self) -> float:
+        running_left = max(self._running_until - time.monotonic(), 0.0)
+        return running_left + self._waiting_s
+
+    @asynccontextmanager
+    async def slot(self, estimate_s: float, deadline_s: float) -> AsyncIterator[float]:
+        """Hold the backend for one input; yields the seconds left before the
+        deadline. Raises BackendBusy instead of starting a late input."""
+        started = time.monotonic()
+        wait_s = self.expected_wait_s()
+        if wait_s + estimate_s > deadline_s:
+            raise BackendBusy(wait_s, estimate_s, deadline_s)
+        self._waiting_s += estimate_s
+        waiting = True
+        try:
+            async with self._lock:
+                self._waiting_s -= estimate_s
+                waiting = False
+                left_s = deadline_s - (time.monotonic() - started)
+                if left_s < estimate_s:
+                    raise BackendBusy(deadline_s - left_s, estimate_s, deadline_s)
+                self._running_until = time.monotonic() + estimate_s
+                try:
+                    yield left_s
+                finally:
+                    self._running_until = 0.0
+        finally:
+            if waiting:
+                self._waiting_s -= estimate_s
+
+
+def _env_float(name: str, default: str) -> float:
+    return float(os.environ.get(name, default))
+
+
+# Seeded from the device the entrypoint found (CLEF_EXPECTED_TOKENS_PER_S:
+# ~70 tok/s on the Iris Xe, ~15 on the CPU; LAYA_MIN_CALL_S: 0.5 s GPU,
+# 2.6 s CPU), measured on the NAS 2026-11-01.
+_QUEUES: dict[str, AdmissionQueue] = {}
+
+
+def admission_queue(backend: _Backend) -> AdmissionQueue:
+    """The backend's queue, created on first use."""
+    queue = _QUEUES.get(backend.key)
+    if queue is None:
+        if backend.key == "clef":
+            service = ServiceTime(
+                seconds_per_token=1 / _env_float("CLEF_EXPECTED_TOKENS_PER_S", "15"),
+                min_call_s=_env_float("CLEF_MIN_CALL_S", "2.0"),
+            )
+        else:
+            service = ServiceTime(
+                seconds_per_token=1 / _env_float("LAYA_EXPECTED_TOKENS_PER_S", "100"),
+                min_call_s=_env_float("LAYA_MIN_CALL_S", "2.6"),
+            )
+        queue = AdmissionQueue(service)
+        _QUEUES[backend.key] = queue
+    return queue
+
+
+def _deadline_s(request: Request) -> float:
+    """The caller's deadline, clamped to [1 s, UPSTREAM_TIMEOUT_S]."""
+    raw = request.headers.get(DEADLINE_HEADER, "")
+    try:
+        deadline = float(raw) if raw else UPSTREAM_TIMEOUT_S
+    except ValueError:
+        deadline = UPSTREAM_TIMEOUT_S
+    return min(max(deadline, 1.0), UPSTREAM_TIMEOUT_S)
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +364,17 @@ async def _probe(backend: _Backend) -> dict[str, Any]:
         if message:
             detail = f"{detail} ({message})"
         return {"ok": False, "enabled": True, "detail": detail}
-    return {"ok": True, "enabled": True, "detail": backend.model_id}
+    queue = admission_queue(backend)
+    return {
+        "ok": True,
+        "enabled": True,
+        "detail": backend.model_id,
+        "queue": {
+            "expected_wait_s": round(queue.expected_wait_s(), 1),
+            "seconds_per_token": round(queue.service_time.seconds_per_token, 4),
+            "chars_per_token": round(queue.service_time.chars_per_token, 2),
+        },
+    }
 
 
 @app.get("/health")
@@ -436,7 +589,39 @@ async def decisions(request: Request) -> dict[str, Any]:
     questions = _validate_questions(body.get("questions"))
     state = body.get("state", "")
     backend = _route(body.get("model"))
+    _refuse_disabled_or_oversize(backend, state)
 
+    chars = _state_char_len(state) + len(json.dumps(questions, ensure_ascii=False))
+    queue = admission_queue(backend)
+    try:
+        async with queue.slot(
+            queue.service_time.estimate_s(chars), _deadline_s(request)
+        ) as left_s:
+            started = time.monotonic()
+            payload = await _ask_upstream(backend, state, questions, left_s)
+            elapsed = time.monotonic() - started
+    except BackendBusy as busy:
+        raise HTTPException(status_code=503, detail=str(busy)) from busy
+
+    answers = build_answers(questions, (payload or {}).get("answers"))
+    usage = (payload or {}).get("usage") or {}
+    input_tokens = int(usage.get("input_tokens") or 0)
+    queue.service_time.learn(chars, input_tokens, elapsed)
+    # session_id is accepted but unused: the sidecar is stateless and the
+    # client owns session bookkeeping (spec section 4).
+    return {
+        "id": f"dec-{uuid.uuid4().hex}",
+        "model": body.get("model") or backend.model_id,
+        "answers": answers,
+        "usage": {
+            "input_tokens": input_tokens,
+            "output_tokens": int(usage.get("output_tokens") or 0),
+            "cost": 0.0,  # self-hosted tier: $0 by construction
+        },
+    }
+
+
+def _refuse_disabled_or_oversize(backend: _Backend, state: Any) -> None:
     if not backend.enabled:
         # No silent rerouting: the caller asked for a tier (cheap screening
         # vs wide context) and the orchestrator's resolver owns fallback.
@@ -461,11 +646,16 @@ async def decisions(request: Request) -> dict[str, Any]:
             ),
         )
 
+
+async def _ask_upstream(
+    backend: _Backend, state: Any, questions: dict[str, Any], timeout_s: float
+) -> Any:
+    """One /v1/systemone call; HTTP errors mapped onto the wire contract."""
     try:
         response = await _http_client().post(
             f"{backend.upstream_url}/v1/systemone",
             json={"state": state, "questions": questions},
-            timeout=UPSTREAM_TIMEOUT_S,
+            timeout=timeout_s,
         )
     except httpx.HTTPError as exc:
         raise HTTPException(
@@ -483,27 +673,12 @@ async def decisions(request: Request) -> dict[str, Any]:
             detail=_upstream_error(backend, response, "rejected the request with"),
         )
     try:
-        payload = response.json()
+        return response.json()
     except ValueError as exc:
         raise HTTPException(
             status_code=502,
             detail=f"{backend.key} upstream returned a non-JSON body",
         ) from exc
-
-    answers = build_answers(questions, (payload or {}).get("answers"))
-    usage = (payload or {}).get("usage") or {}
-    # session_id is accepted but unused: the sidecar is stateless and the
-    # client owns session bookkeeping (spec section 4).
-    return {
-        "id": f"dec-{uuid.uuid4().hex}",
-        "model": body.get("model") or backend.model_id,
-        "answers": answers,
-        "usage": {
-            "input_tokens": int(usage.get("input_tokens") or 0),
-            "output_tokens": int(usage.get("output_tokens") or 0),
-            "cost": 0.0,  # self-hosted tier: $0 by construction
-        },
-    }
 
 
 if __name__ == "__main__":

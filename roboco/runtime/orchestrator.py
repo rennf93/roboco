@@ -22,13 +22,14 @@ import shutil
 import sys
 import tempfile
 import time
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar, cast
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Callable
+    from collections.abc import Callable
 
     from roboco.llm.providers import ProviderRegistry
     from roboco.services.uptime import UptimeLedger
@@ -231,9 +232,13 @@ _PM_DISPATCH_FETCH_LIMIT = 500
 # Validation reason suffix for a child whose parent is still cutting its
 # branch inside the provisioning grace: a healthy, recurring wait, not a fault.
 _PARENT_BRANCH_WAIT = "waiting for parent branch provisioning"
+# The roles the single-active-task rule holds to one unfinished task, mirroring
+# TaskService._SINGLE_ACTIVE_TASK_ROLES (the claim chokepoint's set).
+_SINGLE_ACTIVE_TASK_ROLES = frozenset({"developer", "devops"})
 _HTTP_TOO_MANY_REQUESTS = 429
 _HTTP_OK = 200
-_HTTP_MULTIPLE_CHOICES = 300  # first non-2xx status; 2xx == [_HTTP_OK, this)
+# First non-2xx status; 2xx == [_HTTP_OK, this).
+_HTTP_MULTIPLE_CHOICES = 300
 
 # The orchestrator calls its own write API as a trusted internal actor. Those
 # routes require an agent identity (X-Agent-ID); a self-call without it is
@@ -472,7 +477,8 @@ AGENT_IMAGES: dict[str, str] = {
     # UX/UI
     "ux-dev-1": "roboco-agent-ux",
     "ux-dev-2": "roboco-agent-ux",
-    "ux-qa": "roboco-agent-ux",  # Uses same as dev for now
+    # Uses the same image as the UX devs for now.
+    "ux-qa": "roboco-agent-ux",
     "ux-pm": "roboco-agent-pm",
     "ux-doc": "roboco-agent-doc",
     # Board
@@ -563,8 +569,10 @@ _GROK_RATE_LIMIT_RETRY_AFTER_S = 60.0
 # off exponentially within one episode so the churn dampens (60 -> 120 -> 240
 # -> ... capped) instead of spinning flat. The episode gap resets the count
 # once the rate limit has actually lifted.
-_GROK_REPARK_BACKOFF_CAP = 4  # max 2**4 = 16x base (~16min cycle)
-_GROK_REPARK_EPISODE_GAP_S = 1500.0  # 25min — > the capped ~16min cycle
+# Max 2**4 = 16x base (~16min cycle).
+_GROK_REPARK_BACKOFF_CAP = 4
+# 25min, longer than the capped ~16min cycle.
+_GROK_REPARK_EPISODE_GAP_S = 1500.0
 # A one-shot Grok container exits with this code (EX_CONFIG) when the
 # entrypoint's `grok_auth --check` backstop found the access token missing or
 # expired (it can't be refreshed headlessly, so the CLI would hang at an
@@ -1076,6 +1084,33 @@ class AgentReadinessError(Exception):
     """
 
 
+async def _attempt_dispatch(
+    dispatcher: str, candidate_id: Any, attempt: Awaitable[object]
+) -> bool:
+    """Await one dispatch candidate's attempt; True when it completed, False
+    when ``spawn_agent`` refused it as not ready.
+
+    The refusal is that candidate's outcome (``AgentReadinessError``'s
+    contract: the readiness gate has already auto-blocked the task, callers
+    log and move on), so the dispatcher goes on with its next candidate
+    instead of the exception ending its tick for every candidate after it
+    (live 2026-10-28 06:40:08: fe-pm refused on d42e53ea ended pm_work).
+    Every per-candidate dispatcher loop awaits its spawn step through here;
+    one that spawns once per tick only spends that spawn on a True.
+    """
+    try:
+        await attempt
+    except AgentReadinessError as exc:
+        logger.info(
+            "Spawn refused, task not ready; dispatcher moves on",
+            dispatcher=dispatcher,
+            candidate_id=str(candidate_id),
+            reason=str(exc),
+        )
+        return False
+    return True
+
+
 class _SpawnAbortedDuringShutdown(Exception):
     """Raised when a non-blocking intake/secretary spawn completes ``docker run``
     after the orchestrator began shutting down.
@@ -1327,21 +1362,113 @@ from roboco.runtime.engines._shared import SharedEngine
 from roboco.runtime.engines.ci_watch import CiWatchEngine
 from roboco.runtime.engines.decisions_labeler import DecisionsLabelerEngine
 from roboco.runtime.engines.dep_update import DepUpdateEngine
-from roboco.runtime.engines.dispatch_breaker import DispatchBreakerEngine
-from roboco.runtime.engines.dispatch_claim import DispatchClaimEngine
-from roboco.runtime.engines.dispatch_prompts import DispatchPromptsEngine
-from roboco.runtime.engines.dispatch_routing import DispatchRoutingEngine
-from roboco.runtime.engines.dispatch_work import DispatchWorkEngine
+from roboco.runtime.engines.dispatch_breaker import (
+    AgentWorkSignalEngine,
+    NotificationSpawnGuardEngine,
+    ProviderUpkeepEngine,
+    RespawnBreakerEngine,
+    RespawnTripEngine,
+    StaleClaimReaperEngine,
+    WedgedAgentEngine,
+)
+from roboco.runtime.engines.dispatch_claim import (
+    ClaimBarrierEngine,
+    DispatchClaimEngine,
+    DispatcherLoopEngine,
+    SpawnReadinessEngine,
+    StuckTaskEngine,
+)
+from roboco.runtime.engines.dispatch_closure import AutoSubmitEngine, PMClosureEngine
+from roboco.runtime.engines.dispatch_prompts import (
+    CellReviewPromptsEngine,
+    DevPromptContextEngine,
+    DispatchPromptsEngine,
+)
+from roboco.runtime.engines.dispatch_prompts_management import (
+    ManagementPromptsEngine,
+    NotificationPromptsEngine,
+)
+from roboco.runtime.engines.dispatch_prompts_programs import (
+    AuditorPromptsEngine,
+    MarketingProgramPromptsEngine,
+    ProductOwnerProgramPromptsEngine,
+)
+from roboco.runtime.engines.dispatch_routing import (
+    DispatchRoutingEngine,
+    RoutingClassifierEngine,
+)
+from roboco.runtime.engines.dispatch_work import (
+    AuditDispatchEngine,
+    AuditorExplorationsEngine,
+    BoardDispatchEngine,
+    BoardProgramContextEngine,
+    DevDispatchEngine,
+    DocDispatchEngine,
+    MarketingExplorationsEngine,
+    NotificationDispatchEngine,
+    PMDispatchEngine,
+    ProductOwnerExplorationsEngine,
+    PRReviewDispatchEngine,
+    QADispatchEngine,
+)
+from roboco.runtime.engines.entire_trails import EntireTrailsEngine
 from roboco.runtime.engines.env_sync import EnvSyncEngine
-from roboco.runtime.engines.interactive_sessions import InteractiveSessionsEngine
-from roboco.runtime.engines.rate_limit_probe import RateLimitProbeEngine
-from roboco.runtime.engines.reconcile import ReconcileEngine
+from roboco.runtime.engines.interactive_sessions import (
+    IntakeScopeEngine,
+    IntakeSessionEngine,
+    LiveChatContainerEngine,
+    SecretarySessionEngine,
+)
+from roboco.runtime.engines.rate_limit_probe import (
+    RateLimitProbeEngine,
+    WaitResolutionEngine,
+)
+from roboco.runtime.engines.reconcile import (
+    BoardProgramLoopEngine,
+    HealthLoopEngine,
+    StartupReconcileEngine,
+    StartupRestoreEngine,
+)
 from roboco.runtime.engines.release_manager import ReleaseManagerEngine
-from roboco.runtime.engines.spawn_config import SpawnConfigEngine
-from roboco.runtime.engines.spawn_exit import SpawnExitEngine
-from roboco.runtime.engines.spawn_launch import SpawnLaunchEngine
+from roboco.runtime.engines.spawn_config import (
+    AgentBriefingEngine,
+    AgentSettingsEngine,
+    SystemPromptEngine,
+)
+from roboco.runtime.engines.spawn_exit import (
+    AgentWaitingEngine,
+    ContainerExitEngine,
+    ProviderExitCodeEngine,
+    ProviderParkingEngine,
+    ProviderParkLanesEngine,
+    SessionFinalizeEngine,
+    TranscriptNotesEngine,
+    UsageDirsEngine,
+    UsageFilesEngine,
+    UsageTokensEngine,
+)
+from roboco.runtime.engines.spawn_launch import (
+    AgentImageEngine,
+    ContainerEnvEngine,
+    ContainerMountsEngine,
+    ProviderRouteEngine,
+    ReadinessGateEngine,
+    SpawnAgentEngine,
+    SpawnGitContextEngine,
+)
 from roboco.runtime.engines.strategy import StrategyEngine
-from roboco.runtime.engines.sweeps import SweepsEngine
+from roboco.runtime.engines.sweeps import (
+    AgentStopEngine,
+    BudgetWrapupEngine,
+    ExternalPRIntakeEngine,
+    IdleSessionReaperEngine,
+    MemberPerformanceEngine,
+    SandboxEngine,
+    SupersedeEngine,
+    SweeperLoopEngine,
+    TaskBudgetEngine,
+    UsageRollupEngine,
+)
 from roboco.runtime.engines.telegram_poll import TelegramPollEngine
 from roboco.runtime.engines.vault import VaultEngine
 from roboco.runtime.engines.video_render import VideoRenderEngine
@@ -1350,27 +1477,92 @@ from roboco.runtime.engines.x_mentions import XMentionsEngine
 
 class AgentOrchestrator(
     SharedEngine,
+    AgentBriefingEngine,
+    AgentImageEngine,
+    AgentSettingsEngine,
+    AgentStopEngine,
+    AgentWaitingEngine,
+    AgentWorkSignalEngine,
+    AuditDispatchEngine,
+    AuditorExplorationsEngine,
+    AuditorPromptsEngine,
+    AutoSubmitEngine,
+    BoardDispatchEngine,
+    BoardProgramContextEngine,
+    BoardProgramLoopEngine,
+    BudgetWrapupEngine,
+    CellReviewPromptsEngine,
     CiWatchEngine,
+    ClaimBarrierEngine,
+    ContainerEnvEngine,
+    ContainerExitEngine,
+    ContainerMountsEngine,
     DecisionsLabelerEngine,
     DepUpdateEngine,
-    DispatchBreakerEngine,
+    DevDispatchEngine,
+    DevPromptContextEngine,
     DispatchClaimEngine,
     DispatchPromptsEngine,
     DispatchRoutingEngine,
-    DispatchWorkEngine,
+    DispatcherLoopEngine,
+    DocDispatchEngine,
+    EntireTrailsEngine,
     EnvSyncEngine,
-    InteractiveSessionsEngine,
+    ExternalPRIntakeEngine,
+    HealthLoopEngine,
+    IdleSessionReaperEngine,
+    IntakeScopeEngine,
+    IntakeSessionEngine,
+    LiveChatContainerEngine,
+    ManagementPromptsEngine,
+    MarketingExplorationsEngine,
+    MarketingProgramPromptsEngine,
+    MemberPerformanceEngine,
+    NotificationDispatchEngine,
+    NotificationPromptsEngine,
+    NotificationSpawnGuardEngine,
+    PMClosureEngine,
+    PMDispatchEngine,
+    PRReviewDispatchEngine,
+    ProductOwnerExplorationsEngine,
+    ProductOwnerProgramPromptsEngine,
+    ProviderExitCodeEngine,
+    ProviderParkLanesEngine,
+    ProviderParkingEngine,
+    ProviderRouteEngine,
+    ProviderUpkeepEngine,
+    QADispatchEngine,
     RateLimitProbeEngine,
-    ReconcileEngine,
+    ReadinessGateEngine,
     ReleaseManagerEngine,
-    SpawnConfigEngine,
-    SpawnExitEngine,
-    SpawnLaunchEngine,
+    RespawnBreakerEngine,
+    RespawnTripEngine,
+    RoutingClassifierEngine,
+    SandboxEngine,
+    SecretarySessionEngine,
+    SessionFinalizeEngine,
+    SpawnAgentEngine,
+    SpawnGitContextEngine,
+    SpawnReadinessEngine,
+    StaleClaimReaperEngine,
+    StartupReconcileEngine,
+    StartupRestoreEngine,
     StrategyEngine,
-    SweepsEngine,
+    StuckTaskEngine,
+    SupersedeEngine,
+    SweeperLoopEngine,
+    SystemPromptEngine,
+    TaskBudgetEngine,
     TelegramPollEngine,
+    TranscriptNotesEngine,
+    UsageDirsEngine,
+    UsageFilesEngine,
+    UsageRollupEngine,
+    UsageTokensEngine,
     VaultEngine,
     VideoRenderEngine,
+    WaitResolutionEngine,
+    WedgedAgentEngine,
     XMentionsEngine,
 ):
     """
@@ -1721,6 +1913,7 @@ class AgentOrchestrator(
         self._vault_janitor_task: asyncio.Task | None = None
         self._vault_kb_task: asyncio.Task | None = None
         self._telegram_poll_task: asyncio.Task | None = None
+        self._entire_trails_task: asyncio.Task | None = None
 
     # =========================================================================
     # LIFECYCLE
@@ -1733,7 +1926,7 @@ class AgentOrchestrator(
         isolated on-demand actions with no fleet-state dependency (see
         roboco/api/deps.py; e.g. supersede_external_pr's branch cut) - the
         secretary/intake live chats route to the dispatcher instead (see
-        docker/nginx.conf) - but the fleet-wide background loops and the
+        deploy/nginx.conf) - but the fleet-wide background loops and the
         once-per-fleet startup reconciliation belong to the dispatcher role,
         so they must not also run here. 'dispatcher' and 'all' fall through
         unchanged.
@@ -1772,6 +1965,12 @@ class AgentOrchestrator(
         await self._heal_stale_agent_tokens()
         await self._readopt_running_agents()
 
+        # A work author holds one unfinished task at a time: put the
+        # never-started extra claims left by older runs back in their author's
+        # queue. After the re-adopt, so an author with a live container is
+        # left alone.
+        await self._release_extra_claims_of_work_authors()
+
         # Close agent_spawn_sessions rows left open by a prior orchestrator
         # crash so usage/cost rollups (which filter ended_at IS NOT NULL) count
         # their tokens. Running agents stay open for their live finalize.
@@ -1798,6 +1997,13 @@ class AgentOrchestrator(
         # own edits). No-op when the flag is off.
         self._ensure_vault_assets_on_startup()
 
+        # The read and release clones moved under the private root; their
+        # old copies under the workspaces root go once, in a thread (gigabytes
+        # on a long-lived install), off the startup path.
+        from roboco.services.git_relay import remove_pre_move_copies
+
+        self._schedule_bg(asyncio.to_thread(remove_pre_move_copies))
+
         # Start background tasks
         self._health_task = asyncio.create_task(self._health_loop())
         self._dispatcher_task = asyncio.create_task(self._dispatcher_loop())
@@ -1820,6 +2026,7 @@ class AgentOrchestrator(
         self._vault_janitor_task = asyncio.create_task(self._vault_janitor_loop())
         self._vault_kb_task = asyncio.create_task(self._vault_kb_loop())
         self._telegram_poll_task = asyncio.create_task(self._telegram_poll_loop())
+        self._entire_trails_task = asyncio.create_task(self._entire_trails_loop())
 
         logger.info(
             "Orchestrator started",
@@ -1923,6 +2130,7 @@ class AgentOrchestrator(
             self._vault_janitor_task,
             self._vault_kb_task,
             self._telegram_poll_task,
+            self._entire_trails_task,
         ):
             await self._cancel_background_task(task)
 
@@ -1960,14 +2168,6 @@ class AgentOrchestrator(
 
         self._stopped = True
         logger.info("Orchestrator stopped")
-
-    # =========================================================================
-    # PER-AGENT SETTINGS GENERATION
-    # =========================================================================
-
-    # =========================================================================
-    # AGENT SPAWNING
-    # =========================================================================
 
     # QA reviews run bash/git in the task project's clone, so QA needs the
     # same per-agent workspace resolution as developers. MISSING from this
@@ -2028,54 +2228,6 @@ class AgentOrchestrator(
     _NOTIFICATION_COOLDOWN_PRUNE_AT = 512
 
     # =========================================================================
-    # INTAKE (PROMPTER) LIVE SESSION
-    #
-    # The intake agent is not task-driven and is never dispatched. It is a
-    # persistent Claude-Agent-SDK driver the CEO chats with live (the container
-    # entrypoint is roboco.agent_sdk.intake_main). One fixed container —
-    # `intake-1`, the seeded board-adjacent interviewer — serves one live
-    # session at a time (single CEO; one-session-per-CEO).
-    #
-    # This spawn is a DELIBERATELY separate path from spawn_agent: no task, no
-    # readiness gate, no `claude -p` CLI args (the image ENTRYPOINT is the
-    # driver), no settings.json/hook mount (the driver owns the receiver on
-    # port 9000, not the inbox sidecar), and no MCP/gateway surface (the live
-    # agent reads code with Read/Grep/Glob and talks only to the human).
-    # =========================================================================
-
-    # ------------------------------------------------------------------ #
-    # Secretary live session (mirrors intake; no scope clone; auth token)
-    # ------------------------------------------------------------------ #
-
-    # =========================================================================
-    # AGENT STOPPING
-    # =========================================================================
-
-    # =========================================================================
-    # WAITING STATE MANAGEMENT
-    # =========================================================================
-
-    # =========================================================================
-    # PROVIDER QUERY HELPERS (used by the choreographer rate-limit path)
-    # =========================================================================
-
-    # =========================================================================
-    # TOKEN USAGE INSTRUMENTATION
-    # =========================================================================
-
-    # =========================================================================
-    # MEMBER-PERFORMANCE ROLLUP (granular per-member scorecards)
-    # =========================================================================
-
-    # =========================================================================
-    # HEALTH MONITORING
-    # =========================================================================
-
-    # =========================================================================
-    # RATE-LIMIT PROBE LOOP
-    # =========================================================================
-
-    # =========================================================================
     # STATUS API
     # =========================================================================
 
@@ -2124,10 +2276,6 @@ class AgentOrchestrator(
             "waiting_count": len(self._waiting_records),
             "agents": agents,
         }
-
-    # =========================================================================
-    # SMART DISPATCHER - API HELPERS
-    # =========================================================================
 
     # =========================================================================
     # SMART ROUTING - TASK CLASSIFICATION
@@ -2261,15 +2409,7 @@ class AgentOrchestrator(
     # busy fleet (trigger_dispatch fires on every status transition).
     _GATE_CI_STATUS_CACHE_TTL_SECONDS: ClassVar[float] = 60.0
 
-    # =========================================================================
-    # SMART DISPATCHER - EVENT-BASED DISPATCHERS
-    # =========================================================================
-
     _MIN_DESCRIPTION_LEN = 10
-
-    # =========================================================================
-    # SMART DISPATCHER - PROMPT BUILDERS
-    # =========================================================================
 
 
 # A handful of the moved-verbatim method bodies above call class-qualified

@@ -1200,6 +1200,43 @@ def test_resolve_preview_path_missing_file_is_none(tmp_path: Path) -> None:
     assert video_module._resolve_preview_path(root, "motion/nope.html") is None
 
 
+def test_resolve_preview_path_blocks_a_symlink_out_of_root(tmp_path: Path) -> None:
+    """A clone controls its own tree, so a symlink inside it can point
+    anywhere: the target, not the link's own location, must be under root."""
+    root = (tmp_path / "clone").resolve()
+    root.mkdir()
+    secret = tmp_path / "secret.txt"
+    secret.write_text("nope")
+    (root / "kit.html").symlink_to(secret)
+    assert video_module._resolve_preview_path(root, "kit.html") is None
+
+
+def test_resolve_preview_path_blocks_a_sibling_sharing_roots_prefix(
+    tmp_path: Path,
+) -> None:
+    """``clone-evil/x`` starts with the string ``clone``: containment must
+    compare whole path segments, not string prefixes."""
+    root = (tmp_path / "clone").resolve()
+    root.mkdir()
+    sibling = tmp_path / "clone-evil"
+    sibling.mkdir()
+    (sibling / "x.html").write_text("nope")
+    assert video_module._resolve_preview_path(root, "../clone-evil/x.html") is None
+
+
+def test_resolve_preview_path_serves_under_a_symlinked_root(tmp_path: Path) -> None:
+    """A symlinked workspaces root still serves its own files: both sides
+    of the containment check are compared as real paths."""
+    real = tmp_path / "real-clone"
+    (real / "motion").mkdir(parents=True)
+    target = real / "motion" / "vertical.html"
+    target.write_text("<html></html>")
+    link = tmp_path / "clone"
+    link.symlink_to(real)
+    resolved = video_module._resolve_preview_path(link, "motion/vertical.html")
+    assert resolved == target.resolve()
+
+
 @pytest.mark.asyncio
 async def test_preview_serves_composition_html_and_sibling_kit_asset(
     db_session: AsyncSession,

@@ -53,7 +53,10 @@ export function TabVerification({ task }: TabVerificationProps) {
       <section>
         <h3 className="text-sm font-medium">Findings by review round</h3>
         <div className="mt-2">
-          <FindingsByRoundList data={findings.data} isLoading={findings.isLoading} />
+          <FindingsByRoundList
+            data={findings.data}
+            isLoading={findings.isLoading}
+          />
         </div>
       </section>
 
@@ -70,7 +73,10 @@ export function TabVerification({ task }: TabVerificationProps) {
       <section>
         <h3 className="text-sm font-medium">Reviewer chain</h3>
         <div className="mt-2">
-          <ReviewerChainList data={reviewers.data} isLoading={reviewers.isLoading} />
+          <ReviewerChainList
+            data={reviewers.data}
+            isLoading={reviewers.isLoading}
+          />
         </div>
       </section>
     </div>

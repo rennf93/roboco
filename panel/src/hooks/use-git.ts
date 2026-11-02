@@ -134,7 +134,12 @@ export function useGitFile(
   enabled: boolean = true,
 ) {
   return useQuery<GitFileContentResponse>({
-    queryKey: gitKeys.file(branch ?? "", path ?? "", line ?? undefined, context),
+    queryKey: gitKeys.file(
+      branch ?? "",
+      path ?? "",
+      line ?? undefined,
+      context,
+    ),
     queryFn: () => gitApi.getFile(branch!, path!, line ?? undefined, context),
     enabled: enabled && !!branch && !!path,
     staleTime: 60000, // 1 minute — branch content is stable
@@ -339,11 +344,7 @@ export function useGitRebase() {
 export function useCleanupBranches() {
   const queryClient = useQueryClient();
 
-  return useMutation<
-    GitBranchCleanupResponse,
-    Error,
-    GitBranchCleanupRequest
-  >({
+  return useMutation<GitBranchCleanupResponse, Error, GitBranchCleanupRequest>({
     mutationFn: (request) => gitApi.cleanupBranches(request),
     onSuccess: (_, variables) => {
       // Invalidate branches — the sweep may have deleted several.

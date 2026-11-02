@@ -18,6 +18,14 @@ if TYPE_CHECKING:
 
     import pytest
 
+# auth.json must stay readable by its owner (the agent uid) alone.
+_OWNER_ONLY_MODE = 0o600
+
+# Bounds, in seconds, around a token expiring in ~54 minutes (3240 s).
+_ABOUT_54_MINUTES_MIN = 3200
+_ABOUT_54_MINUTES_MAX = 3300
+
+
 _PAST = "2020-01-01T00:00:00.000000000Z"
 _FUTURE = "2099-01-01T00:00:00.000000000Z"
 _CLIENT = "b1a00492-client"
@@ -64,7 +72,7 @@ def test_seconds_until_expiry_and_is_valid(tmp_path: Path) -> None:
     _write(path, _bundle("2026-06-19T06:54:18.840268518Z"))
     remaining = ga.seconds_until_expiry(path, now=now)
     assert remaining is not None
-    assert 3200 < remaining < 3300  # noqa: PLR2004 — ~54 minutes
+    assert _ABOUT_54_MINUTES_MIN < remaining < _ABOUT_54_MINUTES_MAX
     assert ga.is_valid(path, now=now)
     # Less than an hour left -> not valid under a 1h skew.
     assert not ga.is_valid(path, skew_seconds=3600, now=now)
@@ -296,3 +304,34 @@ def test_refresh_5xx_stays_transient_failed(tmp_path: Path) -> None:
         raise httpx.HTTPStatusError("503", request=req, response=resp)
 
     assert ga.refresh_if_stale(path, post=_boom) == "failed"
+
+
+def _stale_refresh_post(_url: str, _form: dict[str, str]) -> dict[str, Any]:
+    return {"access_token": "new-access", "refresh_token": "new-rt", "expires_in": 60}
+
+
+def test_refresh_rewrites_world_readable_auth_json_owner_only(tmp_path: Path) -> None:
+    """The copied 0644 mode let every uid in the orchestrator (the workspace git
+    user included) read the SuperGrok token; a refresh must land it 0600."""
+    path = tmp_path / "auth.json"
+    _write(path, _bundle(_PAST))
+    path.chmod(0o644)
+
+    assert ga.refresh_if_stale(path, post=_stale_refresh_post) == "refreshed"
+    assert path.stat().st_mode & 0o777 == _OWNER_ONLY_MODE
+
+
+def test_direct_write_fallback_is_owner_only_too(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / "auth.json"
+    _write(path, _bundle(_PAST))
+    path.chmod(0o644)
+
+    def _boom_replace(_self: pathlib.Path, _target: pathlib.Path) -> pathlib.Path:
+        raise OSError("replace failed (simulated)")
+
+    monkeypatch.setattr(pathlib.Path, "replace", _boom_replace)
+
+    assert ga.refresh_if_stale(path, post=_stale_refresh_post) == "refreshed"
+    assert path.stat().st_mode & 0o777 == _OWNER_ONLY_MODE

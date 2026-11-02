@@ -157,7 +157,7 @@ async def test_claim_doc_task_checks_out_branch() -> None:
     env = await c.claim_doc_task(doc_id, task_id)
     body = env.as_dict()
     assert body["error"] is None, body
-    git_svc.checkout_branch_in_agent_workspace.assert_awaited_once_with(
+    git_svc.ensure_branch_worktree_for_agent.assert_awaited_once_with(
         branch, actor_agent_id=doc_id
     )
 
@@ -194,7 +194,7 @@ async def test_claim_doc_task_checkout_failure_does_not_break_claim() -> None:
     task_svc.list_paused_for_agent.return_value = []
     task_svc.doc_claim.return_value = t_claimed
     git_svc = AsyncMock()
-    git_svc.checkout_branch_in_agent_workspace.side_effect = RuntimeError("fetch fail")
+    git_svc.ensure_branch_worktree_for_agent.side_effect = RuntimeError("fetch fail")
     git_svc.diff.return_value = ""
     git_svc.list_changed_files.return_value = []
 

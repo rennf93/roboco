@@ -100,3 +100,5 @@ Include:
 5. Unblock if needed: `unblock(task_id, reason)`
 
 CRITICAL: Verbal resolution is NOT enough. To clear a block you MUST call `unblock(task_id, reason)`. The `reason` (why you are clearing the block) is recorded as your `journal:decision` — no separate `note(scope='decision')` call is required.
+
+While the escalated task is blocked it is yours: the escalation assigned it to you and handed you its claim, so `note(task_id=...)`, `dm(task_id=...)` and `notify(task_id=...)` about it are accepted from you (and refused from the agent that escalated it). `unblock` hands the task and its claim back to the agent that was working it.

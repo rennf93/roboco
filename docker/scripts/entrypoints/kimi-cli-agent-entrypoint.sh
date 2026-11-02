@@ -11,6 +11,9 @@
 # symlinks the host credential in, renders the kimi runtime config from that
 # mount, and runs the CLI headless.
 set -euo pipefail
+# Group-writable output: the orchestrator's workspace git user shares the
+# agent group and must be able to rewrite what this agent creates.
+umask 002
 
 # Split-install sanity: docker/agent-kimi.Dockerfile installs the binary to
 # KIMI_INSTALL_DIR=/usr/local (split from KIMI_CODE_HOME's mutable state) —

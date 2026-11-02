@@ -112,7 +112,7 @@ async def test_rebase_pr_for_task_rebases_in_worktree_not_clone() -> None:
 
     state = _stub_rebase_common(svc, clone)
     object.__setattr__(
-        svc, "_parse_github_remote", MagicMock(return_value=RepoRef("owner", "repo"))
+        svc, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("owner", "repo"))
     )
     object.__setattr__(
         svc,

@@ -47,10 +47,24 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
 
+def _session_stub() -> Any:
+    """An AsyncSession stand-in: its awaitables are AsyncMock, but
+    ``begin_nested()`` is a plain call returning an async context manager,
+    as on a real session. A bare AsyncMock hands back a coroutine there,
+    which ``async with`` rejects, so every pilot prologue would take its
+    fail-open error path instead of the path under test."""
+    session = AsyncMock()
+    savepoint = MagicMock()
+    savepoint.__aenter__ = AsyncMock(return_value=savepoint)
+    savepoint.__aexit__ = AsyncMock(return_value=False)
+    session.begin_nested = MagicMock(return_value=savepoint)
+    return session
+
+
 def _bare(engine_cls: type) -> Any:
     """Instantiate a mixin/engine without __init__ (no DB needed)."""
     engine = cast("Any", engine_cls).__new__(engine_cls)
-    engine.session = AsyncMock()
+    engine.session = _session_stub()
     engine.log = structlog.get_logger("test")
     return engine
 
@@ -1486,3 +1500,30 @@ async def test_b19_advisory_failure_leaves_description_clean(
     monkeypatch.setattr(engine.session, "flush", AsyncMock())
     await engine._originate(_report(bump="minor"), uuid4())
     assert "risk:" not in created["req"].description
+
+
+async def _distinct_delivery() -> bool:
+    return await pi.semantic_distinct_delivery(
+        cast("AsyncSession", None),
+        new_subject="Root d6a26717 needs review",
+        new_body="New CI failure on the root PR",
+        prior_subject="Root d6a26717 needs review",
+        prior_body="The root PR is waiting",
+        recipients=["main-pm"],
+        prior_recipients=["main-pm"],
+    )
+
+
+_CONFIDENTLY_DISTINCT = {"gate": {"type": "noul", "noul": 0.02, "confidence": 0.98}}
+
+
+@pytest.mark.asyncio
+async def test_notify_dedup_lifts_a_suppression_only_in_on_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The docstring's rule ("deviating from suppression requires ON mode")
+    was not enforced: a confident shadow verdict delivered too."""
+    _arm(monkeypatch, mode=PilotMode.SHADOW, answers=_CONFIDENTLY_DISTINCT)
+    assert await _distinct_delivery() is False
+    _arm(monkeypatch, mode=PilotMode.ON, answers=_CONFIDENTLY_DISTINCT)
+    assert await _distinct_delivery() is True

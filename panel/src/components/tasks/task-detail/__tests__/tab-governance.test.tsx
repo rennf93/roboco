@@ -79,7 +79,10 @@ function buildReport(
 
 describe("TabGovernance", () => {
   it("renders the gate chain as a timeline with verdict badges", () => {
-    useTaskGovernance.mockReturnValue({ data: buildReport(), isLoading: false });
+    useTaskGovernance.mockReturnValue({
+      data: buildReport(),
+      isLoading: false,
+    });
     render(<TabGovernance task={buildTask()} />);
 
     // Every gate of the chain appears in the backend's order. Scoped to the
@@ -105,7 +108,10 @@ describe("TabGovernance", () => {
   });
 
   it("renders gate timestamps and detail lines", () => {
-    useTaskGovernance.mockReturnValue({ data: buildReport(), isLoading: false });
+    useTaskGovernance.mockReturnValue({
+      data: buildReport(),
+      isLoading: false,
+    });
     render(<TabGovernance task={buildTask()} />);
 
     // The QA bounce carries its detail line and an absolute timestamp.
@@ -117,14 +123,20 @@ describe("TabGovernance", () => {
   });
 
   it("renders the revision count as a prominent metric", () => {
-    useTaskGovernance.mockReturnValue({ data: buildReport(), isLoading: false });
+    useTaskGovernance.mockReturnValue({
+      data: buildReport(),
+      isLoading: false,
+    });
     render(<TabGovernance task={buildTask()} />);
 
     expect(screen.getByText("1 revision")).toBeInTheDocument();
   });
 
   it("renders the conventions verdict from the block/warn counters", () => {
-    useTaskGovernance.mockReturnValue({ data: buildReport(), isLoading: false });
+    useTaskGovernance.mockReturnValue({
+      data: buildReport(),
+      isLoading: false,
+    });
     render(<TabGovernance task={buildTask()} />);
 
     expect(screen.getByText("2 warn findings")).toBeInTheDocument();
@@ -133,7 +145,10 @@ describe("TabGovernance", () => {
 
   it("renders a clean conventions verdict when no findings exist", () => {
     useTaskGovernance.mockReturnValue({
-      data: buildReport({ conventions_block_count: 0, conventions_warn_count: 0 }),
+      data: buildReport({
+        conventions_block_count: 0,
+        conventions_warn_count: 0,
+      }),
       isLoading: false,
     });
     render(<TabGovernance task={buildTask()} />);
@@ -154,11 +169,16 @@ describe("TabGovernance", () => {
     render(<TabGovernance task={buildTask()} />);
 
     expect(screen.getByText("QA: 1 open · 1 closed")).toBeInTheDocument();
-    expect(screen.getByText("PR Review: 0 open · 2 closed")).toBeInTheDocument();
+    expect(
+      screen.getByText("PR Review: 0 open · 2 closed"),
+    ).toBeInTheDocument();
   });
 
   it("shows the reported task status", () => {
-    useTaskGovernance.mockReturnValue({ data: buildReport(), isLoading: false });
+    useTaskGovernance.mockReturnValue({
+      data: buildReport(),
+      isLoading: false,
+    });
     render(<TabGovernance task={buildTask()} />);
 
     expect(screen.getByText("awaiting_qa")).toBeInTheDocument();
