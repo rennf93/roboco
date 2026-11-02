@@ -258,6 +258,7 @@ if [ "$SKIP_BUILD" -eq 0 ]; then
             fi
             ;;
           *)
+            build_stale_parents_of "$df"
             echo "[deploy] building $img ..."
             if docker build -q -t "$img:latest" $HASH_LABEL -f "$df" . ||
                docker build -q -t "$img:latest" $HASH_LABEL -f "$df" .; then
