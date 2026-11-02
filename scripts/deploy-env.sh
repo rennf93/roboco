@@ -1,7 +1,8 @@
 # shellcheck shell=bash
-# Host-specific .env values for scripts/deploy-nas.sh, which sources this file
-# from the stack dir. Every helper reads and appends ./.env in the caller's
-# working directory and never replaces a value that is already declared.
+# Helpers for scripts/deploy-nas.sh, which sources this file from the stack
+# dir: host-specific .env values (each reads and appends ./.env in the caller's
+# working directory and never replaces a value that is already declared) and
+# the order locally built images are built in.
 
 # Declared in the environment this runs with, or as a line in .env, even when
 # empty: an operator's explicit empty value is a decision, not a gap.
@@ -68,4 +69,38 @@ ensure_env_chain_peer() { # ensure_env_chain_peer <network>
   fi
   append_env_value ROBOCO_GUARD_TRUSTED_CHAIN_PEERS "$gateway"
   echo "[deploy] set ROBOCO_GUARD_TRUSTED_CHAIN_PEERS=$gateway in .env (the $1 gateway host-proxied traffic arrives from)"
+}
+
+# The locally built roboco-* images a Dockerfile builds FROM (any stage, tag
+# or digest dropped), one per line: the images the deploy must have fresh
+# before it builds this one.
+roboco_parent_images_of() { # roboco_parent_images_of <dockerfile>
+  awk '$1 == "FROM" { for (i = 2; i <= NF; i++) if ($i !~ /^--/) { print $i; break } }' "$1" \
+    | sed 's/[:@].*//' | grep '^roboco-' || true
+}
+
+# compose's image order is not a build order: a child built before its
+# roboco-* parent bakes the stale parent, or after an image wipe fails on the
+# missing one with docker.io "pull access denied" (2026-11-02 blue deploy:
+# agent-grok-secretary before agent-grok). Build a stale parent first. img and
+# name are local, so image_fresh and record_fresh see the parent's, and the
+# caller's loop variables are untouched. Uses deploy-nas.sh's image_fresh,
+# record_fresh and HASH_LABEL.
+build_stale_parents_of() { # build_stale_parents_of <dockerfile>
+  local parent img name pdf
+  for parent in $(roboco_parent_images_of "$1"); do
+    img="$parent"
+    name="${parent#roboco-}"
+    pdf="docker/$name.Dockerfile"
+    [ -f "$pdf" ] || continue
+    image_fresh "$img" "$name" && continue
+    build_stale_parents_of "$pdf"
+    echo "[deploy] building $img (parent of ${1#docker/}) ..."
+    if docker build -q -t "$img:latest" $HASH_LABEL -f "$pdf" . ||
+       docker build -q -t "$img:latest" $HASH_LABEL -f "$pdf" .; then
+      record_fresh
+    else
+      echo "[deploy] WARNING: build failed for $img" >&2
+    fi
+  done
 }
