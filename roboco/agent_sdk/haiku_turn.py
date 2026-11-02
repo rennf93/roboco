@@ -2,7 +2,7 @@
 of the mounted Claude Code login.
 
 The background LLM client (``roboco.services.background_llm``) starts this
-module as ``python -I -m roboco.agent_sdk.haiku_turn`` under the uid:gid that
+module's source as ``python -I -c <source>`` under the uid:gid that
 owns the login directory, with no supplementary groups and ``HOME`` set to the
 directory that holds the login. The orchestrator runs as root, and the Claude
 Code CLI writes into the login (an OAuth refresh into ``.credentials.json``, a
