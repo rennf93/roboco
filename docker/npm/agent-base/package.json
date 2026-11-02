@@ -1,0 +1,9 @@
+{
+  "name": "roboco-agent-base-npm-pins",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Exact versions of the npm CLIs docker/agent-base.Dockerfile installs globally. Not installed from here: the Dockerfile reads each version and runs `npm install -g <name>@<version>`. Dependabot bumps this file (.github/dependabot.yml).",
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.312"
+  }
+}

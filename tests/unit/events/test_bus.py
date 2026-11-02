@@ -325,12 +325,13 @@ async def test_reclaim_loop_periodically_calls_recover_pending() -> None:
         bus._running = False  # break the loop after the first reclaim
         return 0
 
-    bus.recover_pending = _fake_recover  # type: ignore[method-assign]
-
     async def _no_sleep(_seconds: float) -> None:
         return
 
-    with patch("roboco.events.stream_bus.asyncio.sleep", new=_no_sleep):
+    with (
+        patch.object(bus, "recover_pending", new=_fake_recover),
+        patch("roboco.events.stream_bus.asyncio.sleep", new=_no_sleep),
+    ):
         await bus._reclaim_loop()
 
     # Reclaim ran once with the interval-aligned idle window, then the loop exited.

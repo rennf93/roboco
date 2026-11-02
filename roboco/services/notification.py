@@ -29,6 +29,13 @@ from roboco.utils.converters import require_uuid
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
+if TYPE_CHECKING:
+    from roboco.services._notification_service_types import (
+        NotificationServiceSelf as _Base,
+    )
+else:
+    _Base = object
+
 logger = structlog.get_logger()
 
 
@@ -60,8 +67,10 @@ async def _resolve_agent_uuid(
     return UUID(str(agent.id)) if agent else None
 
 
-class NotificationService:
-    """Service for sending system-generated notifications."""
+class NotificationTaskNotices(_Base):
+    """Notices about a task's state: blockers, stuck agents, the spawn cap, block
+    flips and oscillation, unblocks and revived dependencies, reaped and released
+    claims, reassignment, and collision sequencing."""
 
     async def send_blocker_notification(
         self,
@@ -267,250 +276,6 @@ class NotificationService:
                 related_task_id=task_id,
             ),
             db_session=db_session,
-        )
-
-    async def send_qa_ready_notification(
-        self,
-        task_id: str,
-        from_agent: str | None,
-        to_qa: str,
-        task_title: str | None = None,
-    ) -> None:
-        """Send notification that task is ready for QA."""
-        logger.info(
-            "Sending QA ready notification",
-            task_id=task_id,
-            to_qa=to_qa,
-        )
-
-        display = task_display(task_title, task_id)
-        body = (
-            f"Task {display} is ready for QA review.\n\n"
-            "Please review and provide feedback."
-        )
-        await self._create_notification(
-            CreateNotificationParams(
-                notification_type=NotificationType.REVIEW_REQUEST,
-                priority=NotificationPriority.NORMAL,
-                from_agent=from_agent or "system",
-                to_agents=[to_qa],
-                subject=f"Task {display} ready for QA",
-                body=body,
-                related_task_id=task_id,
-            )
-        )
-
-    async def send_docs_ready_notification(
-        self,
-        task_id: str,
-        from_agent: str | None,
-        to_documenter: str,
-        task_title: str | None = None,
-    ) -> None:
-        """Send notification that task is ready for documentation."""
-        logger.info(
-            "Sending docs ready notification",
-            task_id=task_id,
-            to_documenter=to_documenter,
-        )
-
-        display = task_display(task_title, task_id)
-        body = (
-            f"Task {display} has passed QA and is ready for documentation.\n\n"
-            "Please create the required documentation."
-        )
-        await self._create_notification(
-            CreateNotificationParams(
-                notification_type=NotificationType.DOCUMENTATION_REQUEST,
-                priority=NotificationPriority.NORMAL,
-                from_agent=from_agent or "system",
-                to_agents=[to_documenter],
-                subject=f"Task {display} needs documentation",
-                body=body,
-                related_task_id=task_id,
-            )
-        )
-
-    async def send_handoff_notification(
-        self,
-        task_id: str,
-        handoff_id: str,
-        from_agent: str | None,
-        to_documenter: str,
-        task_title: str | None = None,
-    ) -> None:
-        """Send notification that task needs handoff documentation."""
-        logger.info(
-            "Sending handoff notification",
-            task_id=task_id,
-            handoff_id=handoff_id,
-            to_documenter=to_documenter,
-        )
-
-        display = task_display(task_title, task_id)
-        body = (
-            f"Task {display} is ready for handoff (ID: {handoff_id}).\n\n"
-            "Please review and create handoff documentation."
-        )
-        await self._create_notification(
-            CreateNotificationParams(
-                notification_type=NotificationType.DOCUMENTATION_REQUEST,
-                priority=NotificationPriority.NORMAL,
-                from_agent=from_agent or "system",
-                to_agents=[to_documenter],
-                subject=f"Handoff required: Task {display}",
-                body=body,
-                related_task_id=task_id,
-            )
-        )
-
-    async def send_qa_failed_notification(
-        self,
-        task_id: str,
-        qa_notes: str,
-        to_developer: str,
-        task_title: str | None = None,
-    ) -> None:
-        """Send notification that task failed QA."""
-        logger.info(
-            "Sending QA failed notification",
-            task_id=task_id,
-            to_developer=to_developer,
-        )
-
-        display = task_display(task_title, task_id)
-        body = (
-            f"Task {display} has failed QA review.\n\n"
-            f"Notes: {qa_notes}\n\n"
-            "Please address the issues and resubmit."
-        )
-        await self._create_notification(
-            CreateNotificationParams(
-                notification_type=NotificationType.REVIEW_REQUEST,
-                priority=NotificationPriority.HIGH,
-                from_agent="system",
-                to_agents=[to_developer],
-                subject=f"QA Failed: Task {display}",
-                body=body,
-                related_task_id=task_id,
-            )
-        )
-
-    async def send_board_review_complete_notification(
-        self,
-        task_id: str,
-        from_agent: str | None = None,
-        to_ceo: str = "ceo",
-        task_title: str | None = None,
-    ) -> None:
-        """Tell the CEO a board review is complete and ready for Approve & Start.
-
-        Board-reviewed coordination tasks stay ``pending`` and wait for the
-        CEO's Approve & Start gate (``TaskService.approve_and_start``). The
-        Product Owner + Head of Marketing record their review via journal
-        notes, but that left the CEO with no actionable
-        signal — only buried chatter. This emits a
-        formal APPROVAL notification (ack-required) carrying ``related_task_id``
-        so the handoff is a real signal the panel can surface, not buried
-        noise. Board roles are exactly the senders permitted to notify, so the
-        orchestrator emits it as ``system`` on their behalf once BOTH board
-        reviewers (PO + Head of Marketing) have finished.
-        """
-        logger.info(
-            "Sending board-review-complete notification to CEO",
-            task_id=task_id,
-            to_ceo=to_ceo,
-        )
-
-        display = task_display(task_title, task_id)
-        body = (
-            f"Board review complete for task {display}.\n\n"
-            "The Product Owner and Head of Marketing have both reviewed and "
-            "recorded their requirements. The task is ready for your "
-            "Approve & Start decision (hand to Main PM) or rejection."
-        )
-        await self._create_notification(
-            CreateNotificationParams(
-                notification_type=NotificationType.APPROVAL,
-                priority=NotificationPriority.HIGH,
-                from_agent=from_agent or "system",
-                to_agents=[to_ceo],
-                subject=f"Board review complete: Task {display}",
-                body=body,
-                related_task_id=task_id,
-            )
-        )
-
-    async def send_weekly_report_notification(
-        self,
-        week: str,
-        note_path: str,
-        summary_line: str,
-        to_ceo: str = "ceo",
-    ) -> None:
-        """Ping the CEO once the vault janitor materializes the weekly
-        org-report note (``roboco.services.vault_janitor``). Best-effort by
-        design — the caller swallows any failure, since a missed ping never
-        invalidates the note that's already on disk.
-        """
-        body = (
-            f"Weekly org report for {week} is ready in the vault "
-            f"({note_path}).\n\n{summary_line}"
-        )
-        await self._create_notification(
-            CreateNotificationParams(
-                notification_type=NotificationType.ALERT,
-                priority=NotificationPriority.NORMAL,
-                from_agent="system",
-                to_agents=[to_ceo],
-                subject=f"Weekly org report: {week}",
-                body=body,
-            )
-        )
-
-    async def send_external_pr_reviewed_notification(
-        self,
-        *,
-        task_id: str,
-        pr_number: int,
-        pr_url: str,
-        from_agent: str | None = None,
-        to_ceo: str = "ceo",
-        task_title: str | None = None,
-    ) -> None:
-        """Tell the CEO an inbound external PR has been reviewed — their call.
-
-        The PR reviewer is read-only: it posts one change-request and stops. The
-        CEO is the gate on what happens next (supersede the PR — the org takes it
-        over and finishes it — or dismiss it). A passive ping is not enough, so
-        this emits a formal APPROVAL notification carrying ``related_task_id`` so
-        the panel's PR-review decision queue can surface it as an actionable
-        signal. Emitted server-side as ``system`` (the reviewer has no notify
-        verb).
-        """
-        logger.info(
-            "Sending external-PR-reviewed notification to CEO",
-            task_id=task_id,
-            pr_number=pr_number,
-            to_ceo=to_ceo,
-        )
-        display = task_display(task_title, task_id)
-        body = (
-            f"External PR #{pr_number} on {display} has been reviewed and a "
-            f"change-request posted ({pr_url}).\n\nYour call: supersede it (the "
-            "org takes the contribution over and finishes it to our standards) "
-            "or dismiss it."
-        )
-        await self._create_notification(
-            CreateNotificationParams(
-                notification_type=NotificationType.APPROVAL,
-                priority=NotificationPriority.HIGH,
-                from_agent=from_agent or "system",
-                to_agents=[to_ceo],
-                subject=f"External PR #{pr_number} reviewed — your decision",
-                body=body,
-                related_task_id=task_id,
-            )
         )
 
     async def send_reassignment_notification(
@@ -755,6 +520,305 @@ class NotificationService:
             )
         )
 
+    async def send_stale_review_claim_released_notification(
+        self,
+        *,
+        task_id: str,
+        released_agent: str | None,
+        last_heartbeat: str | None = None,
+        from_agent: str = "system",
+        to_ceo: str = "ceo",
+        task_title: str | None = None,
+    ) -> None:
+        """Tell the released reviewer (+ CEO) its stale review claim moved.
+
+        Fired from the orchestrator's review-claim reaper sweep alongside
+        ``release_review_claim_for_reaper``. Distinct from
+        ``send_stale_claim_reaped_notification`` because the wording differs
+        factually: a review claim's release does NOT change the task status
+        (it stays awaiting_* in the review queue) - only the claimant lock
+        clears, so any QA / documenter / gate reviewer can re-claim.
+        """
+        recipients = list(dict.fromkeys(r for r in (released_agent, to_ceo) if r))
+        if not recipients:
+            return
+        logger.info(
+            "Sending stale-review-claim-released notification",
+            task_id=task_id,
+            released_agent=released_agent,
+        )
+        display = task_display(task_title, task_id)
+        agent_label = await agent_display(released_agent)
+        body = (
+            f"Task {display}'s review claim went stale "
+            f"(last heartbeat: {last_heartbeat or 'unknown'}) and was released "
+            f"back to the review queue, clearing it from "
+            f"{agent_label or 'its holder'}. Status is unchanged; any eligible "
+            f"reviewer can re-claim."
+        )
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.ALERT,
+                priority=NotificationPriority.HIGH,
+                from_agent=from_agent,
+                to_agents=recipients,
+                subject=f"Task {display}: stale review claim released",
+                body=body,
+                related_task_id=task_id,
+            )
+        )
+
+
+class NotificationReviewNotices(_Base):
+    """Notices along the review chain and beyond: QA and docs ready, handoffs, QA
+    failures, Board review, weekly reports, reviewed external PRs, acks, broadcasts
+    and A2A messages."""
+
+    async def send_qa_ready_notification(
+        self,
+        task_id: str,
+        from_agent: str | None,
+        to_qa: str,
+        task_title: str | None = None,
+    ) -> None:
+        """Send notification that task is ready for QA."""
+        logger.info(
+            "Sending QA ready notification",
+            task_id=task_id,
+            to_qa=to_qa,
+        )
+
+        display = task_display(task_title, task_id)
+        body = (
+            f"Task {display} is ready for QA review.\n\n"
+            "Please review and provide feedback."
+        )
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.REVIEW_REQUEST,
+                priority=NotificationPriority.NORMAL,
+                from_agent=from_agent or "system",
+                to_agents=[to_qa],
+                subject=f"Task {display} ready for QA",
+                body=body,
+                related_task_id=task_id,
+            )
+        )
+
+    async def send_docs_ready_notification(
+        self,
+        task_id: str,
+        from_agent: str | None,
+        to_documenter: str,
+        task_title: str | None = None,
+    ) -> None:
+        """Send notification that task is ready for documentation."""
+        logger.info(
+            "Sending docs ready notification",
+            task_id=task_id,
+            to_documenter=to_documenter,
+        )
+
+        display = task_display(task_title, task_id)
+        body = (
+            f"Task {display} has passed QA and is ready for documentation.\n\n"
+            "Please create the required documentation."
+        )
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.DOCUMENTATION_REQUEST,
+                priority=NotificationPriority.NORMAL,
+                from_agent=from_agent or "system",
+                to_agents=[to_documenter],
+                subject=f"Task {display} needs documentation",
+                body=body,
+                related_task_id=task_id,
+            )
+        )
+
+    async def send_handoff_notification(
+        self,
+        task_id: str,
+        handoff_id: str,
+        from_agent: str | None,
+        to_documenter: str,
+        task_title: str | None = None,
+    ) -> None:
+        """Send notification that task needs handoff documentation."""
+        logger.info(
+            "Sending handoff notification",
+            task_id=task_id,
+            handoff_id=handoff_id,
+            to_documenter=to_documenter,
+        )
+
+        display = task_display(task_title, task_id)
+        body = (
+            f"Task {display} is ready for handoff (ID: {handoff_id}).\n\n"
+            "Please review and create handoff documentation."
+        )
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.DOCUMENTATION_REQUEST,
+                priority=NotificationPriority.NORMAL,
+                from_agent=from_agent or "system",
+                to_agents=[to_documenter],
+                subject=f"Handoff required: Task {display}",
+                body=body,
+                related_task_id=task_id,
+            )
+        )
+
+    async def send_qa_failed_notification(
+        self,
+        task_id: str,
+        qa_notes: str,
+        to_developer: str,
+        task_title: str | None = None,
+    ) -> None:
+        """Send notification that task failed QA."""
+        logger.info(
+            "Sending QA failed notification",
+            task_id=task_id,
+            to_developer=to_developer,
+        )
+
+        display = task_display(task_title, task_id)
+        body = (
+            f"Task {display} has failed QA review.\n\n"
+            f"Notes: {qa_notes}\n\n"
+            "Please address the issues and resubmit."
+        )
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.REVIEW_REQUEST,
+                priority=NotificationPriority.HIGH,
+                from_agent="system",
+                to_agents=[to_developer],
+                subject=f"QA Failed: Task {display}",
+                body=body,
+                related_task_id=task_id,
+            )
+        )
+
+    async def send_board_review_complete_notification(
+        self,
+        task_id: str,
+        from_agent: str | None = None,
+        to_ceo: str = "ceo",
+        task_title: str | None = None,
+    ) -> None:
+        """Tell the CEO a board review is complete and ready for Approve & Start.
+
+        Board-reviewed coordination tasks stay ``pending`` and wait for the
+        CEO's Approve & Start gate (``TaskService.approve_and_start``). The
+        Product Owner + Head of Marketing record their review via journal
+        notes, but that left the CEO with no actionable
+        signal — only buried chatter. This emits a
+        formal APPROVAL notification (ack-required) carrying ``related_task_id``
+        so the handoff is a real signal the panel can surface, not buried
+        noise. Board roles are exactly the senders permitted to notify, so the
+        orchestrator emits it as ``system`` on their behalf once BOTH board
+        reviewers (PO + Head of Marketing) have finished.
+        """
+        logger.info(
+            "Sending board-review-complete notification to CEO",
+            task_id=task_id,
+            to_ceo=to_ceo,
+        )
+
+        display = task_display(task_title, task_id)
+        body = (
+            f"Board review complete for task {display}.\n\n"
+            "The Product Owner and Head of Marketing have both reviewed and "
+            "recorded their requirements. The task is ready for your "
+            "Approve & Start decision (hand to Main PM) or rejection."
+        )
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.APPROVAL,
+                priority=NotificationPriority.HIGH,
+                from_agent=from_agent or "system",
+                to_agents=[to_ceo],
+                subject=f"Board review complete: Task {display}",
+                body=body,
+                related_task_id=task_id,
+            )
+        )
+
+    async def send_weekly_report_notification(
+        self,
+        week: str,
+        note_path: str,
+        summary_line: str,
+        to_ceo: str = "ceo",
+    ) -> None:
+        """Ping the CEO once the vault janitor materializes the weekly
+        org-report note (``roboco.services.vault_janitor``). Best-effort by
+        design — the caller swallows any failure, since a missed ping never
+        invalidates the note that's already on disk.
+        """
+        body = (
+            f"Weekly org report for {week} is ready in the vault "
+            f"({note_path}).\n\n{summary_line}"
+        )
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.ALERT,
+                priority=NotificationPriority.NORMAL,
+                from_agent="system",
+                to_agents=[to_ceo],
+                subject=f"Weekly org report: {week}",
+                body=body,
+            )
+        )
+
+    async def send_external_pr_reviewed_notification(
+        self,
+        *,
+        task_id: str,
+        pr_number: int,
+        pr_url: str,
+        from_agent: str | None = None,
+        to_ceo: str = "ceo",
+        task_title: str | None = None,
+        post_error: str | None = None,
+    ) -> None:
+        """Tell the CEO an inbound external PR has been reviewed — their call.
+
+        The PR reviewer is read-only: it posts one change-request and stops. The
+        CEO is the gate on what happens next (supersede the PR — the org takes it
+        over and finishes it — or dismiss it). A passive ping is not enough, so
+        this emits a formal APPROVAL notification carrying ``related_task_id`` so
+        the panel's PR-review decision queue can surface it as an actionable
+        signal. Emitted server-side as ``system`` (the reviewer has no notify
+        verb).
+        """
+        logger.info(
+            "Sending external-PR-reviewed notification to CEO",
+            task_id=task_id,
+            pr_number=pr_number,
+            to_ceo=to_ceo,
+        )
+        display = task_display(task_title, task_id)
+        subject, outcome = _external_pr_review_outcome(pr_number, pr_url, post_error)
+        body = (
+            f"External PR #{pr_number} on {display} {outcome}\n\nYour call: "
+            "supersede it (the org takes the contribution over and finishes it to "
+            "our standards) or dismiss it."
+        )
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.APPROVAL,
+                priority=NotificationPriority.HIGH,
+                from_agent=from_agent or "system",
+                to_agents=[to_ceo],
+                subject=subject,
+                body=body,
+                related_task_id=task_id,
+            )
+        )
+
     async def send_review_path_outage_notification(
         self,
         *,
@@ -932,6 +996,28 @@ class NotificationService:
             )
         )
 
+
+def _external_pr_review_outcome(
+    pr_number: int, pr_url: str, post_error: str | None
+) -> tuple[str, str]:
+    """The notification subject and the sentence saying where the review is."""
+    if post_error is None:
+        return (
+            f"External PR #{pr_number} reviewed — your decision",
+            f"has been reviewed and a change-request posted ({pr_url}).",
+        )
+    return (
+        f"External PR #{pr_number} reviewed — NOT posted to GitHub",
+        f"has been reviewed, but GitHub refused the review, so the contributor "
+        f"has not seen it ({pr_url}): {post_error}. The full review is saved on "
+        "the task; fix the cause (for example a token without pull-request "
+        "write, or a locked PR) and post it.",
+    )
+
+
+class NotificationService(NotificationReviewNotices, NotificationTaskNotices):
+    """Service for sending system-generated notifications."""
+
     @staticmethod
     def _notification_type_label(params: CreateNotificationParams) -> str:
         """Render the notification_type for a log line."""
@@ -980,7 +1066,9 @@ class NotificationService:
         that function's docstring for the dedup semantics (same sender +
         type + task, EXACT recipient-set equality, prior still unacked).
         Kept here so callers that already hold a ``CreateNotificationParams``
-        don't have to unpack it themselves.
+        don't have to unpack it themselves. Subject and body ride along so
+        the B12 semantic screen can lift a suppression when the Decisions
+        pilot is on; with it off they change nothing.
         """
         return await duplicate_unacked_notification_exists(
             db,
@@ -988,6 +1076,8 @@ class NotificationService:
             notification_type=params.notification_type,
             related_task_id=params.related_task_id,
             to_agents=to_agents_uuids,
+            subject=params.subject,
+            body=params.body,
         )
 
     async def _create_notification(
@@ -998,12 +1088,7 @@ class NotificationService:
         """Create a notification via the database and deliver it.
 
         When ``db_session`` is provided, use it directly and skip the
-        internal commit — the caller owns the transaction. This is required
-        when the caller runs on a different event loop than the singleton
-        ``_DbHolder`` engine (e.g. ``TaskService`` called outside the FastAPI
-        request loop); opening ``get_db_context()`` there reuses an engine
-        whose asyncpg connections are bound to the server's loop, raising
-        ``Future attached to a different loop``.
+        internal commit — the caller owns the transaction.
         """
         if db_session is not None:
             await self._create_notification_with_session(params, db_session)

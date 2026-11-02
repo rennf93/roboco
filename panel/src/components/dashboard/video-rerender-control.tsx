@@ -131,8 +131,8 @@ export function RerenderControl({
             <DialogTitle>Re-render this video?</DialogTitle>
             <DialogDescription>
               This clears the current render and queues a fresh one from the
-              same composition. Any already-rendered cuts stay visible until
-              the new render finishes.
+              same composition. Any already-rendered cuts stay visible until the
+              new render finishes.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

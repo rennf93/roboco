@@ -7,7 +7,6 @@ gates).
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
@@ -19,9 +18,6 @@ from roboco.api.websocket import (
     notification_stream,
     system_stream,
 )
-
-if TYPE_CHECKING:
-    import pytest as _pytest  # noqa: F401
 
 _SECRET = "test-secret-for-ws-auth"
 

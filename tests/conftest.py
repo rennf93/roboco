@@ -6,22 +6,21 @@ completeness property test.
 
 Why Postgres and not SQLite:
     The production schema uses Postgres-only types — `UUID(as_uuid=True)`,
-    `ARRAY(String)`, `ARRAY(UUID(as_uuid=True))` — across many tables. SQLite
-    cannot compile those via `Base.metadata.create_all`, and migration
-    006_gateway_columns adds `acceptance_criteria_status` /
-    `qa_evidence_inspected` as JSON+Boolean columns that the current ORM
-    model in `roboco/db/tables.py` does NOT yet map (a pre-existing layer
-    drift). The honest path is to spin up a real Postgres test database,
-    build the schema via `Base.metadata.create_all` (sidestepping pre-existing
-    alembic drift in 001's enum casing and 008's nonexistent `agents.skills`
-    column), then apply the additive columns from migration 006 manually so
-    the test reads the same DB-level contract that the live services do.
+    `ARRAY(String)`, `ARRAY(UUID(as_uuid=True))`, JSONB, pgvector — across
+    many tables, which SQLite cannot compile. The suite spins up a real
+    Postgres test database and builds the schema with
+    `Base.metadata.create_all`: faster than replaying the migration chain,
+    and free of the rows migrations seed (providers, settings). It is the
+    same schema production runs: `tests/integration/test_migrations_match_models.py`
+    fails CI when `create_all` and `alembic upgrade head` build different
+    columns, defaults, indexes, constraints or enum labels.
 
 Behaviour:
     Tests that request `db_session` or `smoke_test_batch` are skipped at
-    collection time when no Postgres is reachable on `localhost:5432`. Set
+    collection time when no Postgres is reachable on `localhost:15432`. Set
     `ROBOCO_TEST_DB_HOST`, `ROBOCO_TEST_DB_PORT`, `ROBOCO_TEST_DB_USER`, or
-    `ROBOCO_TEST_DB_PASSWORD` to override.
+    `ROBOCO_TEST_DB_PASSWORD` to override. The terminal summary's "test
+    environment" section counts those skips.
 
 Redis isolation:
     No test uses a real Redis, so `_no_live_redis` (autouse) points the
@@ -32,23 +31,30 @@ Redis isolation:
     purpose-dedupe) — order/state poison for anything reading the real
     instance. Every production Redis path is fail-open by design, so an
     unreachable port keeps behavior identical to "no redis available".
+
+Database isolation:
+    `_no_live_database` (autouse) points the computed
+    `settings.database_url` (what production code opens: `get_engine()`,
+    `get_db_context()`, the cloud-auth router) at a refusing port, so no
+    test reaches a developer's or the live database. A test that drives the
+    app's own engine machinery asks for `app_settings_on_test_db`, which
+    points it at the throwaway test database instead.
 """
 
 from __future__ import annotations
 
-import contextlib
-import json
 import os
 import socket
-import warnings
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, NoReturn
 from uuid import UUID, uuid4
 
 import asyncpg
+import claude_agent_sdk
 import pytest
 import pytest_asyncio
 from cryptography.fernet import Fernet
 from roboco.config import settings as _settings
+from roboco.db import base as db_base
 from roboco.db import tables as roboco_tables
 from roboco.db.base import Base, close_db
 from roboco.db.tables import (
@@ -69,7 +75,11 @@ from roboco.models.base import (
     TaskType,
     Team,
 )
+from roboco.services import background_llm
+from roboco.services import optimal as optimal_module
+from roboco.services.optimal import close_optimal_service
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
     async_sessionmaker,
@@ -77,7 +87,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Iterable, Iterator
 
 
 # Isolate every test-spawned git subprocess from the developer machine's
@@ -90,21 +100,51 @@ os.environ.setdefault("GIT_CONFIG_GLOBAL", "/dev/null")
 os.environ.setdefault("GIT_CONFIG_SYSTEM", "/dev/null")
 
 
-@pytest_asyncio.fixture(autouse=True)
-async def _dispose_global_db_engine() -> AsyncIterator[None]:
-    """Never let the lazy global engine outlive the test that created it.
+@pytest.fixture(autouse=True)
+def _nothing_left_open_on_an_ended_loop() -> Iterator[None]:
+    """Fail a test that leaves a DB engine or RAG service on an ended loop.
 
-    Production code reaching ``get_db_context()``/``get_engine()`` creates
-    the process-global ``_DbHolder`` engine bound to the CURRENT event loop.
-    With function-scoped test loops, any later test touching that global
-    path inherits an engine from a dead loop and crashes with ``Future
-    attached to a different loop`` — an order-dependent failure class that
-    moves around whenever test collection shifts. Disposing after every
-    test keeps the global path loop-local; a no-op when nothing touched it.
+    Nothing can close them once their loop is gone, and their registries keep
+    them alive, so their connections would stay open, unnoticed, until the
+    process exits. The loop's owner closes them first: the fixture below for
+    a test's own loop, ``run_then_close_db`` for an ``asyncio.run``, the
+    app's lifespan for a server's. Defined before that fixture, this one is
+    set up before pytest-asyncio's loop and torn down after it closes, so it
+    names the test that left them.
     """
     yield
-    with contextlib.suppress(Exception):
-        await close_db()
+    left: list[str] = []
+    for kind, by_loop in (
+        ("primary DB engine", db_base._PRIMARY_ENGINES._by_loop),
+        ("background DB engine", db_base._BACKGROUND_ENGINES._by_loop),
+        ("RAG service", optimal_module._OptimalServiceHolder.instances),
+    ):
+        for loop in [loop for loop in by_loop if loop.is_closed()]:
+            left.append(f"{kind} on {loop!r}")
+            # Dropped, so the next test doesn't fail for this one.
+            del by_loop[loop]
+    if left:
+        pytest.fail(
+            "Left open on an event loop that has ended: " + "; ".join(left),
+            pytrace=False,
+        )
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _close_this_loops_db_and_rag() -> AsyncIterator[None]:
+    """Close the engines and RAG service this test's loop opened before the
+    loop ends.
+
+    Production code reaching ``get_db_context()``/``get_engine()`` or
+    ``get_optimal_service()`` opens them on the test's own event loop
+    (``roboco.db.base._PoolEngines``,
+    ``roboco.services.optimal._OptimalServiceHolder``). pytest-asyncio closes
+    that loop after the test, and connections still open then can never be
+    closed. A no-op when nothing touched them.
+    """
+    yield
+    await close_optimal_service()
+    await close_db()
 
 
 _TEST_FERNET_KEY = Fernet.generate_key().decode()
@@ -145,6 +185,82 @@ def _no_live_redis(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_settings, "redis_port", 1)
 
 
+@pytest.fixture(autouse=True)
+def _no_live_background_llm(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep the background LLM client off live Claude and off the routing table.
+
+    Its Claude Haiku fallback starts ``python -m roboco.agent_sdk.haiku_turn``,
+    which runs ``claude_agent_sdk.query`` and the bundled Claude Code CLI on
+    the developer's own ``~/.claude`` login: a real, billed call. The login
+    home points at a path that does not exist, starting that process is
+    refused, and ``query`` (which haiku_turn's own tests run in-process) is
+    refused too, so a test that reaches the fallback sees Haiku fail like any
+    unavailable backend. The routing-mode read opens a database session of
+    its own; it fails here
+    (the client then tries Ollama, then Haiku), so no test opens an engine for
+    it. The mode cache and the Ollama no-credit cooldown are module state, so
+    every test starts with fresh ones. A test exercising any of these
+    monkeypatches it again.
+
+    The name must sort after ``_close_this_loops_db_and_rag``: pytest sets up
+    a conftest's autouse fixtures in name order, and ``monkeypatch`` has to be
+    set up after that fixture so its undo runs before ``close_db()``
+    (tests/integration/test_db_base.py swaps the engine registries through
+    ``monkeypatch``; undone later, ``close_db()`` disposes its mock engine).
+    """
+
+    def _refuse_live_claude_query(**_kwargs: object) -> NoReturn:
+        raise RuntimeError("live Claude Code query refused in tests")
+
+    async def _refuse_live_haiku_process(*_args: object) -> NoReturn:
+        raise background_llm.BackendUnavailableError(
+            "live Claude Code process refused in tests"
+        )
+
+    async def _routing_mode_unreadable_in_tests() -> str:
+        raise RuntimeError("no routing table in unit tests")
+
+    monkeypatch.setattr(
+        _settings, "background_llm_claude_home", "/nonexistent/roboco-test-claude-home"
+    )
+    monkeypatch.setattr(
+        background_llm, "_haiku_turn_in_login_owner_process", _refuse_live_haiku_process
+    )
+    monkeypatch.setattr(claude_agent_sdk, "query", _refuse_live_claude_query)
+    monkeypatch.setattr(
+        background_llm, "read_routing_mode", _routing_mode_unreadable_in_tests
+    )
+    monkeypatch.setattr(
+        background_llm, "_ROUTING_MODE_CACHE", background_llm.RoutingModeCache()
+    )
+    monkeypatch.setattr(
+        background_llm, "_OLLAMA_NO_CREDIT_COOLDOWN", background_llm.NoCreditCooldown()
+    )
+
+
+# Every database ``_test_database_url`` creates is named with this prefix.
+_TEST_DB_NAME_PREFIX = "roboco_test_"
+
+
+@pytest.fixture(autouse=True)
+def _no_live_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keep every test off the app's configured database.
+
+    ``settings.database_url`` is what production code opens
+    (``get_engine()``, ``get_db_context()``, the cloud-auth router). Left as
+    configured it is ``localhost:5432/roboco`` (a developer's own database)
+    or whatever ``ROBOCO_DATABASE_*`` names, never the throwaway test
+    database. Port 1 refuses instantly. A test that needs the app's own
+    database machinery asks for ``app_settings_on_test_db``; a database the
+    e2e harness already pointed the settings at for its session (named
+    ``roboco_test_*``) is left alone.
+    """
+    if _settings.database_name.startswith(_TEST_DB_NAME_PREFIX):
+        return
+    monkeypatch.setattr(_settings, "database_host", "127.0.0.1")
+    monkeypatch.setattr(_settings, "database_port", 1)
+
+
 # ---------------------------------------------------------------------------
 # Test DB endpoint discovery — env-overridable.
 #
@@ -176,21 +292,31 @@ def _postgres_reachable() -> bool:
         return False
 
 
-def _warn_if_pg_unavailable(available: bool, host: str, port: int) -> None:
-    """#90: warn loudly when the test DB is unreachable so a green run of all-skips
-    is not mistaken for a pass. The per-test ``pytest.skip`` still applies; this
-    only adds a visible import-time warning."""
-    if not available:
-        warnings.warn(
-            f"Postgres unreachable at {host}:{port} — every DB test will be "
-            "SKIPPED. Set ROBOCO_TEST_DB_HOST/PORT/USER/PASSWORD or start "
-            "Postgres (local: ROBOCO_TEST_DB_PORT=55432 ROBOCO_TEST_DB_USER=renzof).",
-            stacklevel=2,
-        )
+def _pg_unreachable_notice(
+    skip_reasons: Iterable[str], host: str, port: int
+) -> str | None:
+    """#90: say loudly how many tests skipped for want of the test DB, so a
+    green run of all-skips is not mistaken for a pass. A run that selects no
+    DB test (the in-image suites, the decisions-sidecar suite) has nothing to
+    report."""
+    unreachable = f"Postgres unreachable at {host}:{port}"
+    skipped = sum(unreachable in reason for reason in skip_reasons)
+    if not skipped:
+        return None
+    return (
+        f"{skipped} test(s) needing Postgres were SKIPPED: {unreachable}. "
+        "Set ROBOCO_TEST_DB_HOST/PORT/USER/PASSWORD or start Postgres "
+        "(local: ROBOCO_TEST_DB_PORT=55432 ROBOCO_TEST_DB_USER=renzof)."
+    )
 
+
+# What this machine kept the run from testing, reported in the terminal
+# summary by `pytest_terminal_summary` below. Not through `warnings`: the
+# suite fails on any warning (pyproject's filterwarnings), and these describe
+# the machine the run is on, not the code under test.
+_TEST_ENVIRONMENT_NOTICES = pytest.StashKey[list[str]]()
 
 _PG_AVAILABLE = _postgres_reachable()
-_warn_if_pg_unavailable(_PG_AVAILABLE, _TEST_DB_HOST, _TEST_DB_PORT)
 
 # Sanity-check imported tables registered themselves on Base.metadata. Tied to
 # `roboco_tables` so static analysis treats the import as load-bearing.
@@ -209,7 +335,7 @@ def _build_url(database: str) -> str:
 # Session-scoped: provision an ephemeral test DB and build the schema.
 # ---------------------------------------------------------------------------
 @pytest_asyncio.fixture(scope="session", loop_scope="session")
-async def _test_database_url() -> AsyncIterator[str]:
+async def _test_database_url(request: pytest.FixtureRequest) -> AsyncIterator[str]:
     """Create a fresh `roboco_test_<pid>_<rand>` DB, build the schema, yield URL.
 
     Drops the database on teardown. Skips the entire test session if Postgres
@@ -222,7 +348,7 @@ async def _test_database_url() -> AsyncIterator[str]:
             allow_module_level=False,
         )
 
-    db_name = f"roboco_test_{os.getpid()}_{uuid4().hex[:8]}"
+    db_name = f"{_TEST_DB_NAME_PREFIX}{os.getpid()}_{uuid4().hex[:8]}"
 
     # 1. CREATE DATABASE on the admin connection.
     admin = await asyncpg.connect(
@@ -239,63 +365,30 @@ async def _test_database_url() -> AsyncIterator[str]:
 
     test_url_async = _build_url(db_name)
 
-    # 2. Enable pgvector extension (some tables created via create_all reference
-    #    it; harmless if already enabled in the cluster).
+    # 2. Enable pgvector up front. No create_all table uses it: the vector
+    #    tables (chunks_*) are created by VectorStore.initialize, which the
+    #    e2e smoke's C3 test runs against this database and which creates the
+    #    extension itself, so a missing pgvector fails there, by name.
     pgvector_engine = create_async_engine(test_url_async, future=True)
     try:
         async with pgvector_engine.begin() as conn:
             try:
                 await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
             except Exception:
-                # Dev/sandbox Postgres may lack pgvector; the core schema does
-                # not require it and the e2e smoke suite does not exercise RAG.
-                # Continue so tests can run in lightweight sandboxes.
-                warnings.warn(
-                    "pgvector extension unavailable - continuing without it",
-                    stacklevel=2,
+                # Dev/sandbox Postgres may lack pgvector. Only C3 needs it, so
+                # continue and let the rest of the suite run.
+                request.config.stash.setdefault(_TEST_ENVIRONMENT_NOTICES, []).append(
+                    "pgvector extension unavailable - continued without it"
                 )
     finally:
         await pgvector_engine.dispose()
 
-    # 3. Build the schema. We use `Base.metadata.create_all` (NOT alembic
-    #    upgrade head) for two reasons:
-    #
-    #    a. Migration 001 declares the `agentrole` Postgres enum with
-    #       lowercase string values (`"qa"`, `"developer"`, ...), but the
-    #       SQLAlchemy ORM binds `Enum(AgentRole)` to the StrEnum's member
-    #       NAMES (uppercase: `"QA"`, `"DEVELOPER"`, ...) — they're
-    #       mismatched. Production DBs were bootstrapped via `create_all`
-    #       (which generates uppercase enums to match the ORM) and then
-    #       stamped at 001, masking this drift.
-    #
-    #    b. Migration 008 runs `UPDATE agents SET skills = ... WHERE id = ...`
-    #       against an `agents.skills` column that no migration in this chain
-    #       ever creates — another pre-existing drift item.
-    #
-    #    Neither bug is caused by this PR; both block any "fresh alembic
-    #    upgrade head" run today. `create_all` sidesteps both. After
-    #    `create_all` we manually apply the *additive* columns from migration
-    #    006 (`acceptance_criteria_status`, `qa_evidence_inspected`) since
-    #    those are the columns the tracing-completeness contract reads and
-    #    they are NOT yet on the ORM TaskTable.
+    # 3. Build the schema with `create_all` (see the module docstring for why
+    #    not `alembic upgrade head`, and for the test that keeps the two equal).
     schema_engine = create_async_engine(test_url_async, future=True)
     try:
         async with schema_engine.begin() as conn:
             await conn.run_sync(Base.metadata.create_all)
-            await conn.execute(
-                text(
-                    "ALTER TABLE tasks "
-                    "ADD COLUMN IF NOT EXISTS acceptance_criteria_status "
-                    "JSON NOT NULL DEFAULT '[]'::json"
-                )
-            )
-            await conn.execute(
-                text(
-                    "ALTER TABLE tasks "
-                    "ADD COLUMN IF NOT EXISTS qa_evidence_inspected "
-                    "BOOLEAN NOT NULL DEFAULT FALSE"
-                )
-            )
     finally:
         await schema_engine.dispose()
 
@@ -319,6 +412,24 @@ async def _test_database_url() -> AsyncIterator[str]:
             await teardown_admin.execute(f'DROP DATABASE IF EXISTS "{db_name}"')
         finally:
             await teardown_admin.close()
+
+
+@pytest.fixture
+def app_settings_on_test_db(
+    _test_database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> str:
+    """Point the app's ``settings.database_url`` at the throwaway test
+    database (provisioned and built by ``_test_database_url``) and return
+    its URL, for a test that drives the app's own engine machinery
+    (``get_engine()``, ``get_db_context()``, a real router). The URL is a
+    property derived from these plain fields on every access."""
+    url = make_url(_test_database_url)
+    monkeypatch.setattr(_settings, "database_host", url.host or "localhost")
+    monkeypatch.setattr(_settings, "database_port", url.port or 5432)
+    monkeypatch.setattr(_settings, "database_user", url.username or "")
+    monkeypatch.setattr(_settings, "database_password", url.password or "")
+    monkeypatch.setattr(_settings, "database_name", url.database or "")
+    return _test_database_url
 
 
 @pytest_asyncio.fixture
@@ -383,9 +494,8 @@ async def smoke_test_batch(db_session: AsyncSession) -> AsyncIterator[list[UUID]
             - dev: TASK_REFLECTION
             - qa:  LEARNING
             - pm:  DECISION_LOG
-        * Raw-SQL UPDATE on `tasks.acceptance_criteria_status` and
-          `tasks.qa_evidence_inspected` (these columns exist in the migrated DB
-          but are NOT mapped on the ORM TaskTable — pre-existing drift).
+        * `tasks.acceptance_criteria_status` (one artifact per criterion) and
+          `tasks.qa_evidence_inspected` set on the task.
     """
     # 1. Creator-of-record system agent (FK target for project.created_by etc.).
     system_agent = AgentTable(
@@ -467,6 +577,7 @@ async def smoke_test_batch(db_session: AsyncSession) -> AsyncIterator[list[UUID]
         "API endpoint returns 200 for the happy path",
         "Failure mode returns structured error envelope",
     ]
+    artifact_id = str(uuid4())
     task = TaskTable(
         id=uuid4(),
         title="Add /api/v1/example endpoint",
@@ -501,27 +612,14 @@ async def smoke_test_batch(db_session: AsyncSession) -> AsyncIterator[list[UUID]
         ),
         self_verified=True,
         qa_verified=True,
+        acceptance_criteria_status=[
+            {"criterion": criterion, "referencing_artifact_id": artifact_id}
+            for criterion in criteria
+        ],
+        qa_evidence_inspected=True,
     )
     db_session.add(task)
     await db_session.flush()
-
-    # 4b. Migration-only columns the ORM doesn't map: acceptance_criteria_status
-    #     + qa_evidence_inspected. Set them via raw SQL so the test asserts the
-    #     real DB-level contract.
-    artifact_id = str(uuid4())
-    status_payload: list[dict[str, Any]] = [
-        {"criterion": criteria[0], "referencing_artifact_id": artifact_id},
-        {"criterion": criteria[1], "referencing_artifact_id": artifact_id},
-    ]
-    await db_session.execute(
-        text(
-            "UPDATE tasks "
-            "SET acceptance_criteria_status = CAST(:status AS json), "
-            "    qa_evidence_inspected = TRUE "
-            "WHERE id = :tid"
-        ),
-        {"status": json.dumps(status_payload), "tid": task.id},
-    )
 
     # 5. Three audit-log rows — one per state transition, ALL with non-null
     #    agent_id targeting this task's id.
@@ -629,3 +727,21 @@ def pytest_collection_modifyitems(
         fixturenames = set(getattr(item, "fixturenames", ()))
         if fixturenames & fixtures_requiring_db:
             item.add_marker(skip)
+
+
+def pytest_terminal_summary(terminalreporter: pytest.TerminalReporter) -> None:
+    """Report the run's `_TEST_ENVIRONMENT_NOTICES` and its Postgres skips."""
+    notices: list[str] = terminalreporter.config.stash.get(
+        _TEST_ENVIRONMENT_NOTICES, []
+    )
+    skip_reasons = (
+        str(report.longrepr) for report in terminalreporter.stats.get("skipped", [])
+    )
+    pg_notice = _pg_unreachable_notice(skip_reasons, _TEST_DB_HOST, _TEST_DB_PORT)
+    if pg_notice is not None:
+        notices = [*notices, pg_notice]
+    if not notices:
+        return
+    terminalreporter.section("test environment", sep="!", red=True, bold=True)
+    for notice in notices:
+        terminalreporter.line(notice, red=True, bold=True)

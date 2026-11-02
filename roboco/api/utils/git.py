@@ -12,7 +12,10 @@ from uuid import UUID
 from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from roboco.api.schemas.git import GitRebaseResponse
 from roboco.exceptions import GitCommandError, GitError, GitTimeoutError
+from roboco.models.base import AgentRole
+from roboco.models.permissions import AgentContext
 from roboco.services.base import (
     NotFoundError,
     ServiceError,
@@ -166,3 +169,52 @@ def _parse_branch_line(line: str) -> tuple[str, bool, str | None] | None:
     if ref.startswith("refs/remotes/"):
         return _parse_remote_ref(ref, last_commit)
     return None
+
+
+async def _task_to_rebase(
+    task_service: Any, agent: AgentContext, task_id: UUID | None
+) -> Any | None:
+    """The task ``/api/git/rebase`` names, or None without a ``task_id``.
+
+    404 when it does not exist; 403 unless it is assigned to the caller or
+    the caller is CEO.
+    """
+    if task_id is None:
+        return None
+    task = await task_service.get(task_id)
+    if task is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Task not found: {task_id}",
+        )
+    if agent.role != AgentRole.CEO and task.assigned_to != agent.agent_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "REBASE_OWNERSHIP_RESTRICTED: This task is not assigned to "
+                "you. Only the task's assigned agent or CEO may rebase it."
+            ),
+        )
+    return task
+
+
+def _task_rebase_response(
+    project_slug: str, outcome: dict[str, Any]
+) -> GitRebaseResponse:
+    """A task sync's outcome as the rebase response; a divergence (local and
+    origin each carry commits the other lacks) is refused, nothing was
+    touched."""
+    outcome_status = outcome.get("status")
+    if outcome_status == "diverged":
+        raise ValidationError(
+            "REBASE_DIVERGED: the task branch and origin each carry commits "
+            f"the other lacks (local only: {outcome.get('local_only')}, "
+            f"origin only: {outcome.get('origin_only')}); nothing was "
+            "rebased or pushed. Reconcile by hand."
+        )
+    return GitRebaseResponse(
+        project_slug=project_slug,
+        conflict=outcome_status == "conflicts",
+        conflicted_files=list(outcome.get("files") or []),
+        status=outcome_status,
+    )

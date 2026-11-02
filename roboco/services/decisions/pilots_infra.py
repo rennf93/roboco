@@ -805,14 +805,17 @@ async def semantic_distinct_delivery(
         and confidence is not None
         and confidence >= NOTIFY_DEDUP_CONFIDENCE_FLOOR
     )
+    acts = distinct and mode is PilotMode.ON
     log_action(
         "notify_dedup",
         mode,
         distinct,
-        "deliver (confidently distinct)" if distinct else "suppressed as today",
+        "deliver (confidently distinct)" if acts else "suppressed as today",
         result,
     )
-    return distinct
+    # Only ON may lift a suppression; a shadow verdict is recorded, never
+    # acted on (it used to deliver in shadow too).
+    return acts
 
 
 # ---------------------------------------------------------------------------
