@@ -371,6 +371,9 @@ class TaskResponse(BaseModel):
     completed_at: datetime | None
     target_date: datetime | None
     last_heartbeat_at: datetime | None = None
+    # The single-claimant lock. The dispatcher pins a claimed gate task to
+    # its live claimant with it; absent here, that pin never fired.
+    active_claimant_id: UUID | None = None
 
     # Planning
     estimated_complexity: Complexity
@@ -974,6 +977,7 @@ def task_to_response(task: "TaskTable") -> TaskResponse:
         completed_at=task.completed_at,
         target_date=task.target_date,
         last_heartbeat_at=getattr(task, "last_heartbeat_at", None),
+        active_claimant_id=to_python_uuid(getattr(task, "active_claimant_id", None)),
         estimated_complexity=task.estimated_complexity,
         plan=convert_plan(task.plan),
         checkpoints=convert_checkpoints(task.checkpoints),

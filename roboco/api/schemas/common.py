@@ -114,6 +114,9 @@ class ErrorCode:
     INVALID_INPUT = "INVALID_INPUT"
     INTERNAL_ERROR = "INTERNAL_ERROR"
     API_ERROR = "API_ERROR"
+    # A third party the request depended on failed it (HTTP 424), e.g. a site
+    # that refused a web_fetch page download.
+    DEPENDENCY_FAILED = "DEPENDENCY_FAILED"
 
     # Auth/Permission errors
     NOT_AUTHORIZED = "NOT_AUTHORIZED"

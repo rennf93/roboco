@@ -618,7 +618,7 @@ async def test_claim_doc_task_checkout_timeout_degrades_with_gap(
     same evidence_gaps list the diff/list_changed_files legs use, drawing
     from the SAME shared LegBudget."""
     git_svc = AsyncMock()
-    git_svc.checkout_branch_in_agent_workspace.side_effect = exc
+    git_svc.ensure_branch_worktree_for_agent.side_effect = exc
     git_svc.diff.return_value = "diff content"
     git_svc.list_changed_files.return_value = ["README.md"]
     c, doc_id, task_id = _doc_harness(git_svc)
@@ -631,7 +631,7 @@ async def test_claim_doc_task_checkout_timeout_degrades_with_gap(
     assert ev["pr_diff_summary"] == "diff content"
     assert ev["files_changed"] == ["README.md"]
     assert "evidence_gaps" in ev
-    assert any("workspace checkout unavailable" in g for g in ev["evidence_gaps"])
+    assert any("task worktree unavailable" in g for g in ev["evidence_gaps"])
 
 
 @pytest.mark.asyncio

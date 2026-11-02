@@ -26,6 +26,10 @@ if TYPE_CHECKING:
     from roboco.services.llm import AgentRoute
     from sqlalchemy.ext.asyncio import AsyncSession
 
+# An AGENT_SLUG pin plus one GLOBAL row: what a mode switch must leave behind
+# when a per-agent pin exists.
+_PIN_AND_GLOBAL_ROWS = 2
+
 
 def _first_model_for_type(provider_type: ModelProvider) -> str:
     for entry in MODEL_CATALOG:
@@ -273,6 +277,71 @@ async def test_derive_mode_gemini_when_only_gemini_global(llm_setup: dict) -> No
 
 
 @pytest.mark.asyncio
+async def test_derive_mode_hummin_with_seeded_role_tiers(llm_setup: dict) -> None:
+    """The hummin state apply_mode writes (GLOBAL default + the seeded
+    oversight/delivery ROLE tiers) derives as "hummin", not "mix".
+
+    Regression: derive_mode only recognized exactly-one-assignment states, so
+    the mode button's own seeded ROLE rows tripped the catch-all — clicking
+    hummin reported "mix" forever, on every apply, including the fresh GET
+    the panel renders right after (2026-09-27 CEO report).
+    """
+    svc = llm_setup["svc"]
+    await svc.apply_mode(mode="hummin")
+    assert await svc.derive_mode() == "hummin"
+
+
+@pytest.mark.asyncio
+async def test_derive_mode_hummin_survives_agent_pin_and_complexity_override(
+    llm_setup: dict,
+) -> None:
+    """AGENT_SLUG pins and compound ROLE":"complexity overrides are operator
+    layers that survive every mode switch — they never flip the label to
+    "mix" (the UI surfaces them separately)."""
+    svc = llm_setup["svc"]
+    await svc.apply_mode(mode="hummin")
+    await svc.upsert_assignment(
+        scope=AssignmentScope.AGENT_SLUG,
+        scope_value="be-dev-1",
+        model_name=_first_model_for_type(ModelProvider.OPENAI),
+    )
+    await svc.upsert_assignment(
+        scope=AssignmentScope.ROLE,
+        scope_value="developer:low",
+        model_name=_first_model_for_type(ModelProvider.GROK),
+    )
+    assert await svc.derive_mode() == "hummin"
+
+
+@pytest.mark.asyncio
+async def test_derive_mode_kimi_survives_agent_pin(llm_setup: dict) -> None:
+    """Same carve-out for a single-GLOBAL mode: GLOBAL kimi + an AGENT_SLUG
+    pin reports "kimi" — the pin is a per-agent override, not mode state."""
+    svc = llm_setup["svc"]
+    await svc.apply_mode(mode="kimi")
+    await svc.upsert_assignment(
+        scope=AssignmentScope.AGENT_SLUG,
+        scope_value="be-dev-1",
+        model_name=_first_model_for_type(ModelProvider.GEMINI),
+    )
+    assert await svc.derive_mode() == "kimi"
+
+
+@pytest.mark.asyncio
+async def test_derive_mode_mix_when_plain_role_row_differs(llm_setup: dict) -> None:
+    """A plain ROLE row re-pointed at another provider IS genuine mixing of
+    the mode-authored rows — the catch-all applies."""
+    svc = llm_setup["svc"]
+    await svc.apply_mode(mode="hummin")
+    await svc.upsert_assignment(
+        scope=AssignmentScope.ROLE,
+        scope_value="developer",
+        model_name=_first_model_for_type(ModelProvider.OPENAI),
+    )
+    assert await svc.derive_mode() == "mix"
+
+
+@pytest.mark.asyncio
 async def test_derive_mode_kimi_when_only_kimi_global(llm_setup: dict) -> None:
     """A pure-KIMI global assignment reports "kimi", not the catch-all
     "mix" — mirrors the codex/gemini branches derive_mode already carries."""
@@ -357,7 +426,7 @@ async def test_apply_mode_ollama_preserves_agent_pin(llm_setup: dict) -> None:
     )
     await svc.apply_mode(mode="ollama", default_model=ollama_model)
     assignments = await svc.list_assignments()
-    assert len(assignments) == 2  # noqa: PLR2004  AGENT_SLUG pin kept + new GLOBAL row.
+    assert len(assignments) == _PIN_AND_GLOBAL_ROWS
     by_scope = {a.scope: a for a in assignments}
     assert by_scope[AssignmentScope.AGENT_SLUG].scope_value == "be-dev-1"
     assert by_scope[AssignmentScope.AGENT_SLUG].model_name == anthropic_model
@@ -1496,10 +1565,10 @@ async def test_apply_mode_self_hosted_clears_prior_assignments(
         scope_value=None,
         model_name=anthropic_model,
     )
-    assert len(await svc.list_assignments()) == 2  # noqa: PLR2004
+    assert len(await svc.list_assignments()) == _PIN_AND_GLOBAL_ROWS
     await svc.apply_mode(mode="self_hosted", default_model="gemma2:9b")
     assignments = await svc.list_assignments()
-    assert len(assignments) == 2  # noqa: PLR2004  AGENT_SLUG pin kept + new GLOBAL row.
+    assert len(assignments) == _PIN_AND_GLOBAL_ROWS
     by_scope = {a.scope: a for a in assignments}
     assert by_scope[AssignmentScope.AGENT_SLUG].scope_value == "be-dev-1"
     assert by_scope[AssignmentScope.AGENT_SLUG].model_name == anthropic_model
@@ -1786,3 +1855,49 @@ async def test_apply_routing_preset_skips_entry_whose_provider_went_disabled(
 
     remaining = await svc.list_assignments()
     assert remaining == []  # the disabled-provider entry was never written
+
+
+@pytest.mark.asyncio
+async def test_apply_mode_zai_replaces_the_previous_modes_role_rows(
+    llm_setup: dict, db_session: AsyncSession
+) -> None:
+    """Every mode switch wipes the plain ROLE/GLOBAL rows before setting its
+    own; zai skipped the wipe, so the previous mode's ROLE rows kept
+    overriding the new GLOBAL GLM default. Pins and complexity overrides
+    survive, as on every mode."""
+    db_session.add(
+        ProviderConfigTable(
+            name="zai-test",
+            type=ModelProvider.ZAI,
+            enabled=False,
+            auth_token_encrypted="stored-key",
+        )
+    )
+    await db_session.flush()
+    svc = llm_setup["svc"]
+    await svc.apply_mode(mode="hummin")
+    pin_model = _first_model_for_type(ModelProvider.OPENAI)
+    await svc.upsert_assignment(
+        scope=AssignmentScope.AGENT_SLUG, scope_value="be-dev-1", model_name=pin_model
+    )
+    override_model = _first_model_for_type(ModelProvider.GROK)
+    await svc.upsert_assignment(
+        scope=AssignmentScope.ROLE,
+        scope_value="developer:low",
+        model_name=override_model,
+    )
+
+    await svc.apply_mode(mode="zai")
+
+    rows = {
+        (a.scope, a.scope_value, a.model_name) for a in await svc.list_assignments()
+    }
+    assert rows == {
+        (AssignmentScope.GLOBAL, None, "glm-5.3-flash"),
+        (AssignmentScope.AGENT_SLUG, "be-dev-1", pin_model),
+        (AssignmentScope.ROLE, "developer:low", override_model),
+    }
+    # The GLM ids in the catalog resolve to HUMMIN since 2026-09-17: the
+    # GLOBAL row must still point at the ZAI provider, or "zai" mode is
+    # hummin mode under another name.
+    assert await svc.derive_mode() == "zai"

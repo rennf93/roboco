@@ -19,6 +19,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
+from roboco.services.git_relay import is_dispatcher_owned, run_private_git
+from roboco.services.workspace_git import run_workspace_git
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -46,6 +49,11 @@ _SECTION_ORDER = ("Added", "Changed", "Fixed", "Security")
 _PR_REF_RE = re.compile(r"\(#(\d+)\)")
 _REVISION_RE = re.compile(r"^revision\s*[:=].*$", re.MULTILINE)
 _DOWN_REVISION_RE = re.compile(r"^down_revision\s*[:=].*$", re.MULTILINE)
+# The real release-commit subject shape: ``chore(release): X.Y.Z`` (an
+# optional ``v`` prefix tolerated). A ``chore(release):``-typed commit whose
+# subject carries NO version is a mistyped non-release chore, never a
+# release record.
+_RELEASE_SUBJECT_RE = re.compile(r"^chore\(release\): ?v?\d+\.\d+\.\d+")
 _QUOTED_RE = re.compile(r"""["']([^"']+)["']""")
 _DECLARED_AGENTS_RE = re.compile(r"(\d+)\s+AI\s+agents", re.IGNORECASE)
 
@@ -437,14 +445,11 @@ _GIT_FIELD_SEP = "\x1f"
 
 
 def _run_git(root: Path, args: list[str]) -> str:
+    """Read-only git in the snapshot clone (the dispatcher-owned read clone;
+    any other path is read as the workspace git user)."""
+    runner = run_private_git if is_dispatcher_owned(root) else run_workspace_git
     try:
-        result = subprocess.run(
-            ["git", "-C", str(root), *args],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=30,
-        )
+        result = runner(root, args, timeout=30, check=False)
     except subprocess.TimeoutExpired as exc:
         # A hung git child must not hang the release-readiness thread silently
         # — bubble a clear error so the loop logs and moves on.
@@ -551,8 +556,12 @@ def _canonical_bump_files(root: Path, version: str) -> list[str]:
     # ``chore(release):`` type (e.g. a fix commit explaining the derivation). A
     # newer such commit would shadow the real release commit and the bump plan
     # would list the fix's files instead of the release's. Filter to the
-    # candidate whose SUBJECT (``%s``) starts with ``chore(release):`` — the
-    # real release-commit shape ``chore(release): X.Y.Z``. ``%x01`` separates
+    # candidate whose SUBJECT matches the real release-commit shape
+    # ``chore(release): X.Y.Z`` — the version number is what separates a
+    # release commit from a mistyped non-release ``chore(release):`` subject
+    # (2026-10-05: one real `chore(release): published decisions image ...`
+    # commit shadowed release 0.31.0's derivation and the bump plan listed
+    # release plumbing instead of pyproject/CHANGELOG). ``%x01`` separates
     # sha from subject so a subject may contain spaces unambiguously.
     raw = _run_git(
         root,
@@ -562,7 +571,7 @@ def _canonical_bump_files(root: Path, version: str) -> list[str]:
         if "\x01" not in line:
             continue
         sha, subject = line.split("\x01", 1)
-        if subject.startswith("chore(release):"):
+        if _RELEASE_SUBJECT_RE.match(subject):
             files_raw = _run_git(root, ["show", "--name-only", "--format=", sha])
             return sorted(
                 line.strip() for line in files_raw.splitlines() if line.strip()

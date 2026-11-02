@@ -106,7 +106,9 @@ export function useGrantProjectAccess() {
     onSuccess: (project) => {
       queryClient.invalidateQueries({ queryKey: projectKeys.lists() });
       queryClient.setQueryData(projectKeys.detail(project.id), project);
-      queryClient.invalidateQueries({ queryKey: projectKeys.detail(project.id) });
+      queryClient.invalidateQueries({
+        queryKey: projectKeys.detail(project.id),
+      });
     },
   });
 }
@@ -127,7 +129,9 @@ export function useRevokeProjectAccess() {
     onSuccess: (project) => {
       queryClient.invalidateQueries({ queryKey: projectKeys.lists() });
       queryClient.setQueryData(projectKeys.detail(project.id), project);
-      queryClient.invalidateQueries({ queryKey: projectKeys.detail(project.id) });
+      queryClient.invalidateQueries({
+        queryKey: projectKeys.detail(project.id),
+      });
     },
   });
 }

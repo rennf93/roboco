@@ -44,6 +44,18 @@ def _new_orchestrator() -> AgentOrchestrator:
     return orch
 
 
+async def _attempt_spawn(
+    orch: AgentOrchestrator, slug: str, task: dict[str, Any]
+) -> bool:
+    """One dispatch attempt: consult the breaker and, when it lets the spawn
+    through, launch it. ``_launch_spawn`` reports every container that really
+    started to the breaker, and only those attempts count as strikes."""
+    gated = await orch._pm_respawn_should_gate(slug, task)
+    if not gated:
+        orch._note_respawn_spawn_launched(slug, task["id"])
+    return gated
+
+
 @pytest.mark.asyncio
 async def test_three_tracing_gap_responses_do_not_trip_kill() -> None:
     """A PM rule-followed three times must NOT be killed.
@@ -62,7 +74,7 @@ async def test_three_tracing_gap_responses_do_not_trip_kill() -> None:
     spawn_attempts = 5
     with patch("roboco.services.audit.get_audit_service", return_value=fake_audit):
         for _ in range(spawn_attempts):
-            should_gate = await orch._pm_respawn_should_gate("be-pm", task)
+            should_gate = await _attempt_spawn(orch, "be-pm", task)
             assert should_gate is False
 
     # Audit was consulted on every call past the first record-creation.
@@ -95,9 +107,7 @@ async def test_unending_tracing_gap_is_bounded_and_eventually_trips() -> None:
             return_value=AsyncMock(),
         ),
     ):
-        results = [
-            await orch._pm_respawn_should_gate("main-pm", task) for _ in range(12)
-        ]
+        results = [await _attempt_spawn(orch, "main-pm", task) for _ in range(12)]
 
     # The bug was that this list would be all-False forever. The gate must
     # trip at least once now that the reset budget is finite.
@@ -128,9 +138,9 @@ async def test_three_no_progress_spawns_still_trip_kill() -> None:
     ):
         # Spawns 1, 2, 3 — under threshold, all allowed.
         for _ in range(3):
-            assert await orch._pm_respawn_should_gate("be-pm", task) is False
+            assert await _attempt_spawn(orch, "be-pm", task) is False
         # Spawn 4 — count now exceeds _PM_RESPAWN_MAX_UNPRODUCTIVE = 3.
-        assert await orch._pm_respawn_should_gate("be-pm", task) is True
+        assert await _attempt_spawn(orch, "be-pm", task) is True
 
 
 @pytest.mark.asyncio
@@ -159,11 +169,11 @@ async def test_stuck_loop_alerts_overseer_once() -> None:
     ):
         # Under threshold — no kill, no alert.
         for _ in range(3):
-            assert await orch._pm_respawn_should_gate("be-pm", task) is False
+            assert await _attempt_spawn(orch, "be-pm", task) is False
         notifier.send_stuck_agent_notification.assert_not_awaited()
         # Two over-threshold spawns — both killed, but only ONE alert.
-        assert await orch._pm_respawn_should_gate("be-pm", task) is True
-        assert await orch._pm_respawn_should_gate("be-pm", task) is True
+        assert await _attempt_spawn(orch, "be-pm", task) is True
+        assert await _attempt_spawn(orch, "be-pm", task) is True
 
     notifier.send_stuck_agent_notification.assert_awaited_once()
     kwargs = notifier.send_stuck_agent_notification.await_args.kwargs
@@ -183,16 +193,10 @@ async def test_status_change_resets_strike_count() -> None:
 
     with patch("roboco.services.audit.get_audit_service", return_value=fake_audit):
         # Two strikes on pending.
-        await orch._pm_respawn_should_gate(
-            "be-pm", {"id": task_id, "status": "pending"}
-        )
-        await orch._pm_respawn_should_gate(
-            "be-pm", {"id": task_id, "status": "pending"}
-        )
+        await _attempt_spawn(orch, "be-pm", {"id": task_id, "status": "pending"})
+        await _attempt_spawn(orch, "be-pm", {"id": task_id, "status": "pending"})
         # Status advances — counter must drop back to 1.
-        await orch._pm_respawn_should_gate(
-            "be-pm", {"id": task_id, "status": "in_progress"}
-        )
+        await _attempt_spawn(orch, "be-pm", {"id": task_id, "status": "in_progress"})
         record = orch._pm_respawn_tracker[("be-pm", task_id)]
         assert record["count"] == 1
         assert record["last_status"] == "in_progress"
@@ -210,9 +214,9 @@ async def test_audit_query_uses_correct_agent_uuid_and_task_id() -> None:
 
     with patch("roboco.services.audit.get_audit_service", return_value=fake_audit):
         # First call seeds the record (no audit query yet).
-        await orch._pm_respawn_should_gate("be-pm", task)
+        await _attempt_spawn(orch, "be-pm", task)
         # Second call should consult audit with be-pm's UUID + task UUID + since.
-        await orch._pm_respawn_should_gate("be-pm", task)
+        await _attempt_spawn(orch, "be-pm", task)
 
     fake_audit.has_recent_tracing_gap.assert_awaited()
     kwargs = fake_audit.has_recent_tracing_gap.call_args.kwargs
@@ -239,9 +243,9 @@ async def test_unknown_slug_falls_back_to_status_only() -> None:
     with patch("roboco.services.audit.get_audit_service", return_value=fake_audit):
         # Slug not present in AGENT_UUIDS — should not raise.
         for _ in range(3):
-            assert await orch._pm_respawn_should_gate("not-a-real-slug", task) is False
+            assert await _attempt_spawn(orch, "not-a-real-slug", task) is False
         # Threshold trip path still reachable.
-        assert await orch._pm_respawn_should_gate("not-a-real-slug", task) is True
+        assert await _attempt_spawn(orch, "not-a-real-slug", task) is True
     # Audit is never consulted because slug didn't resolve.
     fake_audit.has_recent_tracing_gap.assert_not_awaited()
 
@@ -262,5 +266,5 @@ async def test_audit_query_failure_does_not_crash_gate() -> None:
     with patch("roboco.services.audit.get_audit_service", return_value=fake_audit):
         # Strikes 1-3: allowed. 4th: gated. Same as the no-tracing-gap case.
         for _ in range(3):
-            assert await orch._pm_respawn_should_gate("be-pm", task) is False
-        assert await orch._pm_respawn_should_gate("be-pm", task) is True
+            assert await _attempt_spawn(orch, "be-pm", task) is False
+        assert await _attempt_spawn(orch, "be-pm", task) is True

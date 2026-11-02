@@ -41,7 +41,9 @@ function scoreAndSort<T>(
 ): T[] {
   return items
     .map((item) => ({ item, score: fuzzyScore(query, getLabel(item)) }))
-    .filter((entry): entry is { item: T; score: number } => entry.score !== null)
+    .filter(
+      (entry): entry is { item: T; score: number } => entry.score !== null,
+    )
     .sort((a, b) => a.score - b.score)
     .slice(0, MAX_RESULTS_PER_GROUP)
     .map((entry) => entry.item);
@@ -173,10 +175,7 @@ export function useCommandPalette() {
     ];
   }, [trimmedQuery, taskResults, agentDefinitions, projects, open]);
 
-  const flatItems = useMemo(
-    () => groups.flatMap((g) => g.items),
-    [groups],
-  );
+  const flatItems = useMemo(() => groups.flatMap((g) => g.items), [groups]);
 
   const moveSelection = useCallback(
     (delta: number) => {
