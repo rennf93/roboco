@@ -89,7 +89,7 @@ A sandboxed DB/Redis can be built to a venture's declared extensions on the fly 
 
 **Feature-aware image selection.** A bare request (no features) uses the light upstream image (`postgres:16-alpine` / `redis:8-alpine`); a request with features pulls a kitchen-sink image that carries all extension/module files (`roboco-sandbox-pg:latest` — `pgvector/pgvector:pg16` + postgis; `redis/redis-stack-server:latest`). So a bare project never pays for a heavier image, and the intersection case (pgvector AND postgis in one DB) just works — flavors are inadequate because the intersection isn't a flavor. `SandboxEngine.image_for(features)` picks; the provisioner pulls whichever it resolves to.
 
-**Delivery.** The ok-envelope's per-service evidence entry carries `available_extensions` (the sorted list actually activated) so an agent doesn't guess what was turned on. The project's standing set is edited in the panel's project edit dialog (Sandbox section) — checkboxes from the allowlist grouped under each enabled service.
+**Delivery.** The ok-envelope's per-service evidence entry carries `available_extensions` (the sorted list actually activated) so an agent doesn't guess what was turned on. The project's standing set is edited in the Sandbox card (`sandbox-card.tsx`) on the panel's `/projects/[id]/settings` page — checkboxes from the allowlist grouped under each enabled service.
 
 ## Provisioning
 

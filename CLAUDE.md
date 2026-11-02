@@ -4,13 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 # Development Rules
 
-**A GOOD FUNCTION NAME IS SELF-EXPLANATORY. IF THE FUNCTION ONLY TAKES CARE OF A SINGLE THINGS, THEN EVEN BETTER BECAUSE THE NAME IS GOING TO BE THE ONLY DOCUMENTATION YOU NEED.**
-**DOING THINGS WRONGLY COST TWICE. DO THINGS RIGHT AT FIRST, AND YOU DON'T PAY THE PRICE**
-**ASK QUESTIONS BEFORE YOU DO ANYTHING**
-**YOU ARE NOT ALLOWED TO MAKE ASSUMPTIONS**
-**IGNORING != FIXING**
-**PRE-EXISTING ERRORS ARE STILL EXISTING ERRORS. I DON'T CARE IF THEY ARE PRE-EXISTING, THEY SHOULDN'T EXIST**
-**HELPING MY PROMPTS**:
+**A GOOD FUNCTION NAME IS SELF-EXPLANATORY. IF THE FUNCTION ONLY TAKES CARE OF A SINGLE THINGS, THEN EVEN BETTER BECAUSE THE NAME IS GOING TO BE THE ONLY DOCUMENTATION YOU NEED.** **DOING THINGS WRONGLY COST TWICE. DO THINGS RIGHT AT FIRST, AND YOU DON'T PAY THE PRICE** **ASK QUESTIONS BEFORE YOU DO ANYTHING** **YOU ARE NOT ALLOWED TO MAKE ASSUMPTIONS** **IGNORING != FIXING** **PRE-EXISTING ERRORS ARE STILL EXISTING ERRORS. I DON'T CARE IF THEY ARE PRE-EXISTING, THEY SHOULDN'T EXIST** **HELPING MY PROMPTS**:
 ```text
 I want the deepest version of the tasks, not bigger ones but rather:
 
@@ -158,6 +152,5 @@ If the orchestrator is pegged at high CPU and nobody can say why, profile it liv
 User-facing documentation is the docs site at **[docs.roboco.tech](https://docs.roboco.tech)** (the `roboco-website` repo). In this repo, `docs/rag/` is the agent-facing RAG corpus and `docs/map/` the agent-facing codebase map, both auto-indexed into the KB at startup (`OptimalService.AUTO_INDEX_DIRS`); `docs/internal/` holds specs and working notes; `docs-redirects/` keeps the old Pages URLs resolving.
 
 <!-- entire-agent:begin -->
-Read .entire/agent-guide.md for this repository's workflow, source inspection, and verification guidance.
-@.entire/agent-guide.md
+Read .entire/agent-guide.md for this repository's workflow, source inspection, and verification guidance. @.entire/agent-guide.md
 <!-- entire-agent:end -->
