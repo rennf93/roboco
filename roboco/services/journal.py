@@ -8,7 +8,7 @@ Integrates with the Optimal API for RAG indexing of entries.
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 from uuid import UUID
 
 from sqlalchemy import and_, func, select
@@ -42,6 +42,11 @@ from roboco.services.base import BaseService
 from roboco.services.optimal_brain.indexer_worker import enqueue_index_request
 from roboco.utils.converters import require_uuid, to_python_uuid
 
+if TYPE_CHECKING:
+    from roboco.services._journal_service_types import JournalServiceSelf as _Base
+else:
+    _Base = object
+
 # Legacy fire-and-forget registry for _schedule_rag_index. It now awaits its
 # own enqueue calls directly (see below) so index-then-unindex ordering on
 # the same entry is preserved, so this set stays empty in normal operation;
@@ -64,152 +69,9 @@ _SCOPE_TO_TYPE: dict[str, JournalEntryType] = {
 }
 
 
-class JournalService(BaseService):
-    """
-    Service for managing agent journals.
-
-    Provides CRUD operations for journals and entries,
-    plus analytics and growth tracking.
-    """
-
-    service_name: ClassVar[str] = "journal"
-
-    def __init__(self, db: AsyncSession) -> None:
-        super().__init__(db)
-        self._optimal_service: Any = None  # Lazy loaded to avoid circular import
-
-    async def _get_optimal_service(self) -> Any:
-        """Lazy load the OptimalService."""
-        if self._optimal_service is None:
-            from roboco.services.optimal import get_optimal_service
-
-            self._optimal_service = await get_optimal_service()
-        return self._optimal_service
-
-    async def resolve_agent_id(self, agent_id_or_slug: str) -> UUID | None:
-        """
-        Resolve an agent identifier to a UUID.
-
-        Accepts either a UUID string or an agent slug (e.g., "be-dev-1").
-
-        Args:
-            agent_id_or_slug: UUID string or agent slug
-
-        Returns:
-            The agent's UUID, or None if not found
-        """
-        from roboco.services.repositories import resolve_agent_uuid
-
-        return await resolve_agent_uuid(self.session, agent_id_or_slug)
-
-    async def get_agent_slug(self, agent_id: UUID) -> str | None:
-        """
-        Get an agent's slug from their UUID.
-
-        Args:
-            agent_id: The agent's UUID
-
-        Returns:
-            The agent's slug (e.g., "be-dev-1"), or None if not found
-        """
-        from roboco.services.repositories import get_agent_slug
-
-        return await get_agent_slug(self.session, agent_id)
-
-    # =========================================================================
-    # JOURNAL CRUD
-    # =========================================================================
-
-    async def get_or_create_journal(self, agent_id: UUID) -> Journal:
-        """
-        Get or create a journal for an agent.
-
-        Args:
-            agent_id: The agent's UUID
-
-        Returns:
-            The agent's journal
-        """
-        result = await self.session.execute(
-            select(JournalTable).where(JournalTable.agent_id == agent_id)
-        )
-        journal_row = result.scalar_one_or_none()
-
-        if journal_row:
-            return Journal(
-                id=require_uuid(journal_row.id),
-                agent_id=require_uuid(journal_row.agent_id),
-                total_entries=journal_row.total_entries,
-                last_entry_at=journal_row.last_entry_at,
-                latest_summary=journal_row.latest_summary,
-                summary_updated_at=journal_row.summary_updated_at,
-                entries_by_type=journal_row.entries_by_type,
-                created_at=journal_row.created_at,
-                updated_at=journal_row.updated_at,
-            )
-
-        # Create new journal
-        new_journal = JournalTable(agent_id=agent_id)
-        self.session.add(new_journal)
-        await self.session.commit()
-        await self.session.refresh(new_journal)
-
-        self.log.info(
-            "Created new journal",
-            agent_id=str(agent_id),
-            journal_id=str(new_journal.id),
-        )
-
-        return Journal(
-            id=require_uuid(new_journal.id),
-            agent_id=require_uuid(new_journal.agent_id),
-            total_entries=0,
-            created_at=new_journal.created_at,
-        )
-
-    async def get_journal(self, journal_id: UUID) -> Journal | None:
-        """Get a journal by ID."""
-        result = await self.session.execute(
-            select(JournalTable).where(JournalTable.id == journal_id)
-        )
-        journal_row = result.scalar_one_or_none()
-
-        if not journal_row:
-            return None
-
-        return Journal(
-            id=require_uuid(journal_row.id),
-            agent_id=require_uuid(journal_row.agent_id),
-            total_entries=journal_row.total_entries,
-            last_entry_at=journal_row.last_entry_at,
-            latest_summary=journal_row.latest_summary,
-            summary_updated_at=journal_row.summary_updated_at,
-            entries_by_type=journal_row.entries_by_type,
-            created_at=journal_row.created_at,
-            updated_at=journal_row.updated_at,
-        )
-
-    async def get_journal_by_agent(self, agent_id: UUID) -> Journal | None:
-        """Get a journal by agent ID."""
-        result = await self.session.execute(
-            select(JournalTable).where(JournalTable.agent_id == agent_id)
-        )
-        journal_row = result.scalar_one_or_none()
-
-        if not journal_row:
-            return None
-
-        return Journal(
-            id=require_uuid(journal_row.id),
-            agent_id=require_uuid(journal_row.agent_id),
-            total_entries=journal_row.total_entries,
-            last_entry_at=journal_row.last_entry_at,
-            latest_summary=journal_row.latest_summary,
-            summary_updated_at=journal_row.summary_updated_at,
-            entries_by_type=journal_row.entries_by_type,
-            created_at=journal_row.created_at,
-            updated_at=journal_row.updated_at,
-        )
+class JournalEntries(_Base):
+    """Journal entries: creating one with its vault note and RAG indexing, getting,
+    listing and deleting them, and the Board review brief."""
 
     # =========================================================================
     # ENTRY CRUD
@@ -226,7 +88,9 @@ class JournalService(BaseService):
 
         Returns:
             The created entry, or None if the referenced task/journal
-            no longer exists (e.g. after a runtime reset).
+            no longer exists (e.g. after a runtime reset). Inside a caller's
+            savepoint that IntegrityError propagates instead, so the
+            caller's savepoint rolls it back.
         """
         from sqlalchemy.exc import IntegrityError
 
@@ -262,8 +126,12 @@ class JournalService(BaseService):
             journal_row.entries_by_type = entries_by_type
 
         try:
-            await self.session.commit()
+            await self._commit_unless_inside_caller_savepoint()
         except IntegrityError as e:
+            if self.session.in_nested_transaction():
+                # Session.rollback() would discard the caller's entire outer
+                # transaction; its savepoint owns this rollback instead.
+                raise
             await self.session.rollback()
             self.log.warning(
                 "Journal entry skipped - referenced row was deleted",
@@ -590,6 +458,11 @@ class JournalService(BaseService):
         self.log.info("Deleted journal entry", entry_id=str(entry_id))
         return True
 
+
+class JournalEntryWriters(_Base):
+    """Writing a typed entry: task reflections, decision logs, learnings, struggles
+    and general entries, and the gateway's struggle, decision and entry writes."""
+
     # =========================================================================
     # CONVENIENCE METHODS
     # =========================================================================
@@ -741,6 +614,102 @@ class JournalService(BaseService):
             )
         )
 
+    async def write_struggle(
+        self,
+        *,
+        agent_id: UUID,
+        task_id: UUID,
+        content: str,
+    ) -> JournalEntry | None:
+        """Write a STRUGGLE entry for (agent, task) with `content` as body.
+
+        Title is derived from the first line of content (truncated to 100
+        chars) so the entry has a meaningful summary in lists.
+        """
+        first_line = content.strip().splitlines()[0] if content.strip() else "Struggle"
+        title = first_line[:100]
+        params = StruggleEntryParams(
+            title=title,
+            what_struggled=content,
+            attempted_solutions=[],
+            task_id=task_id,
+        )
+        return await self.add_struggle(agent_id, params)
+
+    async def write_decision(
+        self,
+        *,
+        agent_id: UUID,
+        task_id: UUID,
+        content: str,
+    ) -> JournalEntry | None:
+        """Write a DECISION_LOG entry for (agent, task) with `content` as the
+        rationale body. Title is derived from the first line of content
+        (truncated to 100 chars).
+
+        Mirrors ``write_struggle``: lets a PM verb persist a decision from
+        its own rationale argument (the write-then-gate pattern) so the
+        journal:decision tracing gate is satisfied without a separate
+        note(scope='decision') call. The ``content`` becomes both the
+        rationale and the chosen-summary so the entry reads coherently in
+        journal lists and RAG retrieval.
+        """
+        first_line = content.strip().splitlines()[0] if content.strip() else "Decision"
+        title = first_line[:100]
+        params = DecisionLogParams(
+            title=title,
+            context="",
+            options=[],
+            chosen=title,
+            rationale=content,
+            consequences=[],
+            task_id=task_id,
+        )
+        return await self.add_decision_log(agent_id, params)
+
+    async def write_entry(
+        self,
+        *,
+        agent_id: UUID,
+        title: str,
+        content: str,
+        scope: str = "note",
+        task_id: UUID | None = None,
+    ) -> JournalEntry | None:
+        """Gateway adapter — write a journal entry by `scope` string.
+
+        The gateway speaks in scope strings (`note`, `decision`, `reflect`,
+        `learning`, `struggle`) while the service stores entries by
+        `JournalEntryType` enum keyed off a `journal_id` (which the agent
+        doesn't carry). This adapter resolves both: maps scope to the enum,
+        looks up or creates the agent's journal, then delegates to
+        `create_entry(JournalEntryCreate(...))`.
+
+        Raises:
+            ValueError: If `scope` is not one of the supported gateway
+                scopes. Caller (gateway) validates the scope set before
+                reaching here, but the guard is kept defensive.
+        """
+        entry_type = _SCOPE_TO_TYPE.get(scope)
+        if entry_type is None:
+            raise ValueError(
+                f"unknown scope {scope!r}; expected one of {sorted(_SCOPE_TO_TYPE)}"
+            )
+        journal = await self.get_or_create_journal(agent_id)
+        return await self.create_entry(
+            JournalEntryCreate(
+                journal_id=journal.id,
+                type=entry_type,
+                title=title,
+                content=content,
+                task_id=task_id,
+            )
+        )
+
+
+class JournalAnalytics(_Base):
+    """A journal's statistics, its growth metrics, and semantic search over it."""
+
     # =========================================================================
     # ANALYTICS
     # =========================================================================
@@ -861,7 +830,7 @@ class JournalService(BaseService):
                         if entry:
                             # Filter by agent_id to ensure we only
                             # return this agent's entries
-                            journal = await self.get_journal(agent_id)
+                            journal = await self.get_journal_by_agent(agent_id)
                             if journal and entry.journal_id == journal.id:
                                 entries.append(entry)
                     except ValueError:
@@ -887,6 +856,11 @@ class JournalService(BaseService):
                 error_type=type(e).__name__,
             )
             return []
+
+
+class JournalGatewayChecks(_Base):
+    """What the gateway asks of a journal: whether a task has a decision, note,
+    learning, reflection or struggle entry, the latest decision, and a recent entry."""
 
     # =========================================================================
     # GATEWAY (CHOREOGRAPHER) BACKFILL
@@ -994,96 +968,176 @@ class JournalService(BaseService):
         result = await self.session.execute(query)
         return (result.scalar() or 0) > 0
 
-    async def write_struggle(
-        self,
-        *,
-        agent_id: UUID,
-        task_id: UUID,
-        content: str,
-    ) -> JournalEntry | None:
-        """Write a STRUGGLE entry for (agent, task) with `content` as body.
 
-        Title is derived from the first line of content (truncated to 100
-        chars) so the entry has a meaningful summary in lists.
+class JournalService(
+    BaseService,
+    JournalAnalytics,
+    JournalEntries,
+    JournalEntryWriters,
+    JournalGatewayChecks,
+):
+    """
+    Service for managing agent journals.
+
+    Provides CRUD operations for journals and entries,
+    plus analytics and growth tracking.
+    """
+
+    service_name: ClassVar[str] = "journal"
+
+    def __init__(self, db: AsyncSession) -> None:
+        super().__init__(db)
+        # Lazy loaded to avoid circular import
+        self._optimal_service: Any = None
+
+    async def _get_optimal_service(self) -> Any:
+        """Lazy load the OptimalService."""
+        if self._optimal_service is None:
+            from roboco.services.optimal import get_optimal_service
+
+            self._optimal_service = await get_optimal_service()
+        return self._optimal_service
+
+    async def resolve_agent_id(self, agent_id_or_slug: str) -> UUID | None:
         """
-        first_line = content.strip().splitlines()[0] if content.strip() else "Struggle"
-        title = first_line[:100]
-        params = StruggleEntryParams(
-            title=title,
-            what_struggled=content,
-            attempted_solutions=[],
-            task_id=task_id,
+        Resolve an agent identifier to a UUID.
+
+        Accepts either a UUID string or an agent slug (e.g., "be-dev-1").
+
+        Args:
+            agent_id_or_slug: UUID string or agent slug
+
+        Returns:
+            The agent's UUID, or None if not found
+        """
+        from roboco.services.repositories import resolve_agent_uuid
+
+        return await resolve_agent_uuid(self.session, agent_id_or_slug)
+
+    async def get_agent_slug(self, agent_id: UUID) -> str | None:
+        """
+        Get an agent's slug from their UUID.
+
+        Args:
+            agent_id: The agent's UUID
+
+        Returns:
+            The agent's slug (e.g., "be-dev-1"), or None if not found
+        """
+        from roboco.services.repositories import get_agent_slug
+
+        return await get_agent_slug(self.session, agent_id)
+
+    async def _commit_unless_inside_caller_savepoint(self) -> None:
+        """Commit, or only flush while a caller's SAVEPOINT is open.
+
+        Gateway verbs write the journal inside ``session.begin_nested()``
+        (e.g. ``Choreographer._ensure_pm_decision``) so a failed write rolls
+        back to the savepoint instead of poisoning the shared request session.
+        A ``commit()`` there closes the caller's whole transaction from under
+        its open savepoint, durably committing everything the verb had staged,
+        and the next statement raises "Can't operate on closed transaction
+        inside context manager". Inside a savepoint the caller owns the commit;
+        the flush still makes the row visible to the rest of the request.
+        """
+        if self.session.in_nested_transaction():
+            await self.session.flush()
+        else:
+            await self.session.commit()
+
+    # =========================================================================
+    # JOURNAL CRUD
+    # =========================================================================
+
+    async def get_or_create_journal(self, agent_id: UUID) -> Journal:
+        """
+        Get or create a journal for an agent.
+
+        Args:
+            agent_id: The agent's UUID
+
+        Returns:
+            The agent's journal
+        """
+        result = await self.session.execute(
+            select(JournalTable).where(JournalTable.agent_id == agent_id)
         )
-        return await self.add_struggle(agent_id, params)
+        journal_row = result.scalar_one_or_none()
 
-    async def write_decision(
-        self,
-        *,
-        agent_id: UUID,
-        task_id: UUID,
-        content: str,
-    ) -> JournalEntry | None:
-        """Write a DECISION_LOG entry for (agent, task) with `content` as the
-        rationale body. Title is derived from the first line of content
-        (truncated to 100 chars).
+        if journal_row:
+            return Journal(
+                id=require_uuid(journal_row.id),
+                agent_id=require_uuid(journal_row.agent_id),
+                total_entries=journal_row.total_entries,
+                last_entry_at=journal_row.last_entry_at,
+                latest_summary=journal_row.latest_summary,
+                summary_updated_at=journal_row.summary_updated_at,
+                entries_by_type=journal_row.entries_by_type,
+                created_at=journal_row.created_at,
+                updated_at=journal_row.updated_at,
+            )
 
-        Mirrors ``write_struggle``: lets a PM verb persist a decision from
-        its own rationale argument (the write-then-gate pattern) so the
-        journal:decision tracing gate is satisfied without a separate
-        note(scope='decision') call. The ``content`` becomes both the
-        rationale and the chosen-summary so the entry reads coherently in
-        journal lists and RAG retrieval.
-        """
-        first_line = content.strip().splitlines()[0] if content.strip() else "Decision"
-        title = first_line[:100]
-        params = DecisionLogParams(
-            title=title,
-            context="",
-            options=[],
-            chosen=title,
-            rationale=content,
-            consequences=[],
-            task_id=task_id,
+        # Create new journal
+        new_journal = JournalTable(agent_id=agent_id)
+        self.session.add(new_journal)
+        await self._commit_unless_inside_caller_savepoint()
+        await self.session.refresh(new_journal)
+
+        self.log.info(
+            "Created new journal",
+            agent_id=str(agent_id),
+            journal_id=str(new_journal.id),
         )
-        return await self.add_decision_log(agent_id, params)
 
-    async def write_entry(
-        self,
-        *,
-        agent_id: UUID,
-        title: str,
-        content: str,
-        scope: str = "note",
-        task_id: UUID | None = None,
-    ) -> JournalEntry | None:
-        """Gateway adapter — write a journal entry by `scope` string.
+        return Journal(
+            id=require_uuid(new_journal.id),
+            agent_id=require_uuid(new_journal.agent_id),
+            total_entries=0,
+            created_at=new_journal.created_at,
+        )
 
-        The gateway speaks in scope strings (`note`, `decision`, `reflect`,
-        `learning`, `struggle`) while the service stores entries by
-        `JournalEntryType` enum keyed off a `journal_id` (which the agent
-        doesn't carry). This adapter resolves both: maps scope to the enum,
-        looks up or creates the agent's journal, then delegates to
-        `create_entry(JournalEntryCreate(...))`.
+    async def get_journal(self, journal_id: UUID) -> Journal | None:
+        """Get a journal by ID."""
+        result = await self.session.execute(
+            select(JournalTable).where(JournalTable.id == journal_id)
+        )
+        journal_row = result.scalar_one_or_none()
 
-        Raises:
-            ValueError: If `scope` is not one of the supported gateway
-                scopes. Caller (gateway) validates the scope set before
-                reaching here, but the guard is kept defensive.
-        """
-        entry_type = _SCOPE_TO_TYPE.get(scope)
-        if entry_type is None:
-            raise ValueError(
-                f"unknown scope {scope!r}; expected one of {sorted(_SCOPE_TO_TYPE)}"
-            )
-        journal = await self.get_or_create_journal(agent_id)
-        return await self.create_entry(
-            JournalEntryCreate(
-                journal_id=journal.id,
-                type=entry_type,
-                title=title,
-                content=content,
-                task_id=task_id,
-            )
+        if not journal_row:
+            return None
+
+        return Journal(
+            id=require_uuid(journal_row.id),
+            agent_id=require_uuid(journal_row.agent_id),
+            total_entries=journal_row.total_entries,
+            last_entry_at=journal_row.last_entry_at,
+            latest_summary=journal_row.latest_summary,
+            summary_updated_at=journal_row.summary_updated_at,
+            entries_by_type=journal_row.entries_by_type,
+            created_at=journal_row.created_at,
+            updated_at=journal_row.updated_at,
+        )
+
+    async def get_journal_by_agent(self, agent_id: UUID) -> Journal | None:
+        """Get a journal by agent ID."""
+        result = await self.session.execute(
+            select(JournalTable).where(JournalTable.agent_id == agent_id)
+        )
+        journal_row = result.scalar_one_or_none()
+
+        if not journal_row:
+            return None
+
+        return Journal(
+            id=require_uuid(journal_row.id),
+            agent_id=require_uuid(journal_row.agent_id),
+            total_entries=journal_row.total_entries,
+            last_entry_at=journal_row.last_entry_at,
+            latest_summary=journal_row.latest_summary,
+            summary_updated_at=journal_row.summary_updated_at,
+            entries_by_type=journal_row.entries_by_type,
+            created_at=journal_row.created_at,
+            updated_at=journal_row.updated_at,
         )
 
 

@@ -12,7 +12,7 @@ import time
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
-from tests.e2e_smoke.harness import E2EStack, ScriptedAgent, expect_error, expect_ok
+from tests.e2e_smoke.harness import E2EStack, ScriptedAgent, expect_ok
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -28,8 +28,10 @@ class Company:
     main_pm_id: Any
     pr_reviewer_id: Any
     ceo_id: Any
-    hom_id: Any  # Head of Marketing — Board role
-    devops_id: Any = None  # floating DevOps — only seeded on demand below
+    # Head of Marketing, a Board role.
+    hom_id: Any
+    # The floating DevOps agent, seeded only on demand below.
+    devops_id: Any = None
 
 
 _COMPANY_CACHE: dict[str, Company] = {}
@@ -345,17 +347,19 @@ def dev_arc(
     env = expect_ok(dev.flow("give_me_work"), "dev give_me_work")
     assert env.get("task_id") == tid, f"expected task {tid}, got: {env}"
 
+    plan_text = (
+        f"Create {filename} at the repository root with the required "
+        "content, commit it on the task branch with the task-prefixed "
+        "message, push the branch to origin, open the pull request "
+        "against the base branch, and self-verify every acceptance "
+        "criterion by re-reading the committed file content."
+    )
+
     def _claim() -> dict[str, Any]:
         return dev.flow(
             "i_will_work_on",
             task_id=tid,
-            plan=(
-                f"Create {filename} at the repository root with the required "
-                "content, commit it on the task branch with the task-prefixed "
-                "message, push the branch to origin, open the pull request "
-                "against the base branch, and self-verify every acceptance "
-                "criterion by re-reading the committed file content."
-            ),
+            plan=plan_text,
             steps=[
                 {
                     "title": f"Write {filename}",
@@ -389,25 +393,13 @@ def dev_arc(
             open_questions=[],
         )
 
-    # Real choreography: the composed claim succeeds and stays; the
-    # post-claim tracing gate demands the claim-time note; the retry
-    # short-circuits as re-entry.
-    expect_error(_claim(), "tracing_gap", "dev first i_will_work_on")
-    expect_ok(
-        dev.do(
-            "note",
-            scope="note",
-            task_id=tid,
-            text=(
-                "Initial assessment: a single additive text file at the repo "
-                "root satisfies the acceptance criteria; no existing code is "
-                "touched, so risk is minimal and the plan is a three-step "
-                "write/commit/PR sequence."
-            ),
-        ),
-        "dev note at claim",
+    # Real choreography: the claim records its plan as the developer's
+    # at-claim journal note (write-then-gate), so the post-claim tracing gate
+    # passes on the first i_will_work_on.
+    expect_ok(_claim(), "dev i_will_work_on")
+    assert stack.note_contents_on_task(tid) == [plan_text], (
+        "i_will_work_on did not record its plan as the at-claim note"
     )
-    expect_ok(_claim(), "dev i_will_work_on retry")
 
     workspace = stack.workspace_of(project_slug, "backend", "be-dev-1")
     workdir = workspace / ".worktrees" / tid[:8]
