@@ -4,7 +4,7 @@ The old flow ``reset --hard`` + ``checkout <base>`` + ``merge --ff-only`` +
 ``checkout -b`` ran on the ONE shared clone — so a coordinator PM claiming a
 second root clobbered the first root's working tree. The new flow delegates to
 ``WorkspaceService.ensure_worktree`` (``git worktree add`` under
-``{clone_root}/.worktrees/{task-short}/``) and pushes from the clone root. The
+``{clone_root}/.worktrees/{task-short}/``) and pushes from that worktree. The
 shared clone's HEAD is never moved by a claim.
 """
 
@@ -116,15 +116,19 @@ async def test_create_branch_calls_ensure_worktree_at_task_short_id_path() -> No
 
 
 @pytest.mark.asyncio
-async def test_create_branch_pushes_branch_from_clone_root() -> None:
+async def test_create_branch_pushes_branch_from_its_worktree() -> None:
+    """The new branch is pushed from the worktree it was cut in: git runs a
+    project's pre-push where the push starts, and the clone root holds
+    another branch's tree (refs are shared, so the push is the same)."""
     svc = _service()
     _stub_base(svc)
-    _, calls, _, branch = await _drive(svc, uuid4(), unique_commits="0")
+    task_id = uuid4()
+    _, calls, _, branch = await _drive(svc, task_id, unique_commits="0")
 
     pushes = [
-        a for ws, a in calls if a[:3] == ["push", "-u", "origin"] and a[3] == branch
+        ws for ws, a in calls if a[:3] == ["push", "-u", "origin"] and a[3] == branch
     ]
-    assert pushes, "branch must be pushed from the clone root (shared refs)"
+    assert pushes == [Path("/tmp/ws") / ".worktrees" / str(task_id)[:8]]
 
 
 @pytest.mark.asyncio

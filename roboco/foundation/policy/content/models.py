@@ -19,6 +19,7 @@ validated model (or a ``ContentValidationError``).
 from __future__ import annotations
 
 import re
+from abc import abstractmethod
 from typing import Any, Literal
 
 from pydantic import (
@@ -80,8 +81,9 @@ class _Base(BaseModel):
 class _Content(_Base):
     """A top-level content type that renders to canonical markdown."""
 
-    def render_markdown(self) -> str:  # pragma: no cover - overridden
-        raise NotImplementedError
+    @abstractmethod
+    def render_markdown(self) -> str:
+        """Render this content as canonical markdown."""
 
 
 # --------------------------------------------------------------------------- #
@@ -474,7 +476,7 @@ class QaNote(_Content):
     rendering (built by the choreographer before the note is written), so
     ``render_markdown`` deliberately does not re-render ``findings`` into a
     second section — that would duplicate every line (mirrors the anti-
-    duplication precedent in ``PRGateMixin._gate_verdict_summary``).
+    duplication precedent in ``PRGateVerdictMixin._gate_verdict_summary``).
     """
 
     summary: str

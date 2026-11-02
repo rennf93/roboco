@@ -1314,6 +1314,9 @@ async def test_claim_review_matches_spec(role: str, status: str) -> None:
             scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
         )
     )
+    # The same-agent re-claim path stamps its loop counter with an explicit
+    # durability commit before assembling evidence.
+    task_svc.session.commit = AsyncMock()
     deps = _make_deps(task_svc=task_svc)
     # _build_qa_claim_evidence unpacks git.diff_and_files' return into
     # (diff, files_changed) — an unconfigured AsyncMock's return_value is a

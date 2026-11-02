@@ -324,7 +324,9 @@ function VideoPostRow({
               rows={2}
               className={xOverLimit ? "border-destructive" : undefined}
             />
-            <HelpTip label={`X's per-post character limit (${MAX_X_CAPTION_CHARS})`}>
+            <HelpTip
+              label={`X's per-post character limit (${MAX_X_CAPTION_CHARS})`}
+            >
               <p
                 className={`text-right text-xs ${xOverLimit ? "text-destructive" : "text-muted-foreground"}`}
               >

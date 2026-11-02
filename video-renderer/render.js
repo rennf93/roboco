@@ -9,8 +9,7 @@
 // streamed the response.
 import { createRenderJob, executeRenderJob } from "@hyperframes/producer";
 import { execFile } from "node:child_process";
-import { existsSync } from "node:fs";
-import { cp, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -20,8 +19,10 @@ import * as tar from "tar";
 const execFileP = promisify(execFile);
 
 // @hyperframes/producer reads each cut's dimensions from the composition HTML
-// itself (data-width/data-height on the stage), so the sidecar no longer
-// passes width/height — it only picks the quality tier.
+// itself: data-width/data-height on the first element carrying
+// data-composition-id (the #stage), defaulting to 1080x1920 when that element
+// has none. So the sidecar no longer passes width/height — it only picks the
+// quality tier.
 const QUALITY = "high";
 
 const DEFAULT_FPS = 30;
@@ -30,11 +31,11 @@ const MAX_FPS = 60;
 
 /**
  * Read the composition-declared frame rate off its HTML text (the
- * `data-fps` attribute motion/README.md instructs authors to set — it
- * appears on both `<html>` and `#stage` in every composition seen so far;
- * a plain regex over the whole file catches either). Falls back to
- * DEFAULT_FPS when absent, unparsable, or outside the sane broadcast bound —
- * never lets a bad attribute wedge the job at an undefined rate.
+ * `data-fps` attribute motion/README.md instructs authors to set on the
+ * `#stage` root; a plain regex over the whole file finds it wherever it
+ * sits). Falls back to DEFAULT_FPS when absent, unparsable, or outside the
+ * sane broadcast bound — never lets a bad attribute wedge the job at an
+ * undefined rate.
  */
 export function parseFps(html) {
   const match = /data-fps=["'](\d+)["']/.exec(html);
@@ -61,7 +62,12 @@ export class ExtractedSizeExceededError extends Error {
   }
 }
 
-async function extractTar(tarBuffer, destDir) {
+// Links are never extracted: the whole of motion/ is the served project root,
+// so a symlink (or a hard link) in the upload could hand the page a file from
+// outside it. A composition source has no reason to carry one.
+const LINK_ENTRY_TYPES = new Set(["SymbolicLink", "Link"]);
+
+export async function extractTar(tarBuffer, destDir) {
   await new Promise((resolve, reject) => {
     let extractedBytes = 0;
     // ponytail: header-declared entry.size, summed per entry via onentry —
@@ -69,6 +75,7 @@ async function extractTar(tarBuffer, destDir) {
     // (post-gunzip) size, so this catches a bomb before most of it lands.
     const extractor = tar.extract({
       cwd: destDir,
+      filter: (_entryPath, entry) => !LINK_ENTRY_TYPES.has(entry.type),
       onentry: (entry) => {
         extractedBytes += entry.size;
         if (extractedBytes > MAX_EXTRACTED_BYTES) {
@@ -117,6 +124,30 @@ export class UnknownCompositionError extends Error {
 }
 
 /**
+ * Where one cut renders from. motion/ is the HyperFrames project root, so a
+ * cut's links to ../../kit and ../../public stay inside the project, and the
+ * producer rebases the entry's relative paths (props.js, theme.css,
+ * ../../kit/kit.css) onto that root. server.js only accepts a compositionId
+ * of letters, digits, '_' and '-' with interior dots, so it can't escape the
+ * compositions folder, but the check is enforced here too so render.js stays
+ * safe regardless of caller.
+ */
+export function resolveRenderTarget(extractDir, compositionId, orientation) {
+  const projectDir = path.resolve(extractDir, "motion");
+  const compositionsRoot = path.join(projectDir, "compositions");
+  const compositionDir = path.resolve(compositionsRoot, compositionId);
+  if (!compositionDir.startsWith(`${compositionsRoot}${path.sep}`)) {
+    throw new UnknownCompositionError(compositionId, []);
+  }
+  const entryPath = path.join(compositionDir, `${orientation}.html`);
+  return {
+    projectDir,
+    compositionDir,
+    entryFile: path.relative(projectDir, entryPath).split(path.sep).join("/"),
+  };
+}
+
+/**
  * Render one composition/orientation cut. Returns the temp mp4 path plus a
  * cleanup callback the caller MUST invoke once the response has been sent
  * (streamed bytes, not returned in-memory, so a large render never holds
@@ -133,22 +164,11 @@ export async function renderComposition({
   let outDir;
   try {
     await extractTar(tarBuffer, extractDir);
-    // compositionId is validated to [A-Za-z0-9_-]+ at the HTTP boundary
-    // (server.js), so it can't escape compositionsRoot — but enforce it here
-    // too so render.js stays safe regardless of caller.
-    const compositionsRoot = path.resolve(
+    const { projectDir, compositionDir, entryFile } = resolveRenderTarget(
       extractDir,
-      "motion",
-      "compositions",
+      compositionId,
+      orientation,
     );
-    const compositionDir = path.resolve(compositionsRoot, compositionId);
-    const compositionsRootWithSep = `${compositionsRoot}${path.sep}`;
-    if (
-      compositionDir !== compositionsRoot &&
-      !compositionDir.startsWith(compositionsRootWithSep)
-    ) {
-      throw new UnknownCompositionError(compositionId, []);
-    }
     // ponytail: readdir is the smallest thing that fails if the dir is
     // missing OR the orientation file is missing — one stat-vs-readdir
     // branch collapsed into a single listing used for the 400 error.
@@ -179,31 +199,21 @@ export async function renderComposition({
       `window.__ORIENTATION__ = ${JSON.stringify(orientation)};`;
     await writeFile(path.join(compositionDir, "props.js"), propsJs);
 
-    // @hyperframes/producer serves the compiled entry at the file-server ROOT
-    // (/index.html) and every other asset from projectDir at its relative path.
-    // So projectDir must be the composition dir — theme.css/props.js are direct
-    // children — and the shared motion/public tree, which theme.css references
-    // as ../../public/fonts and the root-served entry clamps to /public/fonts,
-    // must be staged into it or the fonts 404 and fall back to system faces.
-    const publicSrc = path.join(extractDir, "motion", "public");
-    if (existsSync(publicSrc)) {
-      await cp(publicSrc, path.join(compositionDir, "public"), {
-        recursive: true,
-      });
-    }
-
     outDir = await mkdtemp(path.join(tmpdir(), "hyperframes-out-"));
     const outputLocation = path.join(outDir, "render.mp4");
 
-    // createRenderJob carries only render params; @hyperframes/producer@0.7.36
+    // createRenderJob carries only render params; @hyperframes/producer@0.8.216
     // takes the source dir + output path as executeRenderJob args (they moved
     // out of the job config), and resolves the cut's HTML from entryFile
-    // relative to projectDir.
+    // relative to projectDir. It serves the compiled entry at the file-server
+    // root and every other file from projectDir at its own path, so linked CSS
+    // keeps its real location: kit.css's ../public/fonts and theme.css's
+    // ../../public/fonts both land on motion/public/fonts.
     const job = createRenderJob({
       fps,
       quality: QUALITY,
       format: "mp4",
-      entryFile: `${orientation}.html`,
+      entryFile,
     });
     let timer;
     try {
@@ -214,10 +224,12 @@ export async function renderComposition({
         );
       });
       await Promise.race([
-        executeRenderJob(job, compositionDir, outputLocation, (progress) => {
+        // The producer calls back with (job, stageMessage); job.progress
+        // runs 0-100.
+        executeRenderJob(job, projectDir, outputLocation, (progressJob) => {
           console.log(
             `hyperframes-renderer: ${compositionId}/${orientation} ${Math.round(
-              (progress?.percent ?? 0) * 100,
+              progressJob.progress ?? 0,
             )}%`,
           );
         }),

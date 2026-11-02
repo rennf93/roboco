@@ -200,7 +200,8 @@ def _resolve_to_slug(agent_id: str) -> str:
 AGENT_ROLE_MAP: dict[str, str] = {
     slug: row.role.value
     for slug, row in _foundation.AGENTS.items()
-    if row.role != _foundation.Role.SYSTEM  # exclude sentinel from string-keyed map
+    # exclude sentinel from string-keyed map
+    if row.role != _foundation.Role.SYSTEM
 }
 
 AGENT_TEAM_MAP: dict[str, str] = {
@@ -405,7 +406,8 @@ def get_pm_for_agent(agent_id: str) -> str | None:
 # This is the SINGLE SOURCE OF TRUTH for role hierarchy
 # Used by PermissionService to build AgentRole -> PermissionLevel mapping
 ROLE_PERMISSION_LEVELS: Final[dict[str, str]] = {
-    "system": "CEO",  # System/orchestrator has CEO-level access for internal operations
+    # System/orchestrator has CEO-level access for internal operations
+    "system": "CEO",
     "ceo": "CEO",
     "product_owner": "BOARD",
     "head_marketing": "BOARD",
@@ -748,6 +750,41 @@ def can_a2a_direct(from_agent: str, to_agent: str) -> tuple[bool, str | None]:
     return False, f"A2A from {from_agent} to {to_agent} not permitted."
 
 
+def _pm_route_hint(from_agent: str, to_agent: str, to_team: str | None) -> str | None:
+    """The route from a PM to a cell member it cannot dm: that cell's PM.
+
+    A PM may dm any cell PM directly, and a cell PM may dm the assignee of a
+    task in its own subtree about that task, so the target's cell PM is the
+    one hop between them. None when the target has no cell PM to route via.
+    """
+    to_pm = get_pm_for_team(to_team) if to_team else None
+    if to_pm is None or to_pm == from_agent:
+        return None
+    return (
+        f"Route: {from_agent}→{to_pm}→{to_agent}. dm {to_pm}, the {to_team} "
+        f"cell's PM; {to_pm} may dm {to_agent} about a task in its cell."
+    )
+
+
+def _sender_role_route_hint(from_agent: str, to_agent: str) -> str | None:
+    """The route hint a sender's role fixes, whoever the target is.
+
+    A PR reviewer and DevOps reach only the owning PM; a PM reaches another
+    cell's members through that cell's PM (``_pm_route_hint``). None for a
+    role whose route depends only on the two cells.
+    """
+    from_role = get_agent_role(from_agent)
+    # PR reviewer only reaches the owning PM; everything else goes on the PR.
+    if from_role == "pr_reviewer":
+        return "PR reviewers A2A only the owning PM; post other feedback on the PR."
+    # DevOps mirrors the PR reviewer's lateral reach (owning PM only).
+    if from_role == "devops":
+        return "DevOps A2As only the owning PM; post other feedback on the task."
+    if from_role in ("main_pm", "cell_pm"):
+        return _pm_route_hint(from_agent, to_agent, get_agent_team(to_agent))
+    return None
+
+
 def get_a2a_route_hint(from_agent: str, to_agent: str) -> str:
     """Get a hint for how to properly route an A2A message."""
     to_role = get_agent_role(to_agent)
@@ -758,13 +795,8 @@ def get_a2a_route_hint(from_agent: str, to_agent: str) -> str:
     if to_role == "ceo":
         return "CEO is human. Use notify() for CEO communication."
 
-    # PR reviewer only reaches the owning PM; everything else goes on the PR.
-    if get_agent_role(from_agent) == "pr_reviewer":
-        return "PR reviewers A2A only the owning PM; post other feedback on the PR."
-
-    # DevOps mirrors the PR reviewer's lateral reach (owning PM only).
-    if get_agent_role(from_agent) == "devops":
-        return "DevOps A2As only the owning PM; post other feedback on the task."
+    if role_hint := _sender_role_route_hint(from_agent, to_agent):
+        return role_hint
 
     # Cross-cell routing
     if from_team and to_team and from_team != to_team:
