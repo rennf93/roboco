@@ -1,10 +1,10 @@
 # Shipped-work digest helper
 
-`roboco/utils/shipped_work_digest.py` assembles a shipped-this-week digest (completed tasks plus the CHANGELOG Unreleased section) into a single string that board-program exploration prompts (roadmap/Printer, Pest Control, Spackle) inject so the explorer sees what the fleet just shipped and doesn't re-propose already-shipped work. It was extracted from `megaphone_engine.py`'s original assembly into a shared helper so every board program gets the same view.
+`roboco/services/shipped_work_digest.py` assembles a shipped-this-week digest (completed tasks plus the CHANGELOG Unreleased section) into a single string that board-program exploration prompts (roadmap/Printer, Pest Control, Spackle) inject so the explorer sees what the fleet just shipped and doesn't re-propose already-shipped work. It was extracted from `megaphone_engine.py`'s original assembly into a shared helper so every board program gets the same view.
 
-## Lazy-import constraint
+## Layer
 
-The module lives in `roboco/utils/`, which the architectural standard requires to stay clear of service-module imports at import time. The module docstring states this explicitly. Both service imports — `roboco.services.workspace` and `roboco.services.release_readiness` — are therefore **lazy**: they live inside the `_unreleased_changelog` function body, not at module level, each marked `# noqa: PLC0415` (the ruff rule that would otherwise flag a non-top-level import). A future change that adds a service import at module level violates the standard and contradicts the docstring — keep service imports lazy inside the function that uses them.
+The module is a service: it queries the database and calls `get_workspace_service(session).ensure_read_clone(...)`, which can clone a repository. It first shipped in `roboco/utils/` (declared "shared, side-effect-free helpers") with its table and service imports deferred into the function bodies, and moved to `roboco/services/` in 2026-10. Its imports are now ordinary module-level imports, and `roboco/utils/__init__.py` no longer re-exports it.
 
 ## Changelog-failure warning log
 
@@ -21,7 +21,7 @@ except Exception as exc:
     return ""
 ```
 
-This restores the observability `megaphone_engine.py`'s original implementation had — a swallowed exception with no log is a silent failure that's hard to diagnose. The warning uses structlog's structured `error=` field, matching the `roboco/utils/crypto.py` logger pattern. The test `test_changelog_exception_emits_warning_log` (in `tests/unit/test_shipped_work_digest.py`) pins this behavior by monkeypatching the module-level `logger` with a `MagicMock` and asserting `fake_logger.warning` was called — deterministic regardless of structlog's processor-chain state, unlike `capture_logs`/`caplog` — if the warning stops firing, the test fails.
+This restores the observability `megaphone_engine.py`'s original implementation had — a swallowed exception with no log is a silent failure that's hard to diagnose. The warning uses structlog's structured `error=` field, matching the `roboco/utils/crypto.py` logger pattern. The test `test_changelog_exception_emits_warning_log` (in `tests/unit/services/test_shipped_work_digest.py`) pins this behavior by monkeypatching the module-level `logger` with a `MagicMock` and asserting `fake_logger.warning` was called — deterministic regardless of structlog's processor-chain state, unlike `capture_logs`/`caplog` — if the warning stops firing, the test fails.
 
 ## Degradation behavior
 

@@ -6,7 +6,6 @@ knowledge base. Uses LLM-based analysis to detect violations and provide
 actionable feedback.
 """
 
-import asyncio
 import json
 import re
 from dataclasses import dataclass, field
@@ -14,17 +13,10 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-import httpx
 import structlog
 
-from roboco.config import settings
 from roboco.models.optimal import SearchResult, ValidationResult
-from roboco.services.exceptions import (
-    HTTP_TOO_MANY_REQUESTS,
-    MAX_RATE_LIMIT_RETRIES,
-    RateLimitError,
-    parse_retry_after_header,
-)
+from roboco.services.background_llm import BackgroundPrompt, generate_background_text
 
 logger = structlog.get_logger()
 
@@ -65,11 +57,13 @@ Do NOT include any text outside the JSON. Do NOT use markdown code blocks."""
 
 
 class RuleSeverity(Enum):
-    """Severity levels for rule violations."""
+    """Severity levels for rule violations: ``ERROR`` must be fixed before
+    proceeding, ``WARNING`` should be fixed but work can proceed, ``INFO`` is a
+    suggestion for improvement."""
 
-    ERROR = "error"  # Must fix before proceeding
-    WARNING = "warning"  # Should fix, but can proceed
-    INFO = "info"  # Suggestion for improvement
+    ERROR = "error"
+    WARNING = "warning"
+    INFO = "info"
 
 
 @dataclass
@@ -279,7 +273,7 @@ class StandardsParser:
         }
         keywords = list({w for w in words if w not in common})
 
-        return keywords[:10]  # Limit to 10 keywords
+        return keywords[:10]
 
     def _determine_severity(self, content: str) -> RuleSeverity:
         """Determine rule severity from content."""
@@ -308,8 +302,9 @@ class ValidatorService:
     """
     Validates agent actions against organizational standards.
 
-    Uses LLM-based analysis to detect violations, with fallback to
-    heuristic pattern matching when LLM is unavailable.
+    Uses LLM-based analysis (the background LLM client) to detect
+    violations, with fallback to heuristic pattern matching when no backend
+    answers.
     """
 
     def __init__(self) -> None:
@@ -317,7 +312,6 @@ class ValidatorService:
         self._optimal_service: Any = None
         self._rules_cache: list[ParsedRule] = []
         self._rules_indexed = False
-        self._llm_available = True  # Assume available, set False on failure
 
     async def initialize(
         self,
@@ -336,23 +330,7 @@ class ValidatorService:
         if standards_dir:
             await self.index_standards(standards_dir)
 
-        # Test LLM connectivity
-        await self._test_llm_connectivity()
-
-        logger.info(
-            "ValidatorService initialized",
-            llm_available=self._llm_available,
-        )
-
-    async def _test_llm_connectivity(self) -> None:
-        """Test if LLM is available for validation."""
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(f"{settings.local_llm_base_url}/models")
-                self._llm_available = response.is_success
-        except Exception as e:
-            logger.warning("LLM not available for validation", error=str(e))
-            self._llm_available = False
+        logger.info("ValidatorService initialized")
 
     async def index_standards(self, standards_dir: Path | str) -> int:
         """
@@ -446,25 +424,18 @@ class ValidatorService:
                 relevant_standards=[],
             )
 
-        # Use LLM-based validation if available, otherwise fall back to heuristics
-        if self._llm_available:
-            try:
-                violations, warnings = await self._validate_with_llm(
-                    action_type=action_type,
-                    context=context,
-                    standards=relevant_standards,
-                )
-            except Exception as e:
-                logger.warning(
-                    "LLM validation failed, using heuristics",
-                    error=str(e),
-                )
-                violations, warnings = self._validate_with_heuristics(
-                    context=context,
-                    standards=relevant_standards,
-                    action_type=action_type,
-                )
-        else:
+        # LLM-based validation; heuristics when no background-LLM backend answers
+        try:
+            violations, warnings = await self._validate_with_llm(
+                action_type=action_type,
+                context=context,
+                standards=relevant_standards,
+            )
+        except Exception as e:
+            logger.warning(
+                "LLM validation failed, using heuristics",
+                error=str(e),
+            )
             violations, warnings = self._validate_with_heuristics(
                 context=context,
                 standards=relevant_standards,
@@ -496,11 +467,11 @@ class ValidatorService:
         standards: list[SearchResult],
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         """
-        Use LLM to validate context against standards.
+        Use the background LLM client to validate context against standards.
 
-        Retries the Ollama call up to MAX_RATE_LIMIT_RETRIES times on HTTP 429,
-        respecting the Retry-After header.  Each attempt is bounded by
-        LLM_TIMEOUT_SECONDS so a single slow call cannot block the retry loop.
+        Each backend attempt is bounded by LLM_TIMEOUT_SECONDS. Raises
+        RuntimeError when no backend answered, so ``validate`` falls back to
+        heuristics.
 
         Returns:
             Tuple of (violations, warnings)
@@ -522,74 +493,32 @@ RELEVANT STANDARDS:
 Analyze the context and identify any violations of the standards above.
 Return your analysis as JSON."""
 
-        llm_url = f"{settings.local_llm_base_url}/chat/completions"
-        payload = {
-            "model": settings.local_llm_model,
-            "messages": [
-                {"role": "system", "content": VALIDATION_SYSTEM_PROMPT},
-                {"role": "user", "content": user_prompt},
-            ],
-            "max_tokens": 2048,
-            "temperature": 0.1,  # Low temp for consistent analysis
-            "options": {"num_ctx": 8192},
-        }
-
-        last_rl_retry_after: float | None = None
-
-        for rl_attempt in range(MAX_RATE_LIMIT_RETRIES):
-            # Each attempt gets its own timeout — raises if the call hangs
-            try:
-                async with asyncio.timeout(LLM_TIMEOUT_SECONDS):
-                    async with httpx.AsyncClient(timeout=LLM_TIMEOUT_SECONDS) as client:
-                        response = await client.post(llm_url, json=payload)
-            except TimeoutError:
-                logger.warning("LLM validation timed out")
-                raise
-            except httpx.TimeoutException:
-                logger.warning("LLM validation HTTP timeout")
-                raise
-
-            if response.status_code == HTTP_TOO_MANY_REQUESTS:
-                retry_after = parse_retry_after_header(response)
-                last_rl_retry_after = retry_after
-                backoff = (
-                    retry_after if retry_after is not None else float(2**rl_attempt)
-                )
-                logger.warning(
-                    "Ollama rate limited (429), retrying",
-                    provider="ollama",
-                    attempt=rl_attempt + 1,
-                    max_retries=MAX_RATE_LIMIT_RETRIES,
-                    backoff_duration=backoff,
-                )
-                if rl_attempt < MAX_RATE_LIMIT_RETRIES - 1:
-                    await asyncio.sleep(backoff)
-                continue
-
-            if response.is_success:
-                data = response.json()
-                raw_response = data["choices"][0]["message"]["content"]
-                return self._parse_llm_response(raw_response)
-            else:
-                logger.warning(
-                    "LLM validation call failed",
-                    status=response.status_code,
-                    error=response.text[:200],
-                )
-                raise RuntimeError(f"LLM call failed: {response.status_code}")
-
-        raise RateLimitError(provider="ollama", retry_after=last_rl_retry_after)
+        raw_response = await generate_background_text(
+            BackgroundPrompt(
+                purpose="validator.standards",
+                system_prompt=VALIDATION_SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                max_tokens=2048,
+                timeout_seconds=LLM_TIMEOUT_SECONDS,
+                # Low temperature for a consistent analysis
+                temperature=0.1,
+                ollama_num_ctx=8192,
+            )
+        )
+        if raw_response is None:
+            raise RuntimeError("no background-LLM backend answered")
+        return self._parse_llm_response(raw_response)
 
     def _build_standards_context(self, standards: list[SearchResult]) -> str:
         """Build a formatted string of standards for the LLM."""
         parts = []
-        for i, standard in enumerate(standards[:10], 1):  # Limit to 10 standards
+        for i, standard in enumerate(standards[:10], 1):
             # Extract rule ID if present
             rule_id_match = re.search(r"([A-Z]{2,4}-\d{3})", standard.content)
             rule_id = rule_id_match.group(1) if rule_id_match else f"RULE-{i:03d}"
 
             parts.append(f"--- Standard {rule_id} ---")
-            parts.append(standard.content[:800])  # Limit each standard
+            parts.append(standard.content[:800])
             parts.append("")
 
         return "\n".join(parts)
@@ -691,7 +620,7 @@ Return your analysis as JSON."""
         if any(kw in action_lower for kw in ["task", "workflow", "status"]):
             return "workflow"
 
-        return "coding"  # Default
+        return "coding"
 
     def _check_rule(
         self,

@@ -13,12 +13,19 @@ Searches for:
 """
 
 from dataclasses import dataclass, field
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from uuid import UUID
 
 import structlog
 
 from roboco.models.optimal import IndexType, QueryContext, SearchResult
+
+if TYPE_CHECKING:
+    from roboco.services._proactive_knowledge_types import (
+        ProactiveKnowledgeServiceSelf as _Base,
+    )
+else:
+    _Base = object
 
 logger = structlog.get_logger()
 
@@ -88,7 +95,205 @@ class ContextPackage:
         )
 
 
-class ProactiveKnowledgeService:
+class ProactiveLookups(_Base):
+    """The knowledge lookups a context package draws on: similar past tasks,
+    relevant and team learnings, applicable standards, relevant and recent
+    decisions, and known issues."""
+
+    async def _search_similar_tasks(
+        self, query: str, top_k: int = 5
+    ) -> list[SearchResult]:
+        """Search for similar past tasks in journals."""
+        return cast(
+            "list[SearchResult]",
+            await self._optimal_service.search(
+                query=query,
+                context=QueryContext(index_types=[IndexType.JOURNALS]),
+                top_k=top_k,
+            ),
+        )
+
+    async def _get_relevant_learnings(
+        self, query: str, top_k: int = 5
+    ) -> list[SearchResult]:
+        """Get learnings relevant to the query."""
+        return cast(
+            "list[SearchResult]",
+            await self._optimal_service.search_learnings(
+                query=query,
+                top_k=top_k,
+            ),
+        )
+
+    async def _get_applicable_standards(
+        self, domain: str, top_k: int = 5
+    ) -> list[SearchResult]:
+        """Get standards for a domain."""
+        return cast(
+            "list[SearchResult]",
+            await self._optimal_service.get_standards(
+                domain=domain,
+                top_k=top_k,
+            ),
+        )
+
+    async def _find_relevant_decisions(
+        self, query: str, top_k: int = 3
+    ) -> list[SearchResult]:
+        """Find decisions relevant to the query."""
+        return cast(
+            "list[SearchResult]",
+            await self._optimal_service.search(
+                query=query,
+                context=QueryContext(index_types=[IndexType.DECISIONS]),
+                top_k=top_k,
+            ),
+        )
+
+    async def _check_known_issues(
+        self, query: str, top_k: int = 3
+    ) -> list[SearchResult]:
+        """Check for known issues related to the query."""
+        return cast(
+            "list[SearchResult]",
+            await self._optimal_service.search_errors(
+                error_message=query,
+                top_k=top_k,
+            ),
+        )
+
+    async def _get_team_learnings(
+        self, role: str, scope: str | None, top_k: int = 5
+    ) -> list[SearchResult]:
+        """Get recent learnings from agents with similar roles."""
+        query = f"{role} learnings"
+        if scope:
+            query = f"{scope} {query}"
+        return cast(
+            "list[SearchResult]",
+            await self._optimal_service.search_learnings(
+                query=query,
+                top_k=top_k,
+            ),
+        )
+
+    async def _get_recent_decisions(
+        self, scope: str | None, top_k: int = 5
+    ) -> list[SearchResult]:
+        """Get recent decisions relevant to the scope."""
+        query = scope or "recent decisions"
+        return cast(
+            "list[SearchResult]",
+            await self._optimal_service.search(
+                query=query,
+                context=QueryContext(index_types=[IndexType.DECISIONS]),
+                top_k=top_k,
+            ),
+        )
+
+
+class ProactivePackaging(_Base):
+    """Shaping a context package: the domain inferred from the task, the decisions
+    verdict or the agent's role, and the summary and item count of what was found."""
+
+    def _infer_domain(self, task_type: str | None, description: str) -> str:
+        """Infer the domain from task type and description."""
+        desc_lower = description.lower()
+
+        if task_type:
+            type_lower = task_type.lower()
+            if "security" in type_lower:
+                return "security"
+            if "workflow" in type_lower or "process" in type_lower:
+                return "workflow"
+
+        # Infer from description
+        if any(kw in desc_lower for kw in ["auth", "security", "encrypt", "password"]):
+            return "security"
+        if any(kw in desc_lower for kw in ["workflow", "process", "task", "kanban"]):
+            return "workflow"
+
+        return "coding"
+
+    async def _decisions_domain(
+        self, keyword_domain: str, task_type: str | None, description: str
+    ) -> str:
+        """B24 proactive_domain: a confident verdict overrides the keyword
+        map's guess; off/shadow/below-floor/any failure returns the
+        keyword result unchanged. The service is session-less, so the
+        pilot opens its own short-lived background session."""
+        from roboco.config import settings
+
+        if not settings.decisions_enabled:
+            return keyword_domain
+        try:
+            from roboco.services.decisions import pilots_content
+
+            verdict = await pilots_content.proactive_domain(
+                None,
+                task_type=task_type,
+                description=description,
+                keyword_domain=keyword_domain,
+            )
+        except Exception as e:
+            logger.warning(
+                "Proactive domain pilot failed (fail-open: keyword map result)",
+                error=str(e),
+            )
+            return keyword_domain
+        return verdict or keyword_domain
+
+    def _role_to_domain(self, role: str) -> str:
+        """Map agent role to a standards domain."""
+        role_lower = role.lower()
+
+        if any(kw in role_lower for kw in ["qa", "test", "quality"]):
+            return "workflow"
+        if any(kw in role_lower for kw in ["pm", "manager", "product"]):
+            return "workflow"
+        if any(kw in role_lower for kw in ["security", "sec"]):
+            return "security"
+
+        return "coding"
+
+    def _build_summary(self, package: ContextPackage) -> str:
+        """Build a human-readable summary of the context package."""
+        parts = []
+
+        if package.similar_tasks:
+            parts.append(f"Found {len(package.similar_tasks)} similar past tasks")
+
+        if package.relevant_learnings:
+            parts.append(f"Found {len(package.relevant_learnings)} relevant learnings")
+
+        if package.applicable_standards:
+            parts.append(f"{len(package.applicable_standards)} standards apply")
+
+        if package.recent_decisions:
+            parts.append(f"{len(package.recent_decisions)} relevant decisions found")
+
+        if package.known_issues:
+            parts.append(f"Warning: {len(package.known_issues)} known issues may apply")
+
+        if not parts:
+            return "No relevant context found"
+
+        return ". ".join(parts) + "."
+
+    def _count_items(self, package: ContextPackage) -> int:
+        """Count total items in the package."""
+        return sum(
+            [
+                len(package.similar_tasks),
+                len(package.relevant_learnings),
+                len(package.applicable_standards),
+                len(package.recent_decisions),
+                len(package.known_issues),
+            ]
+        )
+
+
+class ProactiveKnowledgeService(ProactiveLookups, ProactivePackaging):
     """
     Service for proactively injecting relevant knowledge.
 
@@ -349,193 +554,6 @@ class ProactiveKnowledgeService:
                 agent_role=agent.role.value if agent.role else "developer",
                 scope=agent.team.value if agent.team else None,
             )
-
-    async def _search_similar_tasks(
-        self, query: str, top_k: int = 5
-    ) -> list[SearchResult]:
-        """Search for similar past tasks in journals."""
-        return cast(
-            "list[SearchResult]",
-            await self._optimal_service.search(
-                query=query,
-                context=QueryContext(index_types=[IndexType.JOURNALS]),
-                top_k=top_k,
-            ),
-        )
-
-    async def _get_relevant_learnings(
-        self, query: str, top_k: int = 5
-    ) -> list[SearchResult]:
-        """Get learnings relevant to the query."""
-        return cast(
-            "list[SearchResult]",
-            await self._optimal_service.search_learnings(
-                query=query,
-                top_k=top_k,
-            ),
-        )
-
-    async def _get_applicable_standards(
-        self, domain: str, top_k: int = 5
-    ) -> list[SearchResult]:
-        """Get standards for a domain."""
-        return cast(
-            "list[SearchResult]",
-            await self._optimal_service.get_standards(
-                domain=domain,
-                top_k=top_k,
-            ),
-        )
-
-    async def _find_relevant_decisions(
-        self, query: str, top_k: int = 3
-    ) -> list[SearchResult]:
-        """Find decisions relevant to the query."""
-        return cast(
-            "list[SearchResult]",
-            await self._optimal_service.search(
-                query=query,
-                context=QueryContext(index_types=[IndexType.DECISIONS]),
-                top_k=top_k,
-            ),
-        )
-
-    async def _check_known_issues(
-        self, query: str, top_k: int = 3
-    ) -> list[SearchResult]:
-        """Check for known issues related to the query."""
-        return cast(
-            "list[SearchResult]",
-            await self._optimal_service.search_errors(
-                error_message=query,
-                top_k=top_k,
-            ),
-        )
-
-    async def _get_team_learnings(
-        self, role: str, scope: str | None, top_k: int = 5
-    ) -> list[SearchResult]:
-        """Get recent learnings from agents with similar roles."""
-        query = f"{role} learnings"
-        if scope:
-            query = f"{scope} {query}"
-        return cast(
-            "list[SearchResult]",
-            await self._optimal_service.search_learnings(
-                query=query,
-                top_k=top_k,
-            ),
-        )
-
-    async def _get_recent_decisions(
-        self, scope: str | None, top_k: int = 5
-    ) -> list[SearchResult]:
-        """Get recent decisions relevant to the scope."""
-        query = scope or "recent decisions"
-        return cast(
-            "list[SearchResult]",
-            await self._optimal_service.search(
-                query=query,
-                context=QueryContext(index_types=[IndexType.DECISIONS]),
-                top_k=top_k,
-            ),
-        )
-
-    def _infer_domain(self, task_type: str | None, description: str) -> str:
-        """Infer the domain from task type and description."""
-        desc_lower = description.lower()
-
-        if task_type:
-            type_lower = task_type.lower()
-            if "security" in type_lower:
-                return "security"
-            if "workflow" in type_lower or "process" in type_lower:
-                return "workflow"
-
-        # Infer from description
-        if any(kw in desc_lower for kw in ["auth", "security", "encrypt", "password"]):
-            return "security"
-        if any(kw in desc_lower for kw in ["workflow", "process", "task", "kanban"]):
-            return "workflow"
-
-        return "coding"
-
-    async def _decisions_domain(
-        self, keyword_domain: str, task_type: str | None, description: str
-    ) -> str:
-        """B24 proactive_domain: a confident verdict overrides the keyword
-        map's guess; off/shadow/below-floor/any failure returns the
-        keyword result unchanged. The service is session-less, so the
-        pilot opens its own short-lived background session."""
-        from roboco.config import settings
-
-        if not settings.decisions_enabled:
-            return keyword_domain
-        try:
-            from roboco.services.decisions import pilots_content
-
-            verdict = await pilots_content.proactive_domain(
-                None,
-                task_type=task_type,
-                description=description,
-                keyword_domain=keyword_domain,
-            )
-        except Exception as e:
-            logger.warning(
-                "Proactive domain pilot failed (fail-open: keyword map result)",
-                error=str(e),
-            )
-            return keyword_domain
-        return verdict or keyword_domain
-
-    def _role_to_domain(self, role: str) -> str:
-        """Map agent role to a standards domain."""
-        role_lower = role.lower()
-
-        if any(kw in role_lower for kw in ["qa", "test", "quality"]):
-            return "workflow"
-        if any(kw in role_lower for kw in ["pm", "manager", "product"]):
-            return "workflow"
-        if any(kw in role_lower for kw in ["security", "sec"]):
-            return "security"
-
-        return "coding"
-
-    def _build_summary(self, package: ContextPackage) -> str:
-        """Build a human-readable summary of the context package."""
-        parts = []
-
-        if package.similar_tasks:
-            parts.append(f"Found {len(package.similar_tasks)} similar past tasks")
-
-        if package.relevant_learnings:
-            parts.append(f"Found {len(package.relevant_learnings)} relevant learnings")
-
-        if package.applicable_standards:
-            parts.append(f"{len(package.applicable_standards)} standards apply")
-
-        if package.recent_decisions:
-            parts.append(f"{len(package.recent_decisions)} relevant decisions found")
-
-        if package.known_issues:
-            parts.append(f"Warning: {len(package.known_issues)} known issues may apply")
-
-        if not parts:
-            return "No relevant context found"
-
-        return ". ".join(parts) + "."
-
-    def _count_items(self, package: ContextPackage) -> int:
-        """Count total items in the package."""
-        return sum(
-            [
-                len(package.similar_tasks),
-                len(package.relevant_learnings),
-                len(package.applicable_standards),
-                len(package.recent_decisions),
-                len(package.known_issues),
-            ]
-        )
 
 
 class _ProactiveServiceHolder:

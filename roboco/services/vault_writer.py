@@ -36,6 +36,11 @@ import yaml
 if TYPE_CHECKING:
     from datetime import datetime
 
+if TYPE_CHECKING:
+    from roboco.services._vault_writer_types import VaultWriterSelf as _Base
+else:
+    _Base = object
+
 _ILLEGAL_FILENAME_CHARS = re.compile(r'[\\/:*?"<>|]')
 _MAX_TITLE_LEN = 80
 _NARRATIVE_PLACEHOLDER = "_Pending Auditor curation._"
@@ -266,7 +271,8 @@ class OrgReportData:
     this from ``MetricsService``/``UsageService`` dataclasses — kept plain
     here so ``VaultWriter`` stays DB-free."""
 
-    week: str  # ISO week, e.g. "2026-W28"
+    # ISO week, e.g. "2026-W28"
+    week: str
     tasks_completed: int
     tasks_created: int
     completion_rate: float
@@ -326,31 +332,10 @@ def _org_report_body(data: OrgReportData) -> list[str]:
     return body
 
 
-class VaultWriter:
-    """Pure file-system materializer, rooted at ``root`` (``ROBOCO_VAULT_PATH``)."""
-
-    def __init__(self, root: Path) -> None:
-        self.root = Path(root)
-
-    # --- paths ---------------------------------------------------------- #
-
-    def _tasks_root(self) -> Path:
-        return self.root / "RoboCo" / "Tasks"
-
-    def _archive_root(self) -> Path:
-        return self.root / "RoboCo" / "Archive"
-
-    def _reports_root(self) -> Path:
-        return self.root / "RoboCo" / "Reports"
-
-    def _journals_root(self) -> Path:
-        return self.root / "RoboCo" / "Journals"
-
-    def _a2a_root(self) -> Path:
-        return self.root / "RoboCo" / "A2A"
-
-    def _agents_root(self) -> Path:
-        return self.root / "RoboCo" / "Agents"
+class VaultTaskNotes(_Base):
+    """A task's note: finding it in Tasks/ or the archive, reading its status and
+    its narrative back, writing it whole, and touching its frontmatter on a status
+    change."""
 
     # --- tasks ------------------------------------------------------------ #
 
@@ -451,6 +436,11 @@ class VaultWriter:
         fm["tags"] = [f"status/{status}", f"team/{team}"]
         path.write_text(_render_note(fm, body), encoding="utf-8")
         return True
+
+
+class VaultActivityNotes(_Base):
+    """The notes beside the tasks: one per journal entry, a digest per A2A thread,
+    an identity hub per agent, and one per weekly org report."""
 
     # --- journals ----------------------------------------------------------- #
 
@@ -573,6 +563,33 @@ class VaultWriter:
             encoding="utf-8",
         )
         return path
+
+
+class VaultWriter(VaultActivityNotes, VaultTaskNotes):
+    """Pure file-system materializer, rooted at ``root`` (``ROBOCO_VAULT_PATH``)."""
+
+    def __init__(self, root: Path) -> None:
+        self.root = Path(root)
+
+    # --- paths ---------------------------------------------------------- #
+
+    def _tasks_root(self) -> Path:
+        return self.root / "RoboCo" / "Tasks"
+
+    def _archive_root(self) -> Path:
+        return self.root / "RoboCo" / "Archive"
+
+    def _reports_root(self) -> Path:
+        return self.root / "RoboCo" / "Reports"
+
+    def _journals_root(self) -> Path:
+        return self.root / "RoboCo" / "Journals"
+
+    def _a2a_root(self) -> Path:
+        return self.root / "RoboCo" / "A2A"
+
+    def _agents_root(self) -> Path:
+        return self.root / "RoboCo" / "Agents"
 
 
 def get_vault_writer() -> VaultWriter:

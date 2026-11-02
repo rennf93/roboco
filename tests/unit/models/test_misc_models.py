@@ -24,6 +24,7 @@ from roboco.models.agents import AgentConfig
 from roboco.models.base import ModelProvider
 from roboco.models.llm_catalog import (
     MODEL_CATALOG,
+    OLLAMA_DEFAULT_MODEL,
     _build_anthropic_entries,
     provider_type_for_model,
 )
@@ -122,6 +123,13 @@ def test_provider_type_for_model_known() -> None:
 
 def test_provider_type_for_model_unknown_returns_none() -> None:
     assert provider_type_for_model("nonexistent-model-x") is None
+
+
+def test_ollama_default_model_is_an_ollama_cloud_catalog_entry() -> None:
+    # apply_mode('ollama') assigns this model; a name outside the catalog is
+    # rejected as unknown (a version bump once set it to a tag Ollama Cloud
+    # does not serve, breaking pure-Ollama mode outright).
+    assert provider_type_for_model(OLLAMA_DEFAULT_MODEL) == ModelProvider.OLLAMA_CLOUD
 
 
 # ---------------------------------------------------------------------------

@@ -10,11 +10,15 @@ Claude session/overload paths get the same loop-break for free.
 
 from __future__ import annotations
 
+import types
 from datetime import UTC, datetime, timedelta
+from typing import TYPE_CHECKING, cast
 from unittest.mock import AsyncMock
 
 import pytest
+from roboco.llm.providers import grok_auth as ga_mod
 from roboco.models.runtime import AgentInstance
+from roboco.runtime.engines.dispatch_breaker import ProviderUpkeepEngine
 from roboco.runtime.orchestrator import (
     _GROK_AUTH_EXIT_CODE,
     _GROK_RATE_LIMIT_EXIT_CODE,
@@ -22,6 +26,18 @@ from roboco.runtime.orchestrator import (
     _GROK_REPARK_BACKOFF_CAP,
     AgentOrchestrator,
     AgentState,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
+# The refresh loop is a method of the engine class, but these tests duck-type
+# a SimpleNamespace in its place (standing up the whole engine for a
+# two-attribute unit is the noise the alias avoids). The cast keeps mypy
+# aware of the call shape without a suppression comment.
+_refresh_grok_auth = cast(
+    "Callable[[object], Awaitable[None]]",
+    ProviderUpkeepEngine._refresh_grok_auth,
 )
 
 
@@ -120,7 +136,8 @@ async def test_park_grok_rate_limited_activates_and_offlines(
     orch._grok_last_park_at = None
     orch._grok_repark_count = 0
     inst = _grok_instance()
-    inst.error_count = 2  # pretend prior crashes — parking must NOT count one
+    # Pretend prior crashes — parking must NOT count one
+    inst.error_count = 2
     tracker = _FakeTracker()
     monkeypatch.setattr(orch, "_make_tracker", lambda _p: tracker)
     finalize = AsyncMock()
@@ -132,7 +149,8 @@ async def test_park_grok_rate_limited_activates_and_offlines(
     finalize.assert_awaited_once()
     assert inst.state == AgentState.OFFLINE
     assert inst.container_id is None
-    assert inst.error_count == 0  # a 429 is not a crash
+    # A 429 is not a crash
+    assert inst.error_count == 0
     assert tracker.activated_with == {
         "retry_after": pytest.approx(60.0),
         "affected_agents": ["be-dev-1"],
@@ -203,7 +221,8 @@ async def test_park_grok_auth_unavailable_activates_with_auth_missing_kind(
     orch._waiting_records = {}
     orch._rate_limit_ceo_notified = set()
     inst = _grok_instance()
-    inst.error_count = 2  # prior crashes — parking must NOT count one
+    # Prior crashes — parking must NOT count one
+    inst.error_count = 2
     tracker = _FakeTracker()
     monkeypatch.setattr(orch, "_make_tracker", lambda _p: tracker)
     monkeypatch.setattr(orch, "_finalize_spawn_session", AsyncMock())
@@ -213,7 +232,8 @@ async def test_park_grok_auth_unavailable_activates_with_auth_missing_kind(
 
     assert inst.state == AgentState.OFFLINE
     assert inst.container_id is None
-    assert inst.error_count == 0  # an auth-missing exit is not a crash
+    # An auth-missing exit is not a crash
+    assert inst.error_count == 0
     assert tracker.activated_with == {
         "retry_after": pytest.approx(60.0),
         "affected_agents": ["be-dev-1"],
@@ -283,7 +303,8 @@ async def test_grok_repark_resets_after_episode_gap(
     """A re-park AFTER the episode gap is a fresh episode — the retry_after
     resets to the base 60s even if the prior episode had backed off."""
     orch = _backoff_orchestrator()
-    orch._grok_repark_count = 3  # pretend a prior episode backed off hard
+    # Pretend a prior episode backed off hard
+    orch._grok_repark_count = 3
     orch._grok_last_park_at = datetime.now(UTC) - timedelta(hours=2)
     tracker = _RecordingTracker()
     monkeypatch.setattr(orch, "_make_tracker", lambda _p: tracker)
@@ -319,3 +340,62 @@ async def test_grok_repark_backoff_caps(monkeypatch: pytest.MonkeyPatch) -> None
         r == max_expected for r in tracker.retry_afters[_GROK_REPARK_BACKOFF_CAP:]
     )
     assert max(tracker.retry_afters) == max_expected
+
+
+# Two consecutive transient failures: backoff doubled twice.
+_TRANSIENT_STREAK_TWO = 2
+
+
+@pytest.mark.asyncio
+async def test_grok_refresh_backoff_rejected_parks_an_hour(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A dead credential (rejected) parks the refresh check for an hour.
+
+    The old loop re-POSTed the same revoked grant every 60s forever
+    (2026-09-29 dispatcher logs: a 400 from auth.x.ai every minute).
+    """
+    dummy = types.SimpleNamespace(_grok_auth_next_check=None, _grok_auth_fail_streak=0)
+    monkeypatch.setattr(ga_mod, "refresh_if_stale", lambda _path: "rejected")
+
+    await _refresh_grok_auth(dummy)
+
+    assert dummy._grok_auth_fail_streak == 1
+    assert dummy._grok_auth_next_check - datetime.now(UTC) > timedelta(minutes=30)
+
+
+@pytest.mark.asyncio
+async def test_grok_refresh_backoff_transient_doubles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Transient failures back off exponentially (60s -> 120s -> ...)."""
+    dummy = types.SimpleNamespace(_grok_auth_next_check=None, _grok_auth_fail_streak=0)
+    monkeypatch.setattr(ga_mod, "refresh_if_stale", lambda _path: "failed")
+
+    await _refresh_grok_auth(dummy)
+    first = dummy._grok_auth_next_check - datetime.now(UTC)
+    # 60s * 2**1 = 120s on the first failure.
+    assert timedelta(seconds=115) < first < timedelta(seconds=125)
+
+    # Second consecutive failure (once the parked check comes due): the
+    # backoff doubles.
+    dummy._grok_auth_next_check = datetime.now(UTC) - timedelta(seconds=1)
+    await _refresh_grok_auth(dummy)
+    second = dummy._grok_auth_next_check - datetime.now(UTC)
+    assert timedelta(seconds=235) < second < timedelta(seconds=245)
+    assert dummy._grok_auth_fail_streak == _TRANSIENT_STREAK_TWO
+
+
+@pytest.mark.asyncio
+async def test_grok_refresh_success_resets_streak(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A successful refresh clears the failure streak and next check is 60s."""
+    dummy = types.SimpleNamespace(_grok_auth_next_check=None, _grok_auth_fail_streak=3)
+    monkeypatch.setattr(ga_mod, "refresh_if_stale", lambda _path: "refreshed")
+
+    await _refresh_grok_auth(dummy)
+
+    assert dummy._grok_auth_fail_streak == 0
+    gap = dummy._grok_auth_next_check - datetime.now(UTC)
+    assert timedelta(seconds=55) < gap < timedelta(seconds=65)

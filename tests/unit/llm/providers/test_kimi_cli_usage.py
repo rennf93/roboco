@@ -151,11 +151,11 @@ def test_aggregate_sums_turn_scoped_usage_records(tmp_path: Path) -> None:
         ],
     )
     agg = ku.aggregate_usage_from_wire(wire)
-    assert agg["inputOther"] == 300  # noqa: PLR2004
-    assert agg["output"] == 130  # noqa: PLR2004
-    assert agg["inputCacheRead"] == 30  # noqa: PLR2004
-    assert agg["inputCacheCreation"] == 5  # noqa: PLR2004
-    assert agg["turns"] == 2  # noqa: PLR2004
+    assert agg["inputOther"] == 300
+    assert agg["output"] == 130
+    assert agg["inputCacheRead"] == 30
+    assert agg["inputCacheCreation"] == 5
+    assert agg["turns"] == 2
 
 
 def test_aggregate_ignores_non_turn_scope_and_bad_lines(tmp_path: Path) -> None:
@@ -169,7 +169,7 @@ def test_aggregate_ignores_non_turn_scope_and_bad_lines(tmp_path: Path) -> None:
         ],
     )
     agg = ku.aggregate_usage_from_wire(wire)
-    assert agg["inputOther"] == 10  # noqa: PLR2004
+    assert agg["inputOther"] == 10
     assert agg["turns"] == 1
 
 
@@ -205,9 +205,9 @@ def test_capture_run_usage_writes_usage_json(tmp_path: Path) -> None:
     assert tokens == (100, 50, 10, 0)
     data = json.loads(out.read_text())
     assert data["model"] == "kimi-code/k3"
-    assert data["tokens_input"] == 100  # noqa: PLR2004
-    assert data["tokens_output"] == 50  # noqa: PLR2004
-    assert data["tokens_cache_read"] == 10  # noqa: PLR2004
+    assert data["tokens_input"] == 100
+    assert data["tokens_output"] == 50
+    assert data["tokens_cache_read"] == 10
     assert data["turns"] == 1
     assert data["cost_usd"] > 0.0
 
@@ -251,8 +251,8 @@ def test_main_writes_usage_file(
 
     assert ku.main() == 0
     data = json.loads(out.read_text())
-    assert data["tokens_input"] == 200  # noqa: PLR2004
-    assert data["tokens_output"] == 100  # noqa: PLR2004
+    assert data["tokens_input"] == 200
+    assert data["tokens_output"] == 100
 
 
 def test_main_warns_when_run_log_env_missing(
