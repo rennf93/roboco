@@ -11,6 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 import roboco.services.git as git_module
+from roboco.config import settings
 from roboco.services.git import GitService
 
 if TYPE_CHECKING:
@@ -20,6 +21,12 @@ if TYPE_CHECKING:
 def _bind(svc: GitService, name: str, value: object) -> None:
     """Stub without tripping mypy's method-assign check (test_git.py idiom)."""
     setattr(svc, name, value)
+
+
+@pytest.fixture(autouse=True)
+def _private_scratch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The throwaway clone lives under <private_root>/scratch/<slug>/."""
+    monkeypatch.setattr(settings, "private_data_root", str(tmp_path / "private"))
 
 
 def _service() -> GitService:
@@ -57,10 +64,11 @@ async def test_clean_merge_pushes_and_reports_sha() -> None:
     run, verbs = _scripted_run_git(outcomes)
     _bind(svc, "_run_git", run)
 
-    status = await svc._local_merge_branch("https://g/x/y.git", "tok", "stag", "main")
+    status = await svc._local_merge_branch("proj", "stag", "main")
 
     assert status == {"status": "merged", "sha": "abc123"}
-    assert verbs[0] == "clone"
+    # A fresh scratch repo fetches the target rung through the relay.
+    assert verbs[:2] == ["init", "fetch"]
     assert "merge" in verbs
     assert "push" in verbs
 
@@ -71,7 +79,7 @@ async def test_already_ancestor_short_circuits() -> None:
     run, verbs = _scripted_run_git({"merge-base": _result(0)})
     _bind(svc, "_run_git", run)
 
-    status = await svc._local_merge_branch("https://g/x/y.git", "tok", "stag", "main")
+    status = await svc._local_merge_branch("proj", "stag", "main")
 
     assert status == {"status": "already_ancestor"}
     assert "merge" not in verbs
@@ -86,7 +94,7 @@ async def test_merge_conflict_never_pushes() -> None:
     )
     _bind(svc, "_run_git", run)
 
-    status = await svc._local_merge_branch("https://g/x/y.git", "tok", "stag", "main")
+    status = await svc._local_merge_branch("proj", "stag", "main")
 
     assert status == {"status": "conflict"}
     assert "push" not in verbs
@@ -98,7 +106,7 @@ async def test_missing_branch_maps_to_missing_ref() -> None:
     run, _ = _scripted_run_git({"fetch": _result(128)})
     _bind(svc, "_run_git", run)
 
-    status = await svc._local_merge_branch("https://g/x/y.git", "tok", "stag", "main")
+    status = await svc._local_merge_branch("proj", "stag", "main")
 
     assert status == {"status": "missing_ref"}
 
@@ -128,6 +136,4 @@ async def test_sync_env_branch_routes_shaped_501_to_fallback(
     status = await svc.sync_env_branch("proj", "stag", "main")
 
     assert status == {"status": "merged", "sha": "abc"}
-    fallback.assert_awaited_once_with(
-        "https://gitea.example.com/a/b.git", "tok", "stag", "main"
-    )
+    fallback.assert_awaited_once_with("proj", "stag", "main")

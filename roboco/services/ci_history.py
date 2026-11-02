@@ -81,12 +81,17 @@ async def record_runs(session: Any, samples: list[Any], workflow: str | None) ->
     if not rows:
         return 0
     try:
+        # RETURNING lists only the rows actually inserted; a bulk insert's
+        # result carries no rowcount.
         result = await session.execute(
-            insert(CiRunTable).on_conflict_do_nothing(index_elements=_DEDUP_ELEMENTS),
+            insert(CiRunTable)
+            .on_conflict_do_nothing(index_elements=_DEDUP_ELEMENTS)
+            .returning(CiRunTable.id),
             rows,
         )
+        inserted = len(result.all())
         await session.commit()
-        return int(result.rowcount or 0)
+        return inserted
     except Exception as exc:
         logger.debug("ci history write skipped", error=str(exc))
         return 0
@@ -110,12 +115,15 @@ async def runs_for(
 
 
 async def prune(session: Any, days: int = _RETENTION_DAYS) -> int:
-    """Delete run history past its retention window. Best-effort."""
+    """Delete run history past its retention window. Best-effort, in a
+    savepoint: the labeler pass shares its session, and a failed delete
+    must not poison the labels it wrote."""
     try:
         cutoff = datetime.now(UTC) - timedelta(days=days)
-        result = await session.execute(
-            delete(CiRunTable).where(CiRunTable.created_at < cutoff)
-        )
+        async with session.begin_nested():
+            result = await session.execute(
+                delete(CiRunTable).where(CiRunTable.created_at < cutoff)
+            )
         return int(result.rowcount or 0)
     except Exception as exc:
         logger.debug("ci history prune skipped", error=str(exc))

@@ -1,6 +1,6 @@
-"""Smoke-5: get_journal_context_task_for_agent includes BLOCKED, PAUSED,
-NEEDS_REVISION so note/say/dm/notify auto-inject task_id while the agent
-is stuck.
+"""Smoke-5: list_journal_context_tasks_for_agent includes BLOCKED, PAUSED,
+NEEDS_REVISION so a task-less note/dm/notify still finds the task while the
+agent is stuck; list_tasks_claimed_by lists the tasks whose claim it holds.
 
 Original bug: get_active_task_for_agent filtered to DEV_ACTIVE statuses only.
 PMs writing decisions during BLOCKED state got task_id=NULL on their journal
@@ -30,10 +30,10 @@ async def test_journal_context_returns_blocked_task() -> None:
     """A BLOCKED task is returned by the journal-context lookup."""
     task = MagicMock(id=uuid4(), status=TaskStatus.BLOCKED)
     result = MagicMock()
-    result.scalar_one_or_none.return_value = task
+    result.scalars.return_value.all.return_value = [task]
     svc = _service_with(result)
-    found = await svc.get_journal_context_task_for_agent(uuid4())
-    assert found is task
+    found = await svc.list_journal_context_tasks_for_agent(uuid4())
+    assert found == [task]
 
 
 @pytest.mark.asyncio
@@ -41,10 +41,10 @@ async def test_journal_context_returns_paused_task() -> None:
     """A PAUSED task is returned by the journal-context lookup."""
     task = MagicMock(id=uuid4(), status=TaskStatus.PAUSED)
     result = MagicMock()
-    result.scalar_one_or_none.return_value = task
+    result.scalars.return_value.all.return_value = [task]
     svc = _service_with(result)
-    found = await svc.get_journal_context_task_for_agent(uuid4())
-    assert found is task
+    found = await svc.list_journal_context_tasks_for_agent(uuid4())
+    assert found == [task]
 
 
 @pytest.mark.asyncio
@@ -52,23 +52,23 @@ async def test_journal_context_returns_needs_revision_task() -> None:
     """A NEEDS_REVISION task is returned so QA-rejected devs still get task_id."""
     task = MagicMock(id=uuid4(), status=TaskStatus.NEEDS_REVISION)
     result = MagicMock()
-    result.scalar_one_or_none.return_value = task
+    result.scalars.return_value.all.return_value = [task]
     svc = _service_with(result)
-    found = await svc.get_journal_context_task_for_agent(uuid4())
-    assert found is task
+    found = await svc.list_journal_context_tasks_for_agent(uuid4())
+    assert found == [task]
 
 
 @pytest.mark.asyncio
 async def test_journal_context_query_filters_by_journal_statuses() -> None:
     """The query's where clause uses _JOURNAL_CONTEXT_STATUSES, not _DEV_ACTIVE."""
     result = MagicMock()
-    result.scalar_one_or_none.return_value = None
+    result.scalars.return_value.all.return_value = []
     session = MagicMock()
     session.execute = AsyncMock(return_value=result)
     svc = TaskService(session)
     agent_id = uuid4()
 
-    await svc.get_journal_context_task_for_agent(agent_id)
+    await svc.list_journal_context_tasks_for_agent(agent_id)
 
     assert session.execute.await_count == 1
     sent_query = session.execute.await_args.args[0]
@@ -98,3 +98,22 @@ async def test_dev_active_query_still_excludes_blocked() -> None:
     )
     assert "'paused'" not in rendered
     assert "'needs_revision'" not in rendered
+
+
+@pytest.mark.asyncio
+async def test_claimed_tasks_query_filters_by_claimant_and_excludes_terminal() -> None:
+    """The held-task lookup keys on active_claimant_id and skips finished work."""
+    result = MagicMock()
+    result.scalars.return_value.all.return_value = []
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=result)
+    svc = TaskService(session)
+
+    assert await svc.list_tasks_claimed_by(uuid4()) == []
+
+    sent_query = session.execute.await_args.args[0]
+    rendered = str(sent_query.compile(compile_kwargs={"literal_binds": True}))
+    assert "active_claimant_id" in rendered
+    assert "NOT IN" in rendered.upper()
+    for terminal in ("completed", "cancelled"):
+        assert terminal in rendered

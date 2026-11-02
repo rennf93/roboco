@@ -24,7 +24,8 @@ const { listCycles, approveItem, rejectItem } = vi.hoisted(() => ({
               target_task_title: "Stale onboarding polish task",
               action: "reprioritize",
               new_priority: 0,
-              rationale: "Onboarding friction is this quarter's top charter goal",
+              rationale:
+                "Onboarding friction is this quarter's top charter goal",
               status: "proposed",
             },
             {
@@ -34,7 +35,8 @@ const { listCycles, approveItem, rejectItem } = vi.hoisted(() => ({
               target_task_title: "Old experimental widget",
               action: "cancel",
               new_priority: null,
-              rationale: "Superseded by the new dashboard; no longer on the roadmap",
+              rationale:
+                "Superseded by the new dashboard; no longer on the roadmap",
               status: "proposed",
             },
           ],
@@ -90,7 +92,9 @@ describe("ScalesReviewQueue", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Old experimental widget")).toBeInTheDocument();
     expect(
-      screen.getByText(/Onboarding friction is this quarter's top charter goal/),
+      screen.getByText(
+        /Onboarding friction is this quarter's top charter goal/,
+      ),
     ).toBeInTheDocument();
     expect(screen.getByText(/Reprioritize/)).toBeInTheDocument();
     expect(screen.getByText("Cancel")).toBeInTheDocument();

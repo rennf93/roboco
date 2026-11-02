@@ -171,7 +171,7 @@ class SentinelService(BaseService):
         """
         from roboco.services.task import get_task_service
 
-        task = await get_task_service(self.session).get(task_id)
+        task = await get_task_service(self.session).get_for_update(task_id)
         if task is None or task.source != SENTINEL_SOURCE:
             return None, None, None
         stored = markers.get_quality_report(task)

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import UUID, uuid4
 
+import httpx
 import pytest
 from roboco.exceptions import GitError
 from roboco.services.base import NotFoundError
@@ -66,7 +67,7 @@ def _make_http_response(
 ) -> MagicMock:
     resp = MagicMock()
     resp.status_code = status_code
-    resp.is_success = 200 <= status_code < 300  # noqa: PLR2004
+    resp.is_success = httpx.codes.is_success(status_code)
     resp.json.return_value = json_payload or {}
     resp.text = text
     return resp
@@ -76,10 +77,18 @@ def _make_async_client(
     *,
     patch_resp: MagicMock | None = None,
     post_resp: MagicMock | None = None,
+    current_body: str = "old body",
 ) -> MagicMock:
+    """``get`` answers the current-PR read a body rewrite makes first (to
+    carry Entire's markers over)."""
     client = MagicMock()
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=False)
+    client.get = AsyncMock(
+        return_value=_make_http_response(
+            status_code=200, json_payload={"body": current_body}
+        )
+    )
     client.patch = AsyncMock(return_value=patch_resp)
     client.post = AsyncMock(return_value=post_resp)
     return client
@@ -94,7 +103,9 @@ async def _stub_task_get(svc: GitService, task: object | None) -> None:
 def _wire_service(svc: GitService, task: MagicMock) -> MagicMock:
     """Apply common bindings: workspace, remote parse, token resolution."""
     _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
-    _bind(svc, "_parse_github_remote", MagicMock(return_value=RepoRef("acme", "repo")))
+    _bind(
+        svc, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("acme", "repo"))
+    )
     _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
 
     # update_pr_for_task fetches the task via get_task_service; we patch it
@@ -167,6 +178,38 @@ async def test_update_pr_title_and_body_calls_patch_with_both() -> None:
     call = fake_client.patch.await_args
     assert call.kwargs["json"] == {"title": "t", "body": "b"}
     assert set(out["updated_fields"]) == {"title", "body"}
+
+
+@pytest.mark.asyncio
+async def test_a_body_rewrite_keeps_entires_trail_markers() -> None:
+    """Entire links a PR to its trail change with a block at the top of the
+    body (and marks a PR it opened with a trailing comment); RoboCo's body
+    rewrite carries both over, since Entire never puts them back."""
+    svc = _service()
+    task = _task_with_pr()
+    fake_task_service = _wire_service(svc, task)
+    link = (
+        "<!-- entire-trail-link-start -->\n"
+        "https://entire.com/gh/acme/-/trails/7/changes/repo/3\n"
+        "<!-- entire-trail-link-end -->"
+    )
+    current = f"{link}\n\nold body\n\n<!-- entire-shadow-pr -->"
+    patch_resp = _make_http_response(
+        status_code=200, json_payload={"number": _PR_NUMBER, "html_url": task.pr_url}
+    )
+    fake_client = _make_async_client(patch_resp=patch_resp, current_body=current)
+
+    with (
+        patch("roboco.services.git.get_task_service", return_value=fake_task_service),
+        _patch_project_service(MagicMock(slug="roboco")),
+        patch("roboco.services.git.httpx.AsyncClient", return_value=fake_client),
+    ):
+        await svc.update_pr_for_task(
+            UUID(str(task.id)), title=None, body="new body", reviewers=None
+        )
+
+    body = fake_client.patch.await_args.kwargs["json"]["body"]
+    assert body == f"{link}\n\nnew body\n\n<!-- entire-shadow-pr -->"
 
 
 @pytest.mark.asyncio

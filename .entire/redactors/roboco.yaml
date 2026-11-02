@@ -1,0 +1,16 @@
+name: roboco
+version: 1.0.0
+description: RoboCo fleet credentials Entire's built-in scanners do not know
+rules:
+  - id: roboco-agent-token
+    description: >-
+      Expiring per-agent gateway token minted by roboco.agents_config.issue_agent_token:
+      base64url JSON payload (always opens with {"id":) + "." + hex HMAC-SHA256.
+    regex: 'eyJpZCI6[A-Za-z0-9_-]{20,}\.[0-9a-f]{64}'
+    samples:
+      # Synthetic: the token's shape around an all-zero id and an all-zero
+      # signature, so it matches the rule but can never verify.
+      - input: "ROBOCO_AGENT_TOKEN=eyJpZCI6IjAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMCJ9.0000000000000000000000000000000000000000000000000000000000000000"
+        redacted: true
+      - input: "sha256:4a547b75906c70f6992fbd10a86de46a7ae5bae6dc5765251fb389548c204298"
+        redacted: false

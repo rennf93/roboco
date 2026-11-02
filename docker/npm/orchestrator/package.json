@@ -1,0 +1,9 @@
+{
+  "name": "roboco-orchestrator-npm-pins",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Exact versions of the npm CLIs docker/orchestrator.Dockerfile installs globally. Not installed from here: the Dockerfile reads each version and runs `npm install -g <name>@<version>`. Dependabot bumps this file (.github/dependabot.yml).",
+  "dependencies": {
+    "pnpm": "12.16.1"
+  }
+}

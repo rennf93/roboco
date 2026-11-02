@@ -5,56 +5,56 @@ The pure, no-IO/no-DB foundation layer for RoboCo's identity model and the archi
 
 | Path | Role | LOC |
 |---|---|---|
-| roboco/foundation/policy/conventions/__init__.py | Package facade re-exporting BUILTIN_RULES, ConventionsParseError, ConventionsStandard, CustomRule, DefinitionKind, Module, Rule, RuleLevel, Waiver, effective_map. | 33 |
-| roboco/foundation/policy/conventions/effective_map.py | Pure merge of auto-derived scan defaults with the committed conventions file into one ConventionsStandard (per-field precedence). | 65 |
-| roboco/foundation/policy/conventions/models.py | Pydantic schema for the conventions standard: Module/Rule/CustomRule/Waiver/ConventionsStandard, BUILTIN_RULES, ConventionsParseError, parse_yaml entry point. | 131 |
-| roboco/foundation/identity.py | Single source of truth for Role, Team, CELL_TEAMS, RoleLevel, AgentRow, the AGENTS roster, role-sets (PM/BOARD/DEV/REVIEWER/ALL), ROLE_LEVEL, and slug/role/team lookup helpers. | 317 |
-| roboco/foundation/_validate.py | Import-time identity validators (unique UUIDs/slugs, every real role has an agent, ROLE_LEVEL covers all roles, PM/BOARD roles populated); run_all() entry. | 93 |
-| roboco/foundation/_generators.py | Deterministic renderers of lifecycle intent-verb/status-transition markdown, panel JSON, and per-role prompt fragments from the lifecycle spec. | 145 |
+| roboco/foundation/policy/conventions/__init__.py | Package facade re-exporting BUILTIN_RULES, ConventionsParseError, ConventionsStandard, CustomRule, DefinitionKind, Module, Rule, RuleLevel, Waiver, effective_map. | 35 |
+| roboco/foundation/policy/conventions/effective_map.py | Pure merge of auto-derived scan defaults with the committed conventions file into one ConventionsStandard (per-field precedence). | 88 |
+| roboco/foundation/policy/conventions/models.py | Pydantic schema for the conventions standard: Module/Rule/CustomRule/Waiver/ConventionsStandard, BUILTIN_RULES, ConventionsParseError, parse_yaml entry point. | 153 |
+| roboco/foundation/identity.py | Single source of truth for Role, Team, CELL_TEAMS, RoleLevel, AgentRow, the AGENTS roster, role-sets (PM/BOARD/DEV/REVIEWER/ALL), ROLE_LEVEL, and slug/role/team lookup helpers. | 425 |
+| roboco/foundation/_validate.py | Import-time identity validators (unique UUIDs/slugs, every real role has an agent, ROLE_LEVEL covers all roles, PM/BOARD roles populated); run_all() entry. | 92 |
+| roboco/foundation/_generators.py | Deterministic renderers of lifecycle intent-verb/status-transition markdown, panel JSON, and per-role prompt fragments from the lifecycle spec. | 144 |
 
 ## Key Symbols
 
 | Name | Kind | File:Line | Responsibility |
 |---|---|---|---|
 | Role | StrEnum | roboco/foundation/identity.py:22 | The 12 canonical agent roles (developer, qa, documenter, cell_pm, main_pm, product_owner, head_marketing, auditor, pr_reviewer, prompter, secretary, ceo, system). |
-| Team | StrEnum | roboco/foundation/identity.py:38 | Team enum (backend, frontend, ux_ui, board, main_pm, fullstack, marketing-legacy, system). |
-| CELL_TEAMS | frozenset[Team] | roboco/foundation/identity.py:54 | The three delivery cells {BACKEND, FRONTEND, UX_UI} — distinct from the full Team enum; single source of truth for 'the cells' subset. |
-| RoleLevel | IntEnum | roboco/foundation/identity.py:57 | Hierarchical authority levels (-1 SYSTEM, 0 INTAKE, 1 DEV, 2 QA, 3 DOCUMENTER, 4 CELL_PM, 5 MAIN_PM, 6 BOARD, 7 AUDITOR, 8 CEO) for 'X or above' checks. |
-| AgentRow | dataclass(frozen=True) | roboco/foundation/identity.py:70 | Identity record for one agent: slug, role, team, uuid, is_human (True only for ceo). |
-| _u | function | roboco/foundation/identity.py:81 | Shorthand UUID literal constructor for the AGENTS table. |
-| AGENTS | dict[str,AgentRow] | roboco/foundation/identity.py:86 | The full agent roster: system sentinel, CEO, 3 cells (5 members each), main-pm, product-owner, head-marketing, auditor, intake-1, secretary-1, pr-reviewer-1, and 3 per-cell pr-reviewers. |
-| PM_ROLES | frozenset[Role] | roboco/foundation/identity.py:251 | {CELL_PM, MAIN_PM} — roles allowed to plan/delegate/merge. |
-| BOARD_ROLES | frozenset[Role] | roboco/foundation/identity.py:252 | {PRODUCT_OWNER, HEAD_MARKETING, AUDITOR} — board reviewers; intake/secretary/pr-reviewer deliberately excluded. |
-| DEV_ROLES | frozenset[Role] | roboco/foundation/identity.py:255 | {DEVELOPER}. |
-| REVIEWER_ROLES | frozenset[Role] | roboco/foundation/identity.py:256 | {PR_REVIEWER}. |
-| ALL_ROLES | frozenset[Role] | roboco/foundation/identity.py:257 | frozenset(Role) — every role value. |
-| ROLE_LEVEL | dict[Role,RoleLevel] | roboco/foundation/identity.py:262 | Per-role authority level; PR_REVIEWER=QA, PROMPTER=INTAKE, SECRETARY=BOARD, AUDITOR above MAIN_PM, CEO ceiling. |
-| agent_for_slug | function | roboco/foundation/identity.py:279 | Return AgentRow for slug; raise KeyError on unknown (lists known slugs in message). |
-| slugs_for_role | function | roboco/foundation/identity.py:286 | frozenset of slugs whose agent has a given role. |
-| slugs_for_team | function | roboco/foundation/identity.py:291 | frozenset of slugs whose agent is on a given team. |
-| role_for_slug | function | roboco/foundation/identity.py:296 | Shorthand role lookup; raises KeyError on unknown slug. |
-| role_for_slug_or_none | function | roboco/foundation/identity.py:301 | Safe variant returning None for unknown/stale slug so dispatcher skip-guards don't crash the tick (added in 5bb13c84). |
-| _HUMAN_ONLY_ROLES | frozenset[Role] | roboco/foundation/identity.py:315 | {CEO, PROMPTER, SECRETARY} — the three human-driven roles that are never containers; single source of truth for the human-only set consumed by is_human_only_role and is_spawnable_agent_slug. |
-| is_human_only_role | function | roboco/foundation/identity.py:320 | True for the CEO / prompter / secretary human-driven roles; None (unresolvable slug) returns False. Prefer over bare `role in (CEO, ...)` checks to avoid the stale-None blind spot. |
-| is_spawnable_agent_slug | function | roboco/foundation/identity.py:331 | True only when slug resolves to a known non-human agent role; False for an unresolvable/stale slug or a human-only role. Dispatcher may spawn a slug only when this returns True. |
-| role_for_uuid_or_none | function | roboco/foundation/identity.py:347 | UUID→Role lookup over the AGENTS table; returns None for a non-seeded/stale UUID. Used by creation-time PM-vs-code guard where assigned_to is carried as UUID not slug. |
-| team_for_slug | function | roboco/foundation/identity.py:365 | Shorthand team lookup; raises KeyError on unknown slug. |
+| Team | StrEnum | roboco/foundation/identity.py:39 | Team enum (backend, frontend, ux_ui, board, main_pm, fullstack, marketing-legacy, system). |
+| CELL_TEAMS | frozenset[Team] | roboco/foundation/identity.py:55 | The three delivery cells {BACKEND, FRONTEND, UX_UI} — distinct from the full Team enum; single source of truth for 'the cells' subset. |
+| RoleLevel | IntEnum | roboco/foundation/identity.py:58 | Hierarchical authority levels (-1 SYSTEM, 0 INTAKE, 1 DEV, 2 QA, 3 DOCUMENTER, 4 CELL_PM, 5 MAIN_PM, 6 BOARD, 7 AUDITOR, 8 CEO) for 'X or above' checks. |
+| AgentRow | dataclass(frozen=True) | roboco/foundation/identity.py:72 | Identity record for one agent: slug, role, team, uuid, is_human (True only for ceo). |
+| _u | function | roboco/foundation/identity.py:82 | Shorthand UUID literal constructor for the AGENTS table. |
+| AGENTS | dict[str,AgentRow] | roboco/foundation/identity.py:87 | The full agent roster: system sentinel, CEO, 3 cells (5 members each), main-pm, product-owner, head-marketing, auditor, intake-1, secretary-1, pr-reviewer-1, and 3 per-cell pr-reviewers. |
+| PM_ROLES | frozenset[Role] | roboco/foundation/identity.py:281 | {CELL_PM, MAIN_PM} — roles allowed to plan/delegate/merge. |
+| BOARD_ROLES | frozenset[Role] | roboco/foundation/identity.py:282 | {PRODUCT_OWNER, HEAD_MARKETING, AUDITOR} — board reviewers; intake/secretary/pr-reviewer deliberately excluded. |
+| DEV_ROLES | frozenset[Role] | roboco/foundation/identity.py:285 | {DEVELOPER}. |
+| REVIEWER_ROLES | frozenset[Role] | roboco/foundation/identity.py:286 | {PR_REVIEWER}. |
+| ALL_ROLES | frozenset[Role] | roboco/foundation/identity.py:287 | frozenset(Role) — every role value. |
+| ROLE_LEVEL | dict[Role,RoleLevel] | roboco/foundation/identity.py:292 | Per-role authority level; PR_REVIEWER=QA, PROMPTER=INTAKE, SECRETARY=BOARD, AUDITOR above MAIN_PM, CEO ceiling. |
+| agent_for_slug | function | roboco/foundation/identity.py:310 | Return AgentRow for slug; raise KeyError on unknown (lists known slugs in message). |
+| slugs_for_role | function | roboco/foundation/identity.py:317 | frozenset of slugs whose agent has a given role. |
+| slugs_for_team | function | roboco/foundation/identity.py:322 | frozenset of slugs whose agent is on a given team. |
+| role_for_slug | function | roboco/foundation/identity.py:327 | Shorthand role lookup; raises KeyError on unknown slug. |
+| role_for_slug_or_none | function | roboco/foundation/identity.py:332 | Safe variant returning None for unknown/stale slug so dispatcher skip-guards don't crash the tick (added in 5bb13c84). |
+| _HUMAN_ONLY_ROLES | frozenset[Role] | roboco/foundation/identity.py:346 | {CEO, PROMPTER, SECRETARY} — the three human-driven roles that are never containers; single source of truth for the human-only set consumed by is_human_only_role and is_spawnable_agent_slug. |
+| is_human_only_role | function | roboco/foundation/identity.py:351 | True for the CEO / prompter / secretary human-driven roles; None (unresolvable slug) returns False. Prefer over bare `role in (CEO, ...)` checks to avoid the stale-None blind spot. |
+| is_spawnable_agent_slug | function | roboco/foundation/identity.py:378 | True only when slug resolves to a known non-human agent role; False for an unresolvable/stale slug or a human-only role. Dispatcher may spawn a slug only when this returns True. |
+| role_for_uuid_or_none | function | roboco/foundation/identity.py:394 | UUID→Role lookup over the AGENTS table; returns None for a non-seeded/stale UUID. Used by creation-time PM-vs-code guard where assigned_to is carried as UUID not slug. |
+| team_for_slug | function | roboco/foundation/identity.py:423 | Shorthand team lookup; raises KeyError on unknown slug. |
 | RuleLevel | Literal | roboco/foundation/policy/conventions/models.py:18 | 'warn' / 'block' — gate severity for a convention rule. |
 | DefinitionKind | Literal | roboco/foundation/policy/conventions/models.py:19 | model / route / helper / business_logic / component / other — what a tree-sitter-classified definition is. |
 | ConventionsParseError | class(ValueError) | roboco/foundation/policy/conventions/models.py:24 | Raised when .roboco/conventions.yml is malformed or fails schema validation; carries .reason. |
 | BUILTIN_RULES | dict[str,RuleLevel] | roboco/foundation/policy/conventions/models.py:38 | Org-default hygiene rules seeded into every project: no_lint_suppressions=block, no_inline_comments=warn. Placement rules are NOT here (derived per-project). RoboCo's own committed `.roboco/conventions.yml` **keeps `no_inline_comments` at `warn`, not promoted** (Main-PM decision, 2026-08-08): Sentinel's 2026-07-26 report flagged 1,446 violations, organically down to 603 by 2026-08-08 with no enforced sweep; promoting to block would force a low-value cleanup sweep against the rule's own stated soft-nudge intent, so it stays `warn` — a dated rationale comment sits directly above the rule in the committed file. |
-| _Base | BaseModel | roboco/foundation/policy/conventions/models.py:44 | Shared pydantic config: extra='ignore' for forward-compat with unknown YAML keys. |
-| Module | BaseModel | roboco/foundation/policy/conventions/models.py:50 | One module boundary: path prefix, purpose, forbidden definition kinds. |
-| Rule | BaseModel | roboco/foundation/policy/conventions/models.py:58 | A toggleable named rule and the level it fires at. |
-| CustomRule | BaseModel | roboco/foundation/policy/conventions/models.py:65 | Project-specific regex rule: id, pattern, message, level, optional language scope. |
-| Waiver | BaseModel | roboco/foundation/policy/conventions/models.py:75 | Accountable escape hatch: a (path, rule, reason) the gate must not flag. |
-| ConventionsStandard | BaseModel | roboco/foundation/policy/conventions/models.py:83 | Parsed standard (raw file or merged effective map): version, languages, modules, rules, custom, waivers. |
-| ConventionsStandard._name_rules_from_keys | field_validator | roboco/foundation/policy/conventions/models.py:93 | Inject mapping key as each rule's name; accepts both {name: {level:...}} YAML and pre-built Rule objects. |
-| ConventionsStandard.parse_yaml | classmethod | roboco/foundation/policy/conventions/models.py:112 | Single entry point from raw file text to validated ConventionsStandard; raises ConventionsParseError on malformed YAML / non-mapping top level / ValidationError. |
-| _merge_rules | function | roboco/foundation/policy/conventions/effective_map.py:22 | Merge rules: BUILTIN_RULES < derived < file (per key). |
-| _merge_modules | function | roboco/foundation/policy/conventions/effective_map.py:34 | Merge modules: derived, file modules override by path, new paths appended in file order. |
-| _union_languages | function | roboco/foundation/policy/conventions/effective_map.py:43 | Union languages preserving derived order then file-only extras. |
-| effective_map | function | roboco/foundation/policy/conventions/effective_map.py:53 | Produce the merged ConventionsStandard: derived defaults overlaid by the committed file; version/custom/waivers come from the curated side (file if present else derived). |
+| _Base | BaseModel | roboco/foundation/policy/conventions/models.py:61 | Shared pydantic config: extra='ignore' for forward-compat with unknown YAML keys. |
+| Module | BaseModel | roboco/foundation/policy/conventions/models.py:67 | One module boundary: path prefix, purpose, forbidden definition kinds. |
+| Rule | BaseModel | roboco/foundation/policy/conventions/models.py:75 | A toggleable named rule and the level it fires at. |
+| CustomRule | BaseModel | roboco/foundation/policy/conventions/models.py:82 | Project-specific regex rule: id, pattern, message, level, optional language scope. |
+| Waiver | BaseModel | roboco/foundation/policy/conventions/models.py:92 | Accountable escape hatch: a (path, rule, reason) the gate must not flag. |
+| ConventionsStandard | BaseModel | roboco/foundation/policy/conventions/models.py:100 | Parsed standard (raw file or merged effective map): version, languages, modules, rules, custom, waivers. |
+| ConventionsStandard._name_rules_from_keys | field_validator | roboco/foundation/policy/conventions/models.py:118 | Inject mapping key as each rule's name; accepts both {name: {level:...}} YAML and pre-built Rule objects. |
+| ConventionsStandard.parse_yaml | classmethod | roboco/foundation/policy/conventions/models.py:136 | Single entry point from raw file text to validated ConventionsStandard; raises ConventionsParseError on malformed YAML / non-mapping top level / ValidationError. |
+| _merge_rules | function | roboco/foundation/policy/conventions/effective_map.py:31 | Merge rules: BUILTIN_RULES < derived < file (per key). |
+| _merge_modules | function | roboco/foundation/policy/conventions/effective_map.py:43 | Merge modules: derived, file modules override by path, new paths appended in file order. |
+| _union_languages | function | roboco/foundation/policy/conventions/effective_map.py:52 | Union languages preserving derived order then file-only extras. |
+| effective_map | function | roboco/foundation/policy/conventions/effective_map.py:75 | Produce the merged ConventionsStandard: derived defaults overlaid by the committed file; version/custom/waivers come from the curated side (file if present else derived). |
 | _SENTINEL_ROLES | frozenset[Role] | roboco/foundation/_validate.py:23 | {Role.SYSTEM} — excluded from 'every real role has an agent' check. |
 | IdentityValidationError | class(RuntimeError) | roboco/foundation/_validate.py:26 | Raised at import time when identity tables are inconsistent. |
 | _check_unique_uuids | function | roboco/foundation/_validate.py:30 | Fail if any two AgentRows share a UUID. |
@@ -193,7 +193,7 @@ foundation-conventions-identity
 
 | Name | File | Trigger |
 |---|---|---|
-| foundation package import → run_all() | roboco/foundation/__init__.py | import roboco.foundation (or any submodule) — line 48-50 imports and invokes _validate.run_all() at module load; first failing validator raises IdentityValidationError and blocks orchestrator start |
+| foundation package import → run_all() | roboco/foundation/__init__.py | import roboco.foundation (or any submodule) — the package `__init__` imports and invokes _validate.run_all() at module load; first failing validator raises IdentityValidationError and blocks orchestrator start |
 | identity lookups (agent_for_slug / role_for_slug / role_for_slug_or_none / slugs_for_role / slugs_for_team / team_for_slug) | roboco/foundation/identity.py | called throughout the dispatcher tick, claim/plan/escalate flows, notification routing, permissions checks, and seed bootstrap whenever a slug/role/team must be resolved |
 | ConventionsStandard.parse_yaml(text) | roboco/foundation/policy/conventions/models.py | called by ConventionsService and the validator CLI when raw .roboco/conventions.yml text is loaded from the read clone |
 | effective_map(derived, file) | roboco/foundation/policy/conventions/effective_map.py | called by ConventionsService to merge the scan-derived standard with the committed file into the effective map consumed by validator + ambient/baseline injection |
@@ -239,7 +239,7 @@ foundation-conventions-identity
 | Title | File:Line | Claim | Severity |
 |---|---|---|---|
 | ~~Stale human-role slug silently bypasses human-only skip guard~~ **RESOLVED in 536bbb64** | roboco/foundation/identity.py:331 | After 5bb13c84, a bare `role_for_slug_or_none(slug) in (CEO, PROMPTER, SECRETARY)` treated a stale None as "not human" and proceeded to spawn. Fixed in 536bbb64: `is_spawnable_agent_slug(slug)` returns False for any stale/None slug (not just non-human-resolved ones), and all dispatch-skip call sites were updated to use it. The `_HUMAN_ONLY_ROLES` frozenset is the single authority consumed by both `is_human_only_role` and `is_spawnable_agent_slug`. | medium |
-| role_for_slug_or_none introduces a None-handling contract callers must honour | roboco/foundation/identity.py:301 | The new function returns Role / None. Any future caller that does `role_for_slug_or_none(slug).value` or passes the result into a function typed Role (not Role/None) will hit AttributeError / TypeError on a stale slug. mypy may not catch call sites that annotate the local as Role. The docstring documents the None-as-'not human-only' convention but nothing enforces it. | low |
+| role_for_slug_or_none introduces a None-handling contract callers must honour | roboco/foundation/identity.py:332 | The new function returns Role / None. Any future caller that does `role_for_slug_or_none(slug).value` or passes the result into a function typed Role (not Role/None) will hit AttributeError / TypeError on a stale slug. mypy may not catch call sites that annotate the local as Role. The docstring documents the None-as-'not human-only' convention but nothing enforces it. | low |
 | Import-time validators raise on any future AGENTS edit that drops a role's last agent | roboco/foundation/_validate.py:47 | _check_every_real_role_has_agent / _check_pm_roles_have_agents / _check_board_roles_have_agents run at every import. Removing the last agent of a role (e.g. deleting the only secretary row) will raise IdentityValidationError and block container start. Not a regression from 5bb13c84 itself, but a landmine for any future edit to identity.py: the validators are unforgiving and give only a generic message. | low |
 
 ## Health
