@@ -237,10 +237,14 @@ async def test_wedge_blocked_notification_carries_the_cycle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     created: list[Any] = []
+
+    async def _capture(params: Any, **_: Any) -> None:
+        created.append(params)
+
     monkeypatch.setattr(
         NotificationService,
         "_create_notification",
-        AsyncMock(side_effect=lambda params, **_: created.append(params) or None),
+        AsyncMock(side_effect=_capture),
     )
     cycle = [
         {
