@@ -76,3 +76,27 @@ def test_runner_is_fail_loud_on_grammar_failure(
     monkeypatch.setattr("roboco.conventions.classify_python.classify_definitions", boom)
     with pytest.raises(ValidatorCouldNotRun):
         run(tmp_path, ["x.py"], ConventionsStandard())
+
+
+_WRAPPER_TSX = (
+    b"export function wrapper({ children }: { children: React.ReactNode }) {\n"
+    b"  return <QueryClientProvider client={client}>{children}</QueryClientProvider>;\n"
+    b"}\n"
+)
+_HOOKS_STD = ConventionsStandard(
+    modules=[Module(path="src/hooks", purpose="hooks", forbidden=["component"])]
+)
+
+
+def test_runner_flags_component_in_hooks_module(tmp_path: Path) -> None:
+    _write(tmp_path, "src/hooks/use-tasks.tsx", _WRAPPER_TSX)
+    findings = run(tmp_path, ["src/hooks/use-tasks.tsx"], _HOOKS_STD)
+    assert [f.rule for f in findings] == ["no_components_in_hooks"]
+
+
+def test_runner_skips_placement_for_component_in_hooks_test_file(
+    tmp_path: Path,
+) -> None:
+    rel = "src/hooks/__tests__/use-tasks.test.tsx"
+    _write(tmp_path, rel, _WRAPPER_TSX)
+    assert run(tmp_path, [rel], _HOOKS_STD) == []

@@ -1,5 +1,7 @@
-"""Auto-extracted engine mixin -- see decomp/extract.py. Method bodies below are
-moved verbatim from AgentOrchestrator (family: reconcile)."""
+"""What the orchestrator restores and reconciles at startup, and the health
+and Board Program loops it runs.
+
+Engine mixins composed into AgentOrchestrator."""
 
 from __future__ import annotations
 
@@ -8,15 +10,12 @@ import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from roboco.agents_config import (
-    get_agent_team,
-)
-from roboco.models.runtime import (
-    AgentInstance,
-    WaitingRecord,
-)
+from roboco.agents_config import get_agent_role, get_agent_team
+from roboco.foundation.policy.agent_loop import DEFAULT_BUDGET
+from roboco.models.runtime import AgentInstance, WaitingRecord
 from roboco.runtime.orchestrator import (
     _DOCKER_INSPECT_TIMEOUT_SECONDS,
+    _SINGLE_ACTIVE_TASK_ROLES,
     AGENT_IMAGES,
     AgentState,
     logger,
@@ -28,15 +27,36 @@ if TYPE_CHECKING:
 
     from roboco.services.task import TaskService
 
-
 if TYPE_CHECKING:
     from roboco.runtime.engines._types import AgentOrchestratorSelf as _Base
 else:
     _Base = object
 
 
-class ReconcileEngine(_Base):
-    """Mixin holding the "reconcile" methods moved out of AgentOrchestrator."""
+def _respawn_row_outlived_cooldown(
+    row: Any, restore_now: datetime, max_age_seconds: int
+) -> bool:
+    """True when a persisted respawn counter's newest strike is older than the
+    breaker's trip cooldown, so restoring it would be stale evidence.
+
+    The cooldown is how long the running breaker itself holds a trip before it
+    re-arms the pair; a counter whose last strike is older than that would
+    already have been forgiven had the process stayed up, and untripped strikes
+    are weaker evidence than a trip. A crash-restart loop, the reason the
+    counters are persisted at all, restarts well inside the window and keeps
+    its counts. Without the cutoff every row lived until its task went
+    terminal: live 2026-10-28 05:15:33 restored 36 rows, the previous run in
+    the orchestrator log having stopped 2026-09-29 21:25, and be-qa on
+    5db9054b and fe-qa on 86ed0eab "tripped" on their very first attempt of
+    the run and paged the CEO; both reviews ran normally once the cooldown let
+    them through.
+    """
+    return bool((restore_now - row.updated_at).total_seconds() > max_age_seconds)
+
+
+class StartupRestoreEngine(_Base):
+    """Restoring persisted state at startup: the waiting records, and the
+    PM-respawn counters minus their stale rows."""
 
     async def _clear_respawn_record(self, agent_slug: str, task_id: str) -> None:
         """Delete one PM-respawn counter row (best-effort).
@@ -109,13 +129,18 @@ class ReconcileEngine(_Base):
         rows: "Iterable[Any]",
         status_by_id: dict[Any, Any],
         now: datetime | None = None,
+        *,
+        max_age_seconds: int = DEFAULT_BUDGET.pm_respawn_trip_cooldown_seconds,
     ) -> tuple[dict[tuple[str, str], dict[str, Any]], list[tuple[str, Any]]]:
         """Split persisted respawn rows into (restorable entries, stale keys).
 
         Pure: a row is **stale** when its task is missing from ``status_by_id``
         or terminal (completed/cancelled) — a stale counter must never resurrect
-        against a fixed/deleted task. Restorable entries are keyed
-        ``(agent_slug, str(task_id))`` to match the in-memory dict; stale keys
+        against a fixed/deleted task — or when its newest strike is older than
+        ``max_age_seconds`` (see ``_respawn_row_outlived_cooldown``).
+        Restorable entries are keyed ``(agent_slug, str(task_id))`` to match
+        the in-memory dict and keep the row's ``updated_at``, so a shutdown
+        flush of an untouched entry does not make it look fresh; stale keys
         carry the raw ``task_id`` for deletion.
 
         F034: ``last_check`` is re-stamped to ``now`` (the restore time) on
@@ -134,7 +159,11 @@ class ReconcileEngine(_Base):
         for r in rows:
             status = status_by_id.get(r.task_id)
             norm = getattr(status, "value", status)
-            if status is None or norm in terminal:
+            if (
+                status is None
+                or norm in terminal
+                or _respawn_row_outlived_cooldown(r, restore_now, max_age_seconds)
+            ):
                 stale.append((r.agent_slug, r.task_id))
                 continue
             restored[(r.agent_slug, str(r.task_id))] = {
@@ -149,6 +178,7 @@ class ReconcileEngine(_Base):
                 "tracing_resets": r.tracing_resets,
                 "revisit_resets": r.revisit_resets,
                 "notified": r.notified,
+                "updated_at": r.updated_at,
             }
         return restored, stale
 
@@ -182,7 +212,11 @@ class ReconcileEngine(_Base):
                     )
                 ).all()
                 status_by_id = {row.id: row.status for row in live}
-                restored, stale = self._partition_respawn_rows(rows, status_by_id)
+                restored, stale = self._partition_respawn_rows(
+                    rows,
+                    status_by_id,
+                    max_age_seconds=self._PM_RESPAWN_TRIP_COOLDOWN_SECONDS,
+                )
             self._pm_respawn_tracker.update(restored)
             for agent_slug, task_id in stale:
                 await self._clear_respawn_record(agent_slug, str(task_id))
@@ -197,9 +231,71 @@ class ReconcileEngine(_Base):
             logger.error("Failed to restore respawn records", error=str(e))
             return 0
 
+
+class StartupReconcileEngine(_Base):
+    """Reconciling with the world at startup: mark this process running, roll
+    back orphan claims, release the never-started extra claims a work author
+    holds, close orphan spawn sessions, kill containers whose agent token no
+    longer verifies, and re-adopt the running ones."""
+
+    async def _release_extra_claims_of_work_authors(self) -> int:
+        """Release every work author's never-started extra claims; returns how
+        many were released.
+
+        A developer or devops agent holds one unfinished task at a time.
+        Before that rule covered every path that hands out work (c8879be9)
+        the dispatcher stacked claims on developers that already held work,
+        and those rows were never reconciled afterwards: live 2026-11-01
+        be-dev-1 still held claimed 106f46e3 next to its own f5d66db6 and was
+        respawned onto it, where every verb it tried was refused.
+        ``TaskService.release_never_started_extra_claims`` puts each extra
+        claim back in the author's queue (pending, still assigned to it) and
+        leaves started work alone. An author with a live container is skipped
+        this boot: what it is running on is not known here, and a claim must
+        not be released from under it.
+        """
+        released = 0
+        for slug, agent_uuid in AGENT_UUIDS.items():
+            if get_agent_role(slug) not in _SINGLE_ACTIVE_TASK_ROLES:
+                continue
+            if self._is_agent_active(slug):
+                continue
+            released += await self._release_extra_claims_of(slug, agent_uuid)
+        return released
+
+    async def _release_extra_claims_of(self, slug: str, agent_uuid: str) -> int:
+        """One work author's pass in its own session. Best-effort: a failure
+        is logged and leaves that author's rows as they were."""
+        from uuid import UUID
+
+        from roboco.db.base import get_session_factory
+        from roboco.services.task import TaskService
+
+        try:
+            async with get_session_factory()() as db:
+                released = await TaskService(db).release_never_started_extra_claims(
+                    UUID(agent_uuid)
+                )
+                released_ids = [str(task.id) for task in released]
+                await db.commit()
+        except Exception as exc:
+            logger.error(
+                "Held-work reconciliation failed for a work author; rows left as is",
+                agent=slug,
+                error=str(exc),
+            )
+            return 0
+        for task_id in released_ids:
+            logger.warning(
+                "Released a never-started extra claim back to its author's queue",
+                agent=slug,
+                task_id=task_id,
+            )
+        return len(released_ids)
+
     @staticmethod
     async def _resolve_container_id(container_name: str) -> str | None:
-        """Return the Docker container id for ``container_name`` via `docker inspect`.
+        """The container id of ``container_name``, from `docker container inspect`.
 
         Used at startup re-adoption (F033) so a re-adopted ACTIVE instance
         carries the real container id — ``_check_health`` skips
@@ -210,6 +306,7 @@ class ReconcileEngine(_Base):
         """
         proc = await asyncio.create_subprocess_exec(
             "docker",
+            "container",
             "inspect",
             "-f",
             "{{.Id}}",
@@ -369,7 +466,8 @@ class ReconcileEngine(_Base):
 
         agent_uuid = AGENT_UUIDS.get(slug)
         if agent_uuid is None:
-            return False  # unknown slug owns nothing by definition
+            # Unknown slug owns nothing by definition
+            return False
         try:
             async with get_db_context() as db:
                 result = await db.execute(
@@ -505,7 +603,7 @@ class ReconcileEngine(_Base):
         ``_is_agent_active`` does NOT — so after a restart it sees a live agent as
         inactive and can double-spawn it onto work its forgotten-but-running
         container is already doing. Probe each known agent slug's container (the
-        same ``docker inspect`` the reaper uses) and register a minimal ACTIVE
+        same ``docker container inspect`` the reaper uses) and register a minimal ACTIVE
         instance for any that is running, not already tracked, AND still holds a
         live (non-terminal) claim — a running container whose claim a prior
         orchestrator already released is a zombie and is skipped so it can't
@@ -561,6 +659,11 @@ class ReconcileEngine(_Base):
             )
         return readopted
 
+
+class HealthLoopEngine(_Base):
+    """The background health loop: each running agent's health, and whether
+    the orchestrator's own loops are still alive."""
+
     def _check_loop_liveness(self) -> None:
         now = time.monotonic()
         heartbeats = getattr(self, "_loop_heartbeats", {})
@@ -574,11 +677,16 @@ class ReconcileEngine(_Base):
                     interval=interval,
                 )
 
+    # =========================================================================
+    # HEALTH MONITORING
+    # =========================================================================
+
     async def _health_loop(self) -> None:
         """Background health check loop."""
         while self._running:
             try:
-                await asyncio.sleep(30)  # Check every 30 seconds
+                # Check every 30 seconds
+                await asyncio.sleep(30)
                 await self._check_health()
             except asyncio.CancelledError:
                 break
@@ -611,6 +719,11 @@ class ReconcileEngine(_Base):
             if not is_running:
                 await self._handle_stopped_container(agent_id, instance, exit_code)
         self._check_loop_liveness()
+
+
+class BoardProgramLoopEngine(_Base):
+    """The Board Program loop: on the shortest program cadence, originate a
+    cycle for every enabled, due program."""
 
     async def _board_program_loop(self) -> None:
         """Board Program engine: on an interval, originate a cycle for every

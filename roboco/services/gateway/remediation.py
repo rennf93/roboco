@@ -75,9 +75,14 @@ def hint_for_open_findings(*, finding_ids: list[str], task_id: str) -> str:
 
 
 def hint_for_missing_journal_decision() -> str:
+    """Every verb that requires journal:decision records its own rationale
+    as the decision, so the key only goes missing when that was empty."""
     return (
-        "call note(scope='decision', text='<your decision and rationale>') "
-        "before complete"
+        "this verb records its own rationale as your journal:decision and "
+        "got none: retry it with a substantive one (reason= for unblock / "
+        "escalate_up / escalate_to_ceo / cancel_leaf, notes= for complete / "
+        "submit_up / submit_root, the subtask description for delegate, the "
+        "findings for request_changes)"
     )
 
 
