@@ -1,9 +1,12 @@
 // Pure client-side derivations for the task-detail Verification receipt and
-// the release-proposal rollup. No new backend endpoints or capture: every
-// export here reshapes data GET /tasks/{id}, GET /tasks/{id}/findings, and
-// GET /projects/{id}/conventions/findings already return.
-import type { TaskFinding } from "./tasks";
+// the release-proposal rollup. Every export here reshapes data GET
+// /tasks/{id}, GET /tasks/{id}/findings, GET /tasks/{id}/attestation, GET
+// /projects/{id}/conventions/findings, or the rollup's two bulk reads (GET
+// /release/proposal/verification and /ci-verdicts) already return.
+import type { AttestationCiVerdict, TaskFinding } from "./tasks";
 import type { TaskMetricsReviewerChainEntry } from "./dashboard";
+import type { ConventionFinding } from "./conventions";
+import type { ReleaseMemberCiVerdict, ReleaseMemberReceipt } from "./release";
 
 // One acceptance criterion's QA verification state, parsed from the
 // deterministic "[AC] <criterion> — verified: <evidence>" lines
@@ -107,34 +110,66 @@ export function buildReviewerChain(
   return [...entries].sort((a, b) => a.round - b.round);
 }
 
-// The PR CI verdict bound to the task's PR head commit — NOT reachable from
-// any existing endpoint. `GitService.get_pr_ci_status` exists server-side
-// (roboco/services/git.py) but is only called internally by the in-path PR
-// gate and the self-heal loop; no REST route wraps it, so the panel has no
-// way to fetch it without a new backend endpoint. Per this task's intake
-// facts ("no new backend data capture"), that gap is reported here for
-// escalation instead of invented — the shape below always reads as
-// unavailable until a real route (e.g. GET /tasks/{id}/pr-ci-status) ships.
-export interface PrCiVerdict {
-  available: false;
-  /** Short sentence safe to render directly to the approver. */
-  reason: string;
-  /**
-   * The backend-facing escalation detail (which endpoint is missing, why) —
-   * for a HelpTip, code comment, or the docs. Never render this as the
-   * primary visible sentence; it names internals the approver has no use for.
-   */
-  technicalDetail: string;
-}
+// The PR CI verdict bound to the task's PR head commit, read off
+// GET /tasks/{id}/attestation's `ci` (roboco/services/attestation.py
+// `_ci_verdict`, which wraps `GitService.get_pr_ci_status`: the same
+// check-runs signal the in-path PR gate reads). `PrCiState` is
+// get_pr_ci_status's own vocabulary; the attestation reports
+// `not_available` instead when the task has no PR yet or no CI signal
+// could be resolved, which maps to the unavailable branch below.
+export type PrCiState =
+  | "success"
+  | "failure"
+  | "pending"
+  | "pending_not_scheduled"
+  | "no_ci_configured"
+  | "error";
 
-export const PR_CI_VERDICT_UNAVAILABLE: PrCiVerdict = {
+const PR_CI_STATES: readonly PrCiState[] = [
+  "success",
+  "failure",
+  "pending",
+  "pending_not_scheduled",
+  "no_ci_configured",
+  "error",
+];
+
+export type PrCiVerdict =
+  | {
+      available: true;
+      state: PrCiState;
+      headSha: string | null;
+      failingChecks: string[];
+    }
+  | {
+      available: false;
+      /** Short sentence safe to render directly to the approver. */
+      reason: string;
+    };
+
+export const PR_CI_VERDICT_NOT_AVAILABLE: PrCiVerdict = {
   available: false,
-  reason: "Per-task PR CI verification isn't available yet.",
-  technicalDetail:
-    "No backend endpoint exposes PR CI status for a task " +
-    "(GitService.get_pr_ci_status has no REST route) — needs a new " +
-    "endpoint; escalate rather than invent.",
+  reason:
+    "No CI verdict yet: the task has no pull request, or its CI can't be read.",
 };
+
+export const PR_CI_VERDICT_UNREADABLE: PrCiVerdict = {
+  available: false,
+  reason: "The task's verification record couldn't be loaded.",
+};
+
+export function prCiVerdictFromAttestation(
+  ci: AttestationCiVerdict,
+): PrCiVerdict {
+  const state = PR_CI_STATES.find((s) => s === ci.state);
+  if (state === undefined) return PR_CI_VERDICT_NOT_AVAILABLE;
+  return {
+    available: true,
+    state,
+    headSha: ci.head_sha ?? null,
+    failingChecks: ci.failing_checks,
+  };
+}
 
 // The release proposal's member-task set. GET /release/proposal's
 // `member_task_ids` (roboco/api/schemas/release.py ReleaseProposalResponse)
@@ -144,3 +179,56 @@ export const PR_CI_VERDICT_UNAVAILABLE: PrCiVerdict = {
 // message is the release-proposal rollup's empty-state copy for that case.
 export const RELEASE_NO_MEMBER_TASKS_MESSAGE =
   "This release has no member tasks. There's nothing to verify per-task.";
+
+// One member task's receipt shaped for the shared presentational pieces: the
+// same derivations the task-detail Verification tab applies to the per-task
+// endpoints, applied to one entry of GET /release/proposal/verification.
+export interface MemberVerification {
+  taskId: string;
+  title: string;
+  ac: AcVerificationStamp[];
+  findings: ReviewRoundFindings[];
+  conventions: ConventionFinding[];
+  reviewers: ReviewerChainEntry[];
+}
+
+export function memberVerificationFromReceipt(
+  receipt: ReleaseMemberReceipt,
+): MemberVerification {
+  return {
+    taskId: receipt.task_id,
+    title: receipt.title,
+    ac: parseAcVerificationStamps(
+      receipt.acceptance_criteria,
+      receipt.qa_notes,
+    ),
+    findings: groupFindingsByRound(receipt.findings),
+    conventions: receipt.conventions_findings,
+    reviewers: buildReviewerChain(receipt.reviewer_chain),
+  };
+}
+
+// GET /release/proposal/ci-verdicts' entries keyed by member task id.
+export function ciVerdictsByTask(
+  verdicts: ReleaseMemberCiVerdict[],
+): Record<string, PrCiVerdict> {
+  return Object.fromEntries(
+    verdicts.map((v) => [v.task_id, prCiVerdictFromAttestation(v.ci)]),
+  );
+}
+
+// One member's CI verdict from the rollup's bulk read: unreadable when that
+// read failed, not-available when the member has no verdict (yet).
+export function memberCiVerdict(
+  verdicts: Record<string, PrCiVerdict> | undefined,
+  failed: boolean,
+  taskId: string,
+): PrCiVerdict {
+  if (failed) return PR_CI_VERDICT_UNREADABLE;
+  return verdicts?.[taskId] ?? PR_CI_VERDICT_NOT_AVAILABLE;
+}
+
+// The rollup's copy when its bulk receipts read fails: never an empty list
+// that would read as "nothing to verify".
+export const RELEASE_ROLLUP_UNREADABLE_MESSAGE =
+  "The release's verification receipts couldn't be loaded.";

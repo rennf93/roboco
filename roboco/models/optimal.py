@@ -11,23 +11,45 @@ from uuid import UUID
 
 
 class IndexType(StrEnum):
-    """Types of content indexes in the Optimal Brain."""
+    """Types of content indexes in the Optimal Brain.
 
-    # Existing indexes
+    ``errors``: error patterns and their solutions. ``standards``: coding
+    standards, security policies and workflow rules. ``decisions``:
+    architectural and design decisions. ``reviews``: code review feedback.
+    ``learnings``: cross-agent learnings. ``playbooks``: curated,
+    Auditor-approved reusable procedures. ``vault_notes``: the CEO's own
+    Obsidian vault notes. ``code`` is retired (see
+    ``SEARCHABLE_INDEX_TYPES``).
+    """
+
     CODE = "code"
     DOCUMENTATION = "documentation"
     JOURNALS = "journals"
+    ERRORS = "errors"
+    STANDARDS = "standards"
+    DECISIONS = "decisions"
+    REVIEWS = "reviews"
+    LEARNINGS = "learnings"
+    PLAYBOOKS = "playbooks"
+    VAULT_NOTES = "vault_notes"
 
-    # New indexes for Optimal Brain
-    ERRORS = "errors"  # Error patterns and solutions
-    STANDARDS = "standards"  # Coding standards, security policies, workflow rules
-    DECISIONS = "decisions"  # Architectural and design decisions
-    REVIEWS = "reviews"  # Code review feedback
-    LEARNINGS = "learnings"  # Cross-agent learnings (shareable)
-    PLAYBOOKS = "playbooks"  # Curated, Auditor-approved reusable procedures
-    VAULT_NOTES = (
-        "vault_notes"  # Human-authored Obsidian vault notes (CEO's own writing)
-    )
+
+# The indexes a live plugin serves (roboco.services.optimal.PLUGIN_REGISTRY
+# registers exactly these): what kb search, stats and clear can act on and
+# the only names any agent-facing tool may advertise. CODE stays an enum
+# member but is retired (slow CPU embedding, poor retrieval); the old
+# "conversations" index went with the channels/messages subsystem (#306).
+SEARCHABLE_INDEX_TYPES: tuple[IndexType, ...] = (
+    IndexType.DOCUMENTATION,
+    IndexType.JOURNALS,
+    IndexType.ERRORS,
+    IndexType.STANDARDS,
+    IndexType.DECISIONS,
+    IndexType.REVIEWS,
+    IndexType.LEARNINGS,
+    IndexType.PLAYBOOKS,
+    IndexType.VAULT_NOTES,
+)
 
 
 @dataclass
@@ -58,15 +80,20 @@ class SearchOutcome:
 
 @dataclass
 class RAGResponse:
-    """Response from a RAG query."""
+    """Response from a RAG query.
+
+    ``context_used`` counts the context chunks used; ``search_stats`` holds
+    the results per index, ``search_errors`` the errors per index and
+    ``gaps`` the indexes that timed out.
+    """
 
     answer: str
     citations: list[SearchResult]
     query: str
-    context_used: int  # Number of context chunks used
-    search_stats: dict[str, int] = field(default_factory=dict)  # Results per index
-    search_errors: dict[str, str] = field(default_factory=dict)  # Errors per index
-    gaps: list[str] = field(default_factory=list)  # Indexes that timed out
+    context_used: int
+    search_stats: dict[str, int] = field(default_factory=dict)
+    search_errors: dict[str, str] = field(default_factory=dict)
+    gaps: list[str] = field(default_factory=list)
 
 
 @dataclass

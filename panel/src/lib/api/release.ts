@@ -1,5 +1,8 @@
 import axios from "axios";
 import api from "./client";
+import type { ConventionFinding } from "./conventions";
+import type { TaskMetricsReviewerChainEntry } from "./dashboard";
+import type { AttestationCiVerdict, TaskFinding } from "./tasks";
 
 // ---------------------------------------------------------------------------
 // Release manager — the CEO approves or rejects a held release proposal that
@@ -42,6 +45,41 @@ export interface ReleaseProposal {
   // tasks, see RELEASE_NO_MEMBER_TASKS_MESSAGE in @/lib/api/verification).
   member_task_ids: ReleaseMemberTaskId[];
   report: ReleaseReport;
+}
+
+// One member task's verification receipt for the rollup, in the wire shapes
+// the per-task endpoints already use (backend ReleaseMemberReceiptModel in
+// roboco/api/schemas/release.py): the task's acceptance criteria and
+// qa_notes, its findings ledger (newest round first), its conventions
+// findings, and its review-layer spawn chain.
+export interface ReleaseMemberReceipt {
+  task_id: string;
+  title: string;
+  acceptance_criteria: string[];
+  qa_notes: string | null;
+  findings: TaskFinding[];
+  conventions_findings: ConventionFinding[];
+  reviewer_chain: TaskMetricsReviewerChainEntry[];
+}
+
+// GET /release/proposal/verification: every member task's receipt in one
+// response, in the proposal's member order.
+export interface ReleaseVerification {
+  proposal_task_id: string;
+  members: ReleaseMemberReceipt[];
+}
+
+// One member task's PR CI verdict (backend ReleaseMemberCiVerdictModel).
+export interface ReleaseMemberCiVerdict {
+  task_id: string;
+  ci: AttestationCiVerdict;
+}
+
+// GET /release/proposal/ci-verdicts: every member PR's CI verdict, read from
+// the forge server-side a few at a time.
+export interface ReleaseCiVerdicts {
+  proposal_task_id: string;
+  verdicts: ReleaseMemberCiVerdict[];
 }
 
 export interface ReleaseExecuteResult {
@@ -115,6 +153,18 @@ export const releaseApi = {
       }
       throw err;
     }
+  },
+  getVerification: async (): Promise<ReleaseVerification> => {
+    const { data } = await api.get<ReleaseVerification>(
+      "/release/proposal/verification",
+    );
+    return data;
+  },
+  getCiVerdicts: async (): Promise<ReleaseCiVerdicts> => {
+    const { data } = await api.get<ReleaseCiVerdicts>(
+      "/release/proposal/ci-verdicts",
+    );
+    return data;
   },
   approve: async (): Promise<ReleaseExecuteResult> => {
     const { data } = await api.post<ReleaseExecuteResult>(

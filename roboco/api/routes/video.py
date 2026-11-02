@@ -190,7 +190,7 @@ async def get_video_preview(
         workspace = await get_workspace_service(db).ensure_read_clone(project.slug)
     except WorkspaceError as e:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(e)) from e
-    resolved = _resolve_preview_path(workspace.resolve(), file_path)
+    resolved = _resolve_preview_path(workspace, file_path)
     if resolved is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="No such preview file"

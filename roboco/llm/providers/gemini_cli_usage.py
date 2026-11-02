@@ -44,9 +44,12 @@ entrypoint today:
 Unlike grok (one model, so a blanket total was safe to price at a single
 output rate), Gemini's three GA models are priced 4-12x apart, so each
 model's tokens are priced with its OWN rate via
-``roboco.billing.pricing.calculate_cost`` and the per-model costs are summed
-before folding down to the single ``{model, total_tokens, cost_usd}`` shape
-the orchestrator reads back (the grok usage.json shape).
+``roboco.billing.pricing.calculate_cost`` and the per-model costs are summed.
+The orchestrator reads back the grok usage.json shape (``{model,
+total_tokens, cost_usd}``) plus the run's ``tokens_input``/``tokens_output``
+split summed over its models (the codex/kimi key names), and records that
+priced ``cost_usd`` as the session's cost: re-pricing the summed tokens under
+one model name could not reproduce a multi-model run.
 
 This module also classifies the CLI's raw exit code for the entrypoint
 (:func:`classify_exit_code`): the Gemini CLI has no dedicated exit code for a
@@ -143,20 +146,22 @@ def extract_model_stats(stats: dict[str, Any]) -> dict[str, tuple[int, int]]:
     }
 
 
-def usage_and_cost(stats: dict[str, Any]) -> tuple[int, float]:
-    """Return ``(total_tokens, total_cost_usd)`` for a run's ``stats`` block.
+def usage_and_cost(stats: dict[str, Any]) -> tuple[int, int, float]:
+    """Return ``(tokens_input, tokens_output, total_cost_usd)`` for a run's ``stats``.
 
     Each model's tokens are priced at ITS OWN rate (unlike grok's single-model
-    blanket total) and the per-model costs summed.
+    blanket total) and the per-model token counts and costs summed.
     """
-    total_tokens = 0
+    tokens_input = 0
+    tokens_output = 0
     total_cost = 0.0
     for model, (input_tokens, output_tokens) in extract_model_stats(stats).items():
-        total_tokens += input_tokens + output_tokens
+        tokens_input += input_tokens
+        tokens_output += output_tokens
         total_cost += calculate_cost(
             model, tokens_input=input_tokens, tokens_output=output_tokens
         )
-    return total_tokens, round(total_cost, 8)
+    return tokens_input, tokens_output, round(total_cost, 8)
 
 
 def _error_type(payload: dict[str, Any]) -> str | None:
@@ -247,7 +252,8 @@ def classify_exit_code(cli_exit_code: int, run_log: Path) -> int:
 
 
 def capture_run_usage(*, run_log: Path, fallback_model: str, out_path: Path) -> int:
-    """Write ``usage.json`` (``{model, total_tokens, cost_usd}``) for one run.
+    """Write ``usage.json`` for one run: ``{model, total_tokens, tokens_input,
+    tokens_output, cost_usd}``.
 
     Best-effort: a missing/unreadable log or a log with no parsed ``stats``
     still writes a zero-usage file (never raises) — a genuinely absent
@@ -256,10 +262,19 @@ def capture_run_usage(*, run_log: Path, fallback_model: str, out_path: Path) -> 
     Returns the total token count written.
     """
     stats = stats_from_run_log(run_log)
-    tokens, cost = usage_and_cost(stats)
+    tokens_input, tokens_output, cost = usage_and_cost(stats)
+    tokens = tokens_input + tokens_output
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(
-        json.dumps({"model": fallback_model, "total_tokens": tokens, "cost_usd": cost}),
+        json.dumps(
+            {
+                "model": fallback_model,
+                "total_tokens": tokens,
+                "tokens_input": tokens_input,
+                "tokens_output": tokens_output,
+                "cost_usd": cost,
+            }
+        ),
         encoding="utf-8",
     )
     return tokens

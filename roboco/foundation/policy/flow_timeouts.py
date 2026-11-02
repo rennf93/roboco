@@ -18,7 +18,7 @@ from __future__ import annotations
 # up to 300s). Deliberately EXCLUDES i_will_plan / delegate: the slow budget
 # also governs the server middleware wall, and i_will_plan is exactly the
 # verb that wedged in #326 holding the SELECT FOR UPDATE task-row lock — a
-# 900s budget would let a wedged planning verb block its task row for 15
+# 1500s budget would let a wedged planning verb block its task row for 25
 # minutes instead of 2. Healthy planning verbs are DB writes that complete
 # in seconds; their 30s+ production runs were contention symptoms.
 SLOW_VERBS = frozenset(
