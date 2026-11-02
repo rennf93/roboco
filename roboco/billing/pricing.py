@@ -53,32 +53,44 @@ _ANTHROPIC_FRAGMENTS = ("claude", "opus", "sonnet", "haiku")
 # Format: model_name_fragment → (input_usd_per_1m, output_usd_per_1m,
 #                                cache_read_usd_per_1m, cache_write_usd_per_1m)
 #
-# Cache read is charged at ~10 % of the input price.
-# Cache write is charged at ~25 % of the input price.
+# Cache read is charged at 0.1x the input price (0.05x on Opus 5.5 /
+# Sonnet 5.5). Cache write is the 5-minute-TTL rate, 1.25x the input price.
+# Source: platform.claude.com/docs/en/about-claude/pricing (verified 2026-10-28).
 #
 # Match on *substring* of model name so "claude-opus-5" and "opus" both
 # resolve to the same tier.
 # ---------------------------------------------------------------------------
 _PRICING: list[tuple[str, float, float, float, float]] = [
     # (fragment, input/1M, output/1M, cache_read/1M, cache_write/1M)
+    # Opus 5.5 (MODEL_MAP["opus"]); longest-fragment-wins keeps it off the
+    # Opus 5 row, whose fragment is its prefix.
+    ("claude-opus-5-5", 4.00, 20.00, 0.20, 5.00),
     # Opus 5
     ("claude-opus-5", 5.00, 25.00, 0.50, 6.25),
     # Opus 4 family — prices the historical usage rows only
     ("claude-opus-4", 5.00, 25.00, 0.50, 6.25),
     # Sonnet 4 / 3.7 / 3.5 family
-    ("claude-sonnet-4", 3.00, 15.00, 0.30, 0.75),
-    ("claude-3-7-sonnet", 3.00, 15.00, 0.30, 0.75),
-    ("claude-3-5-sonnet", 3.00, 15.00, 0.30, 0.75),
+    ("claude-sonnet-4", 3.00, 15.00, 0.30, 3.75),
+    ("claude-3-7-sonnet", 3.00, 15.00, 0.30, 3.75),
+    ("claude-3-5-sonnet", 3.00, 15.00, 0.30, 3.75),
+    # Sonnet 5.5 (MODEL_MAP["sonnet"]) - same $2/$10 as Sonnet 5, half the
+    # cache-read rate.
+    ("claude-sonnet-5-5", 2.00, 10.00, 0.10, 2.50),
     # Sonnet 5 - $2.00/$10.00 is the PERMANENT standard price, not a promo:
     # Anthropic's pricing page states the previously scheduled increase to
     # $3/$15 on 2026-09-01 "will not occur" (verified 2026-09-16 against
-    # platform.claude.com/docs/en/about-claude/pricing). Cache read $0.20;
-    # cache write at the usual ~25%-of-input convention.
-    ("claude-sonnet-5", 2.00, 10.00, 0.20, 0.50),
+    # platform.claude.com/docs/en/about-claude/pricing).
+    ("claude-sonnet-5", 2.00, 10.00, 0.20, 2.50),
+    # Haiku 5.5 (MODEL_MAP["haiku"]).
+    # shortcut: prices every request at the <=100K-token-prompt tier; a
+    # prompt over 100K bills 5x ($0.50/$2.50/$0.05/$0.625), but usage is
+    # aggregated per session so the per-request size is not known here.
+    # Upgrade when per-request usage is captured.
+    ("claude-haiku-5-5", 0.10, 0.50, 0.01, 0.125),
     # Haiku family
     ("claude-haiku-4", 1.00, 5.00, 0.10, 1.25),
-    ("claude-haiku-3-5", 1.00, 5.00, 0.10, 1.25),
-    ("claude-3-5-haiku", 1.00, 5.00, 0.10, 1.25),
+    ("claude-haiku-3-5", 0.80, 4.00, 0.08, 1.00),
+    ("claude-3-5-haiku", 0.80, 4.00, 0.08, 1.00),
     ("claude-haiku-3", 0.25, 1.25, 0.025, 0.0625),
     # xAI Grok — priced non-Anthropic (per-token via the xAI API). Cached-input
     # read is $0.20/1M; xAI publishes no cache-write premium, so cache_write is
@@ -130,16 +142,17 @@ _PRICING: list[tuple[str, float, float, float, float]] = [
     # cache_write falls back to the input rate (same convention as
     # grok-build/gpt-5.3-codex above).
     # Side effect: input_price_per_million("glm-5.3:cloud") is now $1.40 (was
-    # $0.0) - pricier than haiku's $1.00 - so the cost-tiered
+    # $0.0) - pricier than haiku's $0.10 - so the cost-tiered
     # complexity-override's downgrade-only comparator now REJECTS a new
     # qa/documenter pin to glm-5.3:cloud that was previously allowed when it
     # priced as free-tier. Intended: it really is costlier per input token.
     ("glm-5.3-flash", 0.15, 0.50, 0.03, 0.15),
     ("glm-5.3", 1.40, 4.40, 0.26, 1.40),
-    # Short aliases used in ROLE_MODEL_MAP / MODEL_MAP
-    ("opus", 5.00, 25.00, 0.50, 6.25),
-    ("sonnet", 3.00, 15.00, 0.30, 0.75),
-    ("haiku", 1.00, 5.00, 0.10, 1.25),
+    # Short aliases used in ROLE_MODEL_MAP / MODEL_MAP - priced as the model
+    # each alias resolves to in MODEL_MAP.
+    ("opus", 4.00, 20.00, 0.20, 5.00),
+    ("sonnet", 2.00, 10.00, 0.10, 2.50),
+    ("haiku", 0.10, 0.50, 0.01, 0.125),
 ]
 
 _MILLION = 1_000_000.0

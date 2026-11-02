@@ -40,9 +40,16 @@ class _FakeWorkspace:
 def _make_engine(
     task_svc: Any, workspace: _FakeWorkspace | None = None
 ) -> tuple[DepUpdateEngine, list[Any]]:
-    # AsyncMock, not MagicMock: run_cycle now awaits session.commit() to
-    # release the pool connection before each project's probe.
+    # An AsyncSession double. AsyncMock, not MagicMock: run_cycle awaits
+    # session.commit() to release the pool connection before each project's
+    # probe. begin_nested() and the Result that execute() returns are sync, as
+    # on SQLAlchemy's AsyncSession, so the decisions risk screen's settings
+    # read finds no row and its pilot resolves to off.
     session = AsyncMock()
+    session.begin_nested = MagicMock(return_value=AsyncMock())
+    session.execute.return_value = MagicMock(
+        scalar_one_or_none=MagicMock(return_value=None)
+    )
     engine = DepUpdateEngine(session, workspace=workspace or _FakeWorkspace())
     patchers = [
         patch(

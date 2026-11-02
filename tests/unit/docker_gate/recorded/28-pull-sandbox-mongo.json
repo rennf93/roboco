@@ -1,0 +1,6 @@
+{
+  "body": null,
+  "method": "POST",
+  "source": "pull-sandbox:mongo",
+  "target": "/v1.51/images/create?fromImage=docker.io%2Flibrary%2Fmongo&tag=8"
+}

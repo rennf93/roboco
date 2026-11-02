@@ -364,13 +364,16 @@ async def test_i_will_work_on_invalid_state_returns_invalid_state() -> None:
 
 
 @pytest.mark.asyncio
-async def test_i_will_work_on_blocks_when_journal_note_at_claim_missing() -> None:
+async def test_i_will_work_on_still_gates_when_the_claim_note_cannot_be_recorded() -> (
+    None
+):
     """Pre-gateway parity P1: i_will_work_on requires a journal:note at claim.
 
     The composed (claim, set_plan, start) sequence runs first — the claim
-    sticks. Then the post-claim tracing gate fires because no journal:note
-    exists for (agent, task), and the agent gets a tracing_gap with a
-    remediation hint to write a note and retry.
+    sticks. The verb then records its own plan as that note; when the write
+    fails and no journal:note exists for (agent, task), the post-claim
+    tracing gate still fires as defense-in-depth, and the agent gets a
+    tracing_gap with a remediation hint to write a note and retry.
     """
     agent_id = uuid4()
     task_id = uuid4()
@@ -412,6 +415,7 @@ async def test_i_will_work_on_blocks_when_journal_note_at_claim_missing() -> Non
     task_svc.start.return_value = in_progress_task
     journal_svc = AsyncMock()
     journal_svc.has_note_for_task.return_value = False
+    journal_svc.write_entry.side_effect = RuntimeError("journal unavailable")
     deps = _make_deps(task=task_svc, journal=journal_svc)
     c = Choreographer(deps)
 
@@ -431,6 +435,104 @@ async def test_i_will_work_on_blocks_when_journal_note_at_claim_missing() -> Non
     # the post-claim gate failed.
     task_svc.claim.assert_awaited_once_with(task_id, agent_id, provision=False)
     task_svc.start.assert_awaited_once_with(task_id, agent_id)
+
+
+def _work_claim_choreographer(
+    agent_id: Any, task_id: Any, started_plan: dict[str, Any]
+) -> tuple[Choreographer, AsyncMock]:
+    """A pending leaf whose claim+set_plan+start succeeds, persisting
+    ``started_plan``; the journal answers has_note from its own writes."""
+    pending_task = MagicMock(
+        id=task_id,
+        status="pending",
+        plan=None,
+        assigned_to=None,
+        team="backend",
+        parent_task_id=None,
+        sequence=0,
+        task_type="code",
+        commits=[],
+        pr_number=None,
+        branch_name="feature/backend/abc",
+        quick_context=None,
+    )
+    started = MagicMock(
+        id=task_id, status="in_progress", plan=started_plan, assigned_to=agent_id
+    )
+    task_svc = AsyncMock()
+    task_svc.get.side_effect = [pending_task, started]
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role="developer", team="backend", slug=None
+    )
+    task_svc.list_in_progress_for_agent.return_value = []
+    task_svc.list_paused_for_agent.return_value = []
+    task_svc.get_subtasks.return_value = []
+    task_svc.claim.return_value = MagicMock(
+        id=task_id, status="claimed", plan=None, assigned_to=agent_id
+    )
+    task_svc.set_plan.return_value = MagicMock(
+        id=task_id, status="claimed", plan=started_plan, assigned_to=agent_id
+    )
+    task_svc.start.return_value = started
+    journal_svc = AsyncMock()
+    journal_svc.has_note_for_task.side_effect = lambda *_a, **_k: (
+        journal_svc.write_entry.await_count > 0
+    )
+    return Choreographer(_make_deps(task=task_svc, journal=journal_svc)), journal_svc
+
+
+@pytest.mark.asyncio
+async def test_i_will_work_on_records_its_plan_as_the_claim_note() -> None:
+    """Write-then-gate, as i_will_plan does for the PM's decision: the plan
+    the developer just claimed with is its initial read of the task. note()
+    refuses any write before the claim exists, so the prompted order (note,
+    then i_will_work_on) was refused (dfeb2d8a, 86b799b8, 0f391d46 on
+    2026-10-28) and the claim-first order met a tracing_gap that cost a
+    second i_will_work_on (7 times that day)."""
+    agent_id, task_id = uuid4(), uuid4()
+    chor, journal_svc = _work_claim_choreographer(
+        agent_id, task_id, {"text": _GOOD_PLAN}
+    )
+
+    env = await chor.i_will_work_on(
+        agent_id=agent_id,
+        task_id=task_id,
+        plan=_GOOD_PLAN,
+        steps=_STEPS,
+        technical_considerations=_GOOD_TC,
+        risks=_GOOD_RISKS,
+    )
+
+    assert env.as_dict().get("error") is None, env.as_dict()
+    journal_svc.write_entry.assert_awaited_once()
+    written = journal_svc.write_entry.await_args.kwargs
+    assert written["agent_id"] == agent_id
+    assert written["task_id"] == task_id
+    assert written["scope"] == "note"
+    assert written["content"] == _GOOD_PLAN
+
+
+@pytest.mark.asyncio
+async def test_i_will_work_on_keeps_an_existing_claim_note() -> None:
+    """A re-claim (needs_revision, a reaped task) keeps the note it has."""
+    agent_id, task_id = uuid4(), uuid4()
+    chor, journal_svc = _work_claim_choreographer(
+        agent_id, task_id, {"text": _GOOD_PLAN}
+    )
+    journal_svc.has_note_for_task.side_effect = None
+    journal_svc.has_note_for_task.return_value = True
+
+    env = await chor.i_will_work_on(
+        agent_id=agent_id,
+        task_id=task_id,
+        plan=_GOOD_PLAN,
+        steps=_STEPS,
+        technical_considerations=_GOOD_TC,
+        risks=_GOOD_RISKS,
+    )
+
+    assert env.as_dict().get("error") is None, env.as_dict()
+    journal_svc.write_entry.assert_not_awaited()
 
 
 # test_i_am_done_with_catchup_full_chain removed:
@@ -516,7 +618,8 @@ async def test_i_am_done_reflect_note_addresses_acceptance_criteria() -> None:
         self_verified=False,
         progress_updates=[{"message": "p"}],
         acceptance_criteria=["AC1", "AC2"],
-        acceptance_criteria_status=[],  # nothing cited explicitly
+        # nothing cited explicitly
+        acceptance_criteria_status=[],
         commits=[{"sha": "abc"}],
         pr_number=8,
         pr_url="https://x/pr/8",
@@ -584,7 +687,8 @@ async def test_i_am_done_blocks_when_journal_reflect_missing() -> None:
         id=agent_id, role="developer", team="backend", slug=None
     )
     journal_svc = AsyncMock()
-    journal_svc.has_reflect_for_task.return_value = False  # no reflect
+    # no reflect
+    journal_svc.has_reflect_for_task.return_value = False
     # Satisfy JOURNAL_DURING_WORK_AT_LEAST_ONE so journal:reflect is the
     # load-bearing gap surfaced to the assertion.
     journal_svc.has_decision_for_task.return_value = True
@@ -656,7 +760,8 @@ async def test_i_am_done_skill_resolution_picks_existing_skill() -> None:
 
     qa_with_neither = MagicMock(id=uuid4(), skills=[{"id": "other_skill"}])
     skill3 = c._resolve_skill(qa_with_neither, ["code_review", "qa_review"])
-    assert skill3 == "code_review"  # fallback to first
+    # fallback to first
+    assert skill3 == "code_review"
 
 
 @pytest.mark.asyncio

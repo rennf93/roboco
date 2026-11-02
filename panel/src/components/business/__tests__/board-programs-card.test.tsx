@@ -25,7 +25,9 @@ function buildProgram(overrides: Partial<BoardProgram> = {}): BoardProgram {
   };
 }
 
-function buildCycle(overrides: Partial<BoardProgramCycle> = {}): BoardProgramCycle {
+function buildCycle(
+  overrides: Partial<BoardProgramCycle> = {},
+): BoardProgramCycle {
   return {
     id: "cycle-1",
     opened_at: "2026-08-01T00:00:00Z",

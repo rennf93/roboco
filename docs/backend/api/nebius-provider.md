@@ -68,7 +68,7 @@ Response items reuse `OpenRouterModelEntry` (`id`, `name`, `context_length`, `pr
 
 - **`derive_mode()`** returns `"nebius"` when exactly one GLOBAL assignment targets the NEBIUS provider.
 - **`apply_mode("nebius", default_model=...)`** (route `POST /api/providers/mode/apply`) clears every assignment, force-enables the seeded Nebius row, and sets the GLOBAL default to `default_model` (default `settings.nebius_cli_model`) via `provider_type_override=ModelProvider.NEBIUS` - the catalog check is bypassed because Token Factory models live in the live catalog, not `MODEL_CATALOG`. Like openrouter, there is no key check at mode-apply time; the spawn-time key check (ProviderError + entrypoint exit 78) is the gate, and the assignment-upsert path surfaces `provider_remediation`'s message ("Save the Nebius API key first (PUT /providers/nebius-key).") when the provider is disabled.
-- **Interactive guard**: NEBIUS is in `INTERACTIVE_UNSUPPORTED_PROVIDERS` - intake/secretary keep the legacy Anthropic path under fleet-wide Nebius mode, and an explicit AGENT_SLUG pin is refused loudly by the orchestrator guard.
+- **Interactive chats**: since 2026-09-17 NEBIUS is a live chat provider (`LIVE_CLI_PROVIDERS`), so intake/secretary run on `roboco-agent-nebius-live` (opencode) under Nebius routing, with the `roboco-intake` / `roboco-secretary` MCP server mounted at `/app/mcp-config.json` and the routed model passed as `ROBOCO_AGENT_MODEL` (`nebius/<model id>`). See `.claude/rules/agent-providers.md`, "Live chats".
 - **Upsert auto-enable**: NEBIUS is in the auto-enable tuple (the openrouter precedent) - an explicit assignment is a deliberate operator choice; the spawn-time check catches a missing key.
 
 ### Cost-tier limitation (same as OpenRouter)

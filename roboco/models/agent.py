@@ -32,8 +32,8 @@ class ModelConfig(RobocoBase):
         description="Model provider (anthropic, openai, local)",
     )
     name: str = Field(
-        default="claude-sonnet-4-20250514",
-        description="Model name (claude-sonnet-4-20250514, etc.)",
+        default="claude-sonnet-5-5",
+        description="Model name (claude-sonnet-5-5, etc.)",
     )
     fallback: str | None = Field(
         default=None, description="Fallback model if primary unavailable"

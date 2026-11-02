@@ -1,8 +1,32 @@
+# Each value must be true or false: pnpm 12 fails `pnpm install` on any other
+# value. esbuild is the only package left with an install script, and
+# `pnpm test`, `pnpm lint` and `pnpm preview` do not need it: esbuild loads its
+# prebuilt platform package. (hyperframes 0.8 dropped onnxruntime-node,
+# @google/genai and protobufjs; sharp 0.35 has no install script.)
 allowBuilds:
-  '@google/genai': set this to true or false
-  esbuild: set this to true or false
-  onnxruntime-node: set this to true or false
-  protobufjs: set this to true or false
-  sharp: set this to true or false
+  esbuild: false
+# hyperframes is pinned to the 0.8.216 the video-renderer renders with. pnpm
+# holds back releases younger than its minimum release age, so the exact pin
+# is excluded from that check, as video-renderer/pnpm-workspace.yaml does.
+minimumReleaseAgeExclude:
+  - hyperframes@0.8.216
+# hyperframes' own ranges admit releases without these fixes, so the floors
+# are lifted here.
 overrides:
-  adm-zip: '>=0.6.0'
+  # adm-zip 0.6.1 fixes GHSA-7q85-xj36-vmfc, GHSA-j5f4-cc29-5x44,
+  # GHSA-p634-w6r4-rjp2 and GHSA-vwc7-r8mq-g2x9, all of which 0.6.0 has
+  # (hyperframes asks for ^0.6.0).
+  adm-zip: ^0.6.1
+  # hyperframes asks for sharp ^0.35.0 (optional); 0.35.5 carries the libvips,
+  # libheif and librsvg fixes.
+  sharp: ^0.35.5
+  # hyperframes pins undici to exactly 7.25.0, which carries 29 advisories;
+  # 7.30.1 is the first 7.x release that fixes all of them.
+  undici: ^7.30.1
+# pmOnFail: ignore keeps pnpm-lock.yaml one YAML document. Without it pnpm 12
+# writes a packageManagerDependencies document at the top of the lockfile, and
+# GitHub's dependency graph reads only the first document
+# (dependabot-core#15904, open), which would silence and close the Dependabot
+# alerts on this lockfile. pnpm then no longer switches to the packageManager
+# pin itself; corepack still enforces it in Motion CI.
+pmOnFail: ignore
