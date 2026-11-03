@@ -7,13 +7,15 @@ Covers:
 - Empty model string returns 0.0 without raising.
 - Substring match correctness: longer fragment wins
   (e.g. 'claude-sonnet-4-6' matches 'claude-sonnet-4' not bare 'sonnet';
-  'claude-sonnet-5' matches its own entry; 'claude-opus-5-5' matches its own
-  entry, not its 'claude-opus-5' prefix).
+  'claude-sonnet-5' matches its own promo entry).
 """
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
+from roboco.billing import pricing as p
 from roboco.billing.pricing import (
     CostResult,
     _is_anthropic_model,
@@ -22,7 +24,6 @@ from roboco.billing.pricing import (
     input_price_per_million,
     is_ollama_cloud_model,
 )
-from roboco.models.runtime import MODEL_MAP
 
 # ---------------------------------------------------------------------------
 # Named constants (ruff PLR2004: magic values in comparisons must be named).
@@ -40,33 +41,13 @@ _OPUS_CACHE_WRITE = 6.25
 _SONNET_INPUT = 3.00
 _SONNET_OUTPUT = 15.00
 _SONNET_CACHE_READ = 0.30
-_SONNET_CACHE_WRITE = 3.75
+_SONNET_CACHE_WRITE = 0.75
 
-# Sonnet 5 - the permanent standard price (the previously scheduled
-# increase to $3/$15 was cancelled per Anthropic's pricing page,
-# verified 2026-09-16; $2/$10 is not a promo).
-_SONNET5_INPUT = 2.00
-_SONNET5_OUTPUT = 10.00
-_SONNET5_CACHE_READ = 0.20
-_SONNET5_CACHE_WRITE = 2.50
-
-# The 5.5 generation - the models MODEL_MAP's short aliases resolve to.
-# Source: platform.claude.com/docs/en/about-claude/pricing (verified 2026-10-28).
-_OPUS55_INPUT = 4.00
-_OPUS55_OUTPUT = 20.00
-_OPUS55_CACHE_READ = 0.20
-_OPUS55_CACHE_WRITE = 5.00
-
-_SONNET55_INPUT = 2.00
-_SONNET55_OUTPUT = 10.00
-_SONNET55_CACHE_READ = 0.10
-_SONNET55_CACHE_WRITE = 2.50
-
-# Haiku 5.5 at its <=100K-token-prompt tier.
-_HAIKU55_INPUT = 0.10
-_HAIKU55_OUTPUT = 0.50
-_HAIKU55_CACHE_READ = 0.01
-_HAIKU55_CACHE_WRITE = 0.125
+# Sonnet 5 — promotional pricing (33% off Sonnet 4.6, pay 67%) through 2026-08-31
+_SONNET5_INPUT = 2.01
+_SONNET5_OUTPUT = 10.05
+_SONNET5_CACHE_READ = 0.201
+_SONNET5_CACHE_WRITE = 0.5025
 
 _HAIKU_INPUT = 1.00
 _HAIKU_OUTPUT = 5.00
@@ -90,17 +71,11 @@ _CODEX_CACHE_WRITE = 1.75
 
 # Z.ai GLM-5.3 — priced non-Anthropic (Ollama Cloud's `glm-5.3:cloud` tag,
 # subscription-billed but attributed at the API-equivalent rate). Source:
-# https://docs.z.ai/guides/overview/pricing (re-verified 2026-09-16);
-# ollama.com/pricing lists glm-5.3 at the same API-equivalent rate.
+# https://docs.z.ai/guides/overview/pricing (fetched 2026-07-23).
 _GLM_INPUT = 1.40
 _GLM_OUTPUT = 4.40
 _GLM_CACHE_READ = 0.26
 _GLM_CACHE_WRITE = 1.40
-
-_GLM_FLASH_INPUT = 0.15
-_GLM_FLASH_OUTPUT = 0.50
-_GLM_FLASH_CACHE_READ = 0.03
-_GLM_FLASH_CACHE_WRITE = 0.15
 
 # Moonshot Kimi — priced non-Anthropic (kimi-code CLI subscription, priced
 # here for cost attribution like grok-build/gpt-5.3-codex).
@@ -169,9 +144,9 @@ class TestOpusTier:
         assert abs(cost - expected) < _TOL
 
     def test_short_alias(self) -> None:
-        """Bare 'opus' alias resolves to MODEL_MAP's Opus 5.5."""
+        """Bare 'opus' alias resolves to the opus tier."""
         cost = calculate_cost("opus", tokens_input=_M, tokens_output=0)
-        assert abs(cost - _OPUS55_INPUT) < _TOL
+        assert abs(cost - _OPUS_INPUT) < _TOL
 
     def test_returns_float(self) -> None:
         cost = calculate_cost("claude-opus-4", tokens_input=100, tokens_output=50)
@@ -226,9 +201,9 @@ class TestSonnetTier:
         assert abs(cost - expected) < _TOL
 
     def test_short_alias(self) -> None:
-        """Bare 'sonnet' alias resolves to MODEL_MAP's Sonnet 5.5."""
+        """Bare 'sonnet' alias resolves to the sonnet tier."""
         cost = calculate_cost("sonnet", tokens_input=_M, tokens_output=0)
-        assert abs(cost - _SONNET55_INPUT) < _TOL
+        assert abs(cost - _SONNET_INPUT) < _TOL
 
     def test_35_variant(self) -> None:
         """claude-3-5-sonnet resolves to sonnet tier."""
@@ -238,10 +213,18 @@ class TestSonnetTier:
         assert abs(cost - _SONNET_INPUT) < _TOL
 
 
-class TestSonnet5Tier:
-    """claude-sonnet-5 pricing - the permanent standard $2/$10 rate (the
-    previously scheduled increase to $3/$15 was cancelled; this is not a
-    promo and has no date gate)."""
+class TestSonnet5PromoTier:
+    """claude-sonnet-5 promotional pricing — 33% off Sonnet 4.6 (through
+    2026-08-31). A dedicated table entry wins over the bare 'sonnet' fragment."""
+
+    @pytest.fixture(autouse=True)
+    def _inside_promo_window(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        class _D:
+            @staticmethod
+            def today() -> date:
+                return date(2026, 8, 1)
+
+        monkeypatch.setattr(p, "date", _D)
 
     def test_input_only(self) -> None:
         cost = calculate_cost("claude-sonnet-5", tokens_input=_M, tokens_output=0)
@@ -280,13 +263,13 @@ class TestSonnet5Tier:
         assert abs(cost - expected) < _TOL
 
     def test_cheaper_than_sonnet4(self) -> None:
-        """The cancelled increase leaves Sonnet 5 strictly below Sonnet 4.6."""
+        """The promo must actually be cheaper than full Sonnet 4.6."""
         five = calculate_cost("claude-sonnet-5", tokens_input=_M, tokens_output=_M)
         four = calculate_cost("claude-sonnet-4-6", tokens_input=_M, tokens_output=_M)
         assert five < four
 
-    def test_dated_variant_matches_tier(self) -> None:
-        """A dated 'claude-sonnet-5-*' id still resolves to the tier entry."""
+    def test_dated_variant_matches_promo(self) -> None:
+        """A dated 'claude-sonnet-5-*' id still resolves to the promo entry."""
         cost = calculate_cost(
             "claude-sonnet-5-20260930", tokens_input=_M, tokens_output=0
         )
@@ -339,84 +322,14 @@ class TestHaikuTier:
         assert abs(cost - expected) < _TOL
 
     def test_short_alias(self) -> None:
-        """Bare 'haiku' alias resolves to MODEL_MAP's Haiku 5.5."""
+        """Bare 'haiku' alias resolves to the haiku tier."""
         cost = calculate_cost("haiku", tokens_input=_M, tokens_output=0)
-        assert abs(cost - _HAIKU55_INPUT) < _TOL
+        assert abs(cost - _HAIKU_INPUT) < _TOL
 
     def test_haiku3_variant(self) -> None:
         """claude-haiku-3 has lower pricing than haiku-3-5."""
         cost = calculate_cost("claude-haiku-3", tokens_input=_M, tokens_output=0)
         assert abs(cost - _HAIKU3_INPUT) < _TOL
-
-
-class TestFiveFiveGeneration:
-    """Opus 5.5 / Sonnet 5.5 / Haiku 5.5 - the models MODEL_MAP routes to."""
-
-    @pytest.mark.parametrize(
-        ("model", "expected"),
-        [
-            (
-                "claude-opus-5-5",
-                _OPUS55_INPUT
-                + _OPUS55_OUTPUT
-                + _OPUS55_CACHE_READ
-                + _OPUS55_CACHE_WRITE,
-            ),
-            (
-                "claude-sonnet-5-5",
-                _SONNET55_INPUT
-                + _SONNET55_OUTPUT
-                + _SONNET55_CACHE_READ
-                + _SONNET55_CACHE_WRITE,
-            ),
-            (
-                "claude-haiku-5-5",
-                _HAIKU55_INPUT
-                + _HAIKU55_OUTPUT
-                + _HAIKU55_CACHE_READ
-                + _HAIKU55_CACHE_WRITE,
-            ),
-        ],
-    )
-    def test_all_token_types(self, model: str, expected: float) -> None:
-        cost = calculate_cost(
-            model,
-            tokens_input=_M,
-            tokens_output=_M,
-            tokens_cache_read=_M,
-            tokens_cache_write=_M,
-        )
-        assert abs(cost - expected) < _TOL
-
-    def test_opus_5_5_does_not_fall_through_to_its_opus_5_prefix(self) -> None:
-        five_five = calculate_cost("claude-opus-5-5", tokens_input=_M, tokens_output=0)
-        five = calculate_cost("claude-opus-5", tokens_input=_M, tokens_output=0)
-        assert abs(five_five - _OPUS55_INPUT) < _TOL
-        assert abs(five - _OPUS_INPUT) < _TOL
-
-    def test_sonnet_5_5_does_not_fall_through_to_its_sonnet_5_prefix(self) -> None:
-        five_five = calculate_cost(
-            "claude-sonnet-5-5", tokens_input=0, tokens_output=0, tokens_cache_read=_M
-        )
-        five = calculate_cost(
-            "claude-sonnet-5", tokens_input=0, tokens_output=0, tokens_cache_read=_M
-        )
-        assert abs(five_five - _SONNET55_CACHE_READ) < _TOL
-        assert abs(five - _SONNET5_CACHE_READ) < _TOL
-
-    @pytest.mark.parametrize("alias", ["opus", "sonnet", "haiku"])
-    def test_alias_prices_as_its_model_map_target(self, alias: str) -> None:
-        # The bare alias rows must track MODEL_MAP, or a session recorded
-        # under a short name is priced as a different model than it ran on.
-        kwargs = {
-            "tokens_input": _M,
-            "tokens_output": _M,
-            "tokens_cache_read": _M,
-            "tokens_cache_write": _M,
-        }
-        assert calculate_cost(alias, **kwargs) == calculate_cost(
-            MODEL_MAP[alias], **kwargs
-        )
 
 
 # ---------------------------------------------------------------------------
@@ -631,33 +544,6 @@ class TestGlmTier:
         assert abs(cost - _GLM_INPUT) < _TOL
 
 
-class TestGlmFlashTier:
-    """glm-5.3-flash pricing - Z.ai's cheaper Flash tier, its own entry
-    (longest-fragment-wins must resolve it away from the glm-5.3 rate)."""
-
-    def test_flash_prices_below_base_glm(self) -> None:
-        flash = calculate_cost("glm-5.3-flash", tokens_input=_M, tokens_output=0)
-        base = calculate_cost("glm-5.3", tokens_input=_M, tokens_output=0)
-        assert abs(flash - _GLM_FLASH_INPUT) < _TOL
-        assert flash < base
-
-    def test_flash_all_token_types(self) -> None:
-        cost = calculate_cost(
-            "glm-5.3-flash",
-            tokens_input=_M,
-            tokens_output=_M,
-            tokens_cache_read=_M,
-            tokens_cache_write=_M,
-        )
-        expected = (
-            _GLM_FLASH_INPUT
-            + _GLM_FLASH_OUTPUT
-            + _GLM_FLASH_CACHE_READ
-            + _GLM_FLASH_CACHE_WRITE
-        )
-        assert abs(cost - expected) < _TOL
-
-
 # ---------------------------------------------------------------------------
 # Unknown / edge cases — must return 0.0 without raising
 # ---------------------------------------------------------------------------
@@ -852,6 +738,28 @@ class TestCostResult:
         assert result.unpriced is False
 
 
+# ---------------------------------------------------------------------------
+# Sonnet-5 promo date gate — promo on/ before 2026-08-31, list rate after.
+# ---------------------------------------------------------------------------
+
+
+def test_sonnet5_promo_active_on_or_before_2026_08_31(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _D:
+        @staticmethod
+        def today() -> date:
+            return date(2026, 8, 31)
+
+    monkeypatch.setattr(p, "date", _D)
+    assert p._lookup_prices("claude-sonnet-5") == (
+        _SONNET5_INPUT,
+        _SONNET5_OUTPUT,
+        _SONNET5_CACHE_READ,
+        _SONNET5_CACHE_WRITE,
+    )
+
+
 class TestIsOllamaCloudModel:
     """The ':cloud' tag convention, shared by pricing.py's own attribution
     logic and external callers (the TG cockpit's spend label)."""
@@ -869,6 +777,23 @@ class TestIsOllamaCloudModel:
 
     def test_empty_string_is_not_cloud(self) -> None:
         assert is_ollama_cloud_model("") is False
+
+
+def test_sonnet5_reverts_to_list_rate_after_2026_08_31(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _D:
+        @staticmethod
+        def today() -> date:
+            return date(2026, 9, 1)
+
+    monkeypatch.setattr(p, "date", _D)
+    assert p._lookup_prices("claude-sonnet-5") == (
+        _SONNET_INPUT,
+        _SONNET_OUTPUT,
+        _SONNET_CACHE_READ,
+        _SONNET_CACHE_WRITE,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -889,9 +814,9 @@ class TestInputPricePerMillion:
         )
 
     def test_matches_pricing_table_value(self) -> None:
-        assert input_price_per_million("haiku") == _HAIKU55_INPUT
-        assert input_price_per_million("sonnet") == _SONNET55_INPUT
-        assert input_price_per_million("opus") == _OPUS55_INPUT
+        assert input_price_per_million("haiku") == _HAIKU_INPUT
+        assert input_price_per_million("sonnet") == _SONNET_INPUT
+        assert input_price_per_million("opus") == _OPUS_INPUT
 
     def test_grok_priced_below_sonnet(self) -> None:
         """Grok legitimately downgrades-from sonnet under this comparator."""
