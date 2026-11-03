@@ -86,7 +86,9 @@ describe("deriveStuckState", () => {
   });
 
   it("returns the wedge cycle entries verbatim", () => {
-    const cycle = [{ actor: "main-pm", verb: "respawn", timestamp: "2026-09-27T00:00:00Z" }];
+    const cycle = [
+      { actor: "main-pm", verb: "respawn", timestamp: "2026-09-27T00:00:00Z" },
+    ];
     const state = deriveStuckState(
       baseTask({ open_wedge_strikes: 1, wedge_cycle: cycle }),
     );

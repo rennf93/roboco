@@ -58,7 +58,12 @@ describe("TasksPage — stuck filter", () => {
   it("sends the stuck param to the backend and lists exactly the returned set", async () => {
     urlParams = "stuck=1";
     list.mockResolvedValue([
-      { id: "stuck-1", title: "Wedged", status: "in_progress", team: "backend" },
+      {
+        id: "stuck-1",
+        title: "Wedged",
+        status: "in_progress",
+        team: "backend",
+      },
     ]);
     render(wrapper(<TasksPage />));
 
@@ -67,9 +72,7 @@ describe("TasksPage — stuck filter", () => {
         expect.objectContaining({ id: "stuck-1" }),
       ]),
     );
-    expect(list).toHaveBeenCalledWith(
-      expect.objectContaining({ stuck: true }),
-    );
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({ stuck: true }));
   });
 
   it("does not send the stuck param when the filter is off", async () => {

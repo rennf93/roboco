@@ -13,7 +13,9 @@ The filter sends a query parameter to the tasks list endpoint and renders exactl
 | API client | `tasksApi.list` appends `stuck=true` to `GET /tasks/summary` only when `filters.stuck` is truthy. |
 | Render | The page hands the returned `tasks` straight to `TaskTable`. |
 
-**Assumed parameter name.** The cross-cell contract left the exact parameter name to the backend cell. The panel assumes `stuck=true`. If the backend ships a different name, the change is one line in `tasksApi.list` (`params.append("stuck", "true")`); the URL state and component props stay as they are. Confirm against the merged backend slice.
+**Parameter name: pending be-pm confirmation.** The cross-cell contract left the exact parameter name to the backend cell. The panel assumes `stuck=true`, and the name is **pending be-pm confirmation via main-pm** (not yet confirmed at the time of writing; record the confirmed name here when it arrives). If the backend ships a different name, the change is the single line in `tasksApi.list` (`params.append("stuck", "true")`); the URL state and component props stay as they are.
+
+**Summary wire.** The list is served by `GET /tasks/summary`, so the stuck fields must ride the summary rows, not just the full task payload. `TaskSummaryWire` (`panel/src/lib/api/tasks.ts`) carries `active_time_since_progress`, `open_wedge_strikes`, `wedge_cycle` and `blocker_resolver_type`, and `summaryToTask` passes them through so kanban cards (which read from `useTasks` -> `tasksApi.list`) can render the stuck chip. The backend `TaskSummaryResponse` does not carry them yet; be-pm has been asked via main-pm to add them, and until then the wire is mocked in tests.
 
 ## Component: `TaskFilters`
 
@@ -50,5 +52,7 @@ The backend slice was not merged at QA time, so the contract is mocked.
 
 - `app/(dashboard)/tasks/__tests__/stuck-filter.test.tsx`: mocks `tasksApi.list`. With `?stuck=1`, asserts the call carries `stuck: true` and that `TaskTable` receives exactly the mocked response; with no param, asserts the `stuck` key is absent.
 - `components/tasks/__tests__/task-filters-stuck.test.tsx`: toggle hidden without `onStuckChange`; click calls `onStuckChange(true)` with `aria-pressed="false"` beforehand; active badge removal and Clear all both call `onStuckChange(false)`.
+
+- `lib/api/__tests__/tasks-summary-stuck.test.tsx`: mocks the `/tasks/summary` wire, runs rows through `tasksApi.list` into `KanbanCard`, and asserts the stuck chip renders (strikes, and human-blocked via `blocker_resolver_type`) and is absent for a healthy row.
 
 Once the backend ships, re-check the parameter name and swap in real fixtures if the response shape differs.
