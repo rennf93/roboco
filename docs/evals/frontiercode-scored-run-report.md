@@ -12,11 +12,13 @@ This report records what was attempted. It contains no score, because no harness
 - Runner: `EvalRunner.run_cohort` (`roboco/eval/runner.py`). It replays fixtures through the real delivery lifecycle in a disposable stack: a fake GitHub REST, a local git origin, a scratch database.
 - Real spawn: `OrchestratorStageSpawner` drives one `AgentOrchestrator` container spawn per turn (`runner.py`).
 - Scoring: deterministic metrics plus a local-model judge. The judge output is marked `"non_deterministic": true`.
-- Scope: developer-role fixtures only.
+- Scope: twelve fixtures exist. The default `--fixtures` set is the six developer-role ones (`roboco/eval/__main__.py:50`). The six QA and PM fixtures target other roles.
 
 ## Fixtures
 
-Six golden tasks are checked in (`roboco/eval/fixtures.py`):
+Twelve golden tasks are checked in (`roboco/eval/fixtures.py`).
+
+Developer-role (the default `--fixtures` set):
 
 1. `bugfix-off-by-one`
 2. `bugfix-null-check`
@@ -24,6 +26,15 @@ Six golden tasks are checked in (`roboco/eval/fixtures.py`):
 4. `refactor-duplicate-normalize`
 5. `docs-readme-flag`
 6. `research-magic-constant`
+
+Seeded-defect fixtures, `target_role` set to `qa` or `cell_pm`:
+
+7. `qa-catch-off-by-one` (qa)
+8. `pm-delegate-pagination-fix` (cell_pm)
+9. `qa-catch-dropped-ac` (qa)
+10. `qa-catch-conventions-misplacement` (qa)
+11. `qa-catch-security-flaw` (qa)
+12. `qa-catch-vacuous-test` (qa)
 
 Each is a small seeded repo plus a brief and a checked-in expectation. They are authored fixtures, not sourced from real pull requests.
 
@@ -55,7 +66,7 @@ No run id exists, so no figure is given.
 
 - It shows the harness exists, is invocable, and is gated on infrastructure this sandbox lacks.
 - It does not show how any model scores on it.
-- FrontierCode 1.1 uses 150 tasks from real open-source pull requests, 1,000+ reviewer-defined criteria, and blocking criteria. This harness has six authored fixtures. The two are not comparable, and no comparison is made.
+- FrontierCode 1.1 uses 150 tasks from real open-source pull requests, 1,000+ reviewer-defined criteria, and blocking criteria. This harness has twelve authored fixtures (six developer-role, six QA/PM seeded-defect). The two are not comparable, and no comparison is made.
 
 ## Follow-up
 

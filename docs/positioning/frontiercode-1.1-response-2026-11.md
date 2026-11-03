@@ -9,7 +9,7 @@ Source: [Runtime Wire — Cognition adds Grok 4.6 to Devin's multi-model coding 
 ## Verified facts
 
 1. **The harness exists.** `python -m roboco.eval run` replays golden tasks through the real build, review, document, merge lifecycle (`roboco/eval/__main__.py`, `roboco/eval/runner.py`). Real spawn is wired in v0.28.0 #701.
-2. **It is small.** Six authored fixtures (`roboco/eval/fixtures.py`). FrontierCode 1.1 has 150 tasks from real pull requests. The two are not comparable.
+2. **It is small.** Twelve authored fixtures (`roboco/eval/fixtures.py`): six developer-role, the default set, and six QA/PM seeded-defect. FrontierCode 1.1 has 150 tasks from real pull requests. The two are not comparable.
 3. **No scored run completed.** The attempt in this sandbox failed on missing Docker and a shell guard. Zero run ids, zero scores. Full account: [frontiercode-scored-run-report.md](../evals/frontiercode-scored-run-report.md).
 4. **The methodology gaps are written down.** Task sourcing, reviewer-defined criteria, blocking criteria, and retrieval controls are compared in [frontiercode-1.1-gap-analysis.md](../evals/frontiercode-1.1-gap-analysis.md).
 5. **What changed.** Two docs landed: the gap analysis and the scored-run report. No code changed. The report has an empty results table that stays empty until a run produces a receipt.
