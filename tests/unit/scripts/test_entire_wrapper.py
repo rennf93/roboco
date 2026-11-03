@@ -18,6 +18,7 @@ import pytest
 
 WRAPPER = Path(__file__).parents[3] / "docker" / "scripts" / "entire-wrapper.sh"
 _REAL_PATH_IN_IMAGE = "/usr/local/lib/entire/entire"
+_HOOK_EXIT_STATUS = 3
 
 
 @pytest.fixture
@@ -105,3 +106,35 @@ def test_flag_on_refuses_brain_commands_and_says_why(
     assert result.returncode == 1
     assert "Brain is not available" in result.stderr
     assert _real_calls(calls) == []
+
+
+def test_flag_on_hook_leaves_its_git_objects_readable_by_the_agent_group(
+    tmp_path: Path,
+) -> None:
+    # Entire writes objects 0600; the git user (agent group only) then reads
+    # the clone as corrupt and every fetch fails.
+    repo = tmp_path / "clone"
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    obj = repo / ".git" / "objects" / "fb" / "5b70ef"
+    real = tmp_path / "real-entire"
+    real.write_text(
+        f"#!/bin/sh\nmkdir -p {obj.parent}\n(umask 077; : > {obj})\n"
+        f"exit {_HOOK_EXIT_STATUS}\n"
+    )
+    real.chmod(0o755)
+    wrapper = tmp_path / "entire"
+    wrapper.write_text(WRAPPER.read_text().replace(_REAL_PATH_IN_IMAGE, str(real)))
+    wrapper.chmod(0o755)
+    env = {**os.environ, "ROBOCO_ENTIRE_ENABLED": "true"}
+
+    result = subprocess.run(
+        [str(wrapper), "hooks", "claude-code", "stop"],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == _HOOK_EXIT_STATUS, "the hook's own status is kept"
+    assert obj.stat().st_mode & 0o040
