@@ -435,8 +435,9 @@ async def test_resync_installs_the_version_the_lockfile_pins(tmp_path: Path) -> 
 async def test_resync_leaves_the_old_venv_usable_until_the_swap(
     tmp_path: Path,
 ) -> None:
-    """A sibling worktree on the old venv is not broken while the new one builds,
-    and concurrent re-syncs for one lockfile serialize into a single install."""
+    """A sibling linked through the clone-root `.venv` keeps reading the old venv
+    while the new one builds (the swap then moves it to `.venv-legacy`), and
+    concurrent re-syncs for one lockfile serialize into a single install."""
     clone_root = _make_workspace(tmp_path)
     _legacy_venv(clone_root, "7.3.1")
     worktree = _worktree_with_lock(clone_root, "7.8.2")
@@ -465,6 +466,30 @@ async def test_resync_leaves_the_old_venv_usable_until_the_swap(
     # The replaced venv survives the swap for anything still running on it.
     legacy = clone_root / ".venv-legacy" / _INSTALLED_VERSION_FILE
     assert legacy.read_text() == "7.3.1"
+
+
+@pytest.mark.asyncio
+async def test_swap_pins_a_clone_root_linked_sibling_to_its_venv(
+    tmp_path: Path,
+) -> None:
+    """A sibling linked `../../.venv` over the clone-time venv (lock X) still
+    reads X after the mover swaps to Y and then to Z."""
+    clone_root = _make_workspace(tmp_path)
+    _legacy_venv(clone_root, "X")
+    mover = _worktree_with_lock(clone_root, "Y")
+    sibling = clone_root / ".worktrees" / "sibling01"
+    sibling.mkdir()
+    (sibling / ".venv").symlink_to("../../.venv")
+    svc = _service()
+
+    with patch("roboco.services.workspace.run_in_workspace_container", _fake_uv_sync()):
+        assert await svc.resync_shared_venv(clone_root, mover) is True
+        (mover / "uv.lock").write_text(_lock_pinning("Z"))
+        assert await svc.resync_shared_venv(clone_root, mover) is True
+
+    assert _installed_version(clone_root) == "Z"
+    assert (sibling / ".venv").readlink() == Path("../../.venv-legacy")
+    assert (sibling / ".venv" / _INSTALLED_VERSION_FILE).read_text() == "X"
 
 
 @pytest.mark.asyncio
