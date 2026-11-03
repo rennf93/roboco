@@ -135,60 +135,63 @@ export function PlaybookReviewQueue({ className }: { className?: string }) {
           )}
           {view === "drafts" &&
             pending.map((pb) => (
-            <div
-              key={pb.id}
-              className="rounded-lg border p-4 transition-colors hover:bg-muted/50"
-            >
-              <div className="mb-1 flex items-center gap-2">
-                <span className="font-medium">{pb.title}</span>
-                {pb.team && (
-                  <HelpTip label="Team that authored this playbook">
-                    <Badge variant="outline">{pb.team}</Badge>
+              <div
+                key={pb.id}
+                className="rounded-lg border p-4 transition-colors hover:bg-muted/50"
+              >
+                <div className="mb-1 flex items-center gap-2">
+                  <span className="font-medium">{pb.title}</span>
+                  {pb.team && (
+                    <HelpTip label="Team that authored this playbook">
+                      <Badge variant="outline">{pb.team}</Badge>
+                    </HelpTip>
+                  )}
+                  {pb.tags.map((t) => (
+                    <HelpTip
+                      key={t}
+                      label="Search/filter tag for this playbook"
+                    >
+                      <Badge variant="secondary" className="text-xs">
+                        {t}
+                      </Badge>
+                    </HelpTip>
+                  ))}
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  <span className="font-semibold">When:</span> {pb.problem}
+                </p>
+                <pre className="mt-2 max-h-40 overflow-auto rounded bg-muted p-2 text-xs whitespace-pre-wrap">
+                  {pb.procedure}
+                </pre>
+                <div className="mt-3 flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
+                  <HelpTip label="Archives this draft — it is never indexed">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="text-destructive hover:text-destructive"
+                      onClick={() => setRejecting(pb)}
+                    >
+                      <XCircle className="mr-1 h-4 w-4" />
+                      Reject
+                    </Button>
                   </HelpTip>
-                )}
-                {pb.tags.map((t) => (
-                  <HelpTip key={t} label="Search/filter tag for this playbook">
-                    <Badge variant="secondary" className="text-xs">
-                      {t}
-                    </Badge>
+                  <HelpTip label="Indexes this playbook so it's auto-suggested to agents">
+                    <Button
+                      size="sm"
+                      className="bg-green-600 hover:bg-green-700"
+                      disabled={
+                        approveMutation.isPending &&
+                        approveMutation.variables === pb.id
+                      }
+                      onClick={() => approveMutation.mutate(pb.id)}
+                    >
+                      <CheckCircle2 className="mr-1 h-4 w-4" />
+                      Approve
+                    </Button>
                   </HelpTip>
-                ))}
+                </div>
               </div>
-              <p className="text-sm text-muted-foreground">
-                <span className="font-semibold">When:</span> {pb.problem}
-              </p>
-              <pre className="mt-2 max-h-40 overflow-auto rounded bg-muted p-2 text-xs whitespace-pre-wrap">
-                {pb.procedure}
-              </pre>
-              <div className="mt-3 flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
-                <HelpTip label="Archives this draft — it is never indexed">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="text-destructive hover:text-destructive"
-                    onClick={() => setRejecting(pb)}
-                  >
-                    <XCircle className="mr-1 h-4 w-4" />
-                    Reject
-                  </Button>
-                </HelpTip>
-                <HelpTip label="Indexes this playbook so it's auto-suggested to agents">
-                  <Button
-                    size="sm"
-                    className="bg-green-600 hover:bg-green-700"
-                    disabled={
-                      approveMutation.isPending &&
-                      approveMutation.variables === pb.id
-                    }
-                    onClick={() => approveMutation.mutate(pb.id)}
-                  >
-                    <CheckCircle2 className="mr-1 h-4 w-4" />
-                    Approve
-                  </Button>
-                </HelpTip>
-              </div>
-            </div>
-          ))}
+            ))}
         </CardContent>
       </Card>
 
