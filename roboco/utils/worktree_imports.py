@@ -21,6 +21,12 @@ the worktree the process runs in (fe-doc's ``make codegen`` regenerated an
 Aug 31 verb table into every push of f28b1d75, 2026-11-03). Started from the
 clone root, it changes nothing.
 
+A ``uv sync`` run from a worktree on that venv rewrites the editable ``.pth``
+to name that worktree, so the line can name ANOTHER task's worktree, on that
+task's older base. Such an entry moves to the worktree served too (fe-dev-1's
+``make codegen`` for 79dbdad0 rendered pre-``c4c493da`` lifecycle text from a
+sibling worktree, 2026-11-03).
+
 Standard library only: it runs inside every project's venv, where RoboCo is
 not installed.
 """
@@ -82,12 +88,15 @@ def _current_directory() -> str:
 
 
 def _same_place_inside_worktree(entry: str, worktree: Path) -> str:
-    """``entry`` moved from the clone root into ``worktree``; unchanged when it
-    is relative, outside the clone root, or under a clone-root-only directory."""
+    """``entry`` moved from the clone root, or from any task worktree, into
+    ``worktree``; unchanged when it is relative, outside the clone root, or
+    under a clone-root-only directory."""
     try:
         relative = Path(os.path.normpath(entry)).relative_to(worktree.parent.parent)
     except ValueError:
         return entry
+    if relative.parts[:1] == (_WORKTREES_DIR,) and len(relative.parts) > 1:
+        return str(worktree.joinpath(*relative.parts[2:]))
     if relative.parts and relative.parts[0] in _CLONE_ROOT_ONLY:
         return entry
     return str(worktree / relative)
