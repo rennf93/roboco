@@ -46,7 +46,14 @@ const { listDrafts, approve, reject } = vi.hoisted(() => ({
   reject: vi.fn(async () => ({})),
 }));
 
-vi.mock("@/lib/api", () => ({ playbooksApi: { listDrafts, approve, reject } }));
+const { listApproved, archive } = vi.hoisted(() => ({
+  listApproved: vi.fn(async () => [] as Playbook[]),
+  archive: vi.fn(async () => ({})),
+}));
+
+vi.mock("@/lib/api", () => ({
+  playbooksApi: { listDrafts, approve, reject, listApproved, archive },
+}));
 
 import { PlaybookReviewQueue } from "../playbook-review-queue";
 
@@ -92,5 +99,22 @@ describe("PlaybookReviewQueue — per-row disable during an approve (F084)", () 
     resolveApproveRef.current?.(undefined);
     await waitFor(() => expect(approveButtons[0]).not.toBeDisabled());
     expect(approveButtons[1]).not.toBeDisabled();
+  });
+});
+
+describe("PlaybookReviewQueue — Drafts/Approved toggle", () => {
+  it("defaults to Drafts and switches to the Approved view and back", async () => {
+    render(withQueryClient(<PlaybookReviewQueue />));
+
+    expect(await screen.findByText("Recover a stuck claim lock")).toBeTruthy();
+    expect(listApproved).not.toHaveBeenCalled();
+
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Approved" }));
+    expect(await screen.findByText("No approved playbooks yet.")).toBeTruthy();
+    expect(screen.queryByText("Recover a stuck claim lock")).toBeNull();
+
+    fireEvent.mouseDown(screen.getByRole("tab", { name: "Drafts" }));
+    expect(await screen.findByText("Recover a stuck claim lock")).toBeTruthy();
+    expect(screen.queryByText("No approved playbooks yet.")).toBeNull();
   });
 });
