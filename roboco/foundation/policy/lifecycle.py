@@ -729,8 +729,10 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
     "create_subtask": ActionSpec(
         name="create_subtask",
         allowed_roles=_PM_ROLES,
-        source_statuses=frozenset({Status.IN_PROGRESS}),  # parent must be in_progress
-        target_status=None,  # creates a NEW task; doesn't transition the parent
+        # parent must be in_progress
+        source_statuses=frozenset({Status.IN_PROGRESS}),
+        # creates a NEW task; doesn't transition the parent
+        target_status=None,
         allowed_task_types=None,
         preconditions=(),
         self_review_block=False,
@@ -820,8 +822,10 @@ ROLE_TEAM_RULES: dict[str, str | None] = {
     "be-pr-reviewer": "backend",
     "fe-pr-reviewer": "frontend",
     "ux-pr-reviewer": "ux_ui",
-    "cell-pr-reviewer-2": None,  # shared cell-gate overflow, serves all cells
-    "devops-1": None,  # floating infra agent, serves any project
+    # shared cell-gate overflow, serves all cells
+    "cell-pr-reviewer-2": None,
+    # floating infra agent, serves any project
+    "devops-1": None,
     "ceo": None,
 }
 
@@ -1330,7 +1334,8 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
             " auto-stash uncommitted changes instead of refusing"
             " DIRTY_WORKSPACE; they are restored after the rebase."
         ),
-        composes=(),  # git-only verb — no DB transition; the handler runs the git op
+        # git-only verb: no DB transition; the handler runs the git op
+        composes=(),
         extra_preconditions=(
             PRECONDITION_OWNERSHIP,
             PRECONDITION_SYNC_BRANCH_STATE,
@@ -1360,7 +1365,8 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
             " reaper; a claimed review that is still awaiting_* (a gate review"
             " in awaiting_pr_review) is released by i_am_idle instead."
         ),
-        composes=(),  # special - cleared in service layer
+        # special - cleared in service layer
+        composes=(),
         extra_preconditions=(),
         side_effects=(),
         next_hint=lambda _t: (
@@ -1376,7 +1382,8 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
             " preserved — the new developer continues the work-in-progress. No"
             " status change."
         ),
-        composes=(),  # special — the verb body owns the assignee write
+        # special: the verb body owns the assignee write
+        composes=(),
         extra_preconditions=(),
         side_effects=(),
         next_hint=lambda _t: (
@@ -1395,7 +1402,8 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
             " cell). No status change; the verb body owns ownership +"
             " criterion validation."
         ),
-        composes=(),  # special — no transition, just an AC-ref write + audit
+        # special: no transition, just an AC-ref write + audit
+        composes=(),
         extra_preconditions=(),
         side_effects=(),
         next_hint=lambda _t: (
@@ -1600,7 +1608,8 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
         name="escalate_up",
         allowed_roles=_PM_ROLES,
         description="Escalate to your role's escalation_target.",
-        composes=(),  # special - uses TaskService.escalate
+        # special - uses TaskService.escalate
+        composes=(),
         extra_preconditions=(PRECONDITION_NON_TERMINAL,),
         side_effects=(),
         next_hint=lambda _t: "idle until escalation target acts",
@@ -1687,7 +1696,8 @@ _INTENT_VERBS: dict[str, IntentSpec] = {
             " only your own coordination task's children. Main PM: any"
             " root's descendant."
         ),
-        composes=(),  # special - the verb body owns ownership + zero-diff checks
+        # special - the verb body owns ownership + zero-diff checks
+        composes=(),
         extra_preconditions=(PRECONDITION_NON_TERMINAL,),
         side_effects=(),
         next_hint=_next_hint_cancel_leaf,

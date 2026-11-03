@@ -7,7 +7,10 @@ the reviewer got a 404 "no route" envelope with no way to release a claim.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 import pytest
+from fastapi.routing import APIRoute
 from roboco.api.routes.v1 import (
     flow_auditor,
     flow_board,
@@ -20,6 +23,9 @@ from roboco.api.routes.v1 import (
     flow_qa,
 )
 from roboco.services.gateway.role_config import ROLE_CONFIGS
+
+if TYPE_CHECKING:
+    from fastapi import APIRouter
 
 _ROUTERS_BY_ROLE = {
     "developer": flow_dev.router,
@@ -38,8 +44,12 @@ _ROUTERS_BY_ROLE = {
 _INTENT_TO_PUBLIC = {"pass_review": "pass", "fail_review": "fail"}
 
 
-def _routed_verbs(router: object) -> set[str]:
-    return {r.path.rsplit("/", 1)[-1] for r in router.routes}  # type: ignore[attr-defined]
+def _routed_verbs(router: APIRouter) -> set[str]:
+    return {
+        route.path.rsplit("/", 1)[-1]
+        for route in router.routes
+        if isinstance(route, APIRoute)
+    }
 
 
 @pytest.mark.parametrize("role", sorted(_ROUTERS_BY_ROLE))
