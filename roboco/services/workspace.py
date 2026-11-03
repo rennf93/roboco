@@ -189,18 +189,35 @@ _VENV_COMPLETE_SENTINEL = ".roboco-complete"
 # Run as the git user in the clone root with $1 = clone root, $2 = new venv dir
 # name. Repoints `.venv` at it with an atomic rename (a legacy real `.venv` dir
 # is moved aside to `.venv-legacy` first), then drops every older venv except
-# the new one and the one it replaced, which a sibling worktree may still use.
+# the new one, the one it replaced, and every venv a present worktree's lockfile
+# still hashes to ($3...), which a sibling worktree may still be running on.
 _SWAP_VENV_SCRIPT = """
 cd -- "$1" || exit 1
+new=$2
+shift 2
 prev=$(readlink .venv 2>/dev/null)
 if [ -e .venv ] && [ ! -L .venv ]; then
     rm -rf -- .venv-legacy && mv -- .venv .venv-legacy || exit 1
     prev=.venv-legacy
 fi
-ln -sfn -- "$2" .venv.swap && mv -T -- .venv.swap .venv || exit 1
+ln -sfn -- "$new" .venv.swap && mv -T -- .venv.swap .venv || exit 1
+keep=" $new $prev $* "
 for d in .venv-*; do
     [ -e "$d" ] || continue
-    [ "$d" = "$2" ] || [ "$d" = "$prev" ] || rm -rf -- "$d"
+    case "$keep" in *" $d "*) continue ;; esac
+    rm -rf -- "$d"
+done
+"""
+# $1 = staged venv, $2 = the worktree the build ran in, $3 = the clone root. The
+# build's editable install names its cwd (a task worktree that is later removed,
+# and which worktree_imports.py leaves alone under .worktrees): point it at the
+# clone root, whose paths the startup hook rewrites per worktree.
+_REWRITE_EDITABLE_SCRIPT = """
+set -e
+for f in "$1"/lib/python*/site-packages/*.pth \\
+         "$1"/lib/python*/site-packages/__editable__*.py; do
+    [ -f "$f" ] || continue
+    sed -i "s|$2|$3|g" "$f"
 done
 """
 
@@ -274,6 +291,10 @@ def _safe_segment(value: str, label: str) -> str:
 # against. Lives under .git/ so it never shows up in `git status` (the agent's
 # clean-tree checks would otherwise trip on it) and is wiped with the clone.
 _DEP_INSTALL_MARKER = ".git/.roboco-dep-install"
+# Same, for the Node installs of a clone whose shared .venv is a symlink: the
+# main marker is written by resync_shared_venv for the uv half only, so it must
+# not decide whether a pnpm/npm install is pending.
+_NODE_INSTALL_MARKER = ".git/.roboco-node-install"
 
 # roboco/utils/worktree_imports.py as installed into a clone's shared venv,
 # imported by a .pth that sorts after the project's editable install's own
@@ -373,6 +394,24 @@ def _detect_dep_commands(
         commands.append(("npm install", ["npm", "install"]))
 
     return commands
+
+
+def _plan_dep_install(
+    workspace: Path, target_python: str | None
+) -> tuple[bool, str, list[tuple[str, list[str]]]]:
+    """``(shared_venv, marker_path, commands)`` for a clone-root dev-deps install.
+
+    The shared venv is a swapped-in .venv-<digest>, owned by
+    resync_shared_venv (built from each worktree's own lockfile); a clone-root
+    `uv sync` here would rewrite it in place under a sibling worktree, so only
+    that command is dropped: Node installs still run, tracked by their own marker.
+    """
+    commands = _detect_dep_commands(workspace, target_python=target_python)
+    shared_venv = (workspace / ".venv").is_symlink()
+    if not shared_venv:
+        return False, _DEP_INSTALL_MARKER, commands
+    node_only = [c for c in commands if not c[0].startswith("uv sync")]
+    return True, _NODE_INSTALL_MARKER, node_only
 
 
 class WorkspaceWorktrees(_Base):
@@ -1729,25 +1768,20 @@ class WorkspaceToolchain(_Base):
         """
         if not settings.workspace_install_dev_deps:
             return False
-        if (workspace / ".venv").is_symlink():
-            # The shared venv is a swapped-in .venv-<digest>, owned by
-            # resync_shared_venv (built from each worktree's own lockfile); a
-            # clone-root `uv sync` here would rewrite it in place under a
-            # sibling worktree.
-            return False
-
         # When toolchain matching is on, provision against the target project's
         # declared Python (uv resolves + fetches it) instead of the system 3.13.
         target_python = await asyncio.to_thread(
             self._resolve_toolchain_target, workspace
         )
 
-        commands = _detect_dep_commands(workspace, target_python=target_python)
+        shared_venv, marker_path, commands = _plan_dep_install(workspace, target_python)
         if not commands:
             return False
 
         digest = await asyncio.to_thread(_lockfile_digest, workspace)
-        if await asyncio.to_thread(self._dep_install_cache_hit, workspace, digest):
+        if await asyncio.to_thread(
+            self._dep_install_cache_hit, workspace, digest, marker_path
+        ):
             logger.debug(
                 "Dev-deps install skipped (lockfiles unchanged)",
                 workspace=str(workspace),
@@ -1773,10 +1807,12 @@ class WorkspaceToolchain(_Base):
         if any_ok and digest is not None:
             with contextlib.suppress(OSError):
                 await asyncio.to_thread(
-                    write_workspace_file, workspace / _DEP_INSTALL_MARKER, digest
+                    write_workspace_file, workspace / marker_path, digest
                 )
 
-        await self._record_toolchain(workspace, target_python)
+        await self._record_toolchain(
+            workspace, target_python, only_if_missing=shared_venv
+        )
         return any_ok
 
     async def resync_shared_venv(self, clone_root: Path, worktree: Path) -> bool:
@@ -1840,7 +1876,21 @@ class WorkspaceToolchain(_Base):
             argv = ["env", f"UV_PROJECT_ENVIRONMENT={staged}", *uv_command]
             if not await self._run_dep_install(worktree, "uv sync --extra dev", argv):
                 return False
+            rewrite = [
+                "sh",
+                "-c",
+                _REWRITE_EDITABLE_SCRIPT,
+                "sh",
+                str(staged),
+                str(worktree),
+                str(clone_root),
+            ]
+            if not await self._run_dep_install(
+                worktree, "rewrite editable install to clone root", rewrite
+            ):
+                return False
             await asyncio.to_thread(write_workspace_file, complete, digest)
+        live = await asyncio.to_thread(self._live_venv_names, clone_root)
         swap = await asyncio.to_thread(
             run_as_workspace_user,
             "sh",
@@ -1849,6 +1899,7 @@ class WorkspaceToolchain(_Base):
             "sh",
             str(clone_root),
             staged.name,
+            *live,
             timeout=settings.git_command_timeout_seconds,
         )
         if swap.returncode != 0:
@@ -1868,6 +1919,20 @@ class WorkspaceToolchain(_Base):
             worktree=str(worktree),
         )
         return True
+
+    @staticmethod
+    def _live_venv_names(clone_root: Path) -> list[str]:
+        """``.venv-<digest12>`` for every present worktree's lockfile digest."""
+        names: list[str] = []
+        try:
+            worktrees = sorted((clone_root / ".worktrees").iterdir())
+        except OSError:
+            return names
+        for tree in worktrees:
+            digest = _lockfile_digest(tree) if tree.is_dir() else None
+            if digest is not None:
+                names.append(f".venv-{digest[:12]}")
+        return names
 
     @staticmethod
     def _resolve_toolchain_target(workspace: Path) -> str | None:
@@ -1960,14 +2025,16 @@ class WorkspaceToolchain(_Base):
         return (data.get("python"), data.get("status"))
 
     @staticmethod
-    def _dep_install_cache_hit(workspace: Path, digest: str | None) -> bool:
+    def _dep_install_cache_hit(
+        workspace: Path, digest: str | None, marker_path: str = _DEP_INSTALL_MARKER
+    ) -> bool:
         """True when the lockfile digest matches the marker from a prior run.
 
         Read as the workspace git user (blocking; call off the event loop).
         """
         if digest is None:
             return False
-        marker = read_workspace_file(workspace / _DEP_INSTALL_MARKER)
+        marker = read_workspace_file(workspace / marker_path)
         return marker is not None and marker.strip() == digest
 
     @staticmethod
