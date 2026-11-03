@@ -85,6 +85,7 @@ async def _refresh(layout: _Layout) -> None:
         "roboco-api", f"file://{layout.origin}", None, default_branch="main"
     )
     object.__setattr__(svc, "_relay_for", AsyncMock(return_value=relay))
+    object.__setattr__(svc, "_project_default_branch", AsyncMock(return_value="main"))
     await svc._fetch_origin_best_effort(layout.clone_root, "roboco-api")
 
 
@@ -136,3 +137,28 @@ async def test_a_default_branch_with_local_commits_is_left_alone(
     await _refresh(layout)
 
     assert _git(layout.clone_root, "rev-parse", "main") == local
+
+
+async def test_a_clone_root_follows_the_project_default_not_a_stale_origin_head(
+    layout: _Layout,
+) -> None:
+    """origin/HEAD is frozen at clone time; the project's default moved."""
+    _git(layout.seed, "checkout", "-q", "-b", "slave")
+    _git(layout.seed, "push", "-q", "origin", "slave")
+    _git(layout.clone_root, "fetch", "-q", "origin", "slave")
+    _git(layout.clone_root, "checkout", "-q", "-b", "slave", "origin/slave")
+    (layout.seed / "uv.lock").write_text("version = 3\n")
+    _git(layout.seed, "commit", "-qam", "advance slave")
+    _git(layout.seed, "push", "-q", "origin", "slave")
+    tip = _git(layout.seed, "rev-parse", "HEAD")
+    assert _git(layout.clone_root, "symbolic-ref", "refs/remotes/origin/HEAD") == (
+        "refs/remotes/origin/main"
+    )
+    svc = WorkspaceService(MagicMock())
+    relay = GitRelay("roboco-api", f"file://{layout.origin}", None)
+    object.__setattr__(svc, "_relay_for", AsyncMock(return_value=relay))
+    object.__setattr__(svc, "_project_default_branch", AsyncMock(return_value="slave"))
+
+    await svc._fetch_origin_best_effort(layout.clone_root, "roboco-api")
+
+    assert _git(layout.clone_root, "rev-parse", "slave") == tip
