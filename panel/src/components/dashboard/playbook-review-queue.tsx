@@ -26,6 +26,15 @@ import { Label } from "@/components/ui/label";
 import { BookOpen, CheckCircle2, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import { HelpTip } from "@/components/ui/help-tip";
+import { SegmentedControl } from "@/components/ui/segmented-control";
+import { PlaybookApprovedList } from "./playbook-approved-list";
+
+type PlaybookView = "drafts" | "approved";
+
+const _VIEW_OPTIONS = [
+  { value: "drafts", label: "Drafts" },
+  { value: "approved", label: "Approved" },
+];
 
 const _MIN_REASON = 4;
 
@@ -35,6 +44,7 @@ export function PlaybookReviewQueue({ className }: { className?: string }) {
   const queryClient = useQueryClient();
   const [rejecting, setRejecting] = useState<Playbook | null>(null);
   const [reason, setReason] = useState("");
+  const [view, setView] = useState<PlaybookView>("drafts");
 
   const { data: drafts, isLoading } = useQuery({
     queryKey: ["playbooks", "drafts"],
@@ -83,7 +93,7 @@ export function PlaybookReviewQueue({ className }: { className?: string }) {
     rejectMutation.mutate({ id: rejecting.id, reason: reason.trim() });
   };
 
-  if (isLoading || !drafts || drafts.length === 0) return null;
+  const pending = drafts ?? [];
 
   return (
     <>
@@ -96,17 +106,35 @@ export function PlaybookReviewQueue({ className }: { className?: string }) {
                 Playbook Review
               </span>
             </HelpTip>
-            <HelpTip label="Drafts awaiting a decision">
-              <Badge variant="secondary">{drafts.length}</Badge>
-            </HelpTip>
+            {pending.length > 0 && (
+              <HelpTip label="Drafts awaiting a decision">
+                <Badge variant="secondary">{pending.length}</Badge>
+              </HelpTip>
+            )}
           </CardTitle>
           <CardDescription>
             Drafted playbooks awaiting your approval — approved ones are indexed
             and auto-suggested to agents.
           </CardDescription>
+          <SegmentedControl
+            aria-label="Playbook view"
+            options={_VIEW_OPTIONS}
+            value={view}
+            onValueChange={(v) => setView(v as PlaybookView)}
+          />
         </CardHeader>
         <CardContent className="space-y-3">
-          {drafts.map((pb) => (
+          {view === "approved" && <PlaybookApprovedList />}
+          {view === "drafts" && isLoading && (
+            <p className="text-sm text-muted-foreground">Loading drafts...</p>
+          )}
+          {view === "drafts" && !isLoading && pending.length === 0 && (
+            <p className="text-sm text-muted-foreground">
+              No drafted playbooks awaiting review.
+            </p>
+          )}
+          {view === "drafts" &&
+            pending.map((pb) => (
             <div
               key={pb.id}
               className="rounded-lg border p-4 transition-colors hover:bg-muted/50"
