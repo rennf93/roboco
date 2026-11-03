@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
 def _orch() -> AgentOrchestrator:
     orch = object.__new__(AgentOrchestrator)
+    orch._held_hold_logged_for = {}
     orch._instances = {}
     return orch
 
@@ -87,7 +88,8 @@ async def test_flag_on_assigned_pending_devops_task_spawns(
     ):
         await orch._dev_dispatch_one(client, task)
 
-    spawn.assert_not_awaited()  # spawn happens inside _spawn_pending_dev
+    # spawn happens inside _spawn_pending_dev
+    spawn.assert_not_awaited()
     pending.assert_awaited_once_with(client, task, "devops-1")
     matches.assert_called_once()
 

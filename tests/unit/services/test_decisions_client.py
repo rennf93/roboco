@@ -11,13 +11,13 @@ import httpx
 import pytest
 import roboco.config as cfg
 from roboco.services.decisions.client import (
-    _CLEF_STATE_BUDGET_CHARS,
     _LAYA_STATE_BUDGET_CHARS,
     DecisionsClient,
     DecisionsEndpoint,
     cap_state,
     cap_state_to_budget,
     cap_text,
+    clef_budget_chars,
 )
 from roboco.services.decisions.schemas import DecisionResult, NoulQuestion
 
@@ -36,7 +36,7 @@ _LAYA = DecisionsEndpoint(
 _CLEF = DecisionsEndpoint(
     tier="clef",
     base_url="http://roboco-decisions:8100",
-    model="ggml-org/Clef-GGUF:Q4_K_M",
+    model="ggml-org/Clef-Flash-GGUF:Q4_K_M",
     timeout_s=60.0,
 )
 
@@ -383,9 +383,9 @@ class TestLayaBudget:
 
 
 class TestClefBudget:
-    """The clef tier runs the same deterministic budget pass with the
-    27B model's 16384-token context: ~22x the laya state budget, still
-    bounded so no call site can overflow the sidecar."""
+    """The clef tier runs the same deterministic budget pass, sized to two
+    characters per token of the sidecar's input cap: far above the laya
+    budget, still bounded so no input overflows the backend's batch."""
 
     @pytest.mark.asyncio
     async def test_clef_tier_applies_budget_pass(self) -> None:
@@ -400,7 +400,7 @@ class TestClefBudget:
         await client.aclose()
         assert (
             len(json.dumps(captured["state"], ensure_ascii=False, default=str))
-            <= _CLEF_STATE_BUDGET_CHARS
+            <= clef_budget_chars()
         )
 
     @pytest.mark.asyncio
@@ -423,7 +423,7 @@ class TestClefBudget:
         clef_size = len(json.dumps(captured["state"], ensure_ascii=False, default=str))
         await client.aclose()
         assert laya_size <= _LAYA_STATE_BUDGET_CHARS
-        assert clef_size <= _CLEF_STATE_BUDGET_CHARS
+        assert clef_size <= clef_budget_chars()
         assert clef_size > _LAYA_STATE_BUDGET_CHARS
 
 
@@ -588,3 +588,122 @@ async def test_successful_call_records_spend(monkeypatch: pytest.MonkeyPatch) ->
     await client.aclose()
     assert result is not None
     assert recorded == [("laya", 0.021)]
+
+
+# ---------------------------------------------------------------------------
+# Deadlines, busy refusals, the verdict cache and the half-open probe
+# (trail #55: Clef-Flash on the NAS, 2026-11-01)
+# ---------------------------------------------------------------------------
+
+_BUSY = httpx.Response(
+    503, json={"detail": "busy: about 40s of queued work plus about 9s ... deadline"}
+)
+
+
+@pytest.mark.asyncio
+async def test_strings_inside_lists_are_capped_too() -> None:
+    """Lessons, transcript segments and acceptance criteria arrive as lists
+    of strings; stage 1 used to skip them, leaving only the total budget."""
+    state = {"lessons": ["z" * 10_000, "short"], "segments": [["y" * 9_000]]}
+    capped = cast("dict[str, list[object]]", cap_state(state))
+    assert len(cast("str", capped["lessons"][0])) <= 4_100
+    assert capped["lessons"][1] == "short"
+    assert len(cast("list[str]", capped["segments"][0])[0]) <= 4_100
+
+
+@pytest.mark.asyncio
+async def test_the_deadline_rides_to_the_sidecar_and_bounds_the_call() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["deadline"] = request.headers.get("x-decisions-deadline-s")
+        seen["timeout"] = request.extensions["timeout"]["read"]
+        return httpx.Response(200, json=_OK_PAYLOAD)
+
+    client = _client_with(handler)
+    await client.decide(_CLEF, {"a": 1}, {}, "s", deadline_s=20.0)
+    await client.aclose()
+    assert seen == {"deadline": "20.0", "timeout": 20.0}
+
+
+@pytest.mark.asyncio
+async def test_a_deadline_never_exceeds_the_tier_bound() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["timeout"] = request.extensions["timeout"]["read"]
+        return httpx.Response(200, json=_OK_PAYLOAD)
+
+    client = _client_with(handler)
+    await client.decide(_LAYA, {"a": 1}, {}, "s", deadline_s=600.0)
+    await client.aclose()
+    assert seen["timeout"] == _LAYA.timeout_s
+
+
+@pytest.mark.asyncio
+async def test_busy_refusals_are_no_verdict_but_never_open_the_circuit() -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return _BUSY
+
+    client = _client_with(handler)
+    for i in range(5):
+        assert await client.decide(_CLEF, {"i": i}, {}, "s") is None
+    await client.aclose()
+    assert calls["n"] == 5
+    assert client.accepts_calls("clef")
+
+
+@pytest.mark.asyncio
+async def test_the_same_input_reuses_its_verdict_for_another_session() -> None:
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, json=_OK_PAYLOAD)
+
+    client = _client_with(handler)
+    first = await client.decide(_CLEF, {"task": "same"}, {}, "complexity:t1")
+    again = await client.decide(_CLEF, {"task": "same"}, {}, "complexity:t2")
+    other = await client.decide(_CLEF, {"task": "different"}, {}, "complexity:t3")
+    await client.aclose()
+    assert calls["n"] == 2
+    assert first is not None and again is not None and other is not None
+    assert again.session_id == "complexity:t2"
+    assert again.answers == first.answers
+
+
+@pytest.mark.asyncio
+async def test_after_the_window_one_call_probes_and_the_rest_wait() -> None:
+    import asyncio
+
+    release = asyncio.Event()
+    calls = {"n": 0}
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] <= 3:
+            return httpx.Response(500, text="boom")
+        await release.wait()
+        return httpx.Response(200, json=_OK_PAYLOAD)
+
+    client = DecisionsClient(
+        http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    )
+    for i in range(3):
+        await client.decide(_CLEF, {"i": i}, {}, "s")
+    assert not client.accepts_calls("clef")
+    circuit = client._circuits["clef"]
+    assert circuit.opened_at is not None
+    circuit.opened_at -= 10_000  # the open window has passed
+
+    probe = asyncio.create_task(client.decide(_CLEF, {"probe": 1}, {}, "s"))
+    await asyncio.sleep(0.01)
+    assert await client.decide(_CLEF, {"other": 1}, {}, "s") is None
+    release.set()
+    assert await probe is not None
+    await client.aclose()
+    assert calls["n"] == 4
+    assert client.accepts_calls("clef")

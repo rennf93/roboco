@@ -22,7 +22,12 @@ jobs:
     steps:
       - name: CLA Assistant
         if: (github.event.comment.body == 'recheck' || github.event.comment.body == 'I have read the CLA Document and I hereby sign the CLA') || github.event_name == 'pull_request_target'
-        uses: contributor-assistant/github-action@v2.6.1
+        # contributor-assistant/github-action is archived and stays on the
+        # deprecated Node 20 runtime. rennf93/cla-assistant-action is its fork:
+        # v2.6.1 (the release used before) with only action.yml's runtime set
+        # to node24. Pinned by commit, because this step runs on
+        # pull_request_target with write permissions and a tag can move.
+        uses: rennf93/cla-assistant-action@2bd28a790d70e0cf12f9cd8b521f21979c695bd3 # v2.6.1 on Node 24
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # PERSONAL_ACCESS_TOKEN is only required if signatures are stored in

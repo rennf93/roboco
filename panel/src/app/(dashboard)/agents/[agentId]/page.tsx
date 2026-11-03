@@ -195,7 +195,13 @@ export default function AgentDetailPage() {
                 </HelpTip>
               )}
             </div>
-            <HelpTip label={agentId !== displayName ? "This agent's slug — used in URLs, branch names, and commits" : ""}>
+            <HelpTip
+              label={
+                agentId !== displayName
+                  ? "This agent's slug — used in URLs, branch names, and commits"
+                  : ""
+              }
+            >
               <p className="text-muted-foreground w-fit">
                 {agentId !== displayName ? `@${agentId}` : "Agent Details"}
               </p>

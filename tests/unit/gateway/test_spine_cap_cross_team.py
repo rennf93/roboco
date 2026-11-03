@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from roboco.services.gateway.choreographer._impl import Choreographer
+from roboco.services.gateway.choreographer import Choreographer
 
 
 def _sibling(

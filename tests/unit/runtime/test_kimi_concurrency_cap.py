@@ -38,6 +38,9 @@ def _make_orchestrator() -> AgentOrchestrator:
     orch._tick_handled_tasks = set()
     orch._bg_tasks = set()
     orch._running = True
+    # No database here: the spawn chokepoint's dispatch-pause lookup would fail
+    # closed (paused) and refuse every spawn.
+    object.__setattr__(orch, "_is_paused", AsyncMock(return_value=False))
     return orch
 
 
@@ -137,7 +140,8 @@ def test_live_provider_instance_count_and_capacity() -> None:
 
     orch._instances["be-dev-1"] = _live_instance("be-dev-1", "kimi", AgentState.ACTIVE)
     assert orch._live_provider_instance_count("kimi") == 1
-    assert orch._provider_spawn_at_capacity("kimi") is True  # default cap 1
+    # The default cap is 1.
+    assert orch._provider_spawn_at_capacity("kimi") is True
 
     # OFFLINE/WAITING_LONG never occupy a slot (mirrors _existing_running_instance).
     orch._instances["be-dev-1"].state = AgentState.OFFLINE

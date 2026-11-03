@@ -9,7 +9,7 @@ the safest first extraction.
 The mixin inherits from ``ChoreographerHelpers`` only when type-checking
 so mypy resolves ``self.task`` etc. to the typed surface. At runtime
 the actual class is composed in ``__init__.py`` and inherits from
-``_LegacyChoreographer`` (where the real implementations live).
+``BaseChoreographer`` (where the shared implementations live).
 """
 
 from __future__ import annotations

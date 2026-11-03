@@ -46,7 +46,7 @@ async def test_rebase_superseded_when_no_unique_commits() -> None:
 
     with patch.object(svc, "_run_git", new=fake_run):
         out = await svc.rebase_onto_base(
-            Path("/tmp/ws"), head_branch=_HEAD, base_branch=_BASE, git_token="tok"
+            Path("/tmp/ws"), head_branch=_HEAD, base_branch=_BASE
         )
     assert out == {"status": "superseded"}
     # A superseded branch must NOT be force-pushed — nothing changed.
@@ -76,7 +76,7 @@ async def test_rebase_rebased_force_pushes_when_unique_commits() -> None:
 
     with patch.object(svc, "_run_git", new=fake_run):
         out = await svc.rebase_onto_base(
-            Path("/tmp/ws"), head_branch=_HEAD, base_branch=_BASE, git_token="tok"
+            Path("/tmp/ws"), head_branch=_HEAD, base_branch=_BASE
         )
     assert out == {"status": "rebased", "unique_commits": 3}
     # Only the head branch is force-pushed, with lease, never the base.
@@ -102,7 +102,7 @@ async def test_rebase_conflicts_aborts_and_reports_files() -> None:
 
     with patch.object(svc, "_run_git", new=fake_run):
         out = await svc.rebase_onto_base(
-            Path("/tmp/ws"), head_branch=_HEAD, base_branch=_BASE, git_token="tok"
+            Path("/tmp/ws"), head_branch=_HEAD, base_branch=_BASE
         )
     assert out == {"status": "conflicts", "files": ["src/a.tsx", "src/b.tsx"]}
     assert aborted is True
@@ -125,7 +125,7 @@ async def test_rebase_never_force_pushes_on_conflict() -> None:
 
     with patch.object(svc, "_run_git", new=fake_run):
         await svc.rebase_onto_base(
-            Path("/tmp/ws"), head_branch=_HEAD, base_branch=_BASE, git_token="tok"
+            Path("/tmp/ws"), head_branch=_HEAD, base_branch=_BASE
         )
     assert pushed == []
 
@@ -159,7 +159,7 @@ async def test_close_pull_request_patches_state_closed(
         svc, "_get_project_token_or_raise", AsyncMock(return_value="tok")
     )
     monkeypatch.setattr(
-        svc, "_parse_github_remote", MagicMock(return_value=RepoRef("owner", "repo"))
+        svc, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("owner", "repo"))
     )
     monkeypatch.setattr(svc, "_delete_pr_branch_best_effort", delete_branch)
 
@@ -241,7 +241,7 @@ async def test_close_pull_request_does_not_delete_branch_by_default(
         svc, "_get_project_token_or_raise", AsyncMock(return_value="tok")
     )
     monkeypatch.setattr(
-        svc, "_parse_github_remote", MagicMock(return_value=RepoRef("owner", "repo"))
+        svc, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("owner", "repo"))
     )
     monkeypatch.setattr(svc, "_delete_pr_branch_best_effort", delete_branch)
 
@@ -307,7 +307,7 @@ async def test_close_pull_request_idempotent_when_already_closed(
         svc, "_get_project_token_or_raise", AsyncMock(return_value="tok")
     )
     monkeypatch.setattr(
-        svc, "_parse_github_remote", MagicMock(return_value=RepoRef("owner", "repo"))
+        svc, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("owner", "repo"))
     )
     monkeypatch.setattr(svc, "_delete_pr_branch_best_effort", AsyncMock())
 

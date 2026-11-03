@@ -105,7 +105,11 @@ function KnowledgeBaseBrowserContent() {
   const searchParams = useSearchParams();
 
   // Read state from URL params; fall back to "search" on null/empty/invalid.
-  const activeTab: TabValue = pickTab(searchParams.get("tab"), TAB_VALUES, "search");
+  const activeTab: TabValue = pickTab(
+    searchParams.get("tab"),
+    TAB_VALUES,
+    "search",
+  );
   const searchQuery = searchParams.get("q") || "";
   const filtersParam = searchParams.get("filters");
   const searchFilters: KBIndexType[] = filtersParam
@@ -600,9 +604,7 @@ function KnowledgeBaseBrowserContent() {
                     <HelpTip label="A chunk is a segment of a document split for embedding — one document can produce many chunks">
                       <div className="w-fit">
                         <p className="text-2xl font-bold">{totalChunks}</p>
-                        <p className="text-xs text-muted-foreground">
-                          Chunks
-                        </p>
+                        <p className="text-xs text-muted-foreground">Chunks</p>
                       </div>
                     </HelpTip>
                   </div>

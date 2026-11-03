@@ -3,11 +3,16 @@
 from __future__ import annotations
 
 import logging
+import stat
+import threading
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING
 from unittest.mock import patch
 
+import pytest
 import structlog
+from roboco import logging as roboco_logging
 from roboco.logging import (
     LogContext,
     _redact_secrets,
@@ -20,7 +25,10 @@ from roboco.logging import (
 )
 
 if TYPE_CHECKING:
-    import pytest
+    from collections.abc import Iterator
+
+_OWNER_ONLY_DIR = 0o700
+_WORLD_TRAVERSABLE_DIR = 0o755
 
 
 def test_redact_secrets_passes_through_non_strings() -> None:
@@ -94,6 +102,41 @@ def test_redact_event_dict_preserves_non_string_values() -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _restore_root_handlers(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """setup_logging replaces the root logger's handlers: put the test
+    session's back afterwards and close the file handlers a test attached,
+    so no log file under a test's tmp_path stays open into later tests. The
+    session's own log writer is left running."""
+    root = logging.getLogger()
+    handlers, level = root.handlers[:], root.level
+    monkeypatch.setattr(roboco_logging, "_log_writers", [])
+    yield
+    roboco_logging._stop_log_writers()
+    for handler in root.handlers[:]:
+        if handler not in handlers and isinstance(handler, logging.FileHandler):
+            handler.close()
+    root.handlers[:] = handlers
+    root.setLevel(level)
+
+
+def test_setup_logging_closes_the_file_handler_it_replaces(tmp_path: Path) -> None:
+    """A second setup_logging closes the first call's log file instead of
+    dropping the open handle."""
+    with (
+        patch("roboco.logging.settings") as mock_settings,
+        patch("roboco.logging._resolve_log_dir", return_value=tmp_path),
+    ):
+        mock_settings.environment = "production"
+        mock_settings.app_version = "1.0.0"
+        mock_settings.debug = False
+        setup_logging()
+        (first,) = _file_handlers()
+        setup_logging()
+    assert first.stream is None
+    assert first not in _file_handlers()
+
+
 def test_setup_logging_development_branch(tmp_path: Path) -> None:
     """Development env uses the colored console renderer."""
     with (
@@ -131,12 +174,7 @@ def test_setup_logging_handles_missing_log_dir() -> None:
         mock_settings.app_version = "x"
         mock_settings.debug = False
         setup_logging()
-    handlers = logging.getLogger().handlers
-    # No file handler should be created.
-    has_file_handler = any(
-        isinstance(h, logging.handlers.RotatingFileHandler) for h in handlers
-    )
-    assert has_file_handler is False
+    assert _file_handlers() == []
 
 
 def test_setup_logging_handles_log_dir_oserror() -> None:
@@ -158,6 +196,76 @@ def test_setup_logging_handles_log_dir_oserror() -> None:
         mock_settings.debug = False
         # Should not raise.
         setup_logging()
+
+
+def _setup_logging_into(log_dir: Path) -> None:
+    with (
+        patch("roboco.logging.settings") as mock_settings,
+        patch("roboco.logging._resolve_log_dir", return_value=log_dir),
+    ):
+        mock_settings.environment = "production"
+        mock_settings.app_version = "x"
+        mock_settings.debug = False
+        setup_logging()
+
+
+def _file_handlers() -> list[logging.FileHandler]:
+    return [
+        handler
+        for writer in roboco_logging._log_writers
+        for handler in writer.handlers
+        if isinstance(handler, logging.FileHandler)
+    ]
+
+
+_NEVER_WAITS_SECONDS = 1.0
+_STALLED_WRITE_SECONDS = 10.0
+
+
+def test_a_stalled_log_write_never_blocks_the_caller(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Live 2026-11-02: one flush() to orchestrator.log on the NAS volume held
+    the API's event loop for 5 s, so every request waited on the disk."""
+    _setup_logging_into(tmp_path)
+    (file_handler,) = _file_handlers()
+    release = threading.Event()
+    write = file_handler.emit
+
+    def stalled_write(record: logging.LogRecord) -> None:
+        release.wait(_STALLED_WRITE_SECONDS)
+        write(record)
+
+    monkeypatch.setattr(file_handler, "emit", stalled_write)
+
+    started = time.monotonic()
+    logging.getLogger("roboco.test").warning("written by the writer thread")
+    assert time.monotonic() - started < _NEVER_WAITS_SECONDS
+
+    release.set()
+    roboco_logging._stop_log_writers()
+    log_file = tmp_path / "orchestrator.log"
+    assert "written by the writer thread" in log_file.read_text()
+
+
+def test_setup_logging_closes_a_log_dir_this_process_owns(tmp_path: Path) -> None:
+    """Agent log dumps there carry tokens: the owner (root today, the
+    orchestrator's uid once it runs as one) makes it 0700, whatever uid."""
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir(mode=0o755)
+    _setup_logging_into(log_dir)
+    assert stat.S_IMODE(log_dir.stat().st_mode) == _OWNER_ONLY_DIR
+
+
+def test_setup_logging_leaves_a_log_dir_it_does_not_own(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    log_dir = tmp_path / "logs"
+    log_dir.mkdir(mode=0o755)
+    log_dir.chmod(0o755)
+    monkeypatch.setattr("roboco.logging.os.geteuid", lambda: log_dir.stat().st_uid + 1)
+    _setup_logging_into(log_dir)
+    assert stat.S_IMODE(log_dir.stat().st_mode) == _WORLD_TRAVERSABLE_DIR
 
 
 # ---------------------------------------------------------------------------

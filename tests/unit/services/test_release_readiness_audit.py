@@ -182,7 +182,7 @@ def test_drafted_changelog_is_keepachangelog_and_single_line() -> None:
     bullets = [
         ln for ln in report.drafted_changelog.splitlines() if ln.startswith("- ")
     ]
-    assert len(bullets) == 2  # noqa: PLR2004 - exactly the two commits above
+    assert len(bullets) == len(snap.commits)
 
 
 # --- gather_snapshot: real-repo smoke (this repo is a git checkout at 0.12.0) ---

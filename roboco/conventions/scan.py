@@ -28,6 +28,8 @@ from roboco.foundation.policy.conventions.models import (
     RuleLevel,
 )
 
+from .placement import NON_SOURCE_SEGMENTS
+
 _IGNORE_DIRS = frozenset(
     {
         "node_modules",
@@ -40,13 +42,6 @@ _IGNORE_DIRS = frozenset(
         "vendor",
     }
 )
-
-# Directory trees that are never placement-enforced. Test trees legitimately
-# define fixtures, fakes, and helper functions of every kind, and documentation
-# trees (e.g. a docs site) are not code at all. A candidate module sitting under
-# any of these path segments is dropped from the map so a test or docs task is
-# never stranded — this holds for any project, not just RoboCo.
-_NON_SOURCE_SEGMENTS = frozenset({"tests", "test", "docs", "__tests__"})
 
 # Directory-name keywords -> (purpose, forbidden definition kinds). Only kinds
 # the classifiers actually emit can ever fire, so extra entries are harmless.
@@ -193,7 +188,9 @@ def _scan_modules(root: Path) -> list[Module]:
             if spec is None:
                 continue
             rel = (Path(dirpath) / name).relative_to(root)
-            if _NON_SOURCE_SEGMENTS.intersection(rel.parts):
+            # A candidate module under a test / docs tree is dropped from the
+            # map so a test or docs task is never stranded.
+            if NON_SOURCE_SEGMENTS.intersection(rel.parts):
                 continue
             purpose, forbidden = spec
             modules.append(

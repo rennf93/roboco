@@ -5,7 +5,7 @@ REAL delivery lifecycle: one real task (``TaskService.create``, ``source=
 "eval_bench"``) through QA / docs / cell-PM review to a terminal state. Each
 fixture is scored on deterministic metrics (final status, revision_count,
 cycle time, tokens+cost via the ``agent_spawn_sessions`` task_id join) plus a
-local-model judge comparing the final PR diff + notes against the fixture's
+background-LLM judge comparing the final PR diff + notes against the fixture's
 checked-in ``expectations`` note — see ``CohortResult.as_dict()``'s nested
 ``"judge"`` object, marked ``"non_deterministic": true`` so a naive cohort
 diff never mistakes judge noise for a real regression.
@@ -99,6 +99,7 @@ from roboco.eval.fixtures import FIXTURES, BenchTaskSpec
 from roboco.foundation import identity as _foundation
 from roboco.models import Team
 from roboco.models.base import Complexity, TaskType
+from roboco.services.background_llm import BackgroundPrompt, generate_background_text
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -834,7 +835,7 @@ async def _drive_task_to_terminal(
 
 
 # ---------------------------------------------------------------------------
-# Local-model judge — same Ollama-compatible endpoint MemoryDistiller uses
+# Background-LLM judge: the same client MemoryDistiller uses
 # ---------------------------------------------------------------------------
 
 _JUDGE_TIMEOUT_SECONDS = 60.0
@@ -945,32 +946,24 @@ def _build_judge_prompt(fixture: BenchTaskSpec, diff: str, notes: str) -> str:
 
 
 async def _judge_chat(prompt: str) -> str | None:
-    async with httpx.AsyncClient(timeout=_JUDGE_TIMEOUT_SECONDS) as client:
-        resp = await client.post(
-            f"{settings.local_llm_base_url}/chat/completions",
-            json={
-                "model": settings.local_llm_model,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 200,
-                "options": {"num_ctx": 8192},
-            },
+    """One background-LLM call for a verdict; None when no backend answered."""
+    return await generate_background_text(
+        BackgroundPrompt(
+            purpose="eval.judge",
+            user_prompt=prompt,
+            max_tokens=200,
+            timeout_seconds=_JUDGE_TIMEOUT_SECONDS,
+            ollama_num_ctx=8192,
         )
-        if not resp.is_success:
-            return None
-        data = resp.json()
-        choices = data.get("choices") or []
-        if not choices:
-            return None
-        content = choices[0].get("message", {}).get("content")
-        return content if isinstance(content, str) else None
+    )
 
 
 class BenchJudge:
     """Scores a fixture's final diff+notes against its expectation, via the
-    SAME local Ollama-compatible endpoint ``MemoryDistiller`` uses (never a
-    cloud LLM in the hot path). Best-effort: any failure yields
-    ``score=None`` — a bench run still produces its deterministic metrics
-    even with the local model down."""
+    SAME background LLM client ``MemoryDistiller`` uses. It runs inside the
+    bench environment, so the routing mode it follows is the throwaway
+    database's. Best-effort: any failure yields ``score=None``, so a bench run
+    still produces its deterministic metrics with no model answering."""
 
     async def score(
         self, *, fixture: BenchTaskSpec, diff: str, notes: str
@@ -1328,7 +1321,7 @@ def _print_table(cohort: CohortResult) -> None:
         f"total_cost=${cohort.total_cost_usd:.4f}  "
         f"mean_judge*={mean_judge if mean_judge is not None else '-'}"
     )
-    print("*judge score/mean_judge* are local-model, non-deterministic — not a metric")
+    print("*judge score/mean_judge* are LLM-judged, non-deterministic, not a metric")
     caught, seeded = cohort.catch_rate_stats
     if seeded:
         print(

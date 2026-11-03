@@ -21,12 +21,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, cast
 
-import httpx
-
 from roboco.config import settings
 from roboco.foundation import identity as _foundation
 from roboco.foundation.policy.content import markers
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType, Team
+from roboco.services.background_llm import BackgroundPrompt, generate_background_text
 from roboco.services.base import BaseService
 from roboco.services.company_goals import get_company_goals_service
 from roboco.services.heartbeat_mutex import HeartbeatLockUnavailable, HeartbeatMutex
@@ -47,7 +46,9 @@ if TYPE_CHECKING:
     from roboco.db.tables import ProjectTable, TaskTable
 
 _AUTHORING_ACCEPTANCE_CRITERIA = [
-    "Both 9:16 and 1:1 cuts render",
+    "Both 9:16 and 1:1 cuts render, and every word in the 9:16 stays between "
+    "y 168 and 1330, none right of x 900 below y 840 (TikTok's UI covers the "
+    "rest; motion/README.md)",
     "Captions within platform limits",
     "Composition follows motion/README.md's design bar and uses the "
     "panel-demo kit register where the occasion shows the product",
@@ -85,42 +86,37 @@ _CHANGELOG_BRIEF_CHARS = 4000
 # lock) keyed by occasion closes that window instead of letting a duplicate
 # authoring task slip through.
 _OCCASION_LOCK_PREFIX = "roboco:video_engine:occasion:"
-_OCCASION_LOCK_TTL_SECONDS = 60  # the check+insert completes in ms; crash backstop
+# The check+insert completes in ms; crash backstop
+_OCCASION_LOCK_TTL_SECONDS = 60
 
 # Shared by every open_video_task caller (release/spotlight/on-demand) so the
-# authoring dev always lands on the demo kit instead of a text card.
+# authoring dev always lands on the demo kit instead of a text card. The
+# template is release-0.28.0, not panel-demo: panel-demo is the kit's original
+# one-card demo, with no camera and a single-glide cursor, which the craft bar
+# (motion/README.md, "Cinematography & rhythm") sends back as a locked-off
+# camera. release-0.28.0 has the camera shots, the waypoint cursor and the
+# 9:16 band layout a release cut needs.
 _MOTION_DESIGN_POINTER = (
     "Before authoring: read motion/README.md's design bar and motion/kit/"
-    "README.md. Build in the panel-demo register on motion/kit/ — extend "
-    "compositions/panel-demo/ rather than starting from scratch or shipping "
-    "a text card. Before submitting: call request_render and read every "
-    "returned frame to verify the RENDERED cut, not just the source."
+    "README.md. Build in the panel-demo register on motion/kit/ — model the "
+    "composition on compositions/release-0.28.0/ rather than starting from "
+    "scratch or shipping a text card. Before submitting: call request_render "
+    "and read every returned frame to verify the RENDERED cut, not just the "
+    "source."
 )
 
 
 async def _chat(prompt: str) -> str | None:
-    """One local-LLM chat call (OpenAI-compatible); None on a non-success.
-
-    Mirrors XEngine's identical helper, duplicated locally (rather than
-    imported) so video_engine doesn't reach into another service's private
-    internals."""
-    async with httpx.AsyncClient(timeout=_CHAT_TIMEOUT_SECONDS) as client:
-        resp = await client.post(
-            f"{settings.local_llm_base_url}/chat/completions",
-            json={
-                "model": settings.local_llm_model,
-                "messages": [{"role": "user", "content": prompt}],
-                "max_tokens": 200,
-            },
+    """One background-LLM call for a voiceover script; None when no backend
+    answered."""
+    return await generate_background_text(
+        BackgroundPrompt(
+            purpose="video_engine.script",
+            user_prompt=prompt,
+            max_tokens=200,
+            timeout_seconds=_CHAT_TIMEOUT_SECONDS,
         )
-        if not resp.is_success:
-            return None
-        data = resp.json()
-        choices = data.get("choices") or []
-        if not choices:
-            return None
-        content = choices[0].get("message", {}).get("content")
-        return content if isinstance(content, str) else None
+    )
 
 
 def _changelog_highlights(changelog: str) -> list[str]:
@@ -138,7 +134,7 @@ def _changelog_highlights(changelog: str) -> list[str]:
 
 def _first_changelog_bullet(changelog: str) -> str:
     """First CHANGELOG bullet's text, or "" if none — the fallback template's
-    headline when the local model is unavailable."""
+    headline when no background-LLM backend answers."""
     highlights = _changelog_highlights(changelog)
     return highlights[0] if highlights else ""
 
@@ -209,7 +205,8 @@ def _scene_criterion(features: list[str]) -> str | None:
         if len(body) <= budget:
             return prefix + body
         kept.pop()
-    return prefix + "…"  # pathological: even one (huge) feature name overruns
+    # Pathological: even one (huge) feature name overruns
+    return prefix + "…"
 
 
 def _authoring_criteria(
@@ -447,7 +444,8 @@ class VideoEngine(BaseService):
         for existing in open_tasks:
             draft = markers.get_video_draft(existing)
             if draft is not None and draft.get("occasion") == occasion:
-                return None  # already drafted for this occasion
+                # Already drafted for this occasion
+                return None
         if len(open_tasks) >= settings.video_max_open_posts:
             self.log.warning(
                 "video-engine: open cap reached; not opening authoring task",
@@ -490,7 +488,8 @@ class VideoEngine(BaseService):
                         project_id=cast("UUID", project.id),
                         status=TaskStatus.PENDING,
                         source=VIDEO_SOURCE,
-                        confirmed_by_human=True,  # normal delivery, not CEO-held
+                        # Normal delivery, not CEO-held
+                        confirmed_by_human=True,
                     )
                 )
                 markers.set_video_draft(
@@ -545,7 +544,7 @@ class VideoEngine(BaseService):
         exemption.
 
         The brief is the structured changelog block (built independent of
-        the local model, so it stands even when the model is down); the
+        the background LLM, so it stands even when no model answers); the
         LLM-drafted (or template-fallback) one-liner is only the ``script``
         prop suggestion, never the whole brief.
         """
@@ -616,7 +615,7 @@ class VideoEngine(BaseService):
             draft = await _chat(_release_video_prompt(version, changelog, product_name))
         except Exception as exc:
             self.log.warning(
-                "video-engine: local-model script draft failed (fallback template)",
+                "video-engine: background-LLM script draft failed (fallback template)",
                 error=str(exc),
             )
             draft = None
@@ -665,7 +664,8 @@ class VideoEngine(BaseService):
                     project_id=cast("UUID", source_task.project_id),
                     status=TaskStatus.PENDING,
                     source=VIDEO_POST_SOURCE,
-                    confirmed_by_human=False,  # HELD for the CEO; never dispatched
+                    # HELD for the CEO; never dispatched
+                    confirmed_by_human=False,
                 )
             )
             markers.set_video_draft(
