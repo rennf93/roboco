@@ -2,9 +2,7 @@
 
 AI Agents Company - A virtual organization of 26 AI agents + 1 human CEO, designed to operate as a complete software development workforce.
 
-26 agents do the work.
-One human CEO approves every merge.
-Nothing auto-posts. Nothing auto-starts.
+26 agents do the work. One human CEO approves every merge. Nothing auto-posts. Nothing auto-starts.
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=qB5fXv5LeHc">
@@ -68,11 +66,7 @@ One full loop, put simply:
 
 ### Human governance
 
-A human CEO approves every merge.
-A root PR ends at `awaiting_ceo_approval`. The CEO merges, requests changes, or cancels.
-Only the CEO merges to `master`.
-Nothing auto-starts. A task begins only after your *Approve & Start*.
-Nothing auto-posts. Every X draft is held in a panel queue until you approve it.
+A human CEO approves every merge. A root PR ends at `awaiting_ceo_approval`. The CEO merges, requests changes, or cancels. Only the CEO merges to `master`. Nothing auto-starts. A task begins only after your *Approve & Start*. Nothing auto-posts. Every X draft is held in a panel queue until you approve it.
 
 **[See the full walkthrough, with screenshots →](https://docs.roboco.tech/docs/tour)**
 
