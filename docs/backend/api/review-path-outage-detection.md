@@ -10,7 +10,7 @@ Cross-task outage detection for the evidence / git-readonly pipeline (the "revie
 - **Outage clears** only on observed successes: `review_path_recovery_successes` consecutive successful reads (evidence legs and 2xx git-readonly reads) clear it and set `recovered=true`. If the window instead empties of failures with no read having succeeded, the outage closes as *expired*: `outage_active` goes false, `recovered` stays false, and the notification says no failures were observed in the window, not that reads are succeeding.
 - **Window start** is the timestamp of the oldest failure in the window at the moment the outage trips.
 - **State is in memory**, per process. In the split deployment (`ROBOCO_ROLE=api` / `dispatcher`) failures are recorded, and the notification sweep runs, in the **dispatcher** (agents' `ROBOCO_API_URL` points at it; the api role returns before starting background loops). The api-role orchestrator's tracker never sees a failure, so nginx routes `/api/system-health/` to `$active_dispatcher` (`deploy/nginx.conf`, pinned by `tests/unit/test_nginx_routing.py`). A restart forgets the window, which at worst delays a trip by one window.
-- **One key per task.** Every git-readonly route (`review_path_key`) and evidence leg (`record_review_path_failure` collapses a full UUID) keys failures by the task's 8-char id prefix, so one task failing across status, log and diff counts once; with no task, a namespaced `branch:`/`project:` key is used.
+- **One key per task.** Every git-readonly route (`resolve_review_path_key`) and evidence leg (`record_review_path_failure` collapses a full UUID) keys failures by the task's 8-char id prefix, so one task failing across status, log and diff counts once; with no task or branch named, the calling agent's active task (else `agent:<id>`) is used, and a namespaced `branch:` key only for a branch that carries no task id.
 
 ### Where failures are recorded
 
@@ -25,12 +25,12 @@ Key resolution for git reads (`resolve_review_path_key` in `roboco/services/revi
 
 `sweep_review_path_health()` runs from the orchestrator's reaper tick in `roboco/runtime/engines/dispatch_breaker.py`, beside `_maybe_recover_broken_gateway`. It is part of the existing gateway-health recovery subsystem, so it is gated by `ROBOCO_GATEWAY_HEALTH_ENABLED` and is not a separate health mechanism.
 
-The tracker queues each `active` / `recovered` transition exactly once when it happens. The sweep drains the queue and calls `NotificationService.send_review_path_outage_notification`, so there is:
+The tracker queues each `active` / `recovered` / `expired` transition exactly once when it happens. The sweep drains the queue and calls `NotificationService.send_review_path_outage_notification`, so there is:
 
 - one `ALERT` (priority HIGH, from `system` to `ceo` and `main-pm`) per outage window, never one per failed call;
 - one `ALERT` (priority NORMAL) when reads recover, or a differently worded one ("window closed", no failures observed, recovery not confirmed) when the window expires without a successful read.
 
-A trip-and-clear between two sweeps still emits both alerts. A failed send is logged and does not break the tick.
+A trip-and-clear between two sweeps still emits both alerts. The `recovered` flag in `send_review_path_outage_notification` (default `True`) selects the wording on a clear; the sweep passes `False` for an `expired` transition. A failed send is logged and does not break the tick.
 
 ## Configuration
 
