@@ -202,7 +202,9 @@ fix:
 reflow-docs:
 	uv run python scripts/reflow_md.py --apply
 
-# CI guard: fail if any in-scope doc has hard-wrapped prose. Wired into `quality`.
+# Full-repo guard: fail if any in-scope doc has hard-wrapped prose. `quality`
+# runs the changed-only variant (`--check --changed`) so base debt in untouched
+# files can't red-line a clean PR.
 .PHONY: reflow-check
 reflow-check:
 	uv run python scripts/reflow_md.py --check
@@ -303,7 +305,7 @@ quality: sync
 	@echo "==> ruff check"
 	@uv run ruff check .
 	@echo "==> markdown prose (no hard-wrapping)"
-	@uv run python scripts/reflow_md.py --check
+	@uv run python scripts/reflow_md.py --check --changed
 	@echo "==> codebase map (every path and symbol exists, every module is mapped)"
 	@uv run python scripts/verify_codebase_map.py
 	@echo "==> codebase map concatenation up to date"
