@@ -188,9 +188,12 @@ _VENV_RESYNC_ATTEMPT = ".venv-resync"
 _VENV_COMPLETE_SENTINEL = ".roboco-complete"
 # Run as the git user in the clone root with $1 = clone root, $2 = new venv dir
 # name. Repoints `.venv` at it with an atomic rename (a legacy real `.venv` dir
-# is moved aside to `.venv-legacy` first), then drops every older venv except
-# the new one, the one it replaced, and every venv a present worktree's lockfile
-# still hashes to ($3...), which a sibling worktree may still be running on.
+# is moved aside to `.venv-legacy` first). Before that, every worktree link that
+# is literally `../../.venv` is repointed at the concrete venv `.venv` currently
+# names, so the swap never moves a running sibling onto the new venv. Then
+# drops every older venv except the new one, the one it replaced, and every
+# venv a present worktree's lockfile still hashes to ($3...), which a sibling
+# worktree may still be running on.
 _SWAP_VENV_SCRIPT = """
 cd -- "$1" || exit 1
 new=$2
@@ -199,6 +202,12 @@ prev=$(readlink .venv 2>/dev/null)
 if [ -e .venv ] && [ ! -L .venv ]; then
     rm -rf -- .venv-legacy && mv -- .venv .venv-legacy || exit 1
     prev=.venv-legacy
+fi
+if [ -n "$prev" ]; then
+    for l in .worktrees/*/.venv; do
+        [ "$(readlink -- "$l" 2>/dev/null)" = "../../.venv" ] || continue
+        ln -sfn -- "../../$prev" "$l"
+    done
 fi
 ln -sfn -- "$new" .venv.swap && mv -T -- .venv.swap .venv || exit 1
 keep=" $new $prev $* "
