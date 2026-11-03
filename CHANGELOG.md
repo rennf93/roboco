@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **Positioning answers Devin's fleet and use-case pitch (November 2026).** devin.ai now sells Devin Review, scheduled workflows and swarms, and automations for triage and failed CI ([source](https://devin.ai/)). RoboCo ships review, QA, docs and triage as separate roles, each behind its own lifecycle gate. `docs/positioning/gated-roles-vs-single-agent-fleet.md` tells that story and `docs/positioning/devin-fleet-change-note.md` records what changed and why. No code changed. Public-site copy is a separate follow-up.
+
 ## [0.32.0] - 2026-10-16
 
 ### Added
