@@ -7,8 +7,10 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from roboco.services.git import GitService
-from roboco.services.md_reflow import reflow_changed_markdown
+from roboco.services.md_reflow import (
+    reflow_changed_markdown,
+    reflow_worktree_markdown,
+)
 
 WRAPPED = "first line of a\nhard wrapped paragraph\n"
 FLAT = "first line of a hard wrapped paragraph\n"
@@ -61,16 +63,27 @@ def test_ignores_unlisted_and_out_of_scope(tmp_path: Path) -> None:
 async def test_git_hook_filters_to_requested_files_and_never_raises(
     tmp_path: Path,
 ) -> None:
-    svc = GitService.__new__(GitService)
-    svc.log = MagicMock()
+    log = MagicMock()
     (tmp_path / "a.md").write_text(WRAPPED)
     (tmp_path / "b.md").write_text(WRAPPED)
     run = AsyncMock(return_value=MagicMock(stdout="a.md\nb.md\n"))
-    object.__setattr__(svc, "_run_git", run)
-    await svc._reflow_changed_markdown(tmp_path, ["a.md"], 5)
+    assert await reflow_worktree_markdown(run, tmp_path, ["a.md"], 5, log) == ["a.md"]
     assert (tmp_path / "a.md").read_text() == FLAT
     assert (tmp_path / "b.md").read_text() == WRAPPED
 
     run.side_effect = RuntimeError("boom")
-    await svc._reflow_changed_markdown(tmp_path, None, 5)
-    svc.log.warning.assert_called_once()
+    assert await reflow_worktree_markdown(run, tmp_path, None, 5, log) == []
+    log.warning.assert_called_once()
+
+
+def test_symlinked_markdown_pointing_outside_the_clone_is_not_written(
+    tmp_path: Path,
+) -> None:
+    clone = tmp_path / "clone"
+    clone.mkdir()
+    outside = tmp_path / "outside.md"
+    outside.write_text(WRAPPED)
+    (clone / "link.md").symlink_to(outside)
+    assert reflow_changed_markdown(clone, ["link.md"]) == []
+    assert outside.read_text() == WRAPPED
+    assert (clone / "link.md").is_symlink()
