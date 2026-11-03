@@ -11946,6 +11946,37 @@ class TaskGatewayWork(_Base):
             await self.add_progress(task_id, agent_id, notes)
         return await self.submit_for_verification(task_id, agent_role="developer")
 
+    async def reopen_after_failed_gate(
+        self, agent_id: UUID, task_id: UUID
+    ) -> TaskTable | None:
+        """Hand a ``verifying`` task whose background quality gate came back red
+        back to its author as ``in_progress``, where the dispatcher respawns the
+        author. ``None`` (no write) unless the caller is the assignee and the
+        task is ``verifying``."""
+        task = await self.get(task_id)
+        if (
+            task is None
+            or task.assigned_to != agent_id
+            or task.status != TaskStatus.VERIFYING
+        ):
+            return None
+        task.self_verified = False
+        try:
+            self._validate_and_set_status(task, TaskStatus.IN_PROGRESS, "developer")
+        except TaskLifecycleError:
+            return None
+        await self.session.flush()
+        return task
+
+    async def list_verifying_with_assignee(self) -> list[TaskTable]:
+        """Every ``verifying`` task that still has an assignee (the gate-job
+        restart-recovery sweep's work list)."""
+        return [
+            t
+            for t in await self.list_by_status(TaskStatus.VERIFYING)
+            if t.assigned_to is not None
+        ]
+
     async def submit_qa(
         self, agent_id: UUID, task_id: UUID, notes: str
     ) -> TaskTable | None:

@@ -25,6 +25,9 @@ class RecordingGateRegistry:
         self.launches: list[GateLaunch] = []
         self.running = False
 
+    def is_running(self, _task_id: Any) -> bool:
+        return self.running
+
     def launch(
         self, task_id: Any, run: Any, finish: Any, *, timeout_seconds: float
     ) -> bool:

@@ -85,6 +85,7 @@ from roboco.services.decisions.resolver import (
     check_openrouter_fallback_at_startup,
 )
 from roboco.services.extraction import ExtractionPipeline, ExtractionService
+from roboco.services.gateway.choreographer.gate_job import relaunch_lost_gate_jobs
 from roboco.services.learning import get_learning_service
 from roboco.services.optimal import close_optimal_service, get_optimal_service
 from roboco.services.optimal_brain.indexer_worker import (
@@ -125,6 +126,17 @@ def _cancel_rag_reconcile(app: FastAPI) -> None:
     task = getattr(app.state, "rag_reconcile_task", None)
     if task is not None and not task.done():
         task.cancel()
+
+
+async def _relaunch_lost_gate_jobs() -> None:
+    """Relaunch quality-gate jobs a restart dropped (best-effort: a failure
+    here must not block startup)."""
+    try:
+        relaunched = await relaunch_lost_gate_jobs()
+        if relaunched:
+            logger.info("Relaunched lost quality gate jobs", count=relaunched)
+    except Exception as e:
+        logger.warning("Gate job recovery failed", error=str(e))
 
 
 async def _apply_flag_overrides() -> None:
@@ -251,6 +263,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     # in every role, since routes query the KB regardless.
     if settings.role == "all":
         _schedule_rag_reconcile(app)
+
+    if settings.role in ("all", "api"):
+        await _relaunch_lost_gate_jobs()
 
     logger.info("All services initialized, API ready")
 

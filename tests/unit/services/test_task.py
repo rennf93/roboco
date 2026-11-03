@@ -162,6 +162,53 @@ async def test_submit_qa_records_progress_when_notes_given() -> None:
     submit_for_qa_mock.assert_awaited_once_with(task_id, agent_role="developer")
 
 
+@pytest.mark.asyncio
+async def test_reopen_after_failed_gate_returns_verifying_task_to_in_progress() -> None:
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    agent_id = uuid4()
+    task = MagicMock(assigned_to=agent_id, status=TaskStatus.VERIFYING)
+    _bind(svc, "get", AsyncMock(return_value=task))
+    validate = MagicMock()
+    _bind(svc, "_validate_and_set_status", validate)
+
+    assert await svc.reopen_after_failed_gate(agent_id, uuid4()) is task
+    validate.assert_called_once_with(task, TaskStatus.IN_PROGRESS, "developer")
+    assert task.self_verified is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "task",
+    [
+        None,
+        MagicMock(assigned_to=uuid4(), status=TaskStatus.VERIFYING),
+        MagicMock(status=TaskStatus.IN_PROGRESS),
+    ],
+    ids=["missing", "other-assignee", "not-verifying"],
+)
+async def test_reopen_after_failed_gate_refuses_without_writing(task: Any) -> None:
+    svc = TaskService(MagicMock())
+    agent_id = uuid4()
+    if task is not None and task.status == TaskStatus.IN_PROGRESS:
+        task.assigned_to = agent_id
+    _bind(svc, "get", AsyncMock(return_value=task))
+    validate = MagicMock()
+    _bind(svc, "_validate_and_set_status", validate)
+
+    assert await svc.reopen_after_failed_gate(agent_id, uuid4()) is None
+    validate.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_list_verifying_with_assignee_drops_unassigned_tasks() -> None:
+    svc = TaskService(MagicMock())
+    owned = MagicMock(assigned_to=uuid4())
+    orphan = MagicMock(assigned_to=None)
+    _bind(svc, "list_by_status", AsyncMock(return_value=[owned, orphan]))
+
+    assert await svc.list_verifying_with_assignee() == [owned]
+
+
 # ---------------------------------------------------------------------------
 # list_assigned_for_agent
 # ---------------------------------------------------------------------------
