@@ -60,6 +60,7 @@ from roboco.services.gateway.choreographer.evidence_legs import (
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
 from roboco.utils.converters import to_python_uuid
+from roboco.utils.timing import timed_phase
 
 logger = structlog.get_logger()
 
@@ -185,7 +186,8 @@ class QAClaimMixin(_Base):
             )
         agent = await self.task.agent_for(qa_agent_id)
         role_str = str(agent.role) if agent is not None else "qa"
-        briefing = await self._briefing_for(qa_agent_id, task_id, full=True)
+        with timed_phase("claim_review", "briefing", task_id=str(task_id)):
+            briefing = await self._briefing_for(qa_agent_id, task_id, full=True)
         try:
             role = spec_module.Role(role_str)
         except ValueError:
@@ -245,7 +247,8 @@ class QAClaimMixin(_Base):
                 qa_agent_id, t, task_id
             )
         else:
-            ev = await self._build_qa_claim_evidence(qa_agent_id, t, task_id)
+            with timed_phase("claim_review", "evidence_build", task_id=str(task_id)):
+                ev = await self._build_qa_claim_evidence(qa_agent_id, t, task_id)
             evidence = ev.as_dict()
 
         env = Envelope.ok(
@@ -448,15 +451,16 @@ class QAClaimMixin(_Base):
 
         diff_summary, files_changed = "", []
         if t.branch_name:
-            diff_summary, files_changed = await run_bounded_leg(
-                self.git.diff_and_files(branch_name=t.branch_name),
-                default=("", []),
-                budget=budget,
-                leg="pr diff + files_changed",
-                hint="review the PR diff on GitHub directly",
-                task_id=task_id,
-                gaps=evidence_gaps,
-            )
+            with timed_phase("claim_review", "evidence_git", task_id=str(task_id)):
+                diff_summary, files_changed = await run_bounded_leg(
+                    self.git.diff_and_files(branch_name=t.branch_name),
+                    default=("", []),
+                    budget=budget,
+                    leg="pr diff + files_changed",
+                    hint="review the PR diff on GitHub directly",
+                    task_id=task_id,
+                    gaps=evidence_gaps,
+                )
 
         # The ask-chain (parent → root descriptions) so QA judges INTENT
         # against the intake's original analysis, not only the leaf's ACs.
@@ -488,16 +492,19 @@ class QAClaimMixin(_Base):
                 "the diff manually for architecture-convention issues"
             )
         else:
-            convention_findings = await self._qa_convention_findings(
-                qa_agent_id,
-                t,
-                timeout=min(
-                    settings.conventions_validator_advisory_timeout_seconds,
-                    budget.remaining(),
-                ),
-                gaps=evidence_gaps,
-                changed_files=files_changed,
-            )
+            with timed_phase(
+                "claim_review", "evidence_conventions", task_id=str(task_id)
+            ):
+                convention_findings = await self._qa_convention_findings(
+                    qa_agent_id,
+                    t,
+                    timeout=min(
+                        settings.conventions_validator_advisory_timeout_seconds,
+                        budget.remaining(),
+                    ),
+                    gaps=evidence_gaps,
+                    changed_files=files_changed,
+                )
         open_findings = await findings_lib.open_findings_for_task(
             self.task.session, t.id
         )

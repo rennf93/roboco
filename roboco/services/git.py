@@ -137,6 +137,7 @@ from roboco.templates.git.pr_internal import InternalCommitInfo
 from roboco.templates.git.pr_root import CommitInfo as PRCommitInfo
 from roboco.utils.converters import require_uuid
 from roboco.utils.entire_markers import is_entire_pr_body, with_entire_markers
+from roboco.utils.timing import timed_phase
 from roboco.utils.workspace_paths import clone_root_of, worktree_path_of
 
 
@@ -2104,9 +2105,10 @@ class GitCheckoutPush(_Base):
         workspace = await self.get_workspace(project.slug, agent_id)
         # Regenerate + commit any codegen drift BEFORE the push carries it —
         # a no-op unless the project sets codegen_command.
-        await self._run_codegen_and_commit(
-            str(task.branch_name), workspace, actor_agent_id=agent_id
-        )
+        with timed_phase("push_task_branch", "codegen", task_id=str(task_id)):
+            await self._run_codegen_and_commit(
+                str(task.branch_name), workspace, actor_agent_id=agent_id
+            )
         # Push the task's branch BY NAME, independent of the current checkout.
         # The dev's clone is shared across tasks, so by the QA-submission /
         # open_pr boundary it is usually parked on a LATER task's branch; the
@@ -2115,7 +2117,8 @@ class GitCheckoutPush(_Base):
         # "No commits between" (origin branch empty/missing). The local task
         # branch ref carries the commits; push it by name.
         tree = await self._attached_task_tree(workspace, task)
-        _branch, pushed = await self.push(tree, branch=str(task.branch_name))
+        with timed_phase("push_task_branch", "push", task_id=str(task_id)):
+            _branch, pushed = await self.push(tree, branch=str(task.branch_name))
         return pushed
 
     # =========================================================================
@@ -2806,10 +2809,14 @@ class GitPRCreation(_Base):
         creation (same posture as ``_record_pr_atomically``)."""
         if not labels:
             return
-        for name in labels:
-            await self._ensure_label_exists(repo_ref, git_token, name)
+        with timed_phase("create_pr", "forge_ensure_labels", pr=pr_number):
+            for name in labels:
+                await self._ensure_label_exists(repo_ref, git_token, name)
         try:
-            resp = await self._forge.add_labels(repo_ref, git_token, pr_number, labels)
+            with timed_phase("create_pr", "forge_add_labels", pr=pr_number):
+                resp = await self._forge.add_labels(
+                    repo_ref, git_token, pr_number, labels
+                )
         except Exception as e:
             self.log.warning("add PR labels HTTP error", pr=pr_number, error=str(e))
             return
@@ -5229,7 +5236,8 @@ class GitGatewayPRs(_Base):
         # before pushing it, or the workspace was wiped. Create it on the
         # remote off the default branch so GitHub doesn't 422 'base invalid'
         # and the integration hierarchy is preserved.
-        parent = await self._ensure_base_on_remote(workspace, parent, project.slug)
+        with timed_phase("create_pr", "ensure_base_on_remote", branch=branch_name):
+            parent = await self._ensure_base_on_remote(workspace, parent, project.slug)
 
         pr_title = f"[{str(task.id)[:8]}] {task.title}"
         pr_body = task.description or ""
@@ -5239,20 +5247,22 @@ class GitGatewayPRs(_Base):
         # moves). A dev branch was linked at claim; an integration branch
         # links here, and Entire then opens a draft PR for it that the 422
         # path below adopts. A no-op unless the tree is bridged.
-        await link_before_pr(
-            require_uuid(task.id), project, branch=branch_name, base=parent
-        )
+        with timed_phase("create_pr", "entire_link_before_pr", branch=branch_name):
+            await link_before_pr(
+                require_uuid(task.id), project, branch=branch_name, base=parent
+            )
 
-        resp = await self._post_pr(
-            repo_ref,
-            git_token,
-            {
-                "title": pr_title,
-                "body": pr_body,
-                "head": branch_name,
-                "base": parent,
-            },
-        )
+        with timed_phase("create_pr", "forge_post_pr", branch=branch_name):
+            resp = await self._post_pr(
+                repo_ref,
+                git_token,
+                {
+                    "title": pr_title,
+                    "body": pr_body,
+                    "head": branch_name,
+                    "base": parent,
+                },
+            )
 
         # Org-structure labels: create_pr is always an assembled PM PR
         # (cell->root or root->master), so has_children is True by construction.

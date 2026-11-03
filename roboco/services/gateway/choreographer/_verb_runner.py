@@ -25,6 +25,7 @@ import structlog
 
 from roboco.foundation.policy import lifecycle as spec
 from roboco.foundation.policy.content import markers
+from roboco.utils.timing import timed_phase
 
 logger = structlog.get_logger()
 
@@ -458,7 +459,8 @@ class VerbRunner(WorkTransitionsMixin, ReviewTransitionsMixin, GitSideEffectsMix
         handler = self._atomic_handlers().get(action_name)
         if handler is None:
             raise ValueError(f"unknown atomic action '{action_name}'")
-        return await handler(self, task, agent, context)
+        with timed_phase("atomic", action_name):
+            return await handler(self, task, agent, context)
 
     async def _dispatch_side_effect(
         self, side_effect_name: str, task: Any, agent: Any
@@ -467,7 +469,8 @@ class VerbRunner(WorkTransitionsMixin, ReviewTransitionsMixin, GitSideEffectsMix
         handler = self._side_effect_handlers().get(side_effect_name)
         if handler is None:
             raise ValueError(f"unknown side effect '{side_effect_name}'")
-        return await handler(self, task, agent)
+        with timed_phase("side_effect", side_effect_name):
+            return await handler(self, task, agent)
 
     # -- Atomic handlers ---------------------------------------------------
 

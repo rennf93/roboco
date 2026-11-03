@@ -39,6 +39,7 @@ from roboco.services.repositories.review_findings import (
     STATUS_OPEN,
     ReviewFindingsRepository,
 )
+from roboco.utils.timing import timed_phase
 
 if TYPE_CHECKING:
     from uuid import UUID
@@ -280,7 +281,8 @@ class DevClaimMixin(_Base):
             )
         agent = await self.task.agent_for(agent_id)
         role_str = str(agent.role) if agent is not None else "developer"
-        briefing = await self._briefing_for(agent_id, task_id, task=t, full=True)
+        with timed_phase("i_will_work_on", "briefing", task_id=str(task_id)):
+            briefing = await self._briefing_for(agent_id, task_id, task=t, full=True)
         try:
             role = spec_module.Role(role_str)
         except ValueError:
@@ -410,7 +412,8 @@ class DevClaimMixin(_Base):
             briefing=briefing,
         ):
             return rejection
-        envelope = await self._claim_plan_start_run(ctx, agent, spec_ctx)
+        with timed_phase("i_will_work_on", "claim_plan_start", task_id=str(task_id)):
+            envelope = await self._claim_plan_start_run(ctx, agent, spec_ctx)
         return await self._post_claim_journal_gate(
             "i_will_work_on", agent_id, task_id, envelope
         )
@@ -531,7 +534,8 @@ class OpenPRMixin(_Base):
         # per-agent) — the single-active-task guard means concurrent open_pr
         # on the same task is purely the respawn-race bug case, never a
         # legitimate-concurrency regression.
-        await self.task.acquire_task_lock(task_id)
+        with timed_phase("open_pr", "task_lock_wait", task_id=str(task_id)):
+            await self.task.acquire_task_lock(task_id)
         t = await self.task.get(task_id)
         if t is None:
             return await self._emit_rejection(
@@ -540,7 +544,8 @@ class OpenPRMixin(_Base):
                 task_id=task_id,
                 verb="open_pr",
             )
-        briefing = await self._briefing_for(agent_id, task_id, task=t)
+        with timed_phase("open_pr", "briefing", task_id=str(task_id)):
+            briefing = await self._briefing_for(agent_id, task_id, task=t)
         agent = await self.task.agent_for(agent_id)
         role_str = str(agent.role) if agent is not None else "developer"
         # Idempotent re-entry: caller owns the task and a PR is already
@@ -577,7 +582,8 @@ class OpenPRMixin(_Base):
         await self._touch(task_id)
         runner = self._verb_runner()
         try:
-            await runner.run_intent("open_pr", t, agent, spec_ctx)
+            with timed_phase("open_pr", "runner_chain", task_id=str(task_id)):
+                await runner.run_intent("open_pr", t, agent, spec_ctx)
         except Exception as exc:
             return await self._emit_rejection(
                 self._open_pr_failure_env(exc, t, briefing, role_str),
@@ -912,18 +918,29 @@ class IAmDoneMixin(_Base):
         """
         await self._apply_resolved_findings(ctx)
         guards = (
-            lambda: self._check_tracing_gates(ctx.agent_id, ctx.task_id, ctx.task),
-            lambda: self._check_submit_qa_field_gates(
-                ctx.agent_id, ctx.task_id, ctx.task
+            (
+                "tracing_gates",
+                lambda: self._check_tracing_gates(ctx.agent_id, ctx.task_id, ctx.task),
             ),
-            lambda: self._ensure_branch_pushed(ctx),
-            lambda: self._behind_base_gate(ctx),
-            lambda: self._check_quality_gate(ctx),
-            lambda: self._toolchain_broken_guard(ctx.agent_id, ctx.task),
-            lambda: self._conventions_gate(ctx),
+            (
+                "field_gates",
+                lambda: self._check_submit_qa_field_gates(
+                    ctx.agent_id, ctx.task_id, ctx.task
+                ),
+            ),
+            ("branch_push", lambda: self._ensure_branch_pushed(ctx)),
+            ("behind_base", lambda: self._behind_base_gate(ctx)),
+            ("quality_gate", lambda: self._check_quality_gate(ctx)),
+            (
+                "toolchain_guard",
+                lambda: self._toolchain_broken_guard(ctx.agent_id, ctx.task),
+            ),
+            ("conventions_gate", lambda: self._conventions_gate(ctx)),
         )
-        for guard in guards:
-            if rejection := await guard():
+        for phase, guard in guards:
+            with timed_phase("i_am_done", phase, task_id=str(ctx.task_id)):
+                rejection = await guard()
+            if rejection:
                 return await self._reject_i_am_done(ctx, rejection)
         # Pre-gateway parity: persist per-criterion
         # status now that all gates have passed. The write runs AFTER the
@@ -937,7 +954,8 @@ class IAmDoneMixin(_Base):
         """Dispatch the spec-composed (submit_verification, submit_qa) chain."""
         runner = self._verb_runner()
         try:
-            t = await runner.run_intent("i_am_done", ctx.task, agent, spec_ctx)
+            with timed_phase("i_am_done", "runner_chain", task_id=str(ctx.task_id)):
+                t = await runner.run_intent("i_am_done", ctx.task, agent, spec_ctx)
         except Exception as exc:
             return await self._reject_i_am_done(
                 ctx,
@@ -947,16 +965,17 @@ class IAmDoneMixin(_Base):
                     context_briefing=ctx.briefing,
                 ),
             )
-        notify_warning = await self._notify_qa(ctx.agent_id, ctx.task_id, t)
-        await self._touch(ctx.task_id)
-        # Server-side milestone progress so the panel always
-        # records the QA handoff regardless of agent's progress() habits.
-        await self._record_milestone_progress(
-            ctx.task_id,
-            ctx.agent_id,
-            "submitted for QA review",
-            percentage=90,
-        )
+        with timed_phase("i_am_done", "post_submit", task_id=str(ctx.task_id)):
+            notify_warning = await self._notify_qa(ctx.agent_id, ctx.task_id, t)
+            await self._touch(ctx.task_id)
+            # Server-side milestone progress so the panel always
+            # records the QA handoff regardless of agent's progress() habits.
+            await self._record_milestone_progress(
+                ctx.task_id,
+                ctx.agent_id,
+                "submitted for QA review",
+                percentage=90,
+            )
         env = await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
         if notify_warning:
             env.warning = notify_warning
