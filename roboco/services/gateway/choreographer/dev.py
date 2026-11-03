@@ -14,6 +14,7 @@ from roboco.foundation.policy import lifecycle as spec_module
 from roboco.foundation.policy.content import (
     markers,
 )
+from roboco.services.gate_jobs import get_gate_job_registry
 from roboco.services.gateway.choreographer import findings as findings_lib
 from roboco.services.gateway.choreographer._impl import (
     _PM_APPROACH_MIN_LEN,
@@ -27,6 +28,10 @@ from roboco.services.gateway.choreographer._protocol import actor_context_fields
 from roboco.services.gateway.choreographer.evidence_legs import (
     LegBudget,
     run_bounded_leg,
+)
+from roboco.services.gateway.choreographer.gate_job import (
+    finish_gate_job,
+    run_gate_job,
 )
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import (
@@ -45,6 +50,7 @@ if TYPE_CHECKING:
     from uuid import UUID
 
     from roboco.services.gateway.choreographer._protocol import ChoreographerHelpers
+    from roboco.services.gateway.quality_gate import GateResult
 
     _Base = ChoreographerHelpers
 else:
@@ -899,7 +905,7 @@ class IAmDoneMixin(_Base):
             return await self._reject_i_am_done(ctx, env)
         if gate_rejection := await self._i_am_done_gate(ctx):
             return gate_rejection
-        return await self._i_am_done_run(ctx, agent, spec_ctx)
+        return await self._defer_quality_gate(ctx)
 
     async def _reject_i_am_done(self, ctx: _IAmDoneContext, env: Envelope) -> Envelope:
         """Stamp introspection + emit audit row for an i_am_done rejection."""
@@ -930,7 +936,6 @@ class IAmDoneMixin(_Base):
             ),
             ("branch_push", lambda: self._ensure_branch_pushed(ctx)),
             ("behind_base", lambda: self._behind_base_gate(ctx)),
-            ("quality_gate", lambda: self._check_quality_gate(ctx)),
             (
                 "toolchain_guard",
                 lambda: self._toolchain_broken_guard(ctx.agent_id, ctx.task),
@@ -948,38 +953,76 @@ class IAmDoneMixin(_Base):
         await self._write_criteria_status(ctx.agent_id, ctx.task_id, ctx.task)
         return None
 
-    async def _i_am_done_run(
-        self, ctx: _IAmDoneContext, agent: Any, spec_ctx: spec_module.Context
-    ) -> Envelope:
-        """Dispatch the spec-composed (submit_verification, submit_qa) chain."""
-        runner = self._verb_runner()
-        try:
-            with timed_phase("i_am_done", "runner_chain", task_id=str(ctx.task_id)):
-                t = await runner.run_intent("i_am_done", ctx.task, agent, spec_ctx)
-        except Exception as exc:
-            return await self._reject_i_am_done(
-                ctx,
-                Envelope.invalid_state(
-                    message=f"verb runner failed: {exc}",
-                    remediate="check workspace + retry; if persistent, escalate",
-                    context_briefing=ctx.briefing,
-                ),
-            )
-        with timed_phase("i_am_done", "post_submit", task_id=str(ctx.task_id)):
-            notify_warning = await self._notify_qa(ctx.agent_id, ctx.task_id, t)
-            await self._touch(ctx.task_id)
-            # Server-side milestone progress so the panel always
-            # records the QA handoff regardless of agent's progress() habits.
+    async def _defer_quality_gate(self, ctx: _IAmDoneContext) -> Envelope:
+        """Hand the slow quality gate to a background job and return promptly.
+
+        The task stays where it is (in_progress, or verifying on the recovery
+        path), so it cannot reach QA before the job's verdict lands; the job's
+        finish callback (``apply_gate_verdict``) does the onward transition.
+        A live job for this task is never doubled: the repeat call just
+        reports it is still running. With no live job (first call, or the
+        process restarted mid-run) a fresh one is launched, so nothing wedges.
+        """
+        from roboco.config import settings as _settings
+
+        agent_id, task_id, notes = ctx.agent_id, ctx.task_id, ctx.notes
+        launched = get_gate_job_registry().launch(
+            task_id,
+            lambda: run_gate_job(agent_id, task_id),
+            lambda verdict: finish_gate_job(agent_id, task_id, notes, verdict),
+            timeout_seconds=_settings.gate_job_timeout_seconds,
+        )
+        state = "started" if launched else "already running"
+        return Envelope.ok(
+            status=str(ctx.task.status),
+            task_id=str(task_id),
+            next=(
+                f"quality gate {state} in the background; the task moves to QA "
+                "automatically when it passes. Call i_am_idle() now. If it "
+                "fails, the failure is recorded as a progress entry on this "
+                "task and it stays in_progress: fix it, commit, and call "
+                "i_am_done again"
+            ),
+            context_briefing=ctx.briefing,
+        ).with_introspection(task=ctx.task, role=ctx.role_str)
+
+    async def apply_gate_verdict(
+        self, agent_id: UUID, task_id: UUID, notes: str, verdict: GateResult
+    ) -> str:
+        """Gate-job callback: move the task onward, or record the failure.
+
+        Idempotent: it acts only while the task is still pre-QA and owned by
+        the submitting developer, so a duplicate or late callback (task
+        already in QA, reassigned, cancelled) is a no-op. Returns
+        ``submitted`` / ``rejected`` / ``skipped``.
+        """
+        t = await self.task.get(task_id)
+        if (
+            t is None
+            or t.assigned_to != agent_id
+            or str(t.status) not in ("in_progress", "verifying")
+        ):
+            return "skipped"
+        if not verdict.passed:
             await self._record_milestone_progress(
-                ctx.task_id,
-                ctx.agent_id,
-                "submitted for QA review",
-                percentage=90,
+                task_id,
+                agent_id,
+                f"quality gate failed before QA — {verdict.summary}. Fix these in "
+                "your workspace, commit, and call i_am_done again — QA reviews "
+                f"working code, not a red gate:\n\n{verdict.output_excerpt}",
             )
-        env = await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
-        if notify_warning:
-            env.warning = notify_warning
-        return env
+            return "rejected"
+        if str(t.status) == "in_progress":
+            await self.task.submit_verification(agent_id, task_id, notes)
+        submitted = await self.task.submit_qa(agent_id, task_id, notes)
+        t = submitted if submitted is not None else t
+        await self._notify_qa(agent_id, task_id, t)
+        await self._touch(task_id)
+        await self._record_milestone_progress(
+            task_id, agent_id, "submitted for QA review", percentage=90
+        )
+        await self._teardown_sandbox_best_effort(agent_id)
+        return "submitted"
 
     async def _i_am_done_resume_from_verifying(self, ctx: _IAmDoneContext) -> Envelope:
         """Recovery path: task is already in `verifying` owned by caller.
@@ -987,29 +1030,13 @@ class IAmDoneMixin(_Base):
         The spec's i_am_done composes (submit_verification, submit_qa) and
         the runner dispatches the FIRST action; submit_verification's
         source_status is IN_PROGRESS so a `verifying` task hits invalid_state
-        through the spec gate. Run submit_qa directly, plus the same tracing
-        + field-level gates the standard path enforces.
+        through the spec gate. Run the same tracing + field-level gates the
+        standard path enforces, then (re)launch the background gate job, whose
+        callback runs submit_qa.
         """
         if gate_rejection := await self._i_am_done_gate(ctx):
             return gate_rejection
-        try:
-            submitted = await self.task.submit_qa(ctx.agent_id, ctx.task_id, ctx.notes)
-        except Exception as exc:
-            return await self._reject_i_am_done(
-                ctx,
-                Envelope.invalid_state(
-                    message=f"submit_qa failed: {exc}",
-                    remediate="check workspace + retry; if persistent, escalate",
-                    context_briefing=ctx.briefing,
-                ),
-            )
-        t = submitted if submitted is not None else ctx.task
-        notify_warning = await self._notify_qa(ctx.agent_id, ctx.task_id, t)
-        await self._touch(ctx.task_id)
-        env = await self._build_i_am_done_ok(ctx.agent_id, ctx.task_id, t)
-        if notify_warning:
-            env.warning = notify_warning
-        return env
+        return await self._defer_quality_gate(ctx)
 
     async def _i_am_done_pre_gate_dispatch(
         self, ctx: _IAmDoneContext, t: Any, agent_id: UUID

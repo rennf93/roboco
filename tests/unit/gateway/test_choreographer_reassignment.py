@@ -18,6 +18,7 @@ from uuid import uuid4
 
 import pytest
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
+from roboco.services.gateway.quality_gate import GateResult
 
 
 def _make_deps(**overrides: Any) -> ChoreographerDeps:
@@ -144,6 +145,9 @@ async def test_i_am_done_reassigns_task_to_qa_agent() -> None:
 
     env = await c.i_am_done(dev_id, task_id, "all done")
     assert env.error is None
+    # Hand-off to QA happens in the gate job's callback, not inline.
+    task_svc.reassign.assert_not_awaited()
+    await c.apply_gate_verdict(dev_id, task_id, "all done", GateResult(True))
     task_svc.reassign.assert_awaited_once_with(task_id, qa_id)
 
 
