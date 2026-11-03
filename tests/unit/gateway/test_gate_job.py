@@ -191,6 +191,57 @@ async def test_verifying_task_skips_submit_verification() -> None:
 
 
 @pytest.mark.asyncio
+async def test_gate_pass_callback_on_an_idle_paused_task_resumes_and_reaches_qa() -> (
+    None
+):
+    """i_am_done -> i_am_idle (auto-pause) -> green verdict must still reach QA."""
+    agent_id, task_id = uuid4(), uuid4()
+    task = _ready_task(task_id, agent_id)
+    task.status = "paused"
+    c, task_svc = _choreo_for(task)
+    resumed = MagicMock(**{**task.__dict__, "status": "in_progress"})
+    task_svc.resume_for_agent.return_value = resumed
+
+    outcome = await c.apply_gate_verdict(agent_id, task_id, "done", GateResult(True))
+
+    assert outcome == "submitted"
+    task_svc.resume_for_agent.assert_awaited_once_with(task_id, agent_id)
+    task_svc.submit_verification.assert_awaited_once()
+    task_svc.submit_qa.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_gate_pass_callback_skips_when_the_paused_task_cannot_resume() -> None:
+    agent_id, task_id = uuid4(), uuid4()
+    task = _ready_task(task_id, agent_id)
+    task.status = "paused"
+    c, task_svc = _choreo_for(task)
+    task_svc.resume_for_agent.return_value = None
+
+    outcome = await c.apply_gate_verdict(agent_id, task_id, "x", GateResult(True))
+
+    assert outcome == "skipped"
+    task_svc.submit_qa.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_gate_fail_callback_on_a_paused_task_records_and_stays_paused() -> None:
+    agent_id, task_id = uuid4(), uuid4()
+    task = _ready_task(task_id, agent_id)
+    task.status = "paused"
+    c, task_svc = _choreo_for(task)
+
+    outcome = await c.apply_gate_verdict(
+        agent_id, task_id, "x", GateResult(passed=False, failures=("lint",))
+    )
+
+    assert outcome == "rejected"
+    task_svc.resume_for_agent.assert_not_awaited()
+    task_svc.submit_qa.assert_not_awaited()
+    task_svc.add_progress.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "mutate",
     [

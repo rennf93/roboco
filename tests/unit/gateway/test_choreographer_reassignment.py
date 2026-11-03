@@ -192,7 +192,7 @@ async def test_i_am_done_skips_reassign_when_no_qa_agent() -> None:
     )
     task_svc.submit_verification.return_value = after_verify
     task_svc.submit_qa.return_value = after_submit
-    task_svc.qa_agent_for_team.return_value = None  # no QA found
+    task_svc.qa_agent_for_team.return_value = None
 
     work_svc = AsyncMock()
     work_svc.has_unpushed_commits.return_value = False

@@ -995,12 +995,17 @@ class IAmDoneMixin(_Base):
         the submitting developer, so a duplicate or late callback (task
         already in QA, reassigned, cancelled) is a no-op. Returns
         ``submitted`` / ``rejected`` / ``skipped``.
+
+        ``paused`` counts as pre-QA: the dev is told to call ``i_am_idle()``
+        after ``i_am_done``, which auto-pauses the task. A pass resumes it and
+        submits; a fail leaves it paused with the failure on its progress
+        trail, and the dispatcher resumes an idle author onto its paused task.
         """
         t = await self.task.get(task_id)
         if (
             t is None
             or t.assigned_to != agent_id
-            or str(t.status) not in ("in_progress", "verifying")
+            or str(t.status) not in ("in_progress", "verifying", "paused")
         ):
             return "skipped"
         if not verdict.passed:
@@ -1012,6 +1017,11 @@ class IAmDoneMixin(_Base):
                 f"working code, not a red gate:\n\n{verdict.output_excerpt}",
             )
             return "rejected"
+        if str(t.status) == "paused":
+            resumed = await self.task.resume_for_agent(task_id, agent_id)
+            if resumed is None:
+                return "skipped"
+            t = resumed
         if str(t.status) == "in_progress":
             await self.task.submit_verification(agent_id, task_id, notes)
         submitted = await self.task.submit_qa(agent_id, task_id, notes)
