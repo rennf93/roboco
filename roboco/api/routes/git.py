@@ -146,7 +146,7 @@ async def get_git_status(
             behind,
         ) = await git_service.get_status(workspace)
     except _TranslatableError as e:
-        raise _translate_read_error(e, agent.agent_id) from e
+        raise _translate_read_error(e, task_id or legacy_task_id or project_slug) from e
 
     return GitStatusResponse(
         project_slug=project_slug,
@@ -216,7 +216,7 @@ async def get_git_log(
             )
             return GitLogResponse(project_slug=project_slug, branch=branch, commits=[])
     except _TranslatableError as e:
-        raise _translate_read_error(e, agent.agent_id) from e
+        raise _translate_read_error(e, branch or project_slug) from e
 
     commits = []
     for line in log_result.stdout.strip().split("\n"):
@@ -272,7 +272,7 @@ async def list_branches(
 
         branch_result = await git_service._run_git(workspace, args)
     except _TranslatableError as e:
-        raise _translate_read_error(e, agent.agent_id) from e
+        raise _translate_read_error(e, project_slug) from e
 
     branches = []
     for line in branch_result.stdout.strip().split("\n"):
@@ -342,7 +342,7 @@ async def get_git_diff(
             stage="diff",
         )
     except _TranslatableError as e:
-        raise _translate_read_error(e, agent.agent_id) from e
+        raise _translate_read_error(e, project_slug) from e
 
     files_changed = stat_result.stdout.count("\n") - 1 if stat_result.stdout else 0
 
@@ -384,7 +384,7 @@ async def get_git_file(
             branch_name=branch, path=path, actor_agent_id=agent.agent_id
         )
     except _TranslatableError as e:
-        raise _translate_read_error(e, agent.agent_id) from e
+        raise _translate_read_error(e, branch) from e
 
     if content is None:
         raise HTTPException(

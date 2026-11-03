@@ -36,8 +36,7 @@ class ReviewPathHealthTracker:
         self._active = False
         self._recovered = False
         self._window_start: datetime | None = None
-        self._notified_active = False
-        self._notified_recovered = False
+        self._unreported: deque[str] = deque()
 
     def _prune(self, now: datetime) -> None:
         cutoff = now - timedelta(seconds=settings.review_path_outage_window_seconds)
@@ -53,8 +52,7 @@ class ReviewPathHealthTracker:
             self._active = True
             self._recovered = False
             self._window_start = self._failures[0][0]
-            self._notified_active = False
-            self._notified_recovered = False
+            self._unreported.append("active")
         elif self._active and not self._failures:
             self._clear()
 
@@ -62,6 +60,7 @@ class ReviewPathHealthTracker:
         self._active = False
         self._recovered = True
         self._consecutive_ok = 0
+        self._unreported.append("recovered")
 
     def record_failure(self, task_key: str, now: datetime | None = None) -> None:
         now = now or datetime.now(UTC)
@@ -89,15 +88,13 @@ class ReviewPathHealthTracker:
         }
 
     def pending_transition(self) -> str | None:
-        """'active' / 'recovered' once per transition, else None (dedup)."""
+        """Next unreported 'active' / 'recovered' transition, else None.
+
+        Each transition is queued exactly once when it happens, so an outage
+        that trips and clears between sweeps still yields active then recovered.
+        """
         self._evaluate(datetime.now(UTC))
-        if self._active and not self._notified_active:
-            self._notified_active = True
-            return "active"
-        if self._recovered and self._notified_active and not self._notified_recovered:
-            self._notified_recovered = True
-            return "recovered"
-        return None
+        return self._unreported.popleft() if self._unreported else None
 
 
 _tracker = ReviewPathHealthTracker()
@@ -116,17 +113,16 @@ def record_review_path_success() -> None:
 
 
 async def sweep_review_path_health() -> None:
-    """Emit the (single) outage / recovery notification for a transition."""
-    transition = _tracker.pending_transition()
-    if transition is None:
-        return
-    state = _tracker.state()
+    """Emit one outage / recovery notification per unreported transition."""
     from roboco.services.notification import NotificationService
 
-    try:
-        await NotificationService().send_review_path_outage_notification(
-            active=transition == "active",
-            window_start=state["window_start"],
-        )
-    except Exception as exc:
-        logger.warning("Failed to send review-path outage notification", error=str(exc))
+    while (transition := _tracker.pending_transition()) is not None:
+        try:
+            await NotificationService().send_review_path_outage_notification(
+                active=transition == "active",
+                window_start=_tracker.state()["window_start"],
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to send review-path outage notification", error=str(exc)
+            )
