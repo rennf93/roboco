@@ -51,10 +51,11 @@ async def test_refused_naming_owner_and_base() -> None:
     env = await base_red_submission_guard(FakeSource(), _task())
     assert env is not None
     assert env.error == "not_authorized"
-    assert "be-dev-1" in env.remediate
-    assert str(OWNER_TASK) in env.remediate
-    assert "slave" in env.remediate
-    assert "manual clear" in env.remediate
+    remediate = env.remediate or ""
+    assert "be-dev-1" in remediate
+    assert str(OWNER_TASK) in remediate
+    assert "slave" in remediate
+    assert "manual clear" in remediate
 
 
 @pytest.mark.asyncio
