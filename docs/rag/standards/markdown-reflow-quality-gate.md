@@ -55,6 +55,32 @@ If no base resolves (for example a shallow CI checkout with no base ref), the sc
 
 A file you edit is checked in full: touching a hard-wrapped file means you must reflow it (`make reflow-docs`).
 
+### Automatic reflow at commit time
+
+Agents no longer need to run `make reflow-docs` by hand: the gateway `commit` path reflows changed markdown before it stages anything, so hard-wrapped prose never reaches the merge gate.
+The hook was placed in commit rather than `open_pr` so every commit is already clean and no fix-up commit is needed when the PR opens.
+
+**Where it runs.** `GitService.commit` and `GitService.create_commit` (`roboco/services/git.py`) call `_reflow_changed_markdown` right before `git add`.
+That method lists the worktree's modified and untracked markdown (`git ls-files -m -o --exclude-standard -- '*.md'`).
+When the caller passed an explicit `files` list, only the listed paths are considered.
+
+**What it reuses.** `roboco/services/md_reflow.py` loads `scripts/reflow_md.py` by path and calls its own `reflow()` and `in_scope()`, so the commit hook and `--check` cannot drift apart.
+Nothing is reimplemented, and `scripts/reflow_md.py` itself is unchanged.
+
+**Behavior guarantees.**
+- Only changed markdown is touched; unchanged files and files outside `in_scope()` (including `EXCLUDE_PREFIXES` such as `docs/internal`) are left alone.
+- A file whose reflowed text would not keep the same token sequence as the original is skipped, the same token-invariant safety the script applies.
+- It is idempotent: a second run rewrites nothing.
+- It is a no-op, not an error, when no markdown changed or the engine script is absent.
+- It is best-effort: any failure is logged as `markdown reflow skipped` and the commit still proceeds.
+
+**Packaging.** `docker/orchestrator.Dockerfile` copies `scripts/reflow_md.py` into the image (`/app/scripts`), because the hook runs inside the orchestrator and needs the engine at runtime.
+
+**Limits.** The hook considers only worktree-modified or untracked files, so markdown that was already committed in an earlier step is not revisited.
+`make quality` (`--check --changed`) remains the authoritative gate.
+
+Tests: `tests/unit/services/test_md_reflow.py` covers reflowing a changed hard-wrapped file (and that the check then passes), idempotency, the no-op case, ignoring unlisted and out-of-scope files, and the git hook's file filtering and never-raises behavior.
+
 ## Quality Gate Integration
 
 The reflow check is **wired into `make quality`**, the Python test/lint/type-check gate that all merged PRs must pass:
