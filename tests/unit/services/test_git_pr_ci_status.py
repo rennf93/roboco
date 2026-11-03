@@ -4,9 +4,9 @@ Reads GitHub check-runs on a PR's head SHA (falling back to list-workflows
 when zero check-runs exist yet) and classifies the result into one of:
 success, failure, pending, pending_not_scheduled, no_ci_configured, error.
 Every unresolvable case is classified explicitly — a missing project/git_url/
-token, or an unreachable/nonexistent repo or PR, is ``no_ci_configured``
-(the guard passes through with an evidence stamp); a genuine GitHub API
-failure on a real, reachable repo is ``error`` (the guard stays fail-closed).
+token, or a nonexistent repo or PR (404), is ``no_ci_configured`` (the guard
+passes through with an evidence stamp); a network failure or a genuine GitHub
+API failure is ``error`` (the guard stays fail-closed).
 """
 
 from __future__ import annotations
@@ -280,19 +280,23 @@ async def test_no_ci_configured_when_pr_lookup_404s() -> None:
 
 
 @pytest.mark.asyncio
-async def test_no_ci_configured_when_pr_lookup_unreachable() -> None:
-    # A connection/network failure resolving the PR's head SHA — the repo is
-    # unreachable, not just returning an error response.
+@pytest.mark.parametrize(
+    "exc",
+    [httpx.ConnectError("connection refused"), httpx.ReadTimeout("timed out")],
+)
+async def test_error_when_pr_lookup_unreachable(exc: httpx.HTTPError) -> None:
+    # A network failure resolving the PR's head SHA is transient, not a
+    # definitive "no CI" — fail closed (retryable), like the later lookups.
     client = MagicMock()
     client.__aenter__ = AsyncMock(return_value=client)
     client.__aexit__ = AsyncMock(return_value=False)
-    client.get = AsyncMock(side_effect=httpx.ConnectError("connection refused"))
+    client.get = AsyncMock(side_effect=exc)
     with (
         _patch_project(),
         patch("roboco.services.git.httpx.AsyncClient", return_value=client),
     ):
         out = await _service().get_pr_ci_status("roboco", _PR)
-    assert out == {"state": "no_ci_configured", "head_sha": None}
+    assert out == {"state": "error", "head_sha": None}
 
 
 # ---------------------------------------------------------------------------
