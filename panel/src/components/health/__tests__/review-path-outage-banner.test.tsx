@@ -5,9 +5,8 @@ import type { ReviewPathOutageStatus } from "@/lib/api/system-health";
 
 // The backend health surface ships in parallel — the contract is mocked
 // here, per the task brief.
-const useReviewPathOutage = vi.fn<
-  () => ReviewPathOutageStatus | null | undefined
->();
+const useReviewPathOutage =
+  vi.fn<() => ReviewPathOutageStatus | null | undefined>();
 vi.mock("@/hooks/use-review-path-outage", () => ({
   useReviewPathOutage: () => useReviewPathOutage(),
 }));

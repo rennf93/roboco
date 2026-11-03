@@ -28,7 +28,9 @@ describe("systemHealthApi.getReviewPathOutage", () => {
       recovered: false,
     };
     mockedGet.mockResolvedValue({ data: status });
-    await expect(systemHealthApi.getReviewPathOutage()).resolves.toEqual(status);
+    await expect(systemHealthApi.getReviewPathOutage()).resolves.toEqual(
+      status,
+    );
     expect(mockedGet).toHaveBeenCalledWith("/system-health/review-path");
   });
 
@@ -41,7 +43,10 @@ describe("systemHealthApi.getReviewPathOutage", () => {
   });
 
   it("rethrows non-404 errors", async () => {
-    mockedGet.mockRejectedValue({ isAxiosError: true, response: { status: 500 } });
+    mockedGet.mockRejectedValue({
+      isAxiosError: true,
+      response: { status: 500 },
+    });
     await expect(systemHealthApi.getReviewPathOutage()).rejects.toEqual({
       isAxiosError: true,
       response: { status: 500 },

@@ -79,3 +79,16 @@ Covered behaviors, all against a mocked contract because the backend slice can l
   - Returns the status payload from `GET /system-health/review-path`.
   - Degrades to `null` on a 404.
   - Rethrows non-404 errors.
+
+## Formatting gate (Panel CI)
+
+The Panel (Next.js) CI job runs `pnpm format:check` (Prettier) alongside lint, typecheck, and tests. The first version of this banner (PR #1158) failed that job because four of its files were not Prettier-formatted:
+
+- `panel/src/components/health/__tests__/review-path-outage-banner.test.tsx`
+- `panel/src/hooks/use-review-path-outage.ts`
+- `panel/src/lib/api/__tests__/system-health.test.ts`
+- `panel/src/lib/api/system-health.ts`
+
+The fix (task `abaf1335`, PR #1366) is a formatting-only commit. It re-wraps long lines and changes no behavior. The banner stays read-only and the `GET /system-health/review-path` contract is unchanged. Before pushing panel changes, run `pnpm format` (or `pnpm format:check` to only verify) from `panel/`.
+
+Full `vitest` runs under load can hit the default 5000ms timeout on unrelated tests (for example `release-proposal-card-fanout`, `decisions-pilots-card`, `task-detail-readability`). They pass when run in isolation, so treat them as load-dependent flakiness, not a regression from this banner. The developer could not read the CI log directly, so the format failure is the reproduced cause rather than a log-confirmed match. The other red checks on PR #1158 (Python quality gate, Build QA images, headless chromium launch + size delta) are outside `panel/` and were not touched, so they need routing to main-pm.
