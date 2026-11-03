@@ -5,6 +5,7 @@ Route-glue helpers backing roboco/api/routes/git.py.
 """
 
 import asyncio
+import re
 from collections.abc import Coroutine
 from typing import Any
 from uuid import UUID
@@ -85,9 +86,34 @@ def _translate_error(e: ServiceError | GitError) -> HTTPException:
     )
 
 
+_TASK_KEY_LEN = 8
+_TASK_PREFIX_RE = re.compile(rf"^[0-9a-f]{{{_TASK_KEY_LEN}}}$")
+
+
+def review_path_key(
+    *, task_id: Any = None, branch: str | None = None, project_slug: str = ""
+) -> str:
+    """One canonical outage-tracker key per read: the task's 8-char id prefix.
+
+    A task id (full UUID) and the id embedded in its branch name
+    (``.../<root>--<sub>``, last segment) normalize to the same key, so one task
+    failing across status/log/diff counts once. Only when no task applies does
+    it fall back to a namespaced branch or project key.
+    """
+    if task_id:
+        return str(task_id)[:_TASK_KEY_LEN]
+    if branch:
+        tail = branch.rsplit("/", 1)[-1].rsplit("--", 1)[-1]
+        if _TASK_PREFIX_RE.match(tail):
+            return tail
+        return f"branch:{branch}"
+    return f"project:{project_slug}"
+
+
 def _translate_read_error(e: ServiceError | GitError, task_key: Any) -> HTTPException:
     """``_translate_error`` for the git-readonly routes: a 5xx also counts as a
     review-path failure toward cross-task outage detection (4xx are caller errors).
+    ``task_key`` comes from ``review_path_key``.
     """
     exc = _translate_error(e)
     if exc.status_code >= status.HTTP_500_INTERNAL_SERVER_ERROR:

@@ -9,7 +9,8 @@ Cross-task outage detection for the evidence / git-readonly pipeline (the "revie
 - **Outage trips** when failures inside the window span at least `review_path_outage_distinct_tasks` **distinct** keys. A single task failing repeatedly counts as one key and never trips it.
 - **Outage clears** when `review_path_recovery_successes` consecutive successful reads arrive, or when the window empties of failures.
 - **Window start** is the timestamp of the oldest failure in the window at the moment the outage trips.
-- **State is in memory**, per orchestrator process. A restart forgets the window, which at worst delays a trip by one window.
+- **State is in memory**, per process. In the split deployment (`ROBOCO_ROLE=api` / `dispatcher`) failures are recorded, and the notification sweep runs, in the **dispatcher** (agents' `ROBOCO_API_URL` points at it; the api role returns before starting background loops). The api-role orchestrator's tracker never sees a failure, so nginx routes `/api/system-health/` to `$active_dispatcher` (`deploy/nginx.conf`, pinned by `tests/unit/test_nginx_routing.py`). A restart forgets the window, which at worst delays a trip by one window.
+- **One key per task.** Every git-readonly route (`review_path_key`) and evidence leg (`record_review_path_failure` collapses a full UUID) keys failures by the task's 8-char id prefix, so one task failing across status, log and diff counts once; with no task, a namespaced `branch:`/`project:` key is used.
 
 ### Where failures are recorded
 
