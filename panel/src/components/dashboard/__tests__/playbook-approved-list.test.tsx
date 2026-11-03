@@ -31,9 +31,11 @@ const pb = (id: string, title: string): Playbook => ({
   status: "approved",
 });
 
-function renderQueue(client = new QueryClient({
-  defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
-})) {
+function renderQueue(
+  client = new QueryClient({
+    defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+  }),
+) {
   const ui: ReactNode = (
     <QueryClientProvider client={client}>
       <PlaybookReviewQueue />

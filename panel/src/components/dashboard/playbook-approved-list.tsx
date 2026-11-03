@@ -79,7 +79,9 @@ export function PlaybookApprovedList() {
   }
   if (approved.length === 0) {
     return (
-      <p className="text-sm text-muted-foreground">No approved playbooks yet.</p>
+      <p className="text-sm text-muted-foreground">
+        No approved playbooks yet.
+      </p>
     );
   }
 
