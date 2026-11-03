@@ -13,6 +13,7 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `roboco/services/product.py` | Product CRUD + per-cell `project_for` routing resolver + idempotent cell-map replace | 247 |
 | `roboco/services/kanban.py` | Role-specific kanban board views (dev/qa/documenter/pm/main-pm/board) from task data | 587 |
 | `roboco/services/_kanban_service_types.py` | `KanbanServiceSelf`, a TYPE_CHECKING-only Protocol declaring the attributes the `KanbanService` mixin reads through `self` (no moved body calls across classes, so it has no `<Class>Surface` yet); `tests/unit/services/test_kanban_service_mixins.py` fails on a stray stub or a member defined twice | 28 |
+| `roboco/services/md_reflow.py` | Commit-time reflow of changed markdown: loads the `scripts/reflow_md.py` engine by path, reads/writes only through `workspace_git` and skips any file whose real path leaves the clone | 116 |
 | `roboco/services/company_goals.py` | CRUD for the singleton company charter (north star + objectives + constraints + policy + brand_voice + company_name); `resolve_product_name` is the shared product-name fallback chain `XEngine`/`VideoEngine` both call | 110 |
 | `roboco/services/strategy_engine.py` | Dormant "engine 2": assesses company state vs goals; `idle`→roadmap and `stranded_blocked`→Coroner both trigger a Board Program before the CEO notification | 337 |
 | `roboco/services/research.py` | Pluggable web-search/fetch - provider adapters (SearXNG/Tavily/Brave/Exa/Null) + clamping service | 570 |

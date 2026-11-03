@@ -23,6 +23,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
 import sys
@@ -203,7 +204,27 @@ def in_scope(p: Path) -> bool:
     return not any(g in rel for g in EXCLUDE_GLOBS)
 
 
-DEFAULT_BASES = ("origin/master", "origin/main", "master", "main")
+# Fleet PRs target the dev branch (slave), so it must win over master: diffing a
+# slave-based branch against master would charge it every markdown file slave
+# changed since master.
+DEFAULT_BASES = (
+    "origin/slave",
+    "slave",
+    "origin/master",
+    "origin/main",
+    "master",
+    "main",
+)
+
+
+def _candidate_bases(base: str | None) -> tuple[str, ...]:
+    """Explicit --base, else the CI pull request's target, else the defaults."""
+    if base:
+        return (base,)
+    target = os.environ.get("GITHUB_BASE_REF")
+    if target:
+        return (f"origin/{target}", target)
+    return DEFAULT_BASES
 
 
 def _git(*args: str) -> str | None:
@@ -222,8 +243,8 @@ def changed_markdown(base: str | None) -> list[Path] | None:
     unstaged and untracked), relative to CWD. None when no base resolves, so
     the caller falls back to the full scan rather than silently passing.
     """
-    for ref in (base,) if base else DEFAULT_BASES:
-        merge_base = _git("merge-base", "HEAD", ref) if ref else None
+    for ref in _candidate_bases(base):
+        merge_base = _git("merge-base", "HEAD", ref)
         if merge_base:
             break
     else:

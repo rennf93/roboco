@@ -12,6 +12,10 @@ import importlib.util
 import subprocess
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import pytest
 
 ROOT = Path(__file__).parents[3]
 SCRIPT = ROOT / "scripts" / "reflow_md.py"
@@ -134,6 +138,41 @@ def _run_check(cwd: Path, *flags: str) -> subprocess.CompletedProcess[str]:
         text=True,
         check=False,
     )
+
+
+def _repo_with_debt_on_slave(tmp_path: Path) -> Path:
+    """master is clean; slave (ahead of master) carries debt; feature is off slave."""
+    _git(tmp_path, "init", "-b", "master")
+    (tmp_path / "ok.md").write_text("One clean line.\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "base")
+    _git(tmp_path, "checkout", "-b", "slave")
+    (tmp_path / "slave_debt.md").write_text(WRAPPED)
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "slave debt")
+    _git(tmp_path, "checkout", "-b", "feature")
+    (tmp_path / "clean.md").write_text("Another clean line.\n")
+    return tmp_path
+
+
+def test_changed_mode_prefers_slave_over_master(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv("GITHUB_BASE_REF", raising=False)
+    repo = _repo_with_debt_on_slave(tmp_path)
+    assert _run_check(repo, "--changed").returncode == 0
+
+
+def test_changed_mode_uses_github_base_ref(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _repo_with_debt_on_slave(tmp_path)
+    monkeypatch.setenv("GITHUB_BASE_REF", "master")
+    result = _run_check(repo, "--changed")
+    assert result.returncode == 1
+    assert "slave_debt.md" in result.stdout
+    monkeypatch.setenv("GITHUB_BASE_REF", "slave")
+    assert _run_check(repo, "--changed").returncode == 0
 
 
 def test_changed_mode_ignores_untouched_base_debt(tmp_path: Path) -> None:

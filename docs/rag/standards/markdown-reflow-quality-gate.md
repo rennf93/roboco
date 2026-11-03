@@ -34,9 +34,7 @@ python3 scripts/reflow_md.py --check
 - `0`: All markdown prose in scope is reflowed (one logical unit per line)
 - `1`: Hard-wrapped prose detected; the output names affected files
 
-**Scope:** The check runs on `.md` files in tracked directories (`docs/`, `README.md`), excluding code blocks, tables, and YAML frontmatter.
-Files under `EXCLUDE_PREFIXES` (and the excluded globs) are skipped in every mode.
-The script treats the current working directory as the repo root, so run it from the repo root.
+**Scope:** The check runs on `.md` files in tracked directories (`docs/`, `README.md`), excluding code blocks, tables, and YAML frontmatter. Files under `EXCLUDE_PREFIXES` (and the excluded globs) are skipped in every mode. The script treats the current working directory as the repo root, so run it from the repo root.
 
 ### Full-repo vs changed-only mode
 
@@ -45,27 +43,19 @@ The script treats the current working directory as the repo root, so run it from
 | `scripts/reflow_md.py --check` | Every in-scope markdown file in the repo | `make reflow-check` |
 | `scripts/reflow_md.py --check --changed [--base REF]` | Only markdown the branch changed vs its base | `make quality` |
 
-`--changed` exists so hard-wrapped prose already on the base branch cannot fail a clean PR that never touched that file.
-It selects files from the merge-base diff (`git diff --name-only --diff-filter=ACMR`, so added, copied, modified, and renamed files) plus staged, unstaged, and untracked markdown.
-The same in-scope filter and the same reflow engine are applied to that smaller set; nothing is reimplemented.
+`--changed` exists so hard-wrapped prose already on the base branch cannot fail a clean PR that never touched that file. It selects files from the merge-base diff (`git diff --name-only --diff-filter=ACMR`, so added, copied, modified, and renamed files) plus staged, unstaged, and untracked markdown. The same in-scope filter and the same reflow engine are applied to that smaller set; nothing is reimplemented.
 
-The base ref is `--base REF` when given.
-Otherwise the first ref that resolves from `origin/master`, `origin/main`, `master`, `main` is used.
-If no base resolves (for example a shallow CI checkout with no base ref), the script prints `warning: no base ref resolved; checking every markdown file` and falls back to the full scan, so it never passes silently.
+The base ref is `--base REF` when given. Otherwise, in a CI pull request, it is `origin/$GITHUB_BASE_REF`. Otherwise the first ref that resolves from `origin/slave`, `slave`, `origin/master`, `origin/main`, `master`, `main` is used, so a slave-based fleet PR is never charged for markdown slave changed since master. If no base resolves (for example a shallow CI checkout with no base ref), the script prints `warning: no base ref resolved; checking every markdown file` and falls back to the full scan, so it never passes silently.
 
 A file you edit is checked in full: touching a hard-wrapped file means you must reflow it (`make reflow-docs`).
 
 ### Automatic reflow at commit time
 
-Agents no longer need to run `make reflow-docs` by hand: the gateway `commit` path reflows changed markdown before it stages anything, so hard-wrapped prose never reaches the merge gate.
-The hook was placed in commit rather than `open_pr` so every commit is already clean and no fix-up commit is needed when the PR opens.
+Agents no longer need to run `make reflow-docs` by hand: the gateway `commit` path reflows changed markdown before it stages anything, so hard-wrapped prose never reaches the merge gate. The hook was placed in commit rather than `open_pr` so every commit is already clean and no fix-up commit is needed when the PR opens.
 
-**Where it runs.** `GitService.commit` and `GitService.create_commit` (`roboco/services/git.py`) call `_reflow_changed_markdown` right before `git add`.
-That method lists the worktree's modified and untracked markdown (`git ls-files -m -o --exclude-standard -- '*.md'`).
-When the caller passed an explicit `files` list, only the listed paths are considered.
+**Where it runs.** `GitService.commit` and `GitService.create_commit` (`roboco/services/git.py`) call `reflow_worktree_markdown` (`roboco/services/md_reflow.py`) right before `git add`. That helper lists the worktree's modified and untracked markdown (`git ls-files -m -o --exclude-standard -- '*.md'`). When the caller passed an explicit `files` list, only the listed paths are considered.
 
-**What it reuses.** `roboco/services/md_reflow.py` loads `scripts/reflow_md.py` by path and calls its own `reflow()` and `in_scope()`, so the commit hook and `--check` cannot drift apart.
-Nothing is reimplemented, and `scripts/reflow_md.py` itself is unchanged.
+**What it reuses.** `roboco/services/md_reflow.py` loads `scripts/reflow_md.py` by path and calls its own `reflow()` and `in_scope()`, so the commit hook and `--check` cannot drift apart. Nothing is reimplemented; the engine stays pure text. File access goes only through `workspace_git.read_workspace_file` / `write_workspace_file`, and a markdown file whose real path leaves the clone (a planted symlink) is skipped, never written.
 
 **Behavior guarantees.**
 - Only changed markdown is touched; unchanged files and files outside `in_scope()` (including `EXCLUDE_PREFIXES` such as `docs/internal`) are left alone.
@@ -76,10 +66,11 @@ Nothing is reimplemented, and `scripts/reflow_md.py` itself is unchanged.
 
 **Packaging.** `docker/orchestrator.Dockerfile` copies `scripts/reflow_md.py` into the image (`/app/scripts`), because the hook runs inside the orchestrator and needs the engine at runtime.
 
-**Limits.** The hook considers only worktree-modified or untracked files, so markdown that was already committed in an earlier step is not revisited.
-`make quality` (`--check --changed`) remains the authoritative gate.
+**Limits.** The hook considers only worktree-modified or untracked files, so markdown that was already committed in an earlier step is not revisited. `make quality` (`--check --changed`) remains the authoritative gate.
 
-Tests: `tests/unit/services/test_md_reflow.py` covers reflowing a changed hard-wrapped file (and that the check then passes), idempotency, the no-op case, ignoring unlisted and out-of-scope files, and the git hook's file filtering and never-raises behavior.
+**Symlink safety.** The orchestrator never reads or writes `/data/workspaces` itself (see `.claude/rules/workspaces-and-git.md`). Besides going through `workspace_git`, the hook resolves each markdown file's real path as the git user and skips any file whose real path leaves the clone, because the git user's `cat` and write would still follow a symlink an agent planted. The cost is one extra git-user process per changed markdown file.
+
+Tests: `tests/unit/services/test_md_reflow.py` covers reflowing a changed hard-wrapped file (and that the check then passes), idempotency, the no-op case, ignoring unlisted and out-of-scope files, and that a symlinked `*.md` pointing outside the clone is not written (`test_symlinked_markdown_pointing_outside_the_clone_is_not_written`).
 
 ## Quality Gate Integration
 
@@ -125,6 +116,8 @@ To ensure the reflow-check wiring does not regress (e.g., if a future Makefile e
 6. `test_changed_mode_fails_on_edited_tracked_file` — Editing a tracked file that is still wrapped fails.
 7. `test_changed_mode_respects_exclude_prefixes` — Changed files under `EXCLUDE_PREFIXES` stay exempt.
 8. `test_reflow_is_idempotent` — Reflowing already-reflowed text is a no-op.
+9. `test_changed_mode_prefers_slave_over_master` — Wrapped debt on a `slave` branch ahead of `master` does not fail a feature branch cut from `slave`.
+10. `test_changed_mode_uses_github_base_ref` — With `GITHUB_BASE_REF` set, the base resolves to `origin/$GITHUB_BASE_REF`.
 
 Running `uv run pytest tests/unit/scripts/test_reflow_md.py` ensures the wiring remains intact.
 
