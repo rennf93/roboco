@@ -850,9 +850,13 @@ def _next_hint_synced(_t: Any) -> str:
     )
 
 
-def _next_hint_after_claim(_t: Any) -> str:
+def _next_hint_after_claim(t: Any) -> str:
+    # Sessions start in the clone root, before the claim makes the worktree;
+    # fe-dev-1 edited the clone root's README and its commit came up empty.
     return (
-        "edit + commit(message) for each meaningful change,"
+        f"edit this task's files under .worktrees/{str(t.id)[:8]}/ in your"
+        " workspace (an edit in the clone root never reaches your commit),"
+        " commit(message) for each meaningful change,"
         " then open_pr(task_id) and i_am_done(task_id)"
     )
 
