@@ -184,7 +184,12 @@ async def resolve_review_path_key(
         from roboco.services.task import get_task_service
 
         task = await get_task_service(db).get_active_task_for_agent(agent_id)
-    except Exception:
+    except Exception as exc:
+        logger.warning(
+            "review_path_key_active_task_lookup_failed",
+            agent_id=str(agent_id),
+            error=str(exc),
+        )
         task = None
     if task is not None:
         return str(task.id)[:_TASK_KEY_LEN]

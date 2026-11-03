@@ -239,6 +239,19 @@ def test_review_path_key_namespaces_fallbacks() -> None:
     assert review_path_key(project_slug="p") == "project:p"
 
 
+@pytest.mark.asyncio
+async def test_resolve_review_path_key_falls_back_when_active_task_lookup_fails() -> (
+    None
+):
+    agent_id = uuid4()
+    failing_service = SimpleNamespace(
+        get_active_task_for_agent=AsyncMock(side_effect=RuntimeError("poisoned"))
+    )
+    with patch("roboco.services.task.get_task_service", return_value=failing_service):
+        key = await resolve_review_path_key(AsyncMock(), agent_id)
+    assert key == f"agent:{agent_id}"
+
+
 def test_translate_read_error_ignores_4xx(
     tracker: ReviewPathHealthTracker,
 ) -> None:
