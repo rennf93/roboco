@@ -100,6 +100,10 @@ When toolchain matching is enabled, `i_am_done` is refused if the project's test
 
 When the architectural-conventions standard is enabled, `i_am_done` is refused on any block-level convention finding (e.g. a model defined in a router), reported with the offending `file:line` and a fix hint. A genuine false positive is cleared by committing a waiver in `.roboco/conventions.yml`.
 
+## The quality gate runs in the background
+
+`i_am_done` does not wait for the quality gate. After the cheap guards pass it starts the gate as a background job and returns, so call `i_am_idle()` next. When the gate passes, the task moves to QA on its own. When it fails, crashes, or exceeds `ROBOCO_GATE_JOB_TIMEOUT_SECONDS` (default 900), the failure lands as a progress entry on your task and the task stays with you: read it, fix in your workspace, commit, and call `i_am_done` again. A task that `i_am_idle()` auto-paused is resumed by a passing verdict; after a failing verdict it stays paused until the dispatcher resumes you. If the orchestrator restarted mid-run the job is lost, and re-calling `i_am_done` starts a fresh one.
+
 ## The possibilities-matrix fast path
 
 When `ROBOCO_POSSIBILITIES_MATRIX_ENABLED` is armed, `i_am_done` checks whether your work already looks done — commits exist, the PR is open, every acceptance criterion is addressed, and no revision finding is still open. If so, it takes a fast path straight to `awaiting_qa` in one call instead of the standard multi-turn verify/journal derivation. You don't call anything different or opt in — you always just call `i_am_done(task_id, notes, resolved_findings?)`, and the fast path silently applies when it applies. The non-negotiable guards still run either way: ownership, branch pushed and not behind base, conventions, and every open finding named via `resolved_findings`. The fast path trusts the PR's own CI-green signal as the quality gate; if there's no CI signal it falls back to the local `make quality` gate, and a known-red CI refuses the fast path outright (fix CI, don't route around it) rather than shipping a broken build to QA.

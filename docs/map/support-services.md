@@ -35,6 +35,7 @@ Cross-cutting support layer beneath the delivery services: the service-base/erro
 | `roboco/utils/__init__.py` | Re-exports crypto + converter helpers | 23 |
 | `roboco/utils/converters.py` | `InvalidIdentifierError` + `require_uuid` / `to_python_uuid` / `to_python_uuid_list` + `repo_key` | 99 |
 | `roboco/utils/crypto.py` | Fernet `encrypt_token` / `decrypt_token` / `is_encryption_configured` + `EncryptionError` | 111 |
+| `roboco/utils/timing.py` | `timed_phase` context manager: one `verb_phase` log event per gateway verb phase with `duration_ms` and `outcome` | 50 |
 | `roboco/utils/telegram_initdata.py` | Pure Telegram Mini App `initData` validation (no I/O): `WebAppData`-keyed HMAC-SHA256 derivation, `hmac.compare_digest` check, freshness window (`auth_date` within `max_age_seconds`, ±60s clock-skew tolerance, no far-future) | 76 |
 
 ## Key Symbols

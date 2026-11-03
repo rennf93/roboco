@@ -1772,6 +1772,14 @@ class Settings(BaseSettings):
             "Max held reply proposals the mentions poll may originate in one cycle."
         ),
     )
+    gate_job_timeout_seconds: float = Field(
+        default=900.0,
+        gt=0,
+        description=(
+            "Ceiling for the background pre-submit quality gate job; a gate that "
+            "outlives it counts as failed and the task stays before QA."
+        ),
+    )
     x_mentions_min_engagement: int = Field(
         default=0,
         ge=0,

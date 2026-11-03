@@ -21,12 +21,16 @@ catch-up behavior for the explicit-opt-in case.
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 import pytest
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
+from roboco.services.gateway.quality_gate import GateResult
+
+if TYPE_CHECKING:
+    from tests.unit.gateway.conftest import RecordingGateRegistry
 
 
 def _make_deps(**overrides: Any) -> ChoreographerDeps:
@@ -112,7 +116,9 @@ def _ready_task(task_id: Any, agent_id: Any) -> MagicMock:
 
 
 @pytest.mark.asyncio
-async def test_i_am_done_auto_runs_submit_verification_when_in_progress() -> None:
+async def test_i_am_done_auto_runs_submit_verification_when_in_progress(
+    gate_registry: RecordingGateRegistry,
+) -> None:
     """Strict i_am_done auto-runs submit_verification (in_progress→verifying)
     so the dev doesn't need a separate verb. The previous NOT_SELF_VERIFIED
     gate required submit_for_verification which wasn't on any manifest.
@@ -156,6 +162,13 @@ async def test_i_am_done_auto_runs_submit_verification_when_in_progress() -> Non
     env = await c.i_am_done(agent_id, task_id, "done")
     body = env.as_dict()
     assert body["error"] is None
+    # The gate is deferred: nothing reaches QA until the job's callback runs.
+    task_svc.submit_verification.assert_not_awaited()
+    task_svc.submit_qa.assert_not_awaited()
+    assert len(gate_registry.launches) == 1
+
+    outcome = await c.apply_gate_verdict(agent_id, task_id, "done", GateResult(True))
+    assert outcome == "submitted"
     task_svc.submit_verification.assert_awaited_once()
     task_svc.submit_qa.assert_awaited_once()
 
@@ -316,7 +329,9 @@ async def test_i_am_done_blocks_when_dev_notes_empty() -> None:
 
 
 @pytest.mark.asyncio
-async def test_i_am_done_proceeds_when_all_gates_pass() -> None:
+async def test_i_am_done_proceeds_when_all_gates_pass(
+    gate_registry: RecordingGateRegistry,
+) -> None:
     agent_id = uuid4()
     task_id = uuid4()
     t = _ready_task(task_id, agent_id)
@@ -352,7 +367,13 @@ async def test_i_am_done_proceeds_when_all_gates_pass() -> None:
     env = await c.i_am_done(agent_id, task_id, "all done")
     body = env.as_dict()
     assert body["error"] is None
-    assert body["status"] == "awaiting_qa"
+    task_svc.submit_qa.assert_not_awaited()
+    assert len(gate_registry.launches) == 1
+
+    outcome = await c.apply_gate_verdict(
+        agent_id, task_id, "all done", GateResult(True)
+    )
+    assert outcome == "submitted"
     task_svc.submit_qa.assert_awaited_once()
     # Already-verifying status: recovery path runs only submit_qa, never
     # the composed submit_verification action.
