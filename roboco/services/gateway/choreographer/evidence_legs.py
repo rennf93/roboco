@@ -46,6 +46,7 @@ import structlog
 
 from roboco.exceptions import GitTimeoutError
 from roboco.services.review_path_health import (
+    is_infrastructure_failure,
     record_review_path_failure,
     record_review_path_success,
 )
@@ -137,8 +138,9 @@ async def run_bounded_leg[T](
             bound="git_command_timeout",
         )
         return default
-    except Exception:
-        record_review_path_failure(task_id)
+    except Exception as exc:
+        if is_infrastructure_failure(exc):
+            record_review_path_failure(task_id)
         raise
     record_review_path_success()
     return result

@@ -824,9 +824,14 @@ class NotificationReviewNotices(_Base):
         *,
         active: bool,
         window_start: Any,
+        recovered: bool = True,
         to_agents: tuple[str, ...] = ("ceo", "main-pm"),
     ) -> None:
-        """One health alert when the review path trips, one when it recovers."""
+        """One health alert when the review path trips, one when it clears.
+
+        ``recovered=False`` on a clear means the window expired with no read
+        having succeeded: it reports no observed failures, not working reads.
+        """
         since = window_start.isoformat() if window_start else "unknown"
         if active:
             subject = "Review-path tool outage detected"
@@ -837,9 +842,16 @@ class NotificationReviewNotices(_Base):
                 "was taken."
             )
             priority = NotificationPriority.HIGH
-        else:
+        elif recovered:
             subject = "Review-path tool outage recovered"
             body = "evidence()/git-readonly reads are succeeding again."
+            priority = NotificationPriority.NORMAL
+        else:
+            subject = "Review-path tool outage window closed"
+            body = (
+                "No review-path failures were observed in the last window; no "
+                "successful read has confirmed recovery yet."
+            )
             priority = NotificationPriority.NORMAL
         await self._create_notification(
             CreateNotificationParams(

@@ -2,16 +2,25 @@
 
 from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, patch
+from uuid import UUID, uuid4
 
 import pytest
 from fastapi import FastAPI, HTTPException, status
 from fastapi.testclient import TestClient
 from roboco.api.routes import health as health_routes
+from roboco.api.routes.git import get_git_status
 from roboco.api.routes.health import review_path_health
-from roboco.api.utils.git import _translate_read_error, review_path_key
+from roboco.api.utils.git import (
+    _translate_read_error,
+    resolve_review_path_key,
+    review_path_key,
+    review_path_read_outcome,
+)
 from roboco.config import settings
-from roboco.exceptions import GitTimeoutError
+from roboco.exceptions import GitCommandError, GitTimeoutError
 from roboco.services.base import NotFoundError, ServiceError
 from roboco.services.gateway.choreographer.evidence_legs import (
     LegBudget,
@@ -19,6 +28,7 @@ from roboco.services.gateway.choreographer.evidence_legs import (
 )
 from roboco.services.review_path_health import (
     ReviewPathHealthTracker,
+    is_infrastructure_failure,
     sweep_review_path_health,
 )
 
@@ -267,3 +277,125 @@ def test_health_route_serves_frozen_path() -> None:
         "window_start",
         "recovered",
     }
+
+
+@pytest.mark.asyncio
+async def test_run_bounded_leg_ignores_caller_errors(
+    tracker: ReviewPathHealthTracker,
+) -> None:
+    for task_id in ("t1", "t2", "t3"):
+        with pytest.raises(NotFoundError):
+            await run_bounded_leg(
+                _boom(NotFoundError("Branch", "gone")),
+                default=None,
+                budget=LegBudget(30),
+                leg="log",
+                hint="h",
+                task_id=task_id,
+                gaps=[],
+            )
+    assert _failed_keys(tracker) == []
+    assert tracker.state()["outage_active"] is False
+
+
+def test_infrastructure_classifier_sees_wrapped_caller_error() -> None:
+    wrapped = RuntimeError("wrapper")
+    wrapped.__cause__ = NotFoundError("Branch", "gone")
+    assert is_infrastructure_failure(wrapped) is False
+    assert is_infrastructure_failure(OSError("disk")) is True
+
+
+def test_window_expiry_closes_outage_without_claiming_recovery(
+    t0: datetime,
+) -> None:
+    t = ReviewPathHealthTracker()
+    for i, key in enumerate("abc"):
+        t.record_failure(key, t0 + timedelta(seconds=i))
+    assert t.pending_transition() == "active"
+    state = t.state(t0 + timedelta(seconds=400))
+    assert state["outage_active"] is False
+    assert state["recovered"] is False
+    assert t.pending_transition() == "expired"
+    assert t.pending_transition() is None
+
+
+@pytest.mark.asyncio
+async def test_sweep_words_expiry_as_not_recovered(
+    tracker: ReviewPathHealthTracker,
+) -> None:
+    tracker._unreported.append("expired")
+    send = AsyncMock()
+    with patch(
+        "roboco.services.notification.NotificationService."
+        "send_review_path_outage_notification",
+        send,
+    ):
+        await sweep_review_path_health()
+    assert send.await_args is not None
+    kwargs = send.await_args.kwargs
+    assert kwargs["active"] is False
+    assert kwargs["recovered"] is False
+
+
+@pytest.mark.asyncio
+async def test_read_outcome_dependency_records_success(
+    tracker: ReviewPathHealthTracker,
+) -> None:
+    for key in "abc":
+        tracker.record_failure(key)
+    for _ in range(settings.review_path_recovery_successes):
+        gen = review_path_read_outcome()
+        await gen.__anext__()
+        with pytest.raises(StopAsyncIteration):
+            await gen.__anext__()
+    assert tracker.state()["recovered"] is True
+
+
+@pytest.mark.asyncio
+async def test_three_agents_without_task_id_trip_the_outage(
+    tracker: ReviewPathHealthTracker,
+) -> None:
+    agents = {uuid4(): uuid4() for _ in range(3)}  # agent id -> active task id
+
+    class _Tasks:
+        async def get_active_task_for_agent(self, agent_id: UUID) -> SimpleNamespace:
+            return SimpleNamespace(id=agents[agent_id])
+
+    git_service = SimpleNamespace(
+        tree_for_agent_read=AsyncMock(side_effect=GitCommandError("git status", "x"))
+    )
+    with (
+        patch(
+            "roboco.api.routes.git._resolve_project_slug", AsyncMock(return_value="p")
+        ),
+        patch("roboco.api.routes.git.get_git_service", return_value=git_service),
+        patch("roboco.services.task.get_task_service", return_value=_Tasks()),
+    ):
+        for agent_id in agents:
+            with pytest.raises(HTTPException):
+                await get_git_status(
+                    db=AsyncMock(),
+                    agent=_agent_ctx(agent_id),
+                    project_slug="p",
+                    task_id=None,
+                    legacy_task_id=None,
+                )
+    assert len(set(_failed_keys(tracker))) == len(agents)
+    assert tracker.state()["outage_active"] is True
+
+
+@pytest.mark.asyncio
+async def test_resolver_falls_back_to_agent_key() -> None:
+    agent_id = uuid4()
+
+    class _NoTask:
+        async def get_active_task_for_agent(self, _: UUID) -> None:
+            return None
+
+    with patch("roboco.services.task.get_task_service", return_value=_NoTask()):
+        key = await resolve_review_path_key(AsyncMock(), agent_id, project_slug="p")
+    assert key == f"agent:{agent_id}"
+
+
+def _agent_ctx(agent_id: UUID) -> Any:
+    return SimpleNamespace(agent_id=agent_id)

@@ -24,7 +24,7 @@ Workspace Structure:
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from roboco.api.deps import CurrentAgentContext, DbSession
 from roboco.api.schemas.git import (
@@ -65,7 +65,8 @@ from roboco.api.utils.git import (
     _task_to_rebase,
     _translate_error,
     _translate_read_error,
-    review_path_key,
+    resolve_review_path_key,
+    review_path_read_outcome,
 )
 from roboco.config import settings
 from roboco.exceptions import GitError
@@ -117,7 +118,11 @@ _TASK_ID_HELP = (
 )
 
 
-@router.get("/status", response_model=GitStatusResponse)
+@router.get(
+    "/status",
+    response_model=GitStatusResponse,
+    dependencies=[Depends(review_path_read_outcome)],
+)
 async def get_git_status(
     db: DbSession,
     agent: CurrentAgentContext,
@@ -147,12 +152,13 @@ async def get_git_status(
             behind,
         ) = await git_service.get_status(workspace)
     except _TranslatableError as e:
-        raise _translate_read_error(
-            e,
-            review_path_key(
-                task_id=task_id or legacy_task_id, project_slug=project_slug
-            ),
-        ) from e
+        key = await resolve_review_path_key(
+            db,
+            agent.agent_id,
+            task_id=task_id or legacy_task_id,
+            project_slug=project_slug,
+        )
+        raise _translate_read_error(e, key) from e
 
     return GitStatusResponse(
         project_slug=project_slug,
@@ -167,7 +173,11 @@ async def get_git_status(
     )
 
 
-@router.get("/log", response_model=GitLogResponse)
+@router.get(
+    "/log",
+    response_model=GitLogResponse,
+    dependencies=[Depends(review_path_read_outcome)],
+)
 async def get_git_log(
     db: DbSession,
     agent: CurrentAgentContext,
@@ -176,6 +186,7 @@ async def get_git_log(
     branch: str | None = Query(default=None),
 ) -> GitLogResponse:
     """Get git log for a project."""
+    requested_branch = branch
     project_slug = await _resolve_project_slug(project_slug, db)
     git_service = get_git_service(db)
 
@@ -222,9 +233,13 @@ async def get_git_log(
             )
             return GitLogResponse(project_slug=project_slug, branch=branch, commits=[])
     except _TranslatableError as e:
-        raise _translate_read_error(
-            e, review_path_key(branch=branch, project_slug=project_slug)
-        ) from e
+        key = await resolve_review_path_key(
+            db,
+            agent.agent_id,
+            branch=requested_branch,
+            project_slug=project_slug,
+        )
+        raise _translate_read_error(e, key) from e
 
     commits = []
     for line in log_result.stdout.strip().split("\n"):
@@ -249,7 +264,11 @@ async def get_git_log(
     )
 
 
-@router.get("/branches", response_model=GitBranchListResponse)
+@router.get(
+    "/branches",
+    response_model=GitBranchListResponse,
+    dependencies=[Depends(review_path_read_outcome)],
+)
 async def list_branches(
     db: DbSession,
     agent: CurrentAgentContext,
@@ -280,9 +299,10 @@ async def list_branches(
 
         branch_result = await git_service._run_git(workspace, args)
     except _TranslatableError as e:
-        raise _translate_read_error(
-            e, review_path_key(project_slug=project_slug)
-        ) from e
+        key = await resolve_review_path_key(
+            db, agent.agent_id, project_slug=project_slug
+        )
+        raise _translate_read_error(e, key) from e
 
     branches = []
     for line in branch_result.stdout.strip().split("\n"):
@@ -306,7 +326,11 @@ async def list_branches(
     )
 
 
-@router.get("/diff", response_model=GitDiffResponse)
+@router.get(
+    "/diff",
+    response_model=GitDiffResponse,
+    dependencies=[Depends(review_path_read_outcome)],
+)
 async def get_git_diff(
     *,
     db: DbSession,
@@ -352,9 +376,10 @@ async def get_git_diff(
             stage="diff",
         )
     except _TranslatableError as e:
-        raise _translate_read_error(
-            e, review_path_key(task_id=task_id, project_slug=project_slug)
-        ) from e
+        key = await resolve_review_path_key(
+            db, agent.agent_id, task_id=task_id, project_slug=project_slug
+        )
+        raise _translate_read_error(e, key) from e
 
     files_changed = stat_result.stdout.count("\n") - 1 if stat_result.stdout else 0
 
@@ -368,7 +393,11 @@ async def get_git_diff(
     )
 
 
-@router.get("/file", response_model=GitFileContentResponse)
+@router.get(
+    "/file",
+    response_model=GitFileContentResponse,
+    dependencies=[Depends(review_path_read_outcome)],
+)
 async def get_git_file(
     *,
     db: DbSession,
@@ -396,7 +425,8 @@ async def get_git_file(
             branch_name=branch, path=path, actor_agent_id=agent.agent_id
         )
     except _TranslatableError as e:
-        raise _translate_read_error(e, review_path_key(branch=branch)) from e
+        key = await resolve_review_path_key(db, agent.agent_id, branch=branch)
+        raise _translate_read_error(e, key) from e
 
     if content is None:
         raise HTTPException(
