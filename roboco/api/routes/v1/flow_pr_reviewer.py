@@ -16,6 +16,7 @@ from roboco.api.schemas.v1.flow import (
     PostPrReviewRequest,
     PrFailRequest,
     PrPassRequest,
+    UnclaimRequest,
 )
 from roboco.security import guard_deco, mesh_scanned
 from roboco.services.gateway.choreographer import Choreographer
@@ -141,4 +142,19 @@ async def i_am_idle(
     choreographer: _ChoreographerDep,
 ) -> dict:
     env = await choreographer.i_am_idle(x_agent_id)
+    return envelope_to_response(env, request)
+
+
+@router.post("/unclaim")
+@mesh_scanned
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.content_type_filter(["application/json"])
+@guard_deco.behavior_analysis(_RUNAWAY_RULES)
+async def unclaim(
+    request: Request,
+    body: UnclaimRequest,
+    x_agent_id: _AgentIdHeader,
+    choreographer: _ChoreographerDep,
+) -> dict:
+    env = await choreographer.unclaim(x_agent_id, body.task_id)
     return envelope_to_response(env, request)

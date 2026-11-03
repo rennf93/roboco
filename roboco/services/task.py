@@ -442,6 +442,17 @@ def _append_capped(existing: str | None, addition: str) -> str:
 _CEO_REJECT_ACTUAL_CAP = 300
 _CEO_REJECT_EVIDENCE_CAP = 2000
 
+# Why a PM's gateway complete may close a parent with cancelled descendants:
+# before it merges, the verb's guard requires every subtask terminal and every
+# declared parent criterion covered by a completed subtask, so a cancelled
+# leaf (cancel_leaf records its reason) leaves nothing undelivered. Refusing
+# here instead came after the irreversible merge and wedged the parent. The
+# REST complete keeps force_with_cancelled CEO-only.
+_GATEWAY_COMPLETE_CANCELLED_JUSTIFICATION = (
+    "gateway PM complete: its guard found every subtask terminal and every "
+    "declared criterion covered by a completed subtask"
+)
+
 # Roles whose claim WORKS the branch (and so should inherit an advanced
 # upstream base into it). QA / documenter / PR-gate claims review the branch
 # exactly as the dev pushed it and must never move it.
@@ -11496,8 +11507,39 @@ class TaskReviewClaims(_Base):
             tid = to_python_uuid(task.id)
             if tid is not None:
                 released.append(tid)
+        released.extend(await self._release_in_progress_pr_reviews(agent_id))
         if released:
             await self.session.flush()
+        return released
+
+    async def _release_in_progress_pr_reviews(self, agent_id: UUID) -> list[UUID]:
+        """Send each in_progress PR-review task the agent holds back to PENDING.
+
+        ``claim_pr_review`` moves the task to in_progress (not an awaiting_*
+        state), so it is outside ``list_open_review_claims``. Left alone,
+        ``i_am_idle`` auto-pauses it and the reviewer can never resume it
+        (``i_will_work_on`` is developer-only), while ``paused_tasks_guard``
+        refuses every later ``claim_pr_review``. ``unclaim_for_agent`` is the
+        existing in_progress -> pending path; it clears ``assigned_to`` (the
+        state a fresh review task has, which the dispatcher requires) and
+        the claim lock, and this clears the remaining claim fields.
+        """
+        result = await self.session.execute(
+            select(TaskTable).where(
+                TaskTable.active_claimant_id == agent_id,
+                TaskTable.status == TaskStatus.IN_PROGRESS,
+                TaskTable.source.in_(PR_REVIEW_SOURCES),
+            )
+        )
+        released: list[UUID] = []
+        for task in result.scalars().all():
+            tid = to_python_uuid(task.id)
+            if tid is None or await self.unclaim_for_agent(tid, agent_id) is None:
+                continue
+            task.claimed_by = cast("Any", None)
+            task.claimed_at = cast("Any", None)
+            task.last_heartbeat_at = cast("Any", None)
+            released.append(tid)
         return released
 
     async def list_all_open_review_claims(self) -> list[TaskTable]:
@@ -13042,7 +13084,12 @@ class TaskGateReviews(_Base):
             }
             task.commits = [*(task.commits or []), merge_entry]
             await self.session.flush()
-        return await self.complete(task_id, agent_id=pm_agent_id)
+        return await self.complete(
+            task_id,
+            agent_id=pm_agent_id,
+            force_with_cancelled=True,
+            justification=_GATEWAY_COMPLETE_CANCELLED_JUSTIFICATION,
+        )
 
 
 class TaskAdminOverride(_Base):

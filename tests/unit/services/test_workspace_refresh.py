@@ -72,6 +72,7 @@ def _wire_healthy_reentry(
         )
     )
     _bind(svc, "_origin_git", origin)
+    _bind(svc, "_project_default_branch", AsyncMock(return_value=None))
     return origin
 
 
