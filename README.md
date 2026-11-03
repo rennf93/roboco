@@ -300,7 +300,7 @@ Domain routes are mounted under `/api`:
 | `/api/dogfood` | Dogfood friction-fix cycle |
 | `/api/github-app` | GitHub App credentials and repo listing |
 | `/api/products` | Product CRUD |
-| `/api/providers` | AI provider model routing |
+| `/api/providers` | AI provider model routing (the mode read also returns the effective `codex_cli_model` / `gemini_cli_model` / `kimi_cli_model` and `ollama_default_model`) |
 | `/api/docs` | Project documentation management |
 | `/api/usage` | Token usage analytics |
 | `/api/system` | System monitoring (rate limits, etc.) |
