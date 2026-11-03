@@ -42,6 +42,34 @@ describe("useCountUp", () => {
       vi.useRealTimers();
     }
   });
+
+  it("counts up on the frame clock even when it lags performance.now()", () => {
+    // Frames are driven by hand on a clock 1.2 s behind performance.now(),
+    // the lag jsdom shows: the count must still finish after its duration
+    // and never dip below where it started.
+    const frames: FrameRequestCallback[] = [];
+    const raf = vi
+      .spyOn(window, "requestAnimationFrame")
+      .mockImplementation((cb) => frames.push(cb));
+    const caf = vi
+      .spyOn(window, "cancelAnimationFrame")
+      .mockImplementation(() => {});
+    try {
+      const frameClock = performance.now() - 1200;
+      const { result } = renderHook(() => useCountUp(12.34, 50));
+      const seen: number[] = [];
+      for (let i = 0; i < 6 && frames.length > 0; i++) {
+        const frame = frames.shift() as FrameRequestCallback;
+        act(() => frame(frameClock + i * 16));
+        seen.push(result.current);
+      }
+      expect(result.current).toBe(12.34);
+      expect(Math.min(...seen)).toBeGreaterThanOrEqual(0);
+    } finally {
+      raf.mockRestore();
+      caf.mockRestore();
+    }
+  });
 });
 
 describe("TgSheet", () => {
