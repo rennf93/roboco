@@ -1781,6 +1781,9 @@ class AgentOrchestrator(
         # actually bounds a loop — DB-persisted, reset by a status change, and
         # cooled down so a deploy that fixes the cause lets the work resume.
         self._board_dispatched: set[tuple[str, str]] = set()
+        # agent slug -> the held task id its "not spawned, holds other work"
+        # INFO line last named, so the line repeats only when that changes.
+        self._held_hold_logged_for: dict[str, str] = {}
         # Cross-tick damper for notification-triggered spawns (escalation /
         # approval / audit / a2a). Those dispatchers carry no task_id, so the
         # readiness gate and the PM respawn breaker never see them — without

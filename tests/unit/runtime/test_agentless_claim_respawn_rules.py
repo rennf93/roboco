@@ -43,6 +43,7 @@ def _orchestrator(
     orch._instances = {}
     orch._tick_handled_tasks = set()
     orch._pm_respawn_tracker = {}
+    orch._held_hold_logged_for = {}
     orch._bg_tasks = set()
     monkeypatch.setattr(orch, "_schedule_respawn_persist", lambda *_a, **_k: None)
     monkeypatch.setattr(
