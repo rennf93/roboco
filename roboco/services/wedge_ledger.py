@@ -210,7 +210,7 @@ class WedgeLedgerService:
 
     async def _transition_cycle(self, task_id: UUID) -> list[dict[str, Any]]:
         """The full transition cycle — actor, role, transition, timestamp —
-        rebuilt from the audit log's ``task.<status>`` rows (oldest last).
+        rebuilt from the audit log's ``task.<status>`` rows (oldest first).
         The audit journey is already the source of truth; the ledger never
         duplicates it."""
         from roboco.db.tables import AuditLogTable
@@ -237,7 +237,7 @@ class WedgeLedgerService:
 
     async def wedge_cycle(self, task_id: UUID) -> list[dict[str, Any]]:
         """Public read of the rebuilt transition cycle (actor, role,
-        transition, timestamp — oldest last) for downstream surfaces
+        transition, timestamp — oldest first) for downstream surfaces
         (e.g. the stuck-state task payload)."""
         return await self._transition_cycle(task_id)
 
