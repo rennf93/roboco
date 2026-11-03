@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **Public copy now states the human-governance differentiator.** The README opens with three declarative lines (one human CEO approves every merge; nothing auto-posts or auto-starts) and gains a "Human governance" section citing the `awaiting_ceo_approval` end state of every root PR, CEO-only merges to `master`, the *Approve & Start* gate before any task begins, and the panel queue that holds every X draft until approved. The panel login card description and the layout metadata description carry the same line. Copy only: no new components or styles. The docs-site hero lives in `roboco-website` and is not changed here.
+
 ## [0.32.0] - 2026-10-16
 
 ### Added
