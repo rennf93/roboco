@@ -25,6 +25,7 @@ from roboco.seeds.initial_data import AGENT_UUIDS
 
 def _orch() -> AgentOrchestrator:
     orch = object.__new__(AgentOrchestrator)
+    orch._held_hold_logged_for = {}
     orch._instances = {}
     return orch
 

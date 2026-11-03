@@ -17,8 +17,11 @@ from uuid import uuid4
 import pytest
 from roboco.runtime.orchestrator import AgentOrchestrator
 from roboco.seeds.initial_data import AGENT_UUIDS
+from structlog.testing import capture_logs
 
 if TYPE_CHECKING:
+    from collections.abc import MutableMapping
+
     import httpx
 
 _BE_DEV_1 = AGENT_UUIDS["be-dev-1"]
@@ -28,6 +31,7 @@ _BE_DEV_2 = AGENT_UUIDS["be-dev-2"]
 def _orch() -> AgentOrchestrator:
     orch = object.__new__(AgentOrchestrator)
     orch._instances = {}
+    orch._held_hold_logged_for = {}
     return orch
 
 
@@ -76,6 +80,59 @@ async def test_idle_dev_holding_a_paused_task_is_resumed_there() -> None:
 
     mocks["resume"].assert_awaited_once_with(_CLIENT, paused_id, "be-dev-1")
     mocks["spawn_pending"].assert_not_awaited()
+
+
+_HOLD_EVENT = "Developer not spawned: it holds other work"
+
+
+async def _hold_logs(
+    orch: AgentOrchestrator, *ticks: tuple[str, str] | None
+) -> list[MutableMapping[str, Any]]:
+    """Dispatch one pending task per (held_status, held_id) tick; return hold logs."""
+    with capture_logs() as logs:
+        for held in ticks:
+            await _dispatch(orch, _dev_task(), held)
+    return [entry for entry in logs if entry["event"] == _HOLD_EVENT]
+
+
+@pytest.mark.asyncio
+async def test_a_hold_logs_once_naming_the_held_task() -> None:
+    held_id = str(uuid4())
+    task = _dev_task()
+    with capture_logs() as logs:
+        await _dispatch(_orch(), task, ("blocked", held_id))
+    [entry] = [e for e in logs if e["event"] == _HOLD_EVENT]
+
+    assert entry["log_level"] == "info"
+    assert entry["agent"] == "be-dev-1"
+    assert entry["held_task_id"] == held_id
+    assert entry["held_status"] == "blocked"
+    assert entry["skipped_task_id"] == task["id"]
+
+
+@pytest.mark.asyncio
+async def test_the_same_hold_on_the_next_tick_does_not_log_again() -> None:
+    held = ("blocked", str(uuid4()))
+
+    assert len(await _hold_logs(_orch(), held, held, held)) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_different_held_task_logs_again() -> None:
+    first, second = ("blocked", str(uuid4())), ("in_progress", str(uuid4()))
+
+    logs = await _hold_logs(_orch(), first, first, second)
+
+    assert [e["held_task_id"] for e in logs] == [first[1], second[1]]
+
+
+@pytest.mark.asyncio
+async def test_checking_the_held_task_itself_does_not_repeat_the_log() -> None:
+    """A dev's only held task, checked itself (status claimed), holds nothing
+    else; the next pending task of the same tick must not log again."""
+    held = ("claimed", str(uuid4()))
+
+    assert len(await _hold_logs(_orch(), held, None, held, None, held)) == 1
 
 
 @pytest.mark.asyncio

@@ -94,6 +94,7 @@ def _service(layout: _Layout) -> WorkspaceService:
         "roboco-panel", f"file://{layout.origin}", None, default_branch="main"
     )
     object.__setattr__(svc, "_relay_for", AsyncMock(return_value=relay))
+    object.__setattr__(svc, "_project_default_branch", AsyncMock(return_value="main"))
     return svc
 
 

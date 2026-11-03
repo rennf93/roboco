@@ -51,6 +51,28 @@ def test_an_interpreter_started_from_the_clone_root_is_left_alone() -> None:
     assert path == [_CLONE, f"{_CLONE}/src"]
 
 
+@pytest.mark.parametrize(
+    ("cwd", "expected"),
+    [
+        (_WORKTREE, _WORKTREE),
+        (f"{_WORKTREE}/scripts", _WORKTREE),
+        (_CLONE, _CLONE),
+        (f"{_CLONE}/.worktrees", _CLONE),
+        ("/data/workspaces/p/backend/be-dev-2/.worktrees/abc12345", _CLONE),
+        ("", _CLONE),
+    ],
+)
+def test_the_canonical_venv_serves_the_worktree_the_process_runs_in(
+    cwd: str, expected: str
+) -> None:
+    """The workspace container runs a worktree's commands with
+    ``UV_PROJECT_ENVIRONMENT`` set to the clone root's venv (2026-11-03:
+    fe-doc's ``make codegen`` rendered the clone root's Aug 31 verb table)."""
+    path = [_CLONE]
+    point_clone_root_paths_at_worktree(f"{_CLONE}/.venv", path, cwd)
+    assert path == [expected]
+
+
 def _clone_with_editable_install(root: Path) -> tuple[Path, Path]:
     """A clone root whose venv carries an editable-style ``.pth`` naming the
     clone root, a package ``demo`` in both checkouts, and one worktree."""
@@ -72,9 +94,9 @@ def _clone_with_editable_install(root: Path) -> tuple[Path, Path]:
     return clone, worktree
 
 
-def _imported_from(checkout: Path) -> str:
+def _imported_from(checkout: Path, venv: Path | None = None) -> str:
     done = subprocess.run(
-        [str(checkout / ".venv" / "bin" / "python"), "scripts/show.py"],
+        [str((venv or checkout / ".venv") / "bin" / "python"), "scripts/show.py"],
         cwd=checkout,
         check=True,
         capture_output=True,
@@ -91,6 +113,16 @@ def test_a_script_in_the_worktree_imports_the_worktrees_package(tmp_path: Path) 
     assert (worktree / ".venv").is_symlink()
     assert _imported_from(worktree) == "worktree"
     assert _imported_from(clone) == "clone root"
+
+
+def test_a_worktree_script_on_the_canonical_venv_imports_the_worktree(
+    tmp_path: Path,
+) -> None:
+    clone, worktree = _clone_with_editable_install(tmp_path)
+
+    WorkspaceService._link_shared_venv(worktree, clone)
+
+    assert _imported_from(worktree, venv=clone / ".venv") == "worktree"
 
 
 def test_the_hook_comes_back_into_a_venv_rebuilt_under_a_linked_worktree(

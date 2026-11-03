@@ -213,13 +213,19 @@ async def test_gate_failure_blocks_with_output_in_remediate() -> None:
 
 
 @pytest.mark.asyncio
-async def test_gate_is_fail_open_on_infrastructure_error() -> None:
-    """A missing workspace / toolchain must never block a submit."""
+async def test_gate_refuses_the_submit_when_it_cannot_run() -> None:
+    """Live 2026-11-02: task 334e1f04 failed the gate four times, then its
+    fifth gate container exited 2 before running anything and the submit went
+    to QA unchecked. A gate that did not run is not a pass."""
     git = MagicMock()
     git.run_pre_submit_quality_gate = AsyncMock(
-        side_effect=RuntimeError("workspace not found")
+        side_effect=RuntimeError("the container did not run the command")
     )
-    assert await _choreo(git)._check_quality_gate(_ctx()) is None
+    env = await _choreo(git)._check_quality_gate(_ctx())
+    assert env is not None
+    assert env.error == "invalid_state"
+    assert "could not run" in (env.message or "")
+    assert "did not run the command" in (env.message or "")
 
 
 _COMMAND_FAILED = 127

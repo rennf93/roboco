@@ -1049,6 +1049,7 @@ class WorkspaceProvisioning(_Base):
                 error=str(exc),
             )
             return
+        default = await self._project_default_branch(project_slug) or default
         refs = list(dict.fromkeys(ref for ref in (current, default) if ref != "HEAD"))
         result = await self._refresh_fetch(workspace, project_slug, refs)
         if result.returncode == 0:
@@ -1076,6 +1077,28 @@ class WorkspaceProvisioning(_Base):
         ).stdout.strip()
         default = origin_head.split("/", 1)[1] if "/" in origin_head else "master"
         return current or "HEAD", default
+
+    async def _project_default_branch(self, project_slug: str) -> str | None:
+        """The project's head branch from its row. A clone's ``origin/HEAD``
+        is frozen at clone time, so it names the old default after the
+        project's default branch changes. Best-effort like the refresh it
+        serves: a failed read returns None (the caller keeps origin/HEAD)
+        inside a savepoint, so it never poisons the caller's session."""
+        from roboco.services.project import get_project_service
+
+        try:
+            async with self.session.begin_nested():
+                project = await get_project_service(self.session).get_by_slug(
+                    project_slug
+                )
+        except Exception as exc:
+            logger.warning(
+                "ensure_workspace: project default branch lookup failed",
+                project=project_slug,
+                error=str(exc),
+            )
+            return None
+        return head_branch(project) if project is not None else None
 
     async def _refresh_fetch(
         self, workspace: Path, project_slug: str, refs: list[str]

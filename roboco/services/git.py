@@ -4021,7 +4021,41 @@ class GitBranchCleanup(_Base):
         reconcile divergent branches"), and a local target branch that has
         drifted from origin in a workspace clone is cruft by definition — the
         remote side of the merge is authoritative.
+
+        Git refuses to check a branch out in two worktrees, so when another
+        worktree of this clone already holds ``target_branch`` (the PM's own
+        task worktree on its cell branch) that worktree is synced in place
+        instead of the clone root.
         """
+        holder = await self._worktree_holding_branch(workspace, target_branch)
+        if holder is not None:
+            workspace = holder
+        else:
+            await self._checkout_target_branch(workspace, target_branch)
+        await self._run_git(workspace, ["fetch", "origin", target_branch])
+        await self._run_git(workspace, ["reset", "--hard", f"origin/{target_branch}"])
+        log_result = await self._run_git(workspace, ["log", "-1", "--format=%H"])
+        return log_result.stdout.strip()
+
+    async def _worktree_holding_branch(
+        self, workspace: Path, branch: str
+    ) -> Path | None:
+        """The other worktree of ``workspace``'s clone that has ``branch``
+        checked out, else None (``workspace`` itself does not count)."""
+        listed = await self._run_git(
+            workspace, ["worktree", "list", "--porcelain"], check=False
+        )
+        wanted = f"branch refs/heads/{branch}"
+        for entry in listed.stdout.split("\n\n"):
+            lines = entry.strip().split("\n")
+            if wanted in lines and lines[0].startswith("worktree "):
+                path = Path(lines[0].removeprefix("worktree "))
+                return None if path == workspace else path
+        return None
+
+    async def _checkout_target_branch(
+        self, workspace: Path, target_branch: str
+    ) -> None:
         checkout = await self._run_git(
             workspace, ["checkout", target_branch], check=False
         )
@@ -4046,10 +4080,6 @@ class GitBranchCleanup(_Base):
                         "tracking_stderr": tracking.stderr.strip(),
                     },
                 )
-        await self._run_git(workspace, ["fetch", "origin", target_branch])
-        await self._run_git(workspace, ["reset", "--hard", f"origin/{target_branch}"])
-        log_result = await self._run_git(workspace, ["log", "-1", "--format=%H"])
-        return log_result.stdout.strip()
 
     async def _sync_target_branch_best_effort(
         self, workspace: Path, target_branch: str
@@ -4075,6 +4105,7 @@ class GitBranchCleanup(_Base):
                 " continuing without local sync",
                 target_branch=target_branch,
                 error=str(exc),
+                details=exc.details,
             )
             return None
 
