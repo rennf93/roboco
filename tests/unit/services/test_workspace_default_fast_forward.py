@@ -162,3 +162,18 @@ async def test_a_clone_root_follows_the_project_default_not_a_stale_origin_head(
     await svc._fetch_origin_best_effort(layout.clone_root, "roboco-api")
 
     assert _git(layout.clone_root, "rev-parse", "slave") == tip
+
+
+async def test_a_failed_project_lookup_falls_back_to_origin_head(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The refresh never raises: a failed project read keeps origin/HEAD."""
+    session = MagicMock()
+    session.begin_nested.return_value.__aexit__.return_value = False
+    projects = MagicMock(get_by_slug=AsyncMock(side_effect=RuntimeError("db down")))
+    monkeypatch.setattr(
+        "roboco.services.project.get_project_service", lambda _session: projects
+    )
+
+    assert await WorkspaceService(session)._project_default_branch("roboco-api") is None
+    session.begin_nested.assert_called_once_with()
