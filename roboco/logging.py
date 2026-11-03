@@ -177,7 +177,7 @@ def setup_logging() -> None:
             if log_dir.stat().st_uid == os.geteuid():
                 log_dir.chmod(0o700)
             file_handler = logging.handlers.RotatingFileHandler(
-                log_dir / "orchestrator.log",
+                log_dir / _log_file_name(settings.role),
                 # 50 MB per file
                 maxBytes=50 * 1024 * 1024,
                 # Keep 5 rotations -> ~250 MB cap
@@ -203,6 +203,18 @@ def setup_logging() -> None:
     logging.getLogger("sqlalchemy.engine").setLevel(
         logging.INFO if settings.debug else logging.WARNING
     )
+
+
+def _log_file_name(role: str) -> str:
+    """The log file this process rotates, one per ``ROBOCO_ROLE``.
+
+    The api, dispatcher and indexer containers share ``/data/logs``. A
+    ``RotatingFileHandler`` is not multi-process safe: when one process rotated
+    a shared ``orchestrator.log``, the others kept writing into the renamed
+    ``orchestrator.log.1``. ``all`` (tests, ``make quickstart``) is one process
+    and keeps the original name.
+    """
+    return "orchestrator.log" if role == "all" else f"orchestrator-{role}.log"
 
 
 def _resolve_log_dir() -> Path | None:
