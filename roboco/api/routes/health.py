@@ -17,6 +17,7 @@ from roboco.services.rag_index_failures import count_failures
 from roboco.services.review_path_health import get_review_path_tracker
 
 router = APIRouter()
+system_health_router = APIRouter()
 
 
 @router.get(
@@ -36,8 +37,8 @@ async def health_check() -> HealthResponse:
     )
 
 
-@router.get(
-    "/health/review-path",
+@system_health_router.get(
+    "/review-path",
     response_model=ReviewPathHealthResponse,
     summary="Review-path tool outage state",
     description=(
@@ -48,6 +49,9 @@ async def health_check() -> HealthResponse:
 async def review_path_health() -> ReviewPathHealthResponse:
     """Panel-readable review-path outage state."""
     return ReviewPathHealthResponse(**get_review_path_tracker().state())
+
+
+router.include_router(system_health_router, prefix="/api/system-health")
 
 
 @router.get(

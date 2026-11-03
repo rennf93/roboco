@@ -6,6 +6,8 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import HTTPException, status
+from fastapi.routing import APIRoute
+from roboco.api.routes import health as health_routes
 from roboco.api.routes.health import review_path_health
 from roboco.api.utils.git import _translate_read_error
 from roboco.config import settings
@@ -230,3 +232,9 @@ async def test_health_route_returns_contract_fields(
     assert active.outage_active is True
     assert active.window_start is not None
     assert active.type == "review_path_tools"
+
+
+def test_health_route_serves_frozen_path() -> None:
+    routes = health_routes.router.routes
+    paths = {r.path for r in routes if isinstance(r, APIRoute)}
+    assert "/api/system-health/review-path" in paths
