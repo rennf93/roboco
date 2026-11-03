@@ -35,6 +35,25 @@ python3 scripts/reflow_md.py --check
 - `1`: Hard-wrapped prose detected; the output names affected files
 
 **Scope:** The check runs on `.md` files in tracked directories (`docs/`, `README.md`), excluding code blocks, tables, and YAML frontmatter.
+Files under `EXCLUDE_PREFIXES` (and the excluded globs) are skipped in every mode.
+The script treats the current working directory as the repo root, so run it from the repo root.
+
+### Full-repo vs changed-only mode
+
+| Command | Evaluates | Used by |
+|---------|-----------|---------|
+| `scripts/reflow_md.py --check` | Every in-scope markdown file in the repo | `make reflow-check` |
+| `scripts/reflow_md.py --check --changed [--base REF]` | Only markdown the branch changed vs its base | `make quality` |
+
+`--changed` exists so hard-wrapped prose already on the base branch cannot fail a clean PR that never touched that file.
+It selects files from the merge-base diff (`git diff --name-only --diff-filter=ACMR`, so added, copied, modified, and renamed files) plus staged, unstaged, and untracked markdown.
+The same in-scope filter and the same reflow engine are applied to that smaller set; nothing is reimplemented.
+
+The base ref is `--base REF` when given.
+Otherwise the first ref that resolves from `origin/master`, `origin/main`, `master`, `main` is used.
+If no base resolves (for example a shallow CI checkout with no base ref), the script prints `warning: no base ref resolved; checking every markdown file` and falls back to the full scan, so it never passes silently.
+
+A file you edit is checked in full: touching a hard-wrapped file means you must reflow it (`make reflow-docs`).
 
 ## Quality Gate Integration
 
@@ -47,7 +66,7 @@ make quality
 This runs (among other checks):
 1. `uv run ruff format --check .` — code formatting
 2. `uv run ruff check .` — linting
-3. `python3 scripts/reflow_md.py --check` — markdown reflow
+3. `python3 scripts/reflow_md.py --check --changed` — markdown reflow, branch-changed files only
 4. `uv run mypy roboco/ tests/` — type checking
 5. `uv run pytest` — unit tests (DB-dependent, skipped in sandboxes)
 
@@ -73,8 +92,13 @@ To ensure the reflow-check wiring does not regress (e.g., if a future Makefile e
 
 **Tests:**
 1. `test_quality_target_wires_in_reflow_check` — Verifies that `make quality` explicitly invokes `scripts/reflow_md.py --check`.
-2. `test_check_passes_on_repo_as_committed` — Confirms the check exits 0 on HEAD.
+2. `test_check_passes_on_repo_as_committed` — Confirms the full-repo check exits 0 on HEAD.
 3. `test_check_fails_on_a_hard_wrapped_file` — Verifies the check correctly rejects hard-wrapped prose.
+4. `test_changed_mode_ignores_untouched_base_debt` — A hard-wrapped file untouched by the branch passes under `--changed`, while the full-repo check still fails on it.
+5. `test_changed_mode_fails_on_changed_wrapped_file` — A new hard-wrapped file fails and is named in the output; untouched debt is not.
+6. `test_changed_mode_fails_on_edited_tracked_file` — Editing a tracked file that is still wrapped fails.
+7. `test_changed_mode_respects_exclude_prefixes` — Changed files under `EXCLUDE_PREFIXES` stay exempt.
+8. `test_reflow_is_idempotent` — Reflowing already-reflowed text is a no-op.
 
 Running `uv run pytest tests/unit/scripts/test_reflow_md.py` ensures the wiring remains intact.
 
@@ -90,22 +114,29 @@ python3 scripts/reflow_md.py --check
 # OK: no hard-wrapped markdown prose in scope.
 ```
 
-To see which files would be reflowed by the script (without modifying them):
+To check only what your branch changed (what `make quality` runs):
 
 ```bash
-python3 scripts/reflow_md.py --diff
+python3 scripts/reflow_md.py --check --changed
+python3 scripts/reflow_md.py --check --changed --base origin/master
 ```
 
-To auto-reflow a file in-place:
+To see which files would be reflowed by the script (without modifying them), run it with no flags (dry run):
 
 ```bash
-python3 scripts/reflow_md.py --fix <file>
+python3 scripts/reflow_md.py
+```
+
+To auto-reflow every in-scope file in place (`make reflow-docs`):
+
+```bash
+python3 scripts/reflow_md.py --apply
 ```
 
 ## Next Steps
 
 - When editing `docs/backend/api/video-engine-endpoints.md`, `docs/backend/migrations/video-project-scoping.md`, or `docs/ux_ui/design/01-video-request-composition-controls.md`, ensure prose continues to follow the one-logical-unit-per-line standard.
-- Before committing, run `python3 scripts/reflow_md.py --check` to catch hard-wrapped prose early.
+- Before committing, run `python3 scripts/reflow_md.py --check --changed` to catch hard-wrapped prose in your own changes early; use `make reflow-check` for the full-repo audit.
 - If a new documentation file is added, it will automatically be checked by the quality gate on the next PR.
 
 ## References
