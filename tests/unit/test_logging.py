@@ -198,7 +198,7 @@ def test_setup_logging_handles_log_dir_oserror() -> None:
         setup_logging()
 
 
-def _setup_logging_into(log_dir: Path) -> None:
+def _setup_logging_into(log_dir: Path, role: str = "all") -> None:
     with (
         patch("roboco.logging.settings") as mock_settings,
         patch("roboco.logging._resolve_log_dir", return_value=log_dir),
@@ -206,6 +206,7 @@ def _setup_logging_into(log_dir: Path) -> None:
         mock_settings.environment = "production"
         mock_settings.app_version = "x"
         mock_settings.debug = False
+        mock_settings.role = role
         setup_logging()
 
 
@@ -216,6 +217,26 @@ def _file_handlers() -> list[logging.FileHandler]:
         for handler in writer.handlers
         if isinstance(handler, logging.FileHandler)
     ]
+
+
+@pytest.mark.parametrize(
+    ("role", "file_name"),
+    [
+        ("all", "orchestrator.log"),
+        ("api", "orchestrator-api.log"),
+        ("dispatcher", "orchestrator-dispatcher.log"),
+        ("indexer", "orchestrator-indexer.log"),
+    ],
+)
+def test_each_process_role_rotates_its_own_log_file(
+    tmp_path: Path, role: str, file_name: str
+) -> None:
+    """Live 2026-11-03: the api, dispatcher and indexer shared one
+    orchestrator.log; after the api rotated it, the dispatcher's events went
+    on landing in orchestrator.log.1."""
+    _setup_logging_into(tmp_path, role)
+    (file_handler,) = _file_handlers()
+    assert Path(file_handler.baseFilename).name == file_name
 
 
 _NEVER_WAITS_SECONDS = 1.0
