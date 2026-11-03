@@ -26,6 +26,15 @@ import { Label } from "@/components/ui/label";
 import { BookOpen, CheckCircle2, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import { HelpTip } from "@/components/ui/help-tip";
+import { SegmentedControl } from "@/components/ui/segmented-control";
+import { PlaybookApprovedList } from "./playbook-approved-list";
+
+type PlaybookView = "drafts" | "approved";
+
+const _VIEW_OPTIONS = [
+  { value: "drafts", label: "Drafts" },
+  { value: "approved", label: "Approved" },
+];
 
 const _MIN_REASON = 4;
 
@@ -35,6 +44,7 @@ export function PlaybookReviewQueue({ className }: { className?: string }) {
   const queryClient = useQueryClient();
   const [rejecting, setRejecting] = useState<Playbook | null>(null);
   const [reason, setReason] = useState("");
+  const [view, setView] = useState<PlaybookView>("drafts");
 
   const { data: drafts, isLoading } = useQuery({
     queryKey: ["playbooks", "drafts"],
@@ -83,7 +93,7 @@ export function PlaybookReviewQueue({ className }: { className?: string }) {
     rejectMutation.mutate({ id: rejecting.id, reason: reason.trim() });
   };
 
-  if (isLoading || !drafts || drafts.length === 0) return null;
+  const pending = drafts ?? [];
 
   return (
     <>
@@ -96,71 +106,92 @@ export function PlaybookReviewQueue({ className }: { className?: string }) {
                 Playbook Review
               </span>
             </HelpTip>
-            <HelpTip label="Drafts awaiting a decision">
-              <Badge variant="secondary">{drafts.length}</Badge>
-            </HelpTip>
+            {pending.length > 0 && (
+              <HelpTip label="Drafts awaiting a decision">
+                <Badge variant="secondary">{pending.length}</Badge>
+              </HelpTip>
+            )}
           </CardTitle>
           <CardDescription>
             Drafted playbooks awaiting your approval — approved ones are indexed
             and auto-suggested to agents.
           </CardDescription>
+          <SegmentedControl
+            aria-label="Playbook view"
+            options={_VIEW_OPTIONS}
+            value={view}
+            onValueChange={(v) => setView(v as PlaybookView)}
+          />
         </CardHeader>
         <CardContent className="space-y-3">
-          {drafts.map((pb) => (
-            <div
-              key={pb.id}
-              className="rounded-lg border p-4 transition-colors hover:bg-muted/50"
-            >
-              <div className="mb-1 flex items-center gap-2">
-                <span className="font-medium">{pb.title}</span>
-                {pb.team && (
-                  <HelpTip label="Team that authored this playbook">
-                    <Badge variant="outline">{pb.team}</Badge>
+          {view === "approved" && <PlaybookApprovedList />}
+          {view === "drafts" && isLoading && (
+            <p className="text-sm text-muted-foreground">Loading drafts...</p>
+          )}
+          {view === "drafts" && !isLoading && pending.length === 0 && (
+            <p className="text-sm text-muted-foreground">
+              No drafted playbooks awaiting review.
+            </p>
+          )}
+          {view === "drafts" &&
+            pending.map((pb) => (
+              <div
+                key={pb.id}
+                className="rounded-lg border p-4 transition-colors hover:bg-muted/50"
+              >
+                <div className="mb-1 flex items-center gap-2">
+                  <span className="font-medium">{pb.title}</span>
+                  {pb.team && (
+                    <HelpTip label="Team that authored this playbook">
+                      <Badge variant="outline">{pb.team}</Badge>
+                    </HelpTip>
+                  )}
+                  {pb.tags.map((t) => (
+                    <HelpTip
+                      key={t}
+                      label="Search/filter tag for this playbook"
+                    >
+                      <Badge variant="secondary" className="text-xs">
+                        {t}
+                      </Badge>
+                    </HelpTip>
+                  ))}
+                </div>
+                <p className="text-sm text-muted-foreground">
+                  <span className="font-semibold">When:</span> {pb.problem}
+                </p>
+                <pre className="mt-2 max-h-40 overflow-auto rounded bg-muted p-2 text-xs whitespace-pre-wrap">
+                  {pb.procedure}
+                </pre>
+                <div className="mt-3 flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
+                  <HelpTip label="Archives this draft — it is never indexed">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="text-destructive hover:text-destructive"
+                      onClick={() => setRejecting(pb)}
+                    >
+                      <XCircle className="mr-1 h-4 w-4" />
+                      Reject
+                    </Button>
                   </HelpTip>
-                )}
-                {pb.tags.map((t) => (
-                  <HelpTip key={t} label="Search/filter tag for this playbook">
-                    <Badge variant="secondary" className="text-xs">
-                      {t}
-                    </Badge>
+                  <HelpTip label="Indexes this playbook so it's auto-suggested to agents">
+                    <Button
+                      size="sm"
+                      className="bg-green-600 hover:bg-green-700"
+                      disabled={
+                        approveMutation.isPending &&
+                        approveMutation.variables === pb.id
+                      }
+                      onClick={() => approveMutation.mutate(pb.id)}
+                    >
+                      <CheckCircle2 className="mr-1 h-4 w-4" />
+                      Approve
+                    </Button>
                   </HelpTip>
-                ))}
+                </div>
               </div>
-              <p className="text-sm text-muted-foreground">
-                <span className="font-semibold">When:</span> {pb.problem}
-              </p>
-              <pre className="mt-2 max-h-40 overflow-auto rounded bg-muted p-2 text-xs whitespace-pre-wrap">
-                {pb.procedure}
-              </pre>
-              <div className="mt-3 flex flex-col-reverse gap-2 sm:flex-row sm:items-center sm:justify-end">
-                <HelpTip label="Archives this draft — it is never indexed">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="text-destructive hover:text-destructive"
-                    onClick={() => setRejecting(pb)}
-                  >
-                    <XCircle className="mr-1 h-4 w-4" />
-                    Reject
-                  </Button>
-                </HelpTip>
-                <HelpTip label="Indexes this playbook so it's auto-suggested to agents">
-                  <Button
-                    size="sm"
-                    className="bg-green-600 hover:bg-green-700"
-                    disabled={
-                      approveMutation.isPending &&
-                      approveMutation.variables === pb.id
-                    }
-                    onClick={() => approveMutation.mutate(pb.id)}
-                  >
-                    <CheckCircle2 className="mr-1 h-4 w-4" />
-                    Approve
-                  </Button>
-                </HelpTip>
-              </div>
-            </div>
-          ))}
+            ))}
         </CardContent>
       </Card>
 
