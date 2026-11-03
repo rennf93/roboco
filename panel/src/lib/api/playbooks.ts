@@ -26,6 +26,16 @@ export const playbooksApi = {
     });
     return data;
   },
+  listApproved: async (): Promise<Playbook[]> => {
+    const { data } = await api.get<Playbook[]>("/playbooks", {
+      params: { status: "approved" },
+    });
+    return data;
+  },
+  archive: async (id: string): Promise<Playbook> => {
+    const { data } = await api.post<Playbook>(`/playbooks/${id}/archive`);
+    return data;
+  },
   approve: async (id: string): Promise<Playbook> => {
     const { data } = await api.post<Playbook>(`/playbooks/${id}/approve`);
     return data;
