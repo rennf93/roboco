@@ -679,7 +679,7 @@ export function AIRoutingCard() {
     )
       return;
     setMixMap({});
-    if (pinnedCount === 0) return; // nothing persisted server-side
+    if (pinnedCount === 0) return;
     try {
       await applyMode.mutateAsync({ mode: "mix", per_agent: {} });
       toast.success(
@@ -1278,7 +1278,7 @@ export function AIRoutingCard() {
               label="Ollama"
               description={
                 hasOllamaKey
-                  ? "Every agent uses Ollama Cloud." // TODO: Add dynamic default model name based on llm_catalog.py
+                  ? "Every agent uses Ollama Cloud."
                   : "Save the Ollama key first."
               }
               active={currentMode === "ollama"}
