@@ -58,8 +58,8 @@ The Choreographer is the server-side composition layer that turns agent intent-v
 | `submit_root` | async verb | `pm.py:2026` | Main PM opens root→master PR + enters gate; umbrella hard-reject + unchanged-PR guard. |
 | `_submit_root_unchanged_pr_guard` | async helper | `pm.py:1976` | Loop-stopper: refuse re-submit when PR head SHA == last `pr_fail` SHA. Fail-open on ambiguity. |
 | `_current_pr_head_sha` | async helper | `pm.py:1991` | Best-effort current PR head SHA via `_project_slug_for` + `git.get_pr_head_sha`. |
-| `complete` | async verb | `pm.py:3707` | Role-dispatch to `cell_pm_complete` / `main_pm_complete`; umbrella-in-progress bypasses spec gate. |
-| `main_pm_complete` | async verb | `pm.py:3592` | Main PM merge + escalate to CEO (never merges master itself). |
+| `complete` | async verb | `pm.py:3744` | Role-dispatch to `cell_pm_complete` / `main_pm_complete`; umbrella-in-progress bypasses spec gate. |
+| `main_pm_complete` | async verb | `pm.py:3629` | Main PM merge + escalate to CEO (never merges master itself). |
 | `escalate_to_ceo` | async verb | `_impl.py:3398` | Escalate to `awaiting_ceo_approval`. |
 | `unblock` | async verb | `pm.py:2428` | Human/PM restores a BLOCKED task; gated by `_oscillation_unblock_guard` (refuses while oscillation-tripped) then, on a real restore, runs `_maybe_trip_oscillation_breaker` (#685). |
 | `_oscillation_unblock_guard` | async helper | `pm.py:2524` | Refuses `unblock` once `markers.is_oscillation_tripped(t)` — an admin override must clear the marker first. |
