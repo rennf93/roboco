@@ -14,6 +14,7 @@ from roboco.foundation.policy import lifecycle as spec_module
 from roboco.foundation.policy.content import (
     markers,
 )
+from roboco.services.gateway.base_red_gate import base_red_submission_guard
 from roboco.services.gateway.choreographer import findings as findings_lib
 from roboco.services.gateway.choreographer._impl import (
     _PM_APPROACH_MIN_LEN,
@@ -540,6 +541,10 @@ class OpenPRMixin(_Base):
                 task_id=task_id,
                 verb="open_pr",
             )
+        if refusal := await base_red_submission_guard(self._deps.base_red, t):
+            return await self._emit_rejection(
+                refusal, agent_id=agent_id, task_id=task_id, verb="open_pr"
+            )
         briefing = await self._briefing_for(agent_id, task_id, task=t)
         agent = await self.task.agent_for(agent_id)
         role_str = str(agent.role) if agent is not None else "developer"
@@ -818,12 +823,14 @@ class IAmDoneMixin(_Base):
         IS the self-verification.
         """
         t = await self.task.get(task_id)
-        if t is None:
+        early = (
+            Envelope.not_found(message=f"task {task_id} not found")
+            if t is None
+            else await base_red_submission_guard(self._deps.base_red, t)
+        )
+        if early is not None:
             return await self._emit_rejection(
-                Envelope.not_found(message=f"task {task_id} not found"),
-                agent_id=agent_id,
-                task_id=task_id,
-                verb="i_am_done",
+                early, agent_id=agent_id, task_id=task_id, verb="i_am_done"
             )
         agent = await self.task.agent_for(agent_id)
         role_str = str(agent.role) if agent is not None else "developer"

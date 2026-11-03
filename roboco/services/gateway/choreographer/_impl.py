@@ -307,6 +307,8 @@ class ChoreographerDeps:
     # callsites / tests that don't exercise Product routing don't have to plumb
     # it in; when None, delegate falls back to parent-project inheritance.
     product: Any = None
+    # Base-red incident source (BaseRedIncidentSource). None = gate inert.
+    base_red: Any = None
     # ProjectService for the agent-access claim guard
     # (check_agent_access — the allowed_agents restriction). Optional so
     # existing callsites / tests that don't plumb it keep the guard inert.
