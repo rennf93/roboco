@@ -9,7 +9,7 @@ from fastapi import FastAPI, HTTPException, status
 from fastapi.testclient import TestClient
 from roboco.api.routes import health as health_routes
 from roboco.api.routes.health import review_path_health
-from roboco.api.utils.git import _translate_read_error
+from roboco.api.utils.git import _translate_read_error, review_path_key
 from roboco.config import settings
 from roboco.exceptions import GitTimeoutError
 from roboco.services.base import NotFoundError, ServiceError
@@ -205,6 +205,28 @@ def test_translate_read_error_records_5xx_with_given_key(
     assert isinstance(exc, HTTPException)
     assert exc.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
     assert _failed_keys(tracker) == ["feature/backend/abc"]
+
+
+def test_one_task_failing_across_status_log_diff_is_not_an_outage(
+    tracker: ReviewPathHealthTracker,
+) -> None:
+    task_id = "0123abcd-1111-2222-3333-444455556666"
+    branch = "feature/backend/be2145b0--1498a7cc--0123abcd"
+    keys = (
+        review_path_key(task_id=task_id, project_slug="p"),  # status
+        review_path_key(branch=branch, project_slug="p"),  # log
+        review_path_key(task_id=task_id, project_slug="p"),  # diff
+        review_path_key(branch=branch),  # file
+    )
+    assert set(keys) == {"0123abcd"}
+    for key in keys:
+        _translate_read_error(ServiceError("boom"), key)
+    assert tracker.state()["outage_active"] is False
+
+
+def test_review_path_key_namespaces_fallbacks() -> None:
+    assert review_path_key(branch="main", project_slug="p") == "branch:main"
+    assert review_path_key(project_slug="p") == "project:p"
 
 
 def test_translate_read_error_ignores_4xx(

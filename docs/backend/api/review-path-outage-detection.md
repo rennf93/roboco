@@ -9,7 +9,8 @@ Cross-task outage detection for the evidence / git-readonly pipeline (the "revie
 - **Outage trips** when failures inside the window span at least `review_path_outage_distinct_tasks` **distinct** keys. A single task failing repeatedly counts as one key and never trips it.
 - **Outage clears** when `review_path_recovery_successes` consecutive successful reads arrive, or when the window empties of failures.
 - **Window start** is the timestamp of the oldest failure in the window at the moment the outage trips.
-- **State is in memory**, per orchestrator process. A restart forgets the window, which at worst delays a trip by one window.
+- **State is in memory**, per process. In the split deployment (`ROBOCO_ROLE=api` / `dispatcher`) failures are recorded, and the notification sweep runs, in the **dispatcher** (agents' `ROBOCO_API_URL` points at it; the api role returns before starting background loops). The api-role orchestrator's tracker never sees a failure, so nginx routes `/api/system-health/` to `$active_dispatcher` (`deploy/nginx.conf`, pinned by `tests/unit/test_nginx_routing.py`). A restart forgets the window, which at worst delays a trip by one window.
+- **One key per task.** Every git-readonly route (`review_path_key`) and evidence leg (`record_review_path_failure` collapses a full UUID) keys failures by the task's 8-char id prefix, so one task failing across status, log and diff counts once; with no task, a namespaced `branch:`/`project:` key is used.
 
 ### Where failures are recorded
 
@@ -18,7 +19,7 @@ Cross-task outage detection for the evidence / git-readonly pipeline (the "revie
 | `run_bounded_leg` in `roboco/services/gateway/choreographer/evidence_legs.py` | failure on error (then re-raises), success on a good leg; keyed on the real task id |
 | `_translate_read_error` in `roboco/api/utils/git.py` (the five git read routes: status, log, branches, diff, file) | failure on 5xx only (4xx is caller error, not an outage); keyed on task id, else branch, else `project_slug` |
 
-Because git read routes carry no task in the agent context, a git-only outage in a single project counts as one key (the `project_slug`) and will not trip on its own; evidence legs key on real task ids.
+Key resolution for git reads (`review_path_key`): the `task_id` if the route has one, else the task id parsed from the branch name (last `--` segment), else `branch:<name>`, else `project:<slug>`. A git-only failure with no task or branch context therefore collapses to the single `project:<slug>` key and will not trip on its own; evidence legs and task-scoped git reads key on real task ids.
 
 ### Notifications (existing notification path)
 
@@ -67,4 +68,4 @@ Example while an outage is active:
 
 ## Tests
 
-`tests/unit/services/test_review_path_health.py` covers the boundary (a single task failing repeatedly is not an outage), distinct-task tripping, one event per window, recovery by successes and by window expiry, the missed-sweep case, both hook sites (4xx vs 5xx, key passed), and the route contract served through an app client.
+`tests/unit/services/test_review_path_health.py` covers the boundary (a single task failing repeatedly is not an outage), distinct-task tripping, one event per window, recovery by successes and by window expiry, the missed-sweep case, both hook sites (4xx vs 5xx, key passed), the route contract served through an app client, and a regression where one task failing across status, log, diff and file counts as one key and does not trip the outage. `tests/unit/test_nginx_routing.py` pins the `/api/system-health/` to `$active_dispatcher` routing that the role split depends on.

@@ -9,15 +9,19 @@ outage is declared only when failures span at least
 never an outage. One notification is emitted per outage window (on trip) and
 one on recovery. Detection only - no auto-remediation.
 
-ponytail: in-memory per orchestrator process (evidence and the git routes run
-in it); a restart forgets the window, which at worst delays a trip by one window.
+ponytail: in-memory per process. Failures and the sweep live in the dispatcher
+(agents' API URL), so nginx sends /api/system-health/ there; the api role's
+tracker is always empty. A restart forgets the window, which at worst delays a
+trip by one window. Move to Redis if a second recording process ever appears.
 """
 
 from __future__ import annotations
 
+import contextlib
 from collections import deque
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import UUID
 
 from roboco.config import settings
 from roboco.logging import get_logger
@@ -105,7 +109,12 @@ def get_review_path_tracker() -> ReviewPathHealthTracker:
 
 
 def record_review_path_failure(task_key: Any) -> None:
-    _tracker.record_failure(str(task_key))
+    """Record a failure; a full task UUID collapses to its 8-char prefix so the
+    evidence legs and the git routes (which may only know the branch) agree."""
+    key = str(task_key)
+    with contextlib.suppress(ValueError):
+        key = str(UUID(key))[:8]
+    _tracker.record_failure(key)
 
 
 def record_review_path_success() -> None:
