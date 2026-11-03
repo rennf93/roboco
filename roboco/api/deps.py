@@ -34,6 +34,7 @@ from roboco.models import AgentRole, Team
 from roboco.runtime import AgentOrchestrator
 from roboco.services.a2a import A2AService
 from roboco.services.audit import get_audit_service
+from roboco.services.gateway.base_red_gate import resolve_incident_service
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 from roboco.services.gateway.content_actions import ContentActions, ContentActionsDeps
 from roboco.services.gateway.evidence_repo import EvidenceRepo
@@ -756,6 +757,7 @@ async def get_choreographer(
             evidence_repo=EvidenceRepo(db_session),
             product=ProductService(db_session),
             project=get_project_service(db_session),
+            base_red=resolve_incident_service(db_session),
             orchestrator=orch,
             stream_bus=bus,
         )

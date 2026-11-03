@@ -16,6 +16,7 @@ from roboco.api.deps import (
     require_pm_or_above,
 )
 from roboco.api.schemas.project import (
+    ClearBaseRedRequest,
     ConventionFinding,
     ConventionsActionResponse,
     ConventionsHealthResponse,
@@ -36,7 +37,12 @@ from roboco.foundation.policy.conventions.models import ConventionsStandard
 from roboco.models.base import Team
 from roboco.models.project import ProjectCreate, ProjectUpdate
 from roboco.security import guard_deco
+from roboco.services.audit import get_audit_service
 from roboco.services.conventions import get_conventions_service
+from roboco.services.gateway.base_red_gate import (
+    clear_base_red_incident,
+    resolve_incident_service,
+)
 from roboco.services.project import get_project_service
 
 router = APIRouter()
@@ -550,6 +556,32 @@ async def restore_conventions(
     result = await get_conventions_service(db).restore(project)
     await db.commit()
     return _action_response(result)
+
+
+@router.post("/{project_id}/base-red/clear", status_code=status.HTTP_204_NO_CONTENT)
+async def clear_base_red(
+    project_id: str,
+    body: ClearBaseRedRequest,
+    db: DbSession,
+    agent: CurrentAgentContext,
+) -> None:
+    """Manually clear the project's open base-red incident (PM+, audited)."""
+    require_pm_or_above(agent.role, "clear a base-red incident")
+    project = await _get_project_or_404(get_project_service(db), project_id)
+    source = resolve_incident_service(db)
+    if source is None:
+        raise HTTPException(
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail="base-red incident tracking is not available",
+        )
+    await clear_base_red_incident(
+        source,
+        get_audit_service(),
+        project_id=cast("UUID", project.id),
+        cleared_by=str(agent.agent_id),
+        reason=body.reason,
+    )
+    await db.commit()
 
 
 @router.get(
