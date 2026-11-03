@@ -40,6 +40,17 @@ The median of 128 ms confirms the verb itself is DB reads plus one forge POST. T
 
 Confidence: medium-high on the mechanism, which is read straight from the code, and medium on it being the only cause. It only applies when `ROBOCO_ENTIRE_TRAILS_ENABLED` is on and the project is opted in; the `entire_link_before_pr` phase and `task_lock_wait` will show it directly. Secondary, unproven contributors: `GitHubProvider._send` opens a fresh `httpx.AsyncClient` per call with the 30 s `git_command_timeout_seconds`, and `_apply_pr_labels` makes one `ensure_label` call per label plus one `add_labels` call, all sequential, so a slow forge can add tens of seconds; and `push_branch` is bounded at 120 s.
 
+### Shipped: fix 1 (bounded tree-lock wait)
+
+Fix 1 below is implemented (task a48da4df, PR #1429). `_lock_tree` in `roboco/services/entire_trails/drain.py` takes a new optional `wait_seconds`. When a blocking wait is requested with it, the function sets a transaction-local Postgres `lock_timeout` (via `set_config(..., true)`) before `pg_advisory_xact_lock`, and resets it to `0` once the lock is held. `link_before_pr` passes `settings.entire_trails_link_lock_wait_seconds`.
+
+- **Setting:** `ROBOCO_ENTIRE_TRAILS_LINK_LOCK_WAIT_SECONDS`, a float greater than 0, default `5.0`. It is the longest `open_pr` waits for the tree lock before its Entire link.
+- **On timeout:** Postgres raises a lock-timeout error. `link_before_pr`'s existing failure path catches it, queues the link in the outbox, and the PR opens anyway. No Entire CLI call is made on the verb path in that case. The worst-case tree-lock stall on `open_pr` is therefore about 5 s instead of the CLI timeout of roughly 60 to 70 s.
+- **Uncontended path:** unchanged. Callers that do not pass `wait_seconds` (including the drain's own non-blocking `wait=False` try-lock) behave as before. `approve_before_merge` still waits unbounded on purpose.
+- **Accepted cost:** a PR that opens while a drain row holds its tree lock past the bound may get an Entire-owned trail of its own, because the link was queued rather than made before the PR. The queued link then fails visibly (dead row, CEO alert), as described in `.claude/rules/entire-trails.md`.
+- **Test:** `test_a_contended_tree_lock_queues_the_link_instead_of_stalling` (`tests/integration/entire_trails/test_entire_trails.py`) holds the tree lock from a second session, sets the wait to 0.3 s, and asserts `link_before_pr` returns in under 5 s, makes no CLI call, and leaves one queued `link` row for the branch.
+- **Not done:** fixes 2 and 3 below (drain releasing the lock across the CLI call; concurrent label calls) remain open.
+
 ### Recommended fix for open_pr
 
 1. Never wait unbounded on the tree lock from the verb path. In `link_before_pr`, set a short `lock_timeout` (for example 5 to 10 s) or use `pg_try_advisory_xact_lock` and, on failure, fall straight into the existing `_queue_unless_pending` path (the function already documents that a failure is queued and the PR opens anyway). The accepted cost is that, rarely, Entire gives that PR a trail of its own; that is far cheaper than a 60 s stall holding a request transaction and a task lock.
