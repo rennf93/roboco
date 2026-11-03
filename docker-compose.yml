@@ -420,6 +420,10 @@ x-orchestrator-volumes: &orchestrator-volumes
   - ${ROBOCO_DATA_DIR:-./data}/kimi-usage:/data/kimi-usage
   # Per-agent HUMMIN usage capture — same shape as grok/codex/gemini/kimi-usage.
   - ${ROBOCO_DATA_DIR:-./data}/hummin-usage:/data/hummin-usage
+  # The dir every agent binds over ~/.claude/plugins (AGENT_PLUGINS_DATA_DIR):
+  # bound here so the dir the orchestrator creates is the host's, which the
+  # docker-gate checks on disk before it lets an agent start.
+  - ${ROBOCO_DATA_DIR:-./data}/agent-claude-plugins:/data/agent-claude-plugins
   # Persistent logs — survive `docker compose down/up`. Orchestrator and
   # each spawned agent write structured logs here so we can audit past
   # runs instead of relying on ephemeral `docker logs`.

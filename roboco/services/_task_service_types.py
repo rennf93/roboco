@@ -479,6 +479,9 @@ class TaskUnclaimSurface(Protocol):
     async def _clear_agent_current_task(
         self, agent_id: UUID | None, task_id: UUID
     ) -> None: ...
+    async def unclaim_for_agent(
+        self, task_id: UUID, agent_id: UUID
+    ) -> TaskTable | None: ...
 
 
 class TaskWorkStateSurface(Protocol):
