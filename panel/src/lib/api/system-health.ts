@@ -38,8 +38,9 @@ export const systemHealthApi = {
   // outage.
   getReviewPathOutage: async (): Promise<ReviewPathOutageStatus | null> => {
     try {
-      const { data } =
-        await api.get<ReviewPathOutageStatus>("/system-health/review-path");
+      const { data } = await api.get<ReviewPathOutageStatus>(
+        "/system-health/review-path",
+      );
       return data;
     } catch (error) {
       if (axios.isAxiosError(error) && error.response?.status === 404) {

@@ -8,7 +8,8 @@ import {
 
 export const systemHealthKeys = {
   all: ["system-health"] as const,
-  reviewPathOutage: () => [...systemHealthKeys.all, "review-path-outage"] as const,
+  reviewPathOutage: () =>
+    [...systemHealthKeys.all, "review-path-outage"] as const,
 };
 
 /**
@@ -19,7 +20,8 @@ export const systemHealthKeys = {
  * also the delivery choice that survives the backend slice landing later —
  * until then the query resolves to null (no surface yet) and nothing renders.
  */
-export function useReviewPathOutage(): ReviewPathOutageStatus | null | undefined {
+export function useReviewPathOutage():
+  ReviewPathOutageStatus | null | undefined {
   const query = useQuery({
     queryKey: systemHealthKeys.reviewPathOutage(),
     queryFn: () => systemHealthApi.getReviewPathOutage(),
