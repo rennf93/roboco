@@ -758,7 +758,8 @@ class Settings(BaseSettings):
         ge=1,
         description=(
             "Consecutive successful review-path reads that clear an active outage "
-            "(it also clears once the window empties of failures)."
+            "as recovered (an outage whose window empties with no success closes "
+            "as expired, recovered stays false)."
         ),
     )
     dispatch_claim_inflight_ttl_seconds: int = Field(
