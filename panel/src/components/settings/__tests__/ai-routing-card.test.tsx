@@ -86,7 +86,10 @@ const {
   getNebiusKey: vi.fn(async () => ({ has_key: false, enabled: false })),
   setNebiusKey: vi.fn(async () => ({ has_key: true, enabled: true })),
   searchNebiusModels: vi.fn(async (): Promise<NebiusModel[]> => []),
-  getMode: vi.fn(async () => ({ mode: "anthropic", assignments: [] })),
+  getMode: vi.fn(async (): Promise<ModeSnapshot> => ({
+    mode: "anthropic",
+    assignments: [],
+  })),
   applyMode: vi.fn(
     async (payload: { mode: string }): Promise<ModeSnapshot> => ({
       mode: payload.mode as ModeSnapshot["mode"],
@@ -1054,6 +1057,21 @@ describe("AIRoutingCard", () => {
   });
 
   describe("Kimi mode button", () => {
+    it("renders the pinned Kimi model from the API response in the button copy", async () => {
+      getMode.mockResolvedValueOnce({
+        mode: "anthropic",
+        assignments: [],
+        kimi_cli_model: "kimi-code/kimi-for-coding",
+      });
+      render(withQueryClient(<AIRoutingCard />));
+      expect(
+        await screen.findByText(
+          "Every agent uses Kimi (kimi-code/kimi-for-coding).",
+        ),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/kimi-code\/k3\)/)).not.toBeInTheDocument();
+    });
+
     it("renders the Kimi button and applies mode='kimi' on confirm", async () => {
       const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
       render(withQueryClient(<AIRoutingCard />));
