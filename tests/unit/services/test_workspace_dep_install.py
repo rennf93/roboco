@@ -572,6 +572,43 @@ async def test_node_install_still_runs_on_a_symlinked_venv(tmp_path: Path) -> No
 
 
 @pytest.mark.asyncio
+async def test_resyncing_one_worktree_never_changes_a_siblings_resolved_venv(
+    tmp_path: Path,
+) -> None:
+    """Sibling on lockfile X keeps resolving X after another worktree re-syncs to Y.
+
+    Goes through the spawn path: a link to the clone-root `.venv` symlink would be
+    repointed under the sibling's already-running interpreter by the swap.
+    """
+    clone_root = _make_workspace(tmp_path)
+    sibling = clone_root / ".worktrees" / "sibling01"
+    mover = _worktree_with_lock(clone_root, "Y")
+    sibling.mkdir(parents=True)
+    (sibling / "pyproject.toml").write_text("[project]\nname = 'x'\n")
+    (sibling / "uv.lock").write_text(_lock_pinning("X"))
+    for tree in (sibling, mover):
+        (tree / ".git").write_text("gitdir: elsewhere\n")
+    svc = _service()
+
+    with (
+        patch("roboco.services.workspace.run_in_workspace_container", _fake_uv_sync()),
+        patch.object(WorkspaceService, "_refresh_present_worktree", AsyncMock()),
+    ):
+        await svc.ensure_worktree_self_heal(
+            clone_root, sibling, "feature/a", "proj", can_author=True
+        )
+        await svc.ensure_worktree_self_heal(
+            clone_root, mover, "feature/b", "proj", can_author=True
+        )
+
+    version_file = Path(".venv") / _INSTALLED_VERSION_FILE
+    assert (sibling / ".venv").readlink().name.startswith(".venv-")
+    assert (sibling / version_file).read_text() == "X"
+    assert (mover / version_file).read_text() == "Y"
+    assert (sibling / ".venv").resolve() != (mover / ".venv").resolve()
+
+
+@pytest.mark.asyncio
 async def test_self_heal_spawn_path_resyncs_a_present_worktree(
     tmp_path: Path,
 ) -> None:

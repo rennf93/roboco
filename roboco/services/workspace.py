@@ -486,39 +486,65 @@ class WorkspaceWorktrees(_Base):
 
     @staticmethod
     def _link_shared_venv(worktree: Path, clone_root: Path) -> None:
-        """Symlink ``worktree/.venv -> ../../.venv`` (the clone-root venv).
+        """Symlink ``worktree/.venv`` at the clone-root venv its lockfile hashes to.
 
         uv discovers ``.venv`` next to the worktree's ``pyproject.toml``; without
         the symlink it re-syncs a fresh venv per worktree. The relative target
         holds because every worktree sits at ``{clone_root}/.worktrees/{id}``
-        (two levels deep). Idempotent: leaves an existing symlink/dir alone.
-        Only links once the clone-root venv exists — otherwise the symlink
-        dangles and uv errors or re-syncs a worktree-local venv that the
-        lexists guard then can't replace. install_dev_deps provisions
-        clone_root/.venv before the first worktree add on the fresh-claim path,
-        so a later ensure (resume) self-heals the link.
+        (two levels deep). The target is the concrete, complete
+        ``.venv-<digest12>`` built from this worktree's own lockfile (never the
+        clone-root ``.venv`` symlink, which a re-sync for another worktree
+        repoints under every interpreter already running through it), falling
+        back to ``../../.venv`` while no such venv exists. An existing link is
+        repointed when it differs; a real dir is left alone. Only links once a
+        clone-root venv exists — otherwise the symlink dangles and uv errors or
+        re-syncs a worktree-local venv that the lexists guard then can't
+        replace.
 
-        Every call also (re)writes the worktree import hook into the shared
+        Every call also (re)writes the worktree import hook into the linked
         venv (``_install_worktree_import_hook``), so a venv rebuilt since the
         last call gets it back before the worktree is used.
         """
         if not (clone_root / ".venv").exists():
             return
-        if not os.path.lexists(worktree / ".venv"):
+        venv_name = WorkspaceService._worktree_venv_name(worktree, clone_root)
+        link = worktree / ".venv"
+        wanted = f"../../{venv_name}"
+        # Fallback ".venv" never repoints an existing link (it could only
+        # move a worktree off the concrete venv it already runs on).
+        if not os.path.lexists(link) or (
+            venv_name != ".venv"
+            and link.is_symlink()
+            and str(link.readlink()) != wanted
+        ):
             # As the git user: the worktree is agent-writable, so a root mkdir
             # or symlink here could be steered anywhere by a planted link.
             run_as_workspace_user(
                 "sh",
                 "-c",
-                'mkdir -p -- "$1" && ln -s ../../.venv "$1/.venv"',
+                'mkdir -p -- "$1" && ln -sfn "$2" "$1/.venv"',
                 "sh",
                 str(worktree),
+                wanted,
                 timeout=settings.git_command_timeout_seconds,
             )
-        WorkspaceService._install_worktree_import_hook(clone_root)
+        WorkspaceService._install_worktree_import_hook(clone_root, venv_name)
 
     @staticmethod
-    def _install_worktree_import_hook(clone_root: Path) -> None:
+    def _worktree_venv_name(worktree: Path, clone_root: Path) -> str:
+        """``.venv-<digest12>`` when it is built for this worktree's lockfile and
+        complete, else ``.venv`` (the clone-root link)."""
+        digest = _lockfile_digest(worktree)
+        if digest is not None:
+            name = f".venv-{digest[:12]}"
+            if read_workspace_file(clone_root / name / _VENV_COMPLETE_SENTINEL):
+                return name
+        return ".venv"
+
+    @staticmethod
+    def _install_worktree_import_hook(
+        clone_root: Path, venv_name: str = ".venv"
+    ) -> None:
         """Write ``roboco.utils.worktree_imports`` into the clone's shared venv.
 
         The venv's editable install points at the clone root's checkout, so a
@@ -531,13 +557,17 @@ class WorkspaceWorktrees(_Base):
         logged and the worktree keeps the old behavior.
         """
         source = Path(worktree_imports.__file__).read_text(encoding="utf-8")
-        result = WorkspaceService._write_worktree_import_hook(clone_root, source)
+        result = WorkspaceService._write_worktree_import_hook(
+            clone_root, source, venv_name
+        )
         if (
             result.returncode != 0
             and "Permission denied" in (result.stderr or "")
             and make_venv_site_packages_group_writable(clone_root)
         ):
-            result = WorkspaceService._write_worktree_import_hook(clone_root, source)
+            result = WorkspaceService._write_worktree_import_hook(
+                clone_root, source, venv_name
+            )
         if result.returncode != 0:
             logger.warning(
                 "worktree import hook not written; worktrees import the clone root",
@@ -547,14 +577,14 @@ class WorkspaceWorktrees(_Base):
 
     @staticmethod
     def _write_worktree_import_hook(
-        clone_root: Path, source: str
+        clone_root: Path, source: str, venv_name: str = ".venv"
     ) -> subprocess.CompletedProcess[str]:
         """Write the hook module and its ``.pth`` into every site-packages of
-        ``clone_root/.venv``, as the git user."""
+        ``clone_root/<venv_name>``, as the git user."""
         return run_as_workspace_user(
             "sh",
             "-c",
-            'for d in "$1"/.venv/lib/python*/site-packages; do '
+            'for d in "$1"/"$5"/lib/python*/site-packages; do '
             '[ -d "$d" ] || continue; '
             'printf "import %s\\n" "$2" > "$d/$3" '
             '&& printf "%s" "$4" > "$d/$2.py" || exit 1; '
@@ -564,6 +594,7 @@ class WorkspaceWorktrees(_Base):
             _WORKTREE_IMPORTS_MODULE,
             _WORKTREE_IMPORTS_PTH,
             source,
+            venv_name,
             timeout=settings.git_command_timeout_seconds,
         )
 
@@ -1922,7 +1953,8 @@ class WorkspaceToolchain(_Base):
 
     @staticmethod
     def _live_venv_names(clone_root: Path) -> list[str]:
-        """``.venv-<digest12>`` for every present worktree's lockfile digest."""
+        """``.venv-<digest12>`` for every present worktree's lockfile digest, plus
+        the concrete venv each worktree's ``.venv`` link currently names."""
         names: list[str] = []
         try:
             worktrees = sorted((clone_root / ".worktrees").iterdir())
@@ -1932,6 +1964,12 @@ class WorkspaceToolchain(_Base):
             digest = _lockfile_digest(tree) if tree.is_dir() else None
             if digest is not None:
                 names.append(f".venv-{digest[:12]}")
+            try:
+                linked = (tree / ".venv").readlink().name
+            except OSError:
+                continue
+            if linked.startswith(".venv-"):
+                names.append(linked)
         return names
 
     @staticmethod
