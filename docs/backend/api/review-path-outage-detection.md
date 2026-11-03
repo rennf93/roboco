@@ -19,7 +19,7 @@ Cross-task outage detection for the evidence / git-readonly pipeline (the "revie
 | `run_bounded_leg` in `roboco/services/gateway/choreographer/evidence_legs.py` | failure on timeouts and other infrastructure-class errors only (NotFound/Validation/Unauthorized, including as a wrapped cause, are caller errors and not recorded; the exception still re-raises), success on a good leg; keyed on the real task id |
 | `_translate_read_error` in `roboco/api/utils/git.py` (the five git read routes: status, log, branches, diff, file) | failure on 5xx only (4xx is caller error); the `review_path_read_outcome` route dependency records a success when a read completes without raising; keyed per `resolve_review_path_key` |
 
-Key resolution for git reads (`resolve_review_path_key` in `roboco/services/review_path_health.py`): the `task_id` if the route has one, else the task id parsed from the branch name (last `--` segment), else `branch:<name>`; when the caller names neither, the server-side identity: the calling agent's active task (8-char prefix), else `agent:<id>`. Task-less reads from different agents on different tasks therefore count as distinct keys and can trip a cross-task outage.
+Key resolution for git reads (`resolve_review_path_key` in `roboco/services/review_path_health.py`): the `task_id` if the route has one, else the task id parsed from the branch name (last `--` segment), else `branch:<name>`; when the caller names neither, the server-side identity: the calling agent's active task (8-char prefix), else `agent:<id>`. If the active-task lookup itself raises (e.g. a poisoned DB session), `resolve_review_path_key` logs a `review_path_key_active_task_lookup_failed` warning (with `agent_id` and `error`) and still returns the `agent:<id>` key, so the read is never failed by key resolution. Task-less reads from different agents on different tasks therefore count as distinct keys and can trip a cross-task outage.
 
 ### Notifications (existing notification path)
 
@@ -40,7 +40,7 @@ All settings are in `roboco/config.py` (env prefix `ROBOCO_`).
 |---|---|---|---|
 | `review_path_outage_window_seconds` / `ROBOCO_REVIEW_PATH_OUTAGE_WINDOW_SECONDS` | `300` | >= 1 | Rolling window length |
 | `review_path_outage_distinct_tasks` / `ROBOCO_REVIEW_PATH_OUTAGE_DISTINCT_TASKS` | `3` | >= 2 | Distinct tasks that must fail inside the window to declare an outage |
-| `review_path_recovery_successes` / `ROBOCO_REVIEW_PATH_RECOVERY_SUCCESSES` | `3` | >= 1 | Consecutive successful reads that clear an active outage |
+| `review_path_recovery_successes` / `ROBOCO_REVIEW_PATH_RECOVERY_SUCCESSES` | `3` | >= 1 | Consecutive successful reads that clear an active outage as recovered (a window that empties with no success closes as expired, `recovered` stays false) |
 
 ## Panel health surface
 
