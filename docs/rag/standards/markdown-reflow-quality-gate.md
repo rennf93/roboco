@@ -68,7 +68,9 @@ Agents no longer need to run `make reflow-docs` by hand: the gateway `commit` pa
 
 **Limits.** The hook considers only worktree-modified or untracked files, so markdown that was already committed in an earlier step is not revisited. `make quality` (`--check --changed`) remains the authoritative gate.
 
-Tests: `tests/unit/services/test_md_reflow.py` covers reflowing a changed hard-wrapped file (and that the check then passes), idempotency, the no-op case, ignoring unlisted and out-of-scope files, and the git hook's file filtering and never-raises behavior.
+**Symlink safety.** The orchestrator never reads or writes `/data/workspaces` itself (see `.claude/rules/workspaces-and-git.md`). Besides going through `workspace_git`, the hook resolves each markdown file's real path as the git user and skips any file whose real path leaves the clone, because the git user's `cat` and write would still follow a symlink an agent planted. The cost is one extra git-user process per changed markdown file.
+
+Tests: `tests/unit/services/test_md_reflow.py` covers reflowing a changed hard-wrapped file (and that the check then passes), idempotency, the no-op case, ignoring unlisted and out-of-scope files, and that a symlinked `*.md` pointing outside the clone is not written (`test_symlinked_markdown_pointing_outside_the_clone_is_not_written`).
 
 ## Quality Gate Integration
 
@@ -114,6 +116,8 @@ To ensure the reflow-check wiring does not regress (e.g., if a future Makefile e
 6. `test_changed_mode_fails_on_edited_tracked_file` — Editing a tracked file that is still wrapped fails.
 7. `test_changed_mode_respects_exclude_prefixes` — Changed files under `EXCLUDE_PREFIXES` stay exempt.
 8. `test_reflow_is_idempotent` — Reflowing already-reflowed text is a no-op.
+9. `test_changed_mode_prefers_slave_over_master` — Wrapped debt on a `slave` branch ahead of `master` does not fail a feature branch cut from `slave`.
+10. `test_changed_mode_uses_github_base_ref` — With `GITHUB_BASE_REF` set, the base resolves to `origin/$GITHUB_BASE_REF`.
 
 Running `uv run pytest tests/unit/scripts/test_reflow_md.py` ensures the wiring remains intact.
 
