@@ -34,6 +34,10 @@ Works with Tavily and Exa (remote extraction endpoints) and with SearXNG, which 
 
 `ROBOCO_RESEARCH_PROVIDER=searxng` (the **default**) uses the self-hosted SearXNG container (`roboco-searxng`, defined in the compose files) instead of a paid API. It needs **no API key**: the compose files point `ROBOCO_RESEARCH_SEARXNG_BASE_URL` at the bundled container (`http://roboco-searxng:8080`), so a stock stack is live out of the box. It is a metasearch aggregator (Google, Bing, DuckDuckGo, Brave, ...) run inside the deployment's own network: no external search account, no per-query cost. `web_fetch` works via the local extractor described above. Tavily/Brave/Exa remain opt-in paid fallbacks via `.env`. Without the base URL configured, the provider degrades to the same always-empty behavior as `null`.
 
+## Keyless hosted provider (Keenable)
+
+`ROBOCO_RESEARCH_PROVIDER=keenable` uses [Keenable](https://keenable.ai), a hosted search API that works with **no API key** (its keyless public endpoint). Setting `ROBOCO_RESEARCH_API_KEY` switches to the keyed endpoint for higher rate limits. Keenable has no content-extraction endpoint, so `web_fetch` is unsupported with this provider (like Brave).
+
 ## Cite-and-persist rules
 
 Web research is external, unverified-by-the-org information — treat it accordingly:

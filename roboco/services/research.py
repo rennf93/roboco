@@ -371,6 +371,53 @@ class SearXNGProvider(SearchProvider):
         return _truncated_fetch(url, extracted or "", max_chars, self.name)
 
 
+class KeenableProvider(SearchProvider):
+    """Keenable: web search that works without an API key.
+
+    With no key it calls the keyless public endpoint; with a key, the keyed
+    endpoint (higher rate limits). ``configured`` is always True because the
+    key is optional. No content-extraction endpoint, so ``fetch`` is
+    unsupported (like Brave).
+    """
+
+    name = "keenable"
+    _PUBLIC_SEARCH_URL = "https://api.keenable.ai/v1/search/public"
+    _SEARCH_URL = "https://api.keenable.ai/v1/search"
+    _SNIPPET_MAX_CHARS = 1000
+
+    @property
+    def configured(self) -> bool:
+        return True
+
+    async def search(self, query: str, max_results: int) -> SearchOutcome:
+        headers = {"Content-Type": "application/json", "X-Keenable-Title": "RoboCo"}
+        url = self._PUBLIC_SEARCH_URL
+        if self._api_key:
+            headers["X-API-Key"] = self._api_key
+            url = self._SEARCH_URL
+        body = await self._request_json(
+            "POST",
+            url,
+            headers=headers,
+            json_body={"query": query, "max_results": max_results},
+        )
+        hits = [
+            SearchHit(
+                title=str(item.get("title", "")),
+                url=str(item["url"]),
+                snippet=str(
+                    item.get("description")
+                    or str(item.get("snippet") or "")[: self._SNIPPET_MAX_CHARS]
+                ),
+            )
+            for item in body.get("results", [])
+            if isinstance(item, dict) and item.get("url")
+        ]
+        return SearchOutcome(
+            query=query, hits=hits[:max_results], answer=None, provider=self.name
+        )
+
+
 class NullProvider(SearchProvider):
     """Graceful stub used when no provider key is configured.
 
@@ -419,6 +466,9 @@ def build_provider(
                 base_url=searxng_base_url, timeout=timeout, client=client
             )
         return NullProvider(api_key=None, timeout=timeout, client=client)
+    if name == "keenable":
+        # Keyless by default; a key, when set, selects the keyed endpoint.
+        return KeenableProvider(api_key=api_key, timeout=timeout, client=client)
     if name == "null" or not api_key:
         return NullProvider(api_key=None, timeout=timeout, client=client)
     provider_cls = _PROVIDERS.get(name)

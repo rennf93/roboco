@@ -17,6 +17,7 @@ from roboco.services.research import (
     BraveProvider,
     ExaProvider,
     FetchOutcome,
+    KeenableProvider,
     NullProvider,
     ResearchError,
     ResearchService,
@@ -362,6 +363,69 @@ async def test_null_provider_degrades_gracefully() -> None:
     assert search.provider == "null"
     fetched = await provider.fetch("u", _RESULTS_CAP)
     assert fetched.content == ""
+
+
+@pytest.mark.asyncio
+async def test_keenable_search_keyless_public_endpoint() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["headers"] = request.headers
+        seen["body"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {
+                        "title": "K",
+                        "url": "https://k.test",
+                        "description": "d",
+                        "snippet": "s",
+                    },
+                    {"title": "No URL", "description": "dropped"},
+                    {"title": "L", "url": "https://l.test", "snippet": "x" * 2000},
+                ]
+            },
+        )
+
+    client = _client(handler)
+    provider = KeenableProvider(api_key=None, timeout=5.0, client=client)
+    assert provider.configured
+    out = await provider.search("q", _RESULTS_CAP)
+    assert seen["url"] == "https://api.keenable.ai/v1/search/public"
+    assert seen["body"] == {"query": "q", "max_results": _RESULTS_CAP}
+    headers = seen["headers"]
+    assert isinstance(headers, httpx.Headers)
+    assert headers["x-keenable-title"] == "RoboCo"
+    assert "x-api-key" not in headers
+    assert [h.url for h in out.hits] == ["https://k.test", "https://l.test"]
+    assert out.hits[0].snippet == "d"
+    assert len(out.hits[1].snippet) == KeenableProvider._SNIPPET_MAX_CHARS
+    with pytest.raises(ResearchUnsupportedError):
+        await provider.fetch("https://k.test", 100)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_keenable_search_keyed_endpoint() -> None:
+    seen: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["key"] = request.headers.get("x-api-key")
+        return httpx.Response(200, json={"results": []})
+
+    client = _client(handler)
+    provider = KeenableProvider(api_key="kn", timeout=5.0, client=client)
+    await provider.search("q", _RESULTS_CAP)
+    assert seen == {"url": "https://api.keenable.ai/v1/search", "key": "kn"}
+    await client.aclose()
+
+
+def test_build_provider_keenable_needs_no_key() -> None:
+    assert isinstance(build_provider("keenable", None, 5.0), KeenableProvider)
+    assert isinstance(build_provider("keenable", "k", 5.0), KeenableProvider)
 
 
 def test_build_provider_selects_by_name() -> None:
