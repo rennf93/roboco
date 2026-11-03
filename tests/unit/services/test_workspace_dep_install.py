@@ -13,8 +13,11 @@ without a DB or a real git remote.
 
 from __future__ import annotations
 
+import asyncio
+import re
 import subprocess
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -29,9 +32,6 @@ from roboco.services.workspace_container import (
     WorkspaceContainerError,
     WorkspaceContainerResult,
 )
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 # Two installs expected when the lockfile changes between calls (named to
 # satisfy ruff PLR2004 — magic-value comparison).
@@ -322,3 +322,168 @@ async def test_install_never_runs_the_clone_code_in_this_process(
         ["uv", "sync", "--extra", "dev"],
         ["pnpm", "install", "--frozen-lockfile"],
     ]
+
+
+# ---------------------------------------------------------------------------
+# resync_shared_venv — the shared clone-root venv follows the worktree lockfile
+# ---------------------------------------------------------------------------
+
+_INSTALLED_VERSION_FILE = "installed-version"
+
+
+def _lock_pinning(version: str) -> str:
+    return f'[[package]]\nname = "fastapi-guard"\nversion = "{version}"\n'
+
+
+def _worktree_with_lock(clone_root: Path, version: str) -> Path:
+    worktree = clone_root / ".worktrees" / "abcd1234"
+    worktree.mkdir(parents=True, exist_ok=True)
+    (worktree / "pyproject.toml").write_text("[project]\nname = 'x'\n")
+    (worktree / "uv.lock").write_text(_lock_pinning(version))
+    return worktree
+
+
+def _legacy_venv(clone_root: Path, version: str) -> None:
+    """The clone-time venv: a real `.venv` dir built from the old lockfile."""
+    (clone_root / ".venv").mkdir()
+    (clone_root / ".venv" / _INSTALLED_VERSION_FILE).write_text(version)
+
+
+def _fake_uv_sync(
+    started: asyncio.Event | None = None, release: asyncio.Event | None = None
+) -> AsyncMock:
+    """A container runner whose `uv sync` writes the lock's pinned version into
+    the venv named by the `env UV_PROJECT_ENVIRONMENT=...` prefix."""
+
+    async def _run(
+        cwd: Path, command: WorkspaceCommand, **_kw: Any
+    ) -> WorkspaceContainerResult:
+        assert command.argv[0] == "env"
+        target = Path(command.argv[1].split("=", 1)[1])
+        pinned = re.search(r'version = "(.+?)"', (cwd / "uv.lock").read_text())
+        assert pinned is not None
+        if started is not None and release is not None:
+            started.set()
+            await release.wait()
+        target.mkdir(parents=True)
+        (target / _INSTALLED_VERSION_FILE).write_text(pinned.group(1))
+        return WorkspaceContainerResult(0, "", "")
+
+    return AsyncMock(side_effect=_run)
+
+
+def _installed_version(clone_root: Path) -> str:
+    return (clone_root / ".venv" / _INSTALLED_VERSION_FILE).read_text()
+
+
+@pytest.mark.asyncio
+async def test_resync_reruns_install_and_changes_marker_when_lockfile_changes(
+    tmp_path: Path,
+) -> None:
+    """Regression: the worktree's lockfile moved, the venv must follow it."""
+    clone_root = _make_workspace(tmp_path)
+    _legacy_venv(clone_root, "7.3.1")
+    worktree = _worktree_with_lock(clone_root, "7.8.2")
+    runner = _fake_uv_sync()
+    svc = _service()
+
+    with patch("roboco.services.workspace.run_in_workspace_container", runner):
+        assert await svc.resync_shared_venv(clone_root, worktree) is True
+        first_marker = (clone_root / _DEP_INSTALL_MARKER).read_text()
+        assert await svc.resync_shared_venv(clone_root, worktree) is False
+
+        (worktree / "uv.lock").write_text(_lock_pinning("7.9.0"))
+        assert await svc.resync_shared_venv(clone_root, worktree) is True
+
+    assert runner.await_count == _EXPECTED_RERUN_INSTALLS
+    assert first_marker == _lockfile_digest_of(worktree, "7.8.2")
+    assert (clone_root / _DEP_INSTALL_MARKER).read_text() != first_marker
+
+
+def _lockfile_digest_of(worktree: Path, version: str) -> str | None:
+    current = (worktree / "uv.lock").read_text()
+    (worktree / "uv.lock").write_text(_lock_pinning(version))
+    try:
+        return _lockfile_digest(worktree)
+    finally:
+        (worktree / "uv.lock").write_text(current)
+
+
+@pytest.mark.asyncio
+async def test_resync_installs_the_version_the_lockfile_pins(tmp_path: Path) -> None:
+    """After a uv.lock bump the venv holds the newly pinned fastapi-guard."""
+    clone_root = _make_workspace(tmp_path)
+    _legacy_venv(clone_root, "7.3.1")
+    worktree = _worktree_with_lock(clone_root, "7.8.2")
+
+    with patch("roboco.services.workspace.run_in_workspace_container", _fake_uv_sync()):
+        await _service().resync_shared_venv(clone_root, worktree)
+
+    assert (clone_root / ".venv").is_symlink()
+    assert _installed_version(clone_root) == "7.8.2"
+
+
+@pytest.mark.asyncio
+async def test_resync_leaves_the_old_venv_usable_until_the_swap(
+    tmp_path: Path,
+) -> None:
+    """A sibling worktree on the old venv is not broken while the new one builds,
+    and concurrent re-syncs for one lockfile serialize into a single install."""
+    clone_root = _make_workspace(tmp_path)
+    _legacy_venv(clone_root, "7.3.1")
+    worktree = _worktree_with_lock(clone_root, "7.8.2")
+    sibling = clone_root / ".worktrees" / "sibling01"
+    sibling.mkdir()
+    (sibling / ".venv").symlink_to("../../.venv")
+    started, release = asyncio.Event(), asyncio.Event()
+    runner = _fake_uv_sync(started, release)
+    svc = _service()
+
+    with patch("roboco.services.workspace.run_in_workspace_container", runner):
+        first = asyncio.create_task(svc.resync_shared_venv(clone_root, worktree))
+        await started.wait()
+        second = asyncio.create_task(svc.resync_shared_venv(clone_root, worktree))
+        await asyncio.sleep(0)
+
+        # Mid-build: the sibling's venv still resolves to the old packages.
+        assert (sibling / ".venv" / _INSTALLED_VERSION_FILE).read_text() == "7.3.1"
+
+        release.set()
+        assert await first is True
+        assert await second is False
+
+    runner.assert_awaited_once()
+    assert _installed_version(clone_root) == "7.8.2"
+    # The replaced venv survives the swap for anything still running on it.
+    legacy = clone_root / ".venv-legacy" / _INSTALLED_VERSION_FILE
+    assert legacy.read_text() == "7.3.1"
+
+
+@pytest.mark.asyncio
+async def test_resync_failure_keeps_the_old_venv(tmp_path: Path) -> None:
+    """A failed build never touches the venv the worktrees are running on."""
+    clone_root = _make_workspace(tmp_path)
+    _legacy_venv(clone_root, "7.3.1")
+    worktree = _worktree_with_lock(clone_root, "7.8.2")
+
+    with patch(
+        "roboco.services.workspace.run_in_workspace_container", _container(1, "boom")
+    ):
+        assert await _service().resync_shared_venv(clone_root, worktree) is False
+
+    assert not (clone_root / ".venv").is_symlink()
+    assert _installed_version(clone_root) == "7.3.1"
+
+
+@pytest.mark.asyncio
+async def test_install_dev_deps_leaves_a_swapped_venv_alone(tmp_path: Path) -> None:
+    """The clone-root install must not `uv sync` over a resync-managed venv."""
+    ws = _python_workspace(tmp_path)
+    (ws / ".venv-abc").mkdir()
+    (ws / ".venv").symlink_to(".venv-abc")
+    runner = _container()
+
+    with patch("roboco.services.workspace.run_in_workspace_container", runner):
+        assert await _service().install_dev_deps(ws) is False
+
+    runner.assert_not_awaited()
