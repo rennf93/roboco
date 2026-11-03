@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 
 def _orch() -> AgentOrchestrator:
     orch = object.__new__(AgentOrchestrator)
+    orch._held_hold_logged_for = {}
     orch._instances = {}
     return orch
 
