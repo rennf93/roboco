@@ -13,6 +13,7 @@ import type {
   TaskCountResponse,
   GovernanceFindingsSummaryRow,
   GovernanceReportResponse,
+  WedgeCycleEntry,
 } from "@/types";
 import { isMockMode, mockTasks } from "@/lib/mock-data";
 
@@ -232,6 +233,12 @@ interface TaskSummaryWire {
   completed_at: string | null;
   board_review_complete: boolean;
   description_snippet: string | null;
+  // Wedge-ledger stuck state + blocked-for-human resolver (frozen contract;
+  // optional until the backend summary schema carries them).
+  active_time_since_progress?: string | number | null;
+  open_wedge_strikes?: number;
+  wedge_cycle?: WedgeCycleEntry[];
+  blocker_resolver_type?: string | null;
 }
 
 // Normalize a summary into the Task shape so list consumers keep their

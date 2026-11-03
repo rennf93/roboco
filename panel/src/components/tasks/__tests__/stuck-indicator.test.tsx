@@ -64,7 +64,11 @@ describe("StuckIndicator", () => {
           active_time_since_progress: "2h 5m",
           open_wedge_strikes: 2,
           wedge_cycle: [
-            { actor: "main-pm", verb: "respawn", timestamp: "2026-09-27T10:00:00Z" },
+            {
+              actor: "main-pm",
+              verb: "respawn",
+              timestamp: "2026-09-27T10:00:00Z",
+            },
           ],
         })}
       />,
@@ -75,9 +79,7 @@ describe("StuckIndicator", () => {
   });
 
   it("renders without the time segment when no active time is present", () => {
-    render(
-      <StuckIndicator task={baseTask({ open_wedge_strikes: 1 })} />,
-    );
+    render(<StuckIndicator task={baseTask({ open_wedge_strikes: 1 })} />);
     expect(screen.getByTestId("stuck-indicator")).toHaveTextContent(/^stuck$/);
   });
 
@@ -113,7 +115,11 @@ describe("StuckIndicator", () => {
           active_time_since_progress: 5400,
           open_wedge_strikes: 1,
           wedge_cycle: [
-            { actor: "main-pm", verb: "respawn", timestamp: "2026-09-27T10:00:00Z" },
+            {
+              actor: "main-pm",
+              verb: "respawn",
+              timestamp: "2026-09-27T10:00:00Z",
+            },
           ],
         })}
       />,

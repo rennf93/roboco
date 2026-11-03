@@ -14,6 +14,10 @@ Three optional fields were added to `Task` in `panel/src/types/index.ts`. They a
 
 Changes to this contract route back through main-pm; do not rename or reshape the fields panel-side.
 
+### Summary wire (kanban cards)
+
+Kanban cards get tasks from `useTasks` -> `tasksApi.list` -> `GET /tasks/summary`, not the full task route. `TaskSummaryWire` in `panel/src/lib/api/tasks.ts` therefore also carries `active_time_since_progress`, `open_wedge_strikes`, `wedge_cycle` and `blocker_resolver_type` (all optional), and `summaryToTask` passes them onto the `Task`. The backend `TaskSummaryResponse` does not return them yet (be-pm has been asked via main-pm), so until it does the card chip stays hidden against a real backend and tests mock the wire. The Tasks-page filter's parameter name is pending be-pm confirmation via main-pm; see [`stuck-filter.md`](./stuck-filter.md).
+
 ## When a task counts as stuck
 
 `deriveStuckState(task)` returns `isStuck: true` when either holds:
@@ -34,7 +38,7 @@ Exports (all re-exported from `@/hooks`):
 - `isTaskBlockedForHuman(task)`.
 - `formatActiveTime(value)`: strings pass through unchanged; seconds become a coarse clock showing at most the two largest units (`93900` -> `1d 2h`, `840` -> `14m`, `30` -> `30s`); `null`, `undefined`, and `""` return `null`.
 
-Despite living in `hooks/`, this hook does **not** fetch. The list and detail queries already return the contract fields on each task, so the hook only derives state from the payload and adds no second request.
+Despite living in `hooks/`, this hook does **not** fetch. The list (via the summary wire above) and detail queries return the contract fields on each task, so the hook only derives state from the payload and adds no second request.
 
 ## Component: `StuckIndicator`
 

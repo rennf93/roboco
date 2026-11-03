@@ -2,11 +2,12 @@
 
 import { Hourglass } from "lucide-react";
 
+import { formatActiveTime, useStuckState } from "@/hooks/use-stuck-state";
 import {
-  formatActiveTime,
-  useStuckState,
-} from "@/hooks/use-stuck-state";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import type { Task } from "@/types";
 
 /**
@@ -38,7 +39,9 @@ export function StuckIndicator({ task }: { task: Task }) {
       <TooltipContent className="max-w-xs">
         <p>
           {reasons.join(" · ")}
-          {activeTime ? ` — active time since last progress movement: ${activeTime}` : ""}
+          {activeTime
+            ? ` — active time since last progress movement: ${activeTime}`
+            : ""}
           .
         </p>
         {wedgeCycle.length > 0 && (
