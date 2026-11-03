@@ -2212,8 +2212,14 @@ async def test_a_cancelled_leaf_does_not_wedge_the_pm_complete() -> None:
     complete_mock = AsyncMock(return_value=parent)
     _bind(svc, "get", AsyncMock(return_value=parent))
     _bind(svc, "complete", complete_mock)
-    await svc.cell_pm_complete(uuid4(), parent.id, "merged", merge_commit=None)
-    assert complete_mock.await_args.kwargs["force_with_cancelled"] is True
+    pm_id = uuid4()
+    await svc.cell_pm_complete(pm_id, parent.id, "merged", merge_commit=None)
+    complete_mock.assert_awaited_once_with(
+        parent.id,
+        agent_id=pm_id,
+        force_with_cancelled=True,
+        justification=_GATEWAY_COMPLETE_CANCELLED_JUSTIFICATION,
+    )
 
 
 @pytest.mark.asyncio
