@@ -133,8 +133,6 @@ Submit work for QA. Auto-runs in_progress->verifying then verifying->awaiting_qa
 
 **Preconditions:** commits>=1, owns_task
 
-**Quality gate runs in the background.** `i_am_done` runs only the cheap inline guards (tracing, submit-QA fields, branch push, behind-base, toolchain, conventions) and then returns promptly with the task still `in_progress`. The slow quality gate (lint + typecheck) runs as a background job and its callback (`apply_gate_verdict`) moves the task on: a pass submits it to `awaiting_qa` and notifies QA, a fail records the failure as a progress entry and leaves the task with the developer. A task never reaches QA before the gate passes. Calling `i_am_done` again while the job is running reports "already running" instead of starting a second job.
-
 
 ## i_am_idle
 
