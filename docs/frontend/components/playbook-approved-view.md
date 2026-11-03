@@ -38,7 +38,7 @@ The review card used to return nothing when there were no drafts. It now always 
 
 ## Test coverage
 
-Client tests cover `listApproved` (params) and `archive` (URL, method). Approved view tests cover list rendering, loading, empty and error states, confirm-then-archive success (toast and both invalidations), and the 409 path. Queue tests cover the toggle.
+Client tests cover `listApproved` (params) and `archive` (URL, method). Approved view tests cover list rendering, loading, empty and error states, confirm-then-archive success (toast and both invalidations), and the 409 path. Queue tests cover the Drafts/Approved toggle (default Drafts, switch to Approved and back) alongside the per-row approve lock.
 
 ## Not documented / out of scope
 
