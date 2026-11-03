@@ -5,8 +5,7 @@ Route-glue helpers backing roboco/api/routes/git.py.
 """
 
 import asyncio
-import re
-from collections.abc import Coroutine
+from collections.abc import AsyncIterator, Coroutine
 from typing import Any
 from uuid import UUID
 
@@ -24,7 +23,14 @@ from roboco.services.base import (
     ValidationError,
 )
 from roboco.services.project import get_project_service
-from roboco.services.review_path_health import record_review_path_failure
+from roboco.services.review_path_health import (
+    record_review_path_failure,
+    record_review_path_success,
+    resolve_review_path_key,
+    review_path_key,
+)
+
+__all__ = ["resolve_review_path_key", "review_path_key"]
 
 # Cap an unbounded whole-file read so a huge file can't flood the panel.
 _FILE_MAX_LINES = 2000
@@ -86,28 +92,11 @@ def _translate_error(e: ServiceError | GitError) -> HTTPException:
     )
 
 
-_TASK_KEY_LEN = 8
-_TASK_PREFIX_RE = re.compile(rf"^[0-9a-f]{{{_TASK_KEY_LEN}}}$")
-
-
-def review_path_key(
-    *, task_id: Any = None, branch: str | None = None, project_slug: str = ""
-) -> str:
-    """One canonical outage-tracker key per read: the task's 8-char id prefix.
-
-    A task id (full UUID) and the id embedded in its branch name
-    (``.../<root>--<sub>``, last segment) normalize to the same key, so one task
-    failing across status/log/diff counts once. Only when no task applies does
-    it fall back to a namespaced branch or project key.
-    """
-    if task_id:
-        return str(task_id)[:_TASK_KEY_LEN]
-    if branch:
-        tail = branch.rsplit("/", 1)[-1].rsplit("--", 1)[-1]
-        if _TASK_PREFIX_RE.match(tail):
-            return tail
-        return f"branch:{branch}"
-    return f"project:{project_slug}"
+async def review_path_read_outcome() -> AsyncIterator[None]:
+    """Route dependency for the git-readonly reads: a read that completes
+    without raising is an observed success toward outage recovery."""
+    yield
+    record_review_path_success()
 
 
 def _translate_read_error(e: ServiceError | GitError, task_key: Any) -> HTTPException:

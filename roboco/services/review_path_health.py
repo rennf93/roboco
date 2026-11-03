@@ -18,17 +18,24 @@ trip by one window. Move to Redis if a second recording process ever appears.
 from __future__ import annotations
 
 import contextlib
+import re
 from collections import deque
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 from roboco.config import settings
 from roboco.logging import get_logger
+from roboco.services.base import NotFoundError, UnauthorizedError, ValidationError
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = get_logger(__name__)
 
 OUTAGE_TYPE = "review_path_tools"
+_TASK_KEY_LEN = 8
+_TASK_PREFIX_RE = re.compile(rf"^[0-9a-f]{{{_TASK_KEY_LEN}}}$")
 
 
 class ReviewPathHealthTracker:
@@ -58,7 +65,14 @@ class ReviewPathHealthTracker:
             self._window_start = self._failures[0][0]
             self._unreported.append("active")
         elif self._active and not self._failures:
-            self._clear()
+            self._expire()
+
+    def _expire(self) -> None:
+        """The window emptied with no read having succeeded: close the outage
+        without claiming recovery (``recovered`` stays False)."""
+        self._active = False
+        self._consecutive_ok = 0
+        self._unreported.append("expired")
 
     def _clear(self) -> None:
         self._active = False
@@ -108,6 +122,75 @@ def get_review_path_tracker() -> ReviewPathHealthTracker:
     return _tracker
 
 
+_CALLER_ERRORS = (NotFoundError, ValidationError, UnauthorizedError)
+
+
+def is_infrastructure_failure(exc: BaseException) -> bool:
+    """True when ``exc`` signals a platform fault, not a caller error.
+
+    A NotFound/Validation/Unauthorized error (e.g. a deleted branch), including
+    one wrapped as another error's cause, is a 4xx-class outcome and never an
+    outage signal; timeouts, git command failures and OSError are.
+    """
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        if isinstance(cur, _CALLER_ERRORS):
+            return False
+        seen.add(id(cur))
+        cur = cur.__cause__ or cur.__context__
+    return True
+
+
+def review_path_key(
+    *, task_id: Any = None, branch: str | None = None, project_slug: str = ""
+) -> str:
+    """One canonical outage-tracker key per read: the task's 8-char id prefix.
+
+    A task id (full UUID) and the id embedded in its branch name
+    (``.../<root>--<sub>``, last segment) normalize to the same key, so one task
+    failing across status/log/diff counts once. Only when no task applies does
+    it fall back to a namespaced branch or project key.
+    """
+    if task_id:
+        return str(task_id)[:_TASK_KEY_LEN]
+    if branch:
+        tail = branch.rsplit("/", 1)[-1].rsplit("--", 1)[-1]
+        if _TASK_PREFIX_RE.match(tail):
+            return tail
+        return f"branch:{branch}"
+    return f"project:{project_slug}"
+
+
+async def resolve_review_path_key(
+    db: AsyncSession,
+    agent_id: UUID,
+    *,
+    task_id: Any = None,
+    branch: str | None = None,
+    project_slug: str = "",
+) -> str:
+    """``review_path_key``, but a read naming no task/branch is keyed on the
+    caller's server-side identity: its active task, else ``agent:<id>``.
+
+    Without this every task-less read collapses to one ``project:<slug>`` key
+    and a cross-task outage can never reach the distinct-task threshold.
+    """
+    if task_id or branch:
+        return review_path_key(
+            task_id=task_id, branch=branch, project_slug=project_slug
+        )
+    try:
+        from roboco.services.task import get_task_service
+
+        task = await get_task_service(db).get_active_task_for_agent(agent_id)
+    except Exception:
+        task = None
+    if task is not None:
+        return str(task.id)[:_TASK_KEY_LEN]
+    return f"agent:{agent_id}"
+
+
 def record_review_path_failure(task_key: Any) -> None:
     """Record a failure; a full task UUID collapses to its 8-char prefix so the
     evidence legs and the git routes (which may only know the branch) agree."""
@@ -129,6 +212,7 @@ async def sweep_review_path_health() -> None:
         try:
             await NotificationService().send_review_path_outage_notification(
                 active=transition == "active",
+                recovered=transition == "recovered",
                 window_start=_tracker.state()["window_start"],
             )
         except Exception as exc:
