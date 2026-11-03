@@ -153,7 +153,8 @@ async def test_green_closes_open_incident(db_session: AsyncSession) -> None:
     await svc.observe([_sample("br-close", red=False)], [proj])
 
     assert await svc.get_open_incident(_pid(proj)) is None
-    assert await svc.is_owner_task(incident.owner_task_id) is False  # type: ignore[arg-type]
+    assert incident.owner_task_id is not None
+    assert await svc.is_owner_task(incident.owner_task_id) is False
     row = await db_session.get(BaseRedIncidentTable, incident.id)
     assert row is not None
     assert row.status == "closed"
