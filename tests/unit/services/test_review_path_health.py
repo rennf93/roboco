@@ -331,7 +331,8 @@ async def test_sweep_words_expiry_as_not_recovered(
         send,
     ):
         await sweep_review_path_health()
-    kwargs = send.await_args.kwargs  # type: ignore[union-attr]
+    assert send.await_args is not None
+    kwargs = send.await_args.kwargs
     assert kwargs["active"] is False
     assert kwargs["recovered"] is False
 
