@@ -85,6 +85,7 @@ from roboco.services.content_notes import apply_structured_note
 from roboco.services.entire_trails import hooks as entire_trails
 from roboco.services.repositories.review_findings import ReviewFindingsRepository
 from roboco.services.uptime import UptimeLedger
+from roboco.services.wedge_ledger import run_wedge_ledger_check
 from roboco.services.work_session import WorkSessionService
 from roboco.utils.converters import repo_key, require_uuid, to_python_uuid
 from roboco.utils.workspace_paths import worktree_path_of
@@ -13944,6 +13945,8 @@ class TaskService(
             task.revision_count = (task.revision_count or 0) + 1
             self._maybe_schedule_coroner_bounce_hook(task)
 
+        self._maybe_schedule_wedge_ledger_check(task, to_status)
+
         if audit_agent_id is not None:
             resolved_audit_agent_id: str | None = str(audit_agent_id)
         elif task.claimed_by is not None:
@@ -13978,6 +13981,30 @@ class TaskService(
                 )
             )
         self._touch_vault_frontmatter(task, to_status=to_status, team=details["team"])
+        self._maybe_schedule_wedge_ledger_check(task, to_status)
+
+    def _maybe_schedule_wedge_ledger_check(
+        self, task: TaskTable, to_status: str
+    ) -> None:
+        """Schedule the task-scoped wedge ledger check (the #685 strike
+        breaker generalized to every transition — status-keyed, actor- and
+        verb-agnostic; see ``roboco/services/wedge_ledger.py``). Best-effort
+        fire-and-forget on a FRESH DB session (this method is sync and runs
+        mid-transaction — same accepted small race as the coroner bounce
+        hook), so a check failure can never fail the transition. Split out
+        of ``_emit_status_transition_audit`` to keep its own complexity down
+        (xenon budget)."""
+        try:
+            bg_task = asyncio.create_task(
+                run_wedge_ledger_check(cast("UUID", task.id), to_status)
+            )
+            self._background_tasks.add(bg_task)
+            bg_task.add_done_callback(self._background_tasks.discard)
+        except Exception:
+            _module_log.warning(
+                "wedge ledger: check scheduling failed (best-effort)",
+                task_id=str(task.id),
+            )
 
     @staticmethod
     def _clear_stale_stalled_marker(task: TaskTable) -> None:
