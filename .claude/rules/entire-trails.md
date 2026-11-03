@@ -25,6 +25,7 @@ paths:
 **Invariants.**
 - Outbox rows are written in the lifecycle's own transaction (each hook in a savepoint that logs and never raises), so an operation reaches Entire if and only if the RoboCo change it mirrors commits.
 - The drain runs one tree's rows in id order under a per-tree advisory lock, one transaction per row. A dead row holds its tree until the CEO retries it (Settings → Feature Flags → Entire trails).
+- The verb path never waits unbounded on the tree lock: `link_before_pr` waits at most `ROBOCO_ENTIRE_TRAILS_LINK_LOCK_WAIT_SECONDS` (default 5 s, a transaction-local `lock_timeout`), because a drain row holds the lock across its CLI call. A timeout queues the link and the PR opens anyway (the PR may then get an Entire-owned trail). `approve_before_merge` still waits unbounded.
 - `entire_trail_changes.task_id` is deliberately not a foreign key: the inline link must never take a share lock on a task row its waiting request may hold `FOR UPDATE`.
 - A tree is bridged only if its first branch was cut on an opted-in project. A tree already running when its project opts in keeps Entire's own per-PR trails, since its PRs' changes cannot be moved.
 - The trail text is not hooked per event. The drain's `reconcile_trails` re-syncs an open trail whose tasks' `updated_at` passed its `synced_at`, and closes one whose top task ended; that also catches the status writes that bypass `_validate_and_set_status`.
