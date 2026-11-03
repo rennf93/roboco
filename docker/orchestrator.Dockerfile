@@ -76,6 +76,7 @@ COPY agents /app/agents
 COPY docs /app/docs
 COPY alembic.ini /app/
 COPY alembic /app/alembic
+COPY scripts/reflow_md.py /app/scripts/reflow_md.py
 RUN uv sync --frozen --no-dev
 
 # The git-user exec helper: static (the runner has no compiler or libc
@@ -193,6 +194,7 @@ COPY --from=builder /app/agents /app/agents
 COPY --from=builder /app/docs /app/docs
 COPY --from=builder /app/alembic.ini /app/
 COPY --from=builder /app/alembic /app/alembic
+COPY --from=builder /app/scripts /app/scripts
 
 # uv is needed at runtime: WorkspaceService runs `uv sync` to pre-install
 # Python cell deps, and CI commands shell out to `uv run`. The builder stage
