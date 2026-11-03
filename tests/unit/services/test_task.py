@@ -32,6 +32,7 @@ from roboco.models.base import (
 from roboco.models.task import TaskCreateRequest
 from roboco.services.learning import LearningType
 from roboco.services.task import (
+    _GATEWAY_COMPLETE_CANCELLED_JUSTIFICATION,
     VIDEO_SOURCE,
     GatewayAgentView,
     TaskService,
@@ -454,7 +455,8 @@ async def test_mark_evidence_inspected_sets_flag() -> None:
 async def test_mark_evidence_inspected_no_op_on_missing_task() -> None:
     svc = TaskService(MagicMock(flush=AsyncMock()))
     _bind(svc, "get", AsyncMock(return_value=None))
-    await svc.mark_evidence_inspected(uuid4())  # must not raise
+    # Must not raise.
+    await svc.mark_evidence_inspected(uuid4())
 
 
 @pytest.mark.asyncio
@@ -1047,13 +1049,15 @@ async def test_admin_set_status_blocked_restore_attributes_admin_actor() -> None
     )
     assert out is task
     assert task.status == TaskStatus.PENDING
-    assert task.assigned_to == dev  # ownership restored to the pre-block dev
+    # Ownership is restored to the pre-block dev.
+    assert task.assigned_to == dev
 
     rows = [r for r in added if isinstance(r, AuditLogTable)]
     override_rows = [r for r in rows if r.event_type == "task.admin_override"]
     assert len(override_rows) == 1
     override = override_rows[0]
-    assert override.agent_id == admin  # the admin, not the restored dev
+    # The admin, not the restored dev.
+    assert override.agent_id == admin
     assert override.details["restore"] is True
     assert override.details["forced"] is False
     # Every audit row (the transition row AND the override row) is attributed to
@@ -1320,7 +1324,8 @@ async def test_assign_review_pm_assigns_unassigned_task() -> None:
     assert task.assigned_to == cell_pm.id
     assert task.claimed_by == cell_pm.id
     assert task.active_claimant_id == cell_pm.id
-    clear_mock.assert_not_awaited()  # nothing to release — was never claimed
+    # Nothing to release — was never claimed.
+    clear_mock.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1516,7 +1521,8 @@ def test_reconcile_ac_ids_preserves_new_and_drops() -> None:
     ids = _reconcile_ac_ids(
         old_criteria=["a", "b", "c"],
         old_ids=["id-a", "id-b", "id-c"],
-        new_criteria=["a", "c", "d"],  # b dropped, a/c kept (reordered), d new
+        # B dropped, a/c kept (reordered), d new.
+        new_criteria=["a", "c", "d"],
     )
     assert ids[0] == "id-a"
     assert ids[1] == "id-c"
@@ -1578,8 +1584,10 @@ async def test_uncovered_parent_acs_flags_unsatisfied_and_ignores_cancelled() ->
     svc = _svc_with_children(
         parent,
         [
-            (TaskStatus.COMPLETED, ["id-a"]),  # covers crit a
-            (TaskStatus.CANCELLED, ["id-b"]),  # cancelled -> does NOT cover crit b
+            # Covers crit a.
+            (TaskStatus.COMPLETED, ["id-a"]),
+            # Cancelled -> does NOT cover crit b.
+            (TaskStatus.CANCELLED, ["id-b"]),
         ],
     )
     assert await svc.uncovered_parent_acceptance_criteria(parent.id) == [
@@ -1612,8 +1620,10 @@ async def test_uncovered_parent_acs_recognizes_text_declared_coverage() -> None:
     svc = _svc_with_children(
         parent,
         [
-            (TaskStatus.COMPLETED, ["crit a"]),  # declared by TEXT, not "id-a"
-            (TaskStatus.COMPLETED, ["id-b"]),  # declared by id
+            # Declared by TEXT, not "id-a".
+            (TaskStatus.COMPLETED, ["crit a"]),
+            # Declared by id.
+            (TaskStatus.COMPLETED, ["id-b"]),
         ],
     )
     assert await svc.uncovered_parent_acceptance_criteria(parent.id) == []
@@ -1705,7 +1715,8 @@ async def test_parent_ac_coverage_self_heals_empty_ac_ids() -> None:
     cov = await svc.parent_ac_coverage(parent.id)
     assert len(cov) == 1
     assert cov[0]["text"] == "a"
-    assert cov[0]["id"]  # freshly stamped, non-empty
+    # Freshly stamped, non-empty.
+    assert cov[0]["id"]
     assert list(parent.acceptance_criteria_ids) == [cov[0]["id"]]
 
 
@@ -1896,7 +1907,8 @@ async def test_batch_root_subtask_parent_ac_refs_are_root_owned() -> None:
         acceptance_criteria=["crit a", "crit b"],
         acceptance_criteria_ids=["id-a", "id-b"],
         parent_ac_refs=["id-a"],
-        parent_task_id=uuid4(),  # the umbrella
+        # The umbrella.
+        parent_task_id=uuid4(),
         batch_id=uuid4(),
     )
     svc = _svc_with_children(root_subtask, [])
@@ -1948,8 +1960,10 @@ async def test_unclaimed_parent_acs_counts_live_children_not_just_completed() ->
         acceptance_criteria_ids=["id-a", "id-b", "id-c"],
     )
     rows = [
-        (TaskStatus.IN_PROGRESS, ["id-a"]),  # live -> claims crit a
-        (TaskStatus.CANCELLED, ["id-b"]),  # cancelled -> claim void
+        # Live -> claims crit a.
+        (TaskStatus.IN_PROGRESS, ["id-a"]),
+        # Cancelled -> claim void.
+        (TaskStatus.CANCELLED, ["id-b"]),
     ]
     # unclaimed: crit a is claimed by the live child; crit b (only the cancelled
     # child) and crit c (nobody) remain.
@@ -1966,7 +1980,8 @@ async def test_unclaimed_parent_acs_counts_live_children_not_just_completed() ->
     ]
 
 
-_BASE_WIDTH = 2  # (status, sequence) — the minimal padded row width
+# (status, sequence) — the minimal padded row width.
+_BASE_WIDTH = 2
 _SiblingRow = namedtuple(
     "_SiblingRow",
     ["id", "status", "sequence", "created_at", "dependency_ids"],
@@ -2171,7 +2186,34 @@ async def test_cell_pm_complete_appends_merge_commit() -> None:
     await svc.cell_pm_complete(pm_id, task.id, "all good", merge_commit="deadbeef")
     assert task.commits[-1]["hash"] == "deadbeef"
     assert task.commits[-1]["kind"] == "merge"
-    complete_mock.assert_awaited_once_with(task.id, agent_id=pm_id)
+    complete_mock.assert_awaited_once_with(
+        task.id,
+        agent_id=pm_id,
+        force_with_cancelled=True,
+        justification=_GATEWAY_COMPLETE_CANCELLED_JUSTIFICATION,
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_leaf_does_not_wedge_the_pm_complete() -> None:
+    """Live 2026-11-03: cells 0a335e09 and d516efe6 merged their PRs, then
+    complete() refused "cancelled descendants" and the work session stayed
+    open, so every retry was refused. The gateway complete runs after its
+    guard checked coverage, so a cancelled child must not block it."""
+    parent = _build_task(status=TaskStatus.AWAITING_PM_REVIEW)
+    done = _build_task(status=TaskStatus.COMPLETED)
+    dropped = _build_task(status=TaskStatus.CANCELLED)
+    assert TaskService._cancelled_force_allowed(
+        [done, dropped],
+        force_with_cancelled=True,
+        justification=_GATEWAY_COMPLETE_CANCELLED_JUSTIFICATION,
+    )
+    svc = TaskService(MagicMock(flush=AsyncMock()))
+    complete_mock = AsyncMock(return_value=parent)
+    _bind(svc, "get", AsyncMock(return_value=parent))
+    _bind(svc, "complete", complete_mock)
+    await svc.cell_pm_complete(uuid4(), parent.id, "merged", merge_commit=None)
+    assert complete_mock.await_args.kwargs["force_with_cancelled"] is True
 
 
 @pytest.mark.asyncio
@@ -2353,12 +2395,14 @@ async def test_finalize_claim_rollback_emits_reversal_audit() -> None:
 
     task = _build_task(
         status=TaskStatus.PENDING,
-        branch_name=None,  # forces the branch-creation path
+        # Forces the branch-creation path.
+        branch_name=None,
         project_id=uuid4(),
         product_id=None,
         batch_id=None,
         parent_task_id=None,
-        cell_projects=[],  # a plain code task, not a branchless coordination root
+        # A plain code task, not a branchless coordination root.
+        cell_projects=[],
         pr_created=False,
         pr_number=None,
     )
@@ -2554,8 +2598,10 @@ async def test_update_skips_none_to_protect_partial_callers() -> None:
         )
 
     assert result is task
-    assert task.title == "updated"  # explicit, non-None value is applied
-    assert task.acceptance_criteria == ["keep me"]  # None skipped, not wiped
+    # Explicit, non-None value is applied.
+    assert task.title == "updated"
+    # None skipped, not wiped.
+    assert task.acceptance_criteria == ["keep me"]
 
 
 # ---------------------------------------------------------------------------
@@ -3088,7 +3134,12 @@ async def test_cell_pm_complete_appends_merge_commit_when_commits_is_none() -> N
     await svc.cell_pm_complete(pm_id, task.id, "all good", merge_commit="deadbeef")
     assert task.commits[-1]["hash"] == "deadbeef"
     assert task.commits[-1]["kind"] == "merge"
-    complete_mock.assert_awaited_once_with(task.id, agent_id=pm_id)
+    complete_mock.assert_awaited_once_with(
+        task.id,
+        agent_id=pm_id,
+        force_with_cancelled=True,
+        justification=_GATEWAY_COMPLETE_CANCELLED_JUSTIFICATION,
+    )
 
 
 @pytest.mark.asyncio
@@ -3114,7 +3165,8 @@ async def test_wire_cell_task_wave_chain_handles_null_root_dependency_ids() -> N
     _bind(svc, "get", AsyncMock(side_effect=[cell_task, root]))
     add_dep_mock = AsyncMock()
     _bind(svc, "add_dependency", add_dep_mock)
-    await svc.wire_cell_task_wave_chain(cell_task.id)  # must not raise
+    # Must not raise.
+    await svc.wire_cell_task_wave_chain(cell_task.id)
     add_dep_mock.assert_not_awaited()
 
 
@@ -3128,7 +3180,8 @@ async def test_wire_by_osmosis_edge_handles_null_root_dependency_ids() -> None:
     _bind(svc, "get", AsyncMock(side_effect=[dev_task, cell_task, root]))
     add_dep_mock = AsyncMock()
     _bind(svc, "add_dependency", add_dep_mock)
-    await svc.wire_by_osmosis_edge(dev_task.id)  # must not raise
+    # Must not raise.
+    await svc.wire_by_osmosis_edge(dev_task.id)
     add_dep_mock.assert_not_awaited()
 
 
@@ -3155,7 +3208,8 @@ async def test_unblock_dependents_appends_when_completed_dependency_ids_is_none(
     )
     session.flush = AsyncMock()
     svc = TaskService(session)
-    await svc._unblock_dependents(blocker_id)  # must not raise
+    # Must not raise.
+    await svc._unblock_dependents(blocker_id)
     assert dependent.completed_dependency_ids == [blocker_id]
     assert dependent.dependency_ids == [other_id]
 
@@ -3176,5 +3230,6 @@ async def test_list_pending_for_agent_handles_null_dependency_ids() -> None:
     svc = TaskService(session)
     _bind(svc, "unmet_dependency_ids", AsyncMock(return_value=[]))
     _bind(svc, "_claim_blocked_by_sequence", AsyncMock(return_value=None))
-    available = await svc.list_pending_for_agent(uuid4())  # must not raise
+    # Must not raise.
+    available = await svc.list_pending_for_agent(uuid4())
     assert available == [task]
