@@ -19,7 +19,7 @@ Cross-task outage detection for the evidence / git-readonly pipeline (the "revie
 | `run_bounded_leg` in `roboco/services/gateway/choreographer/evidence_legs.py` | failure on error (then re-raises), success on a good leg; keyed on the real task id |
 | `_translate_read_error` in `roboco/api/utils/git.py` (the five git read routes: status, log, branches, diff, file) | failure on 5xx only (4xx is caller error, not an outage); keyed on task id, else branch, else `project_slug` |
 
-Because git read routes carry no task in the agent context, a git-only outage in a single project counts as one key (the `project_slug`) and will not trip on its own; evidence legs key on real task ids.
+Key resolution for git reads (`review_path_key`): the `task_id` if the route has one, else the task id parsed from the branch name (last `--` segment), else `branch:<name>`, else `project:<slug>`. A git-only failure with no task or branch context therefore collapses to the single `project:<slug>` key and will not trip on its own; evidence legs and task-scoped git reads key on real task ids.
 
 ### Notifications (existing notification path)
 
@@ -68,4 +68,4 @@ Example while an outage is active:
 
 ## Tests
 
-`tests/unit/services/test_review_path_health.py` covers the boundary (a single task failing repeatedly is not an outage), distinct-task tripping, one event per window, recovery by successes and by window expiry, the missed-sweep case, both hook sites (4xx vs 5xx, key passed), and the route contract served through an app client.
+`tests/unit/services/test_review_path_health.py` covers the boundary (a single task failing repeatedly is not an outage), distinct-task tripping, one event per window, recovery by successes and by window expiry, the missed-sweep case, both hook sites (4xx vs 5xx, key passed), the route contract served through an app client, and a regression where one task failing across status, log, diff and file counts as one key and does not trip the outage. `tests/unit/test_nginx_routing.py` pins the `/api/system-health/` to `$active_dispatcher` routing that the role split depends on.
