@@ -492,6 +492,15 @@ class DevClaimMixin(_Base):
         )
 
 
+async def _submission_refusal(
+    base_red: Any, task: Any | None, task_id: UUID
+) -> Envelope | None:
+    """Not-found, else the base-red refusal, for the submission verbs."""
+    if task is None:
+        return Envelope.not_found(message=f"task {task_id} not found")
+    return await base_red_submission_guard(base_red, task)
+
+
 class OpenPRMixin(_Base):
     """``open_pr``: the ownership and branch-topology preflight, the push and
     create-PR run with its success and failure envelopes, and the
@@ -534,16 +543,10 @@ class OpenPRMixin(_Base):
         # legitimate-concurrency regression.
         await self.task.acquire_task_lock(task_id)
         t = await self.task.get(task_id)
-        if t is None:
+        early = await _submission_refusal(self._deps.base_red, t, task_id)
+        if early is not None:
             return await self._emit_rejection(
-                Envelope.not_found(message=f"task {task_id} not found"),
-                agent_id=agent_id,
-                task_id=task_id,
-                verb="open_pr",
-            )
-        if refusal := await base_red_submission_guard(self._deps.base_red, t):
-            return await self._emit_rejection(
-                refusal, agent_id=agent_id, task_id=task_id, verb="open_pr"
+                early, agent_id=agent_id, task_id=task_id, verb="open_pr"
             )
         briefing = await self._briefing_for(agent_id, task_id, task=t)
         agent = await self.task.agent_for(agent_id)
@@ -823,11 +826,7 @@ class IAmDoneMixin(_Base):
         IS the self-verification.
         """
         t = await self.task.get(task_id)
-        early = (
-            Envelope.not_found(message=f"task {task_id} not found")
-            if t is None
-            else await base_red_submission_guard(self._deps.base_red, t)
-        )
+        early = await _submission_refusal(self._deps.base_red, t, task_id)
         if early is not None:
             return await self._emit_rejection(
                 early, agent_id=agent_id, task_id=task_id, verb="i_am_done"

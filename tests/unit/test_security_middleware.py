@@ -728,7 +728,7 @@ class TestGatewayCorpusNoFalsePositive:
                 body_field = route.body_field
                 assert body_field is not None
                 model = body_field.field_info.annotation
-                assert model is not None and issubclass(model, BaseModel)
+                assert isinstance(model, type) and issubclass(model, BaseModel)
                 body = _build_payload(model)
                 headers = {
                     "X-Agent-ID": str(uuid.uuid4()),
