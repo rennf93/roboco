@@ -17,7 +17,7 @@ The Nebius API contract lives in `panel/src/lib/api/providers.ts`:
 ## UI behavior
 
 - **Key row** (`NebiusProviderKeyRow`): password input with Save/Clear; the green "Saved" badge appears only after the mutation's `onSuccess` and clears on any input change, never optimistically.
-- **Mode button + flip**: the Nebius `ModeButton` is disabled until the key is set. Confirming the flip replaces role/global assignments while keeping per-agent pins and complexity overrides; the payload passes `mode: "nebius"` plus the picked model as `default_model` only when one is selected. The mode note states the delivery-roles-only scope (intake/secretary stay on Anthropic) and that agents run on the opencode CLI against Nebius Token Factory.
+- **Mode button + flip**: the Nebius `ModeButton` is disabled until the key is set. Confirming the flip replaces role/global assignments while keeping per-agent pins and complexity overrides; the payload passes `mode: "nebius"` plus the picked model as `default_model` only when one is selected. The mode note states that agents run on the opencode CLI against Nebius Token Factory. There is no "delivery roles only" or Intake/Secretary exclusion copy: the backend's `INTERACTIVE_UNSUPPORTED_PROVIDERS` is empty, so no role is excluded from any provider mode.
 - **Model picker states** (rendered only in `nebius` mode): with no key the input is disabled behind an amber "Save your Nebius API key above…" notice; a failing search renders the status-specific copy below; zero results render `No models found for "…"`. There is no preload - the query fires only for a non-empty debounced search while the key is set.
 
 The picker surfaces the cause of a failure through `nebiusSearchErrorMessage` (mirroring `openRouterSearchErrorMessage`):
