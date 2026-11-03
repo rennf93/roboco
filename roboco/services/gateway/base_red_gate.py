@@ -25,6 +25,8 @@ if TYPE_CHECKING:
 log = structlog.get_logger(__name__)
 
 AUDIT_EVENT_CLEARED = "base_red.cleared"
+INCIDENT_MODULE = "roboco.services.base_red_incident"
+ACCESSOR_NAME = "get_base_red_incident_service"
 
 
 class BaseRedIncidentSource(Protocol):
@@ -44,11 +46,15 @@ def resolve_incident_service(session: Any) -> BaseRedIncidentSource | None:
     ImportError at startup) until the detection service lands.
     """
     try:
-        module = importlib.import_module("roboco.services.base_red_incident")
-        factory = getattr(module, "get_base_red_incident_service", None)
-        return factory(session) if factory is not None else None
+        module = importlib.import_module(INCIDENT_MODULE)
     except ImportError:
         return None
+    factory: Any = getattr(module, ACCESSOR_NAME, None)
+    if factory is None:
+        log.warning("base_red_accessor_missing", accessor=ACCESSOR_NAME)
+        return None
+    service: BaseRedIncidentSource = factory(session)
+    return service
 
 
 def _refusal(incident: Any) -> Envelope:

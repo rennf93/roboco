@@ -23,33 +23,33 @@ The Choreographer is the server-side composition layer that turns agent intent-v
 | Name | Kind | File:Line | Responsibility |
 |------|------|-----------|----------------|
 | `Choreographer` | class | `__init__.py:59` | Composed entry point: the role mixins on top of `BaseChoreographer`; exposes verbs + helpers. |
-| `BaseChoreographer` | class | `_impl.py:423` | Deps-injected base the mixins compose onto: service properties, heartbeat, milestone progress, verb runner, the shared class attributes. Inherits `ChoreographerHelpers` under TYPE_CHECKING, like the mixins. |
+| `BaseChoreographer` | class | `_impl.py:425` | Deps-injected base the mixins compose onto: service properties, heartbeat, milestone progress, verb runner, the shared class attributes. Inherits `ChoreographerHelpers` under TYPE_CHECKING, like the mixins. |
 | `ChoreographerDeps` | dataclass | `_impl.py:290` | Dependency injection container (task, work_session, git, a2a, journal, audit, evidence_repo, messaging, product, orchestrator, stream_bus). |
-| `_COORDINATOR_ROLES` | ClassVar | `_impl.py:528` | `{main_pm, cell_pm}` — exempt from `already_active`/`paused` claim guards + advisory lock. |
-| `give_me_work` | async verb | `dev.py:148` | Picks next task for agent + builds briefing (institutional memory injected here). |
-| `_briefing_for` | async helper | `_impl.py:809` | Builds `context_briefing`. Claim-scoped: `full=True` (context-acquisition verbs only — give_me_work/claims/plan/resume/triage) carries the heavy sections via `_heavy_briefing_sections` (company_goals, recent_team_activity, blockers, task_handoff, institutional_memory); every other verb gets slim signals-only (unread a2a/mentions/notifications + metadata gaps). `include_company_goals=True` is a narrower, cheap-only opt-in (`_resolve_company_goals`) that fetches just the company_goals singleton without the rest of `full`'s heavy sections — used by `board_triage`'s idle branch so the CEO's charter (brand_voice/north_star) still reaches the Product Owner's roadmap-exploration / Head of Marketing's feature-spotlight-exploration one-shot spawns, whose directly-assigned exploration task is never itself a strategic root awaiting PM review (so the `full=True` branch never fires for it). AC coverage stays independent of `full`. |
-| `_run_claim_guards` | async helper | `_impl.py:1173` | already_active / paused / unmet_dependency (with re-check race narrowing) + `_lane_claim_guard`; `skip_dev_guards=False` param skips dev-only guards for pr_reviewer gate claims (claim_gate_review). |
-| `_lane_claim_guard` | async helper | `_impl.py:1549` | Out-of-order-start barrier: refuse code leaf behind an earlier open same-assignee sibling. Fail-closed on lookup error. |
-| `_sequencing_claim_guard` | async helper | `_impl.py:1425` | Proactive claim-time check (#681): consults `TaskService.sequence_hold_reason` and, when held, returns `Envelope.sequence_held` (naming the blocking sibling) BEFORE the claim even reaches `TaskService.claim`'s bare-`None`-on-reject path — closes the misdiagnosed `INVALID_STATE` a held PENDING/NEEDS_REVISION claim used to surface as. |
-| `_claim_plan_start_gate` | async helper | `_impl.py:1921` | spec gate → advisory claim lock (non-PM) → behavioral guards → `_sequencing_claim_guard`. |
-| `_claim_plan_start_run` | async helper | `_impl.py:1995` | `runner.run_intent(verb)` + ensure_work_session + `_touch`. |
-| `i_will_work_on` | async verb | `dev.py:244` | Dev claim+plan+start path; routes re-entry vs fresh claim. |
-| `open_pr` | async verb | `dev.py:499` | Pre-flight + `run_intent("open_pr")` (push_branch + create_pr side effects). |
-| `_open_pr_topology_rejection` | async helper | `dev.py:640` | Calls `merge_chain.find_topology_issue` BEFORE `create_pr` runs; on a bad shape (parented task stranded on the integration branch, or a parentless root nested inside a coordination tree) refuses with an `Envelope.invalid_state` naming the expected base + repair instead of letting `create_pr` fail later. Wrapped in `try/except Exception` (round-1 pr_gate finding F-81e261bd): a `find_topology_issue` DB error is logged (`topology_check_skip`) and returns `None` — fails open like its sibling `_behind_base_gate`, since this check only ever refuses and a transient error must never wedge `open_pr`. |
-| `i_am_done` | async verb | `dev.py:777` | Dev pre-submit; runs `_i_am_done_gate` then `run_intent("i_am_done")`. |
-| `_i_am_done_gate` | async helper | `dev.py:905` | Ordered gate chain: tracing → submit_qa fields → push → behind_base → quality → toolchain → conventions; then write AC status. |
-| `_behind_base_gate` | async helper | `_impl.py:2483` | Refuse submit when branch behind its base (sibling PR merged); fail-open on git error. |
-| `_toolchain_broken_guard` | async helper | `_impl.py:5408` | Block delivery gate when agent workspace can't run suite; `reviewer=True` for `pr_pass`. |
-| `_conventions_guard` | async helper | `_impl.py:5512` | Run architectural-conventions validator; `block` finding refuses gate. |
+| `_COORDINATOR_ROLES` | ClassVar | `_impl.py:530` | `{main_pm, cell_pm}` — exempt from `already_active`/`paused` claim guards + advisory lock. |
+| `give_me_work` | async verb | `dev.py:149` | Picks next task for agent + builds briefing (institutional memory injected here). |
+| `_briefing_for` | async helper | `_impl.py:811` | Builds `context_briefing`. Claim-scoped: `full=True` (context-acquisition verbs only — give_me_work/claims/plan/resume/triage) carries the heavy sections via `_heavy_briefing_sections` (company_goals, recent_team_activity, blockers, task_handoff, institutional_memory); every other verb gets slim signals-only (unread a2a/mentions/notifications + metadata gaps). `include_company_goals=True` is a narrower, cheap-only opt-in (`_resolve_company_goals`) that fetches just the company_goals singleton without the rest of `full`'s heavy sections — used by `board_triage`'s idle branch so the CEO's charter (brand_voice/north_star) still reaches the Product Owner's roadmap-exploration / Head of Marketing's feature-spotlight-exploration one-shot spawns, whose directly-assigned exploration task is never itself a strategic root awaiting PM review (so the `full=True` branch never fires for it). AC coverage stays independent of `full`. |
+| `_run_claim_guards` | async helper | `_impl.py:1175` | already_active / paused / unmet_dependency (with re-check race narrowing) + `_lane_claim_guard`; `skip_dev_guards=False` param skips dev-only guards for pr_reviewer gate claims (claim_gate_review). |
+| `_lane_claim_guard` | async helper | `_impl.py:1551` | Out-of-order-start barrier: refuse code leaf behind an earlier open same-assignee sibling. Fail-closed on lookup error. |
+| `_sequencing_claim_guard` | async helper | `_impl.py:1427` | Proactive claim-time check (#681): consults `TaskService.sequence_hold_reason` and, when held, returns `Envelope.sequence_held` (naming the blocking sibling) BEFORE the claim even reaches `TaskService.claim`'s bare-`None`-on-reject path — closes the misdiagnosed `INVALID_STATE` a held PENDING/NEEDS_REVISION claim used to surface as. |
+| `_claim_plan_start_gate` | async helper | `_impl.py:1923` | spec gate → advisory claim lock (non-PM) → behavioral guards → `_sequencing_claim_guard`. |
+| `_claim_plan_start_run` | async helper | `_impl.py:1997` | `runner.run_intent(verb)` + ensure_work_session + `_touch`. |
+| `i_will_work_on` | async verb | `dev.py:245` | Dev claim+plan+start path; routes re-entry vs fresh claim. |
+| `open_pr` | async verb | `dev.py:509` | Pre-flight + `run_intent("open_pr")` (push_branch + create_pr side effects). |
+| `_open_pr_topology_rejection` | async helper | `dev.py:648` | Calls `merge_chain.find_topology_issue` BEFORE `create_pr` runs; on a bad shape (parented task stranded on the integration branch, or a parentless root nested inside a coordination tree) refuses with an `Envelope.invalid_state` naming the expected base + repair instead of letting `create_pr` fail later. Wrapped in `try/except Exception` (round-1 pr_gate finding F-81e261bd): a `find_topology_issue` DB error is logged (`topology_check_skip`) and returns `None` — fails open like its sibling `_behind_base_gate`, since this check only ever refuses and a transient error must never wedge `open_pr`. |
+| `i_am_done` | async verb | `dev.py:785` | Dev pre-submit; runs `_i_am_done_gate` then `run_intent("i_am_done")`. |
+| `_i_am_done_gate` | async helper | `dev.py:911` | Ordered gate chain: tracing → submit_qa fields → push → behind_base → quality → toolchain → conventions; then write AC status. |
+| `_behind_base_gate` | async helper | `_impl.py:2485` | Refuse submit when branch behind its base (sibling PR merged); fail-open on git error. |
+| `_toolchain_broken_guard` | async helper | `_impl.py:5410` | Block delivery gate when agent workspace can't run suite; `reviewer=True` for `pr_pass`. |
+| `_conventions_guard` | async helper | `_impl.py:5514` | Run architectural-conventions validator; `block` finding refuses gate. |
 | `_pm_task_type_error` | static method | `pm.py:455` | Reject a code/non-planning task_type delegated to a PM (cell or main); extracted from `_validate_assignee_task_type` to keep that dispatcher under complexity budget. |
-| `i_am_blocked` | async verb | `_impl.py:3071` | Rate-limit parking vs generic block; `run_intent("i_am_blocked")`. |
-| `_handle_rate_limited_parking` | async helper | `_impl.py:2967` | Park provider on 429/overload/session-limit. |
-| `unclaim` | async verb | `_impl.py:3476` | Release claimed task → pending (optional reassign). |
-| `reassign` | async verb | `_impl.py:3673` | Reassign task with `_validate_reassign`. |
-| `resume` | async verb | `_impl.py:3753` | Resume paused/blocked task. |
-| `sync_branch` | async verb | `_impl.py:2642` | Gate-level rebase verb (new since baseline). |
-| `i_am_idle` | async verb | `_impl.py:4304` | Idle signal; auto-pause in_progress tasks; pending-assignment / PM review / auditor guards. |
-| `i_will_plan` | async verb | `_impl.py:2197` | PM plan verb; `_pm_sub_tasks_gate` enforces substantive approach/sub_tasks. |
+| `i_am_blocked` | async verb | `_impl.py:3073` | Rate-limit parking vs generic block; `run_intent("i_am_blocked")`. |
+| `_handle_rate_limited_parking` | async helper | `_impl.py:2969` | Park provider on 429/overload/session-limit. |
+| `unclaim` | async verb | `_impl.py:3478` | Release claimed task → pending (optional reassign). |
+| `reassign` | async verb | `_impl.py:3675` | Reassign task with `_validate_reassign`. |
+| `resume` | async verb | `_impl.py:3755` | Resume paused/blocked task. |
+| `sync_branch` | async verb | `_impl.py:2644` | Gate-level rebase verb (new since baseline). |
+| `i_am_idle` | async verb | `_impl.py:4306` | Idle signal; auto-pause in_progress tasks; pending-assignment / PM review / auditor guards. |
+| `i_will_plan` | async verb | `_impl.py:2199` | PM plan verb; `_pm_sub_tasks_gate` enforces substantive approach/sub_tasks. |
 | `delegate` | async verb | `pm.py:57` | PM creates subtask; sizing, sibling-dedup, spine-cap, lifecycle guards; `_create_subtask_from_inputs`. |
 | `submit_up` | async verb | `pm.py:1567` | Cell PM opens cell→root PR + enters `awaiting_pr_review`; unchanged-PR guard. |
 | `submit_root` | async verb | `pm.py:2026` | Main PM opens root→master PR + enters gate; umbrella hard-reject + unchanged-PR guard. |
@@ -57,7 +57,7 @@ The Choreographer is the server-side composition layer that turns agent intent-v
 | `_current_pr_head_sha` | async helper | `pm.py:1991` | Best-effort current PR head SHA via `_project_slug_for` + `git.get_pr_head_sha`. |
 | `complete` | async verb | `pm.py:3658` | Role-dispatch to `cell_pm_complete` / `main_pm_complete`; umbrella-in-progress bypasses spec gate. |
 | `main_pm_complete` | async verb | `pm.py:3543` | Main PM merge + escalate to CEO (never merges master itself). |
-| `escalate_to_ceo` | async verb | `_impl.py:3357` | Escalate to `awaiting_ceo_approval`. |
+| `escalate_to_ceo` | async verb | `_impl.py:3359` | Escalate to `awaiting_ceo_approval`. |
 | `unblock` | async verb | `pm.py:2428` | Human/PM restores a BLOCKED task; gated by `_oscillation_unblock_guard` (refuses while oscillation-tripped) then, on a real restore, runs `_maybe_trip_oscillation_breaker` (#685). |
 | `_oscillation_unblock_guard` | async helper | `pm.py:2524` | Refuses `unblock` once `markers.is_oscillation_tripped(t)` — an admin override must clear the marker first. |
 | `_maybe_trip_oscillation_breaker` | async helper | `pm.py:2553` | Task-scoped strike counter (#685) at the `unblock()` chokepoint (agent-agnostic — legitimate `needs_revision` rework never calls `unblock`, so it structurally can't trip this): `markers.bump_oscillation_strikes(t, progress_fp)` where the progress fingerprint is commit count + `revision_count` + `terminal_children_count` (a coordination root's children advancing between escalations resets the count); past threshold, sets `blocker_resolver_type=HUMAN`, marks the task oscillation-tripped, and best-effort notifies the CEO (`_notify_ceo_oscillation`) naming both agents + the cycle count. |

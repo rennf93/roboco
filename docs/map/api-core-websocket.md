@@ -30,25 +30,25 @@ The FastAPI application shell, request pipeline, and real-time WebSocket fan-out
 | `create_app` | func | app.py:398 | Build FastAPI, add CORS + custom middleware, mount ~40 routers + ws_router at `/ws` |
 | `app` | module attr | app.py:489 | The default ASGI instance (`roboco.api.app:app` entrypoint) |
 | `_AppServices` | class | app.py:102 | Holder for transcription/extraction singletons set in lifespan |
-| `DbSession` | type alias | deps.py:60 | `Annotated[AsyncSession, Depends(get_db)]` |
-| `resolve_agent_id` | func | deps.py:63 | Resolve UUID-or-slug → UUID, 400 on miss |
-| `_ServiceHolder` | class | deps.py:88 | Singleton store for PermissionService + orchestrator |
+| `DbSession` | type alias | deps.py:61 | `Annotated[AsyncSession, Depends(get_db)]` |
+| `resolve_agent_id` | func | deps.py:64 | Resolve UUID-or-slug → UUID, 400 on miss |
+| `_ServiceHolder` | class | deps.py:89 | Singleton store for PermissionService + orchestrator |
 | `set_orchestrator`/`clear_orchestrator`/`get_orchestrator`/`get_orchestrator_or_none` | funcs | deps.py:91-119 | Global orchestrator accessors; `get_orchestrator` 503s when unset, `_or_none` used by shutdown |
 | `get_current_agent_id`/`get_current_agent_slug`/`get_optional_agent_id` | funcs | deps.py:125-208 | Header-based agent identity (UUID or slug) |
-| `_auth_required` | func | deps.py:235 | Reads `ROBOCO_AGENT_AUTH_REQUIRED` env |
-| `_check_agent_auth_token` | func | deps.py:251 | HMAC token enforcement (required in prod, optional-but-verified in dev) |
-| `require_panel_token` | func | deps.py:300 | CEO-HMAC gate for live-chat bridges (HTTP analog of WS gate) |
-| `_resolve_agent_identity` | func | deps.py:353 | Returns `(agent_id, slug)`, special-casing `system` role |
-| `_coerce_agent_role`/`_coerce_agent_team` | funcs | deps.py:374/400 | Parse role/team headers with DB fallback for role |
-| `_header_trust_agent_context` | func | deps.py:409 | The original `get_agent_context` body verbatim (header-trust); the OFF-mode path, and also what a valid agent HMAC token delegates to when cloud auth is ON |
-| `_slide_session_cookie` | func | deps.py:448 | Re-mints + re-sets the session cookie on every cookie-authenticated request — the sliding 30-day window (only inactivity past `cloud_auth_cookie_max_age` logs out) |
-| `_cloud_auth_agent_context` | func | deps.py:488 | Dual-path enforcement when `cloud_auth_enabled`: a valid HMAC token (any role) delegates to `_header_trust_agent_context`; otherwise a non-CEO role claim is rejected outright, and the CEO must present a valid session cookie via `resolve_session_user` |
-| `get_agent_context` | func | deps.py:551 | Builds `AgentContext` from X-Agent-* headers + token (+ the `roboco_session` cookie); byte-for-byte header-trust when `cloud_auth_enabled` is False, else delegates to `_cloud_auth_agent_context` |
-| `require_pm_or_above`/`require_developer_or_above`/`require_cell_access` | funcs | deps.py:619/644/665 | Coarse role-gate guards (403) |
-| `require_ceo_role` | func | deps.py:628 | Single CEO-check: raises 403 unless `role` is CEO; accepts `AgentRole`/`Role`/lowercase string; unifies orchestrator-router + release-handler CEO gates into one source of truth (`536bbb64`) |
-| `require_notification_permission`/`require_task_action` | dep factories | deps.py:680/698 | PermissionService-backed dependency factories |
-| `get_choreographer`/`get_content_actions` | funcs | deps.py:735/765 | Build Choreographer / ContentActions with all service deps + orchestrator/bus |
-| `get_pagination` | func | deps.py:793 | Clamp limit 1-100, offset ≥0 |
+| `_auth_required` | func | deps.py:236 | Reads `ROBOCO_AGENT_AUTH_REQUIRED` env |
+| `_check_agent_auth_token` | func | deps.py:252 | HMAC token enforcement (required in prod, optional-but-verified in dev) |
+| `require_panel_token` | func | deps.py:301 | CEO-HMAC gate for live-chat bridges (HTTP analog of WS gate) |
+| `_resolve_agent_identity` | func | deps.py:354 | Returns `(agent_id, slug)`, special-casing `system` role |
+| `_coerce_agent_role`/`_coerce_agent_team` | funcs | deps.py:375/401 | Parse role/team headers with DB fallback for role |
+| `_header_trust_agent_context` | func | deps.py:410 | The original `get_agent_context` body verbatim (header-trust); the OFF-mode path, and also what a valid agent HMAC token delegates to when cloud auth is ON |
+| `_slide_session_cookie` | func | deps.py:449 | Re-mints + re-sets the session cookie on every cookie-authenticated request — the sliding 30-day window (only inactivity past `cloud_auth_cookie_max_age` logs out) |
+| `_cloud_auth_agent_context` | func | deps.py:489 | Dual-path enforcement when `cloud_auth_enabled`: a valid HMAC token (any role) delegates to `_header_trust_agent_context`; otherwise a non-CEO role claim is rejected outright, and the CEO must present a valid session cookie via `resolve_session_user` |
+| `get_agent_context` | func | deps.py:552 | Builds `AgentContext` from X-Agent-* headers + token (+ the `roboco_session` cookie); byte-for-byte header-trust when `cloud_auth_enabled` is False, else delegates to `_cloud_auth_agent_context` |
+| `require_pm_or_above`/`require_developer_or_above`/`require_cell_access` | funcs | deps.py:620/645/666 | Coarse role-gate guards (403) |
+| `require_ceo_role` | func | deps.py:629 | Single CEO-check: raises 403 unless `role` is CEO; accepts `AgentRole`/`Role`/lowercase string; unifies orchestrator-router + release-handler CEO gates into one source of truth (`536bbb64`) |
+| `require_notification_permission`/`require_task_action` | dep factories | deps.py:681/699 | PermissionService-backed dependency factories |
+| `get_choreographer`/`get_content_actions` | funcs | deps.py:736/767 | Build Choreographer / ContentActions with all service deps + orchestrator/bus |
+| `get_pagination` | func | deps.py:795 | Clamp limit 1-100, offset ≥0 |
 | `CorrelationIdMiddleware` | class | middleware.py:63 | X-Correlation-ID in/out + structlog bind |
 | `RequestLoggingMiddleware` | class | middleware.py:167 | Log request/response + `X-Response-Time-Ms` header |
 | `get_status_code`/`roboco_exception_handler`/`service_exception_handler`/`rate_limit_exception_handler`/`generic_exception_handler`/`http_exception_handler`/`request_validation_handler` | funcs | middleware.py:143-441 | Exception → structured JSONResponse chain |

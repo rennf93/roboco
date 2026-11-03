@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
 import pytest
+from roboco.api.deps import get_choreographer
 from roboco.services.gateway.base_red_gate import (
+    ACCESSOR_NAME,
     AUDIT_EVENT_CLEARED,
+    INCIDENT_MODULE,
     base_red_submission_guard,
     clear_base_red_incident,
     resolve_incident_service,
@@ -100,9 +104,34 @@ async def test_clear_reopens_submission_and_audits() -> None:
 
 
 def test_resolve_incident_service_inert_when_module_absent() -> None:
-    # Returns None until be-dev-1's service lands; a real service afterwards.
-    result = resolve_incident_service(MagicMock())
-    assert result is None or hasattr(result, "get_open_incident")
+    with patch.dict(sys.modules, {INCIDENT_MODULE: None}):
+        assert resolve_incident_service(MagicMock()) is None
+
+
+def test_resolve_incident_service_uses_accessor() -> None:
+    fake = FakeSource()
+    module = SimpleNamespace(**{ACCESSOR_NAME: lambda _session: fake})
+    with patch.dict(sys.modules, {INCIDENT_MODULE: module}):
+        assert resolve_incident_service(MagicMock()) is fake
+
+
+def test_resolve_incident_service_warns_when_accessor_missing() -> None:
+    with (
+        patch.dict(sys.modules, {INCIDENT_MODULE: SimpleNamespace()}),
+        patch("roboco.services.gateway.base_red_gate.log") as log,
+    ):
+        assert resolve_incident_service(MagicMock()) is None
+    log.warning.assert_called_once_with(
+        "base_red_accessor_missing", accessor=ACCESSOR_NAME
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_choreographer_carries_base_red() -> None:
+    fake = FakeSource()
+    with patch("roboco.api.deps.resolve_incident_service", return_value=fake):
+        choreo = await get_choreographer(MagicMock())
+    assert choreo._deps.base_red is fake
 
 
 def _choreographer(source: FakeSource, task: Any) -> Choreographer:
