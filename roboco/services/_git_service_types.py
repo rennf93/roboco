@@ -248,6 +248,9 @@ class GitSurface(Protocol):
         timeout: int | None = ...,
     ) -> subprocess.CompletedProcess[str]: ...
     async def _token_for_project(self, project_slug: str) -> str | None: ...
+    async def _reflow_changed_markdown(
+        self, workspace: Path, files: list[str] | None, timeout: int
+    ) -> None: ...
     async def get_workspace(
         self,
         project_slug: str,

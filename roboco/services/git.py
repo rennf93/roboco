@@ -94,6 +94,7 @@ from roboco.services.git_relay import (
     relay_for,
     run_private_git,
 )
+from roboco.services.md_reflow import reflow_changed_markdown
 from roboco.services.project import get_project_service
 from roboco.services.project_hooks import (
     find_project_hook,
@@ -846,6 +847,7 @@ class GitCommits(_Base):
         # (see `git_commit_timeout_seconds`) — the same reason the gateway
         # `commit()` adapter uses it.
         commit_timeout = _commit_git_timeout()
+        await self._reflow_changed_markdown(workspace, request.files, commit_timeout)
         if request.files:
             for file in request.files:
                 await self._run_git(workspace, ["add", file], timeout=commit_timeout)
@@ -6727,6 +6729,7 @@ class GitDiffs(_Base):
         # the hundreds of files) can exceed the short default git timeout, so
         # these ops get the longer `git_commit_timeout_seconds` budget.
         commit_timeout = _commit_git_timeout()
+        await self._reflow_changed_markdown(workspace, files, commit_timeout)
         if files:
             for file in files:
                 await self._run_git(workspace, ["add", file], timeout=commit_timeout)
@@ -6772,6 +6775,27 @@ class GitDiffs(_Base):
 class GitConventions(_Base):
     """The conventions validator: checking a task's changes, and opening the PR that
     commits a conventions file."""
+
+    async def _reflow_changed_markdown(
+        self, workspace: Path, files: list[str] | None, timeout: int
+    ) -> None:
+        """Reflow the worktree's modified/untracked markdown before staging.
+
+        Best-effort: a failure here must never lose the commit.
+        """
+        try:
+            result = await self._run_git(
+                workspace,
+                ["ls-files", "-m", "-o", "--exclude-standard", "--", "*.md"],
+                check=False,
+                timeout=timeout,
+            )
+            changed = [p for p in result.stdout.splitlines() if p]
+            if files:
+                changed = [p for p in changed if p in files]
+            reflow_changed_markdown(workspace, changed)
+        except Exception as exc:
+            self.log.warning("markdown reflow skipped", error=str(exc))
 
     async def conventions_check_for_task(
         self,
