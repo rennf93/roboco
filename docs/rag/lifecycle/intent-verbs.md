@@ -323,7 +323,7 @@ PM unblocks a blocked task; restores pre-block state.
 
 ## unclaim
 
-Voluntarily release a claim back to pending. The work-in-progress branch is preserved. A PR reviewer who claimed an external review (in_progress) or a gate review (awaiting_pr_review) and cannot finish releases the claim here rather than wedging the lane until the stale-claim reaper.
+Voluntarily release a claim back to pending. The work-in-progress branch is preserved. A PR reviewer who claimed an external review (in_progress) and cannot finish releases the claim here rather than wedging the lane until the stale-claim reaper; a claimed review that is still awaiting_* (a gate review in awaiting_pr_review) is released by i_am_idle instead.
 
 **Allowed roles:** cell_pm, developer, devops, documenter, main_pm, pr_reviewer, qa
 
