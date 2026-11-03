@@ -956,17 +956,25 @@ class IAmDoneMixin(_Base):
     async def _defer_quality_gate(self, ctx: _IAmDoneContext) -> Envelope:
         """Hand the slow quality gate to a background job and return promptly.
 
-        The task stays where it is (in_progress, or verifying on the recovery
-        path), so it cannot reach QA before the job's verdict lands; the job's
-        finish callback (``apply_gate_verdict``) does the onward transition.
-        A live job for this task is never doubled: the repeat call just
-        reports it is still running. With no live job (first call, or the
-        process restarted mid-run) a fresh one is launched, so nothing wedges.
+        The task is moved to ``verifying`` BEFORE the job launches:
+        ``i_am_idle`` pauses only ``in_progress`` tasks and the dispatcher never
+        spawns on ``verifying``, so the author is neither paused nor respawned
+        mid-gate, and the task still cannot reach QA before the verdict lands.
+        The finish callback (``apply_gate_verdict``) submits to QA on green and
+        returns the task to ``in_progress`` on red. A live job for this task is
+        never doubled: the repeat call just reports it is still running. With
+        no live job (first call, or the process restarted mid-run) a fresh one
+        is launched, so nothing wedges.
         """
         from roboco.config import settings as _settings
 
         agent_id, task_id, notes = ctx.agent_id, ctx.task_id, ctx.notes
-        launched = get_gate_job_registry().launch(
+        registry = get_gate_job_registry()
+        status = str(ctx.task.status)
+        if not registry.is_running(task_id) and status == "in_progress":
+            moved = await self.task.submit_verification(agent_id, task_id, notes)
+            status = str(moved.status) if moved is not None else status
+        launched = registry.launch(
             task_id,
             lambda: run_gate_job(agent_id, task_id),
             lambda verdict: finish_gate_job(agent_id, task_id, notes, verdict),
@@ -974,14 +982,14 @@ class IAmDoneMixin(_Base):
         )
         state = "started" if launched else "already running"
         return Envelope.ok(
-            status=str(ctx.task.status),
+            status=status,
             task_id=str(task_id),
             next=(
                 f"quality gate {state} in the background; the task moves to QA "
                 "automatically when it passes. Call i_am_idle() now. If it "
                 "fails, the failure is recorded as a progress entry on this "
-                "task and it stays in_progress: fix it, commit, and call "
-                "i_am_done again"
+                "task, it returns to in_progress and you are respawned on it: "
+                "fix it, commit, and call i_am_done again"
             ),
             context_briefing=ctx.briefing,
         ).with_introspection(task=ctx.task, role=ctx.role_str)
@@ -989,17 +997,18 @@ class IAmDoneMixin(_Base):
     async def apply_gate_verdict(
         self, agent_id: UUID, task_id: UUID, notes: str, verdict: GateResult
     ) -> str:
-        """Gate-job callback: move the task onward, or record the failure.
+        """Gate-job callback: move the task onward, or hand it back to its author.
 
         Idempotent: it acts only while the task is still pre-QA and owned by
         the submitting developer, so a duplicate or late callback (task
         already in QA, reassigned, cancelled) is a no-op. Returns
         ``submitted`` / ``rejected`` / ``skipped``.
 
-        ``paused`` counts as pre-QA: the dev is told to call ``i_am_idle()``
-        after ``i_am_done``, which auto-pauses the task. A pass resumes it and
-        submits; a fail leaves it paused with the failure on its progress
-        trail, and the dispatcher resumes an idle author onto its paused task.
+        The normal pre-QA status is ``verifying`` (set before the job
+        launched); ``in_progress`` and ``paused`` stay accepted for a task
+        left on the older flow. A pass submits to QA (resuming a paused task
+        first). A fail records the failure on the progress trail and puts the
+        task back in ``in_progress``, where the dispatcher respawns the author.
         """
         t = await self.task.get(task_id)
         if (
@@ -1009,14 +1018,7 @@ class IAmDoneMixin(_Base):
         ):
             return "skipped"
         if not verdict.passed:
-            await self._record_milestone_progress(
-                task_id,
-                agent_id,
-                f"quality gate failed before QA — {verdict.summary}. Fix these in "
-                "your workspace, commit, and call i_am_done again — QA reviews "
-                f"working code, not a red gate:\n\n{verdict.output_excerpt}",
-            )
-            return "rejected"
+            return await self._hand_back_after_red_gate(agent_id, t, verdict)
         if str(t.status) == "paused":
             resumed = await self.task.resume_for_agent(task_id, agent_id)
             if resumed is None:
@@ -1033,6 +1035,25 @@ class IAmDoneMixin(_Base):
         )
         await self._teardown_sandbox_best_effort(agent_id)
         return "submitted"
+
+    async def _hand_back_after_red_gate(
+        self, agent_id: UUID, t: Any, verdict: GateResult
+    ) -> str:
+        """Red verdict: return the task to ``in_progress`` (from ``verifying`` or
+        ``paused``) so the dispatcher respawns the author, and record why."""
+        status = str(t.status)
+        if status == "verifying":
+            await self.task.reopen_after_failed_gate(agent_id, t.id)
+        elif status == "paused":
+            await self.task.resume_for_agent(t.id, agent_id)
+        await self._record_milestone_progress(
+            t.id,
+            agent_id,
+            f"quality gate failed before QA — {verdict.summary}. Fix these in "
+            "your workspace, commit, and call i_am_done again — QA reviews "
+            f"working code, not a red gate:\n\n{verdict.output_excerpt}",
+        )
+        return "rejected"
 
     async def _i_am_done_resume_from_verifying(self, ctx: _IAmDoneContext) -> Envelope:
         """Recovery path: task is already in `verifying` owned by caller.

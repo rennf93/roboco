@@ -162,11 +162,13 @@ async def test_i_am_done_auto_runs_submit_verification_when_in_progress(
     env = await c.i_am_done(agent_id, task_id, "done")
     body = env.as_dict()
     assert body["error"] is None
-    # The gate is deferred: nothing reaches QA until the job's callback runs.
-    task_svc.submit_verification.assert_not_awaited()
+    # The task is held in verifying while the gate runs; nothing reaches QA
+    # until the job's callback runs.
+    task_svc.submit_verification.assert_awaited_once()
     task_svc.submit_qa.assert_not_awaited()
     assert len(gate_registry.launches) == 1
 
+    t.status = "verifying"
     outcome = await c.apply_gate_verdict(agent_id, task_id, "done", GateResult(True))
     assert outcome == "submitted"
     task_svc.submit_verification.assert_awaited_once()

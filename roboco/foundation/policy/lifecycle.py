@@ -280,6 +280,8 @@ _STATUS_TRANSITIONS: tuple[StatusTransition, ...] = (
     # Dev verify + submit
     StatusTransition(Status.IN_PROGRESS, Status.VERIFYING, "submit_verification", None),
     StatusTransition(Status.VERIFYING, Status.AWAITING_QA, "submit_qa", None),
+    # A red background quality gate hands the task back to its author.
+    StatusTransition(Status.VERIFYING, Status.IN_PROGRESS, "gate_failed", None),
     # PR reviewer posts its change-request and the review task is done
     StatusTransition(
         Status.IN_PROGRESS,
@@ -558,6 +560,16 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
         allowed_roles=frozenset(_DEV_ROLES | _DEVOPS_AUTHOR_ROLES),
         source_statuses=frozenset({Status.VERIFYING}),
         target_status=Status.AWAITING_QA,
+        allowed_task_types=None,
+        preconditions=(),
+        self_review_block=False,
+        needs_team_match=True,
+    ),
+    "gate_failed": ActionSpec(
+        name="gate_failed",
+        allowed_roles=frozenset(_DEV_ROLES | _DEVOPS_AUTHOR_ROLES),
+        source_statuses=frozenset({Status.VERIFYING}),
+        target_status=Status.IN_PROGRESS,
         allowed_task_types=None,
         preconditions=(),
         self_review_block=False,

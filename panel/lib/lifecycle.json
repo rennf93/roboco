@@ -827,6 +827,12 @@
       ],
       "source": "verifying",
       "target": "cancelled"
+    },
+    {
+      "action": "gate_failed",
+      "roles": null,
+      "source": "verifying",
+      "target": "in_progress"
     }
   ]
 }

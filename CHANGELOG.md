@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- **The background `i_am_done` quality gate no longer respawns the author mid-gate or strands a red task.** `_defer_quality_gate` now moves the task to `verifying` before launching the job: `i_am_idle` pauses only `in_progress` and the dispatcher never spawns on `verifying`, so the author is neither paused nor respawned while the gate runs, and nothing reaches QA before a green verdict. A red verdict returns the task to `in_progress` through a new `verifying` to `in_progress` lifecycle edge (`gate_failed`, `TaskService.reopen_after_failed_gate`), where the dispatcher respawns the author with the failure on the progress trail. Because the gate registry is process-local, API startup now relaunches the gate for every assigned `verifying` task (`relaunch_lost_gate_jobs`) so a restart cannot leave one stuck.
+
 ## [0.32.0] - 2026-10-16
 
 ### Added

@@ -7,6 +7,7 @@ itself); ``finish_gate_job`` is the callback that applies the verdict.
 
 from __future__ import annotations
 
+from functools import partial
 from typing import TYPE_CHECKING
 
 import structlog
@@ -43,6 +44,35 @@ async def run_gate_job(agent_id: UUID, task_id: UUID) -> GateResult:
             logger.warning("quality_gate_skipped", task_id=str(task_id), error=str(exc))
             return GateResult(passed=True, skipped=True)
         return result
+
+
+async def relaunch_lost_gate_jobs() -> int:
+    """Restart recovery: relaunch the gate for every ``verifying`` task with no
+    live job. The registry is process-local, so a restart drops in-flight jobs,
+    and nothing dispatches an author onto ``verifying`` — without this the task
+    would sit there forever. Returns how many jobs were launched.
+    """
+    from roboco.api.deps import get_choreographer
+    from roboco.config import settings
+    from roboco.services.gate_jobs import get_gate_job_registry
+
+    registry = get_gate_job_registry()
+    async with get_session_factory()() as db:
+        choreographer = await get_choreographer(db)
+        stranded = [
+            (t.id, t.assigned_to)
+            for t in await choreographer.task.list_verifying_with_assignee()
+        ]
+    launched = 0
+    for task_id, agent_id in stranded:
+        if registry.launch(
+            task_id,
+            partial(run_gate_job, agent_id, task_id),
+            partial(finish_gate_job, agent_id, task_id, ""),
+            timeout_seconds=settings.gate_job_timeout_seconds,
+        ):
+            launched += 1
+    return launched
 
 
 async def finish_gate_job(

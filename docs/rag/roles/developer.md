@@ -102,7 +102,7 @@ When the architectural-conventions standard is enabled, `i_am_done` is refused o
 
 ## The quality gate runs in the background
 
-`i_am_done` does not wait for the quality gate. After the cheap guards pass it starts the gate as a background job and returns, so call `i_am_idle()` next. When the gate passes, the task moves to QA on its own. When it fails, crashes, or exceeds `ROBOCO_GATE_JOB_TIMEOUT_SECONDS` (default 900), the failure lands as a progress entry on your task and the task stays with you: read it, fix in your workspace, commit, and call `i_am_done` again. A task that `i_am_idle()` auto-paused is resumed by a passing verdict; after a failing verdict it stays paused until the dispatcher resumes you. If the orchestrator restarted mid-run the job is lost, and re-calling `i_am_done` starts a fresh one.
+`i_am_done` does not wait for the quality gate. After the cheap guards pass it moves the task to `verifying`, starts the gate as a background job and returns, so call `i_am_idle()` next. While the gate runs the task sits in `verifying`: `i_am_idle()` does not pause it and you are not respawned on it. When the gate passes, the task moves to QA on its own. When it fails, crashes, or exceeds `ROBOCO_GATE_JOB_TIMEOUT_SECONDS` (default 900), the failure lands as a progress entry on your task, the task returns to `in_progress`, and you are respawned on it: read the entry, fix in your workspace, commit, and call `i_am_done` again. If the orchestrator restarted mid-run the job is lost, and API startup relaunches the gate for every `verifying` task, so no re-call is needed.
 
 ## The possibilities-matrix fast path
 
