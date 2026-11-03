@@ -204,6 +204,14 @@ export interface SubTask {
   notes: string | null;
 }
 
+// One recorded loop iteration in a task's wedge cycle: which actor ran
+// which verb, and when. Rendered read-only by the stuck indicator.
+export interface WedgeCycleEntry {
+  actor: string;
+  verb: string;
+  timestamp: string;
+}
+
 export interface TaskPlan {
   approach: string;
   sub_tasks: SubTask[];
@@ -242,6 +250,13 @@ export interface Task {
   // blocked.
   stalled_reason?: string | null;
   stalled_since?: string | null;
+  // Wedge-ledger stuck state (frozen cross-cell contract, additive on the
+  // task payload): active time since the last progress-fingerprint movement,
+  // count of open wedge strikes, and the recorded actor/verb/timestamp
+  // cycle. Read-only on the panel — surfaced, never acted on here.
+  active_time_since_progress?: string | number | null;
+  open_wedge_strikes?: number;
+  wedge_cycle?: WedgeCycleEntry[];
   priority: number; // 0=P0(highest), 1=P1, 2=P2, 3=P3(lowest)
   // Cost cap (ROBOCO_TASK_BUDGETS_ENABLED). null = use the task-type default.
   budget_usd?: number | null;

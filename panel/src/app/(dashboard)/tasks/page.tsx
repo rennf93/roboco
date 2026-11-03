@@ -87,6 +87,7 @@ function TasksPageContent() {
     [productParam],
   );
   const stalledFilter = searchParams.get("stalled") === "1";
+  const stuckFilter = searchParams.get("stuck") === "1";
 
   // Table state from URL
   const sortField = (searchParams.get("sortBy") as SortField) || "created_at";
@@ -200,6 +201,13 @@ function TasksPageContent() {
     [updateParams],
   );
 
+  const handleStuckChange = useCallback(
+    (value: boolean) => {
+      updateParams({ stuck: value ? "1" : null });
+    },
+    [updateParams],
+  );
+
   // Table state handlers
   const handleSortChange = useCallback(
     (field: SortField, direction: SortDirection | null) => {
@@ -268,6 +276,8 @@ function TasksPageContent() {
     ...(debouncedQuery ? { q: debouncedQuery } : {}),
     ...(statusFilter.length === 1 ? { status: statusFilter[0] } : {}),
     ...(teamFilter.length === 1 ? { team: teamFilter[0] } : {}),
+    // Stuck set is computed by the backend; the list is exactly its result.
+    ...(stuckFilter ? { stuck: true } : {}),
   };
   const { data: tasks, isLoading, error, refetch } = useTasks(filters);
 
@@ -465,6 +475,8 @@ function TasksPageContent() {
               onStalledChange={handleStalledChange}
               stalledCount={stalledTasks?.length}
               stalledError={stalledError}
+              stuckFilter={stuckFilter}
+              onStuckChange={handleStuckChange}
             />
           </div>
 

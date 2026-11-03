@@ -23,6 +23,7 @@ import { BlockedBadge } from "../shared/blocked-badge";
 import { AssigneeAvatar } from "../shared/assignee-avatar";
 import { AgentSelector } from "@/components/agents/agent-selector";
 import { TaskTypeBadge } from "@/components/tasks/task-type-badge";
+import { StuckIndicator } from "@/components/tasks/stuck-indicator";
 import {
   GripVertical,
   ArrowRight,
@@ -175,6 +176,9 @@ function KanbanCardImpl({
             )}
             <PriorityIndicator priority={task.priority} />
             {isBlocked && <BlockedBadge />}
+            {/* Stuck chip — read-only wedge-ledger surfacing (strikes or
+                blocked-for-human); nothing renders on a healthy task. */}
+            <StuckIndicator task={task} />
             {isBacklog && (
               <Tooltip>
                 <TooltipTrigger>
