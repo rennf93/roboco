@@ -324,6 +324,10 @@ x-orchestrator-volumes: &orchestrator-volumes
   - ${ROBOCO_DATA_DIR:-./data}/gemini-usage:/data/gemini-usage
   # Per-agent KIMI usage capture — same shape as grok/codex/gemini-usage.
   - ${ROBOCO_DATA_DIR:-./data}/kimi-usage:/data/kimi-usage
+  # The dir every agent binds over ~/.claude/plugins (AGENT_PLUGINS_DATA_DIR):
+  # bound here so the dir the orchestrator creates is the host's, which the
+  # docker-gate checks on disk before it lets an agent start.
+  - ${ROBOCO_DATA_DIR:-./data}/agent-claude-plugins:/data/agent-claude-plugins
   - ${ROBOCO_DATA_DIR:-./data}/logs:/data/logs
   # video engine: NAS-only bind mount, off by default in public registry.
   # Uncomment + set ROBOCO_VIDEO_ENGINE_ENABLED=true in .env to arm.

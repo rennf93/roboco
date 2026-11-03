@@ -27,6 +27,7 @@ def _service(origin_stderr: str, returncode: int) -> tuple[WorkspaceService, Asy
         return_value=CompletedProcess(["git", "fetch"], returncode, "", origin_stderr)
     )
     object.__setattr__(svc, "_origin_git", origin)
+    object.__setattr__(svc, "_project_default_branch", AsyncMock(return_value=None))
     object.__setattr__(
         svc,
         "_worktree_git",
