@@ -39,5 +39,5 @@ Receipt: `roboco/foundation/policy/lifecycle.py` restricts each gate transition 
 
 - Positioning change. No code change.
 - No generated prompt artifacts touched.
-- The public-site copy (roboco-website) is not part of this task. It needs a follow-up on that project.
+- The public-site MDX page, route wrapper and `nav.ts` entry are not in this repo. They are tracked by root `e4b3e337` on `roboco-website`.
 - No metrics are claimed.

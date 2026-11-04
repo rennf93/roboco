@@ -63,4 +63,4 @@ RoboCo uses separate roles. Each role has its own verbs and its own gate. The ag
 
 ## Public-site note
 
-The public docs site lives in `roboco-website`, which is not reachable from this task. This page is the internal positioning record. The public page is a follow-up on that project.
+This page is the internal positioning record. The public-site MDX page, its route wrapper and the `nav.ts` entry are not in this repo. They are tracked by root `e4b3e337` on `roboco-website`.
