@@ -80,6 +80,33 @@ Pest Control, Spackle, Mirror, and Dogfood share one round-robin picker, `pick_r
 
 `BoardProgramEngine.record_decision(program_key, item_ref, verdict, reason, exploration_task_id=...)` accrues one CEO approve/reject onto the cycle row's `decisions` jsonb column, incrementing `items_proposed`/`items_approved`/`items_rejected`. `prior_cycle_context(program_key, limit=2)` renders the last two CLOSED cycles ("proposed N, approved N; rejected: item — reason") for injection into the NEXT cycle's exploration prompt — every producer of a per-item decision (`RoadmapService`, `PestControlService`-equivalent per-program services) calls this, so a program stops re-proposing something the CEO already rejected without explanation. This is the one genuinely new pipeline stage the registry introduced; the pre-registry roadmap/spotlight engines had no memory of prior outcomes at all.
 
+## Cadence metric: cost per cycle vs approval rate
+
+`BoardProgramCadenceService.program_cadence_metrics()` (`roboco/services/board_program_cadence.py`, built with `get_board_program_cadence_service(session)`) is a read-only service that reports, per program, what a cycle costs next to how much of what it proposes the CEO approves. It has no route, no policy and no setting yet: the cadence-policy task is its intended consumer, so the method name and the `ProgramCadenceMetric` field names (`roboco/models/board_program_cadence.py`, a dataclass) are a stable interface.
+
+It returns `dict[program_key, ProgramCadenceMetric]` with an entry for **every** key in `PROGRAMS`, including programs that have never run a cycle (zeros and `None` rates).
+
+| Field | Meaning |
+|-------|---------|
+| `program_key` | The `PROGRAMS` key. |
+| `cycles_counted` | Cycles whose `exploration_task_id` is set, so cost is attributable. |
+| `cycles_missing_cost` | Cycles whose `exploration_task_id` is null (the task was deleted, FK `SET NULL`). Excluded from the cost mean. |
+| `total_cost_usd` | Summed spend of the counted cycles' exploration tasks. |
+| `cost_per_cycle_usd` | `total_cost_usd / cycles_counted`; `None` when `cycles_counted` is 0. |
+| `items_proposed` / `items_approved` | Sums over **all** of the program's cycles, including the ones missing cost. |
+| `approval_rate` | `items_approved / items_proposed`; `None` when nothing was proposed. |
+
+**Where cost comes from.** The `tasks` table has no cost column. Cost is the sum of `agent_spawn_sessions.estimated_cost_usd` for the exploration task (`agent_spawn_sessions.task_id` is a string, so the join casts `exploration_task_id`) — the same source as `TaskService.task_spend_usd`. `daily_usage_rollups.total_cost_usd` has no task id and cannot attribute spend to a cycle.
+
+**Query shape.** Two grouped aggregate queries, no per-cycle loop: one over `board_program_cycles` (counts split by null/non-null task, plus summed proposals/approvals), one joining cycles to spawn sessions (summed cost). Python then fills in every `PROGRAMS` key.
+
+**Known limits.**
+
+- A session that is still open has a null `estimated_cost_usd` until it closes, so an in-flight cycle undercounts.
+- A cycle whose task has no spawn sessions counts as `cycles_counted` with cost 0, which pulls the mean down; it is not reported as missing cost.
+
+Tests: `tests/unit/services/test_board_program_cadence.py` (real Postgres) covers zero cycles, a null-task cycle, zero proposals, and a mixed multi-program case.
+
 ## Panel and API
 
 `GET /api/board-programs` and `POST /api/board-programs/{key}/run-now` (`roboco/api/routes/board_programs.py`, CEO-only, `require_ceo_role`) back the Board Programs page (Business section, `board-programs-card.tsx`): each program's live enablement, trigger kind, scope, opted-in project slugs, last-run timestamp, whether a cycle is currently open, and the most recent closed cycle's summary — plus a `Switch` that writes `board_program.{key}.enabled` through the generic feature-flag settings endpoint and a "Run now" button (disabled while a cycle is already open) that calls `open_program_cycle` off-schedule. `run-now` 404s on an unregistered key and 409s when the program is disabled, already has an open cycle, or (a project-scoped program) has no opted-in project — the three collapse into one `None` result with no finer-grained distinction available to the caller.
