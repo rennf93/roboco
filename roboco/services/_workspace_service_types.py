@@ -81,6 +81,7 @@ class WorkspaceToolchainSurface(Protocol):
     """``WorkspaceToolchain``'s members that other classes reach."""
 
     async def install_dev_deps(self, workspace: Path) -> bool: ...
+    async def resync_shared_venv(self, clone_root: Path, worktree: Path) -> bool: ...
 
 
 class WorkspaceWorktreesSurface(Protocol):
