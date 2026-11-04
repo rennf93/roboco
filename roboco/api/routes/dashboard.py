@@ -5,7 +5,7 @@ Auditor dashboard and CEO overview endpoints.
 Provides aggregated views, alerts, and reporting.
 """
 
-from typing import Any
+from typing import Annotated, Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -32,6 +32,7 @@ from roboco.api.schemas.dashboard import (
 from roboco.api.utils.dashboard import require_auditor_or_ceo as _require_auditor_or_ceo
 from roboco.models.base import Team
 from roboco.models.dashboard import CreateFlagParams
+from roboco.services.agent_overview import get_agent_overview_service
 from roboco.services.dashboard import get_dashboard_service
 from roboco.services.kanban import get_kanban_service
 from roboco.services.metrics import get_metrics_service
@@ -431,6 +432,16 @@ async def get_all_agent_status(
     """Return agent-status summary (counts + per-agent snapshot)."""
     dashboard = get_dashboard_service(db)
     return await dashboard.get_all_agent_status(team)
+
+
+@router.get("/agents/overview")
+async def get_agent_overview(
+    db: DbSession,
+    team: Team | None = None,
+    period: Annotated[str, Query(pattern="^(24h|7d|30d)$")] = "24h",
+) -> dict[str, Any]:
+    """Single status view: every agent's status, current task and spend."""
+    return await get_agent_overview_service(db).overview(period, team)
 
 
 # =============================================================================

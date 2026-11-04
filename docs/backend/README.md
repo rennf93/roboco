@@ -13,6 +13,8 @@ Documentation for the Backend Cell team.
 - `/api/` - API documentation
   - `x-post-response-schemas.md` - `XPostResponse` / `XPostHistoryResponse` Pydantic schemas and their source-specific ref fields (mention, feature, campaign, editorial, barfly) for the CEO X post queue and history view
   - `release-certificate-endpoint.md` - CEO-only `GET /api/releases/{version}/certificate`: the `ReleaseCertificateResponse` cross-cell contract (CI verdict, conventions-clean verdict, per-AC QA states, findings summary, approval timestamp, changelog excerpt) and the release task-set derivation heuristic
+  - `agents-overview.md` - `GET /api/dashboard/agents/overview`: per-agent status, current task and spend in one call, with rate-limited providers; parameters, response shape and what it excludes
+- `agent-status-vs-copilot-agents.md` - Audit of dispatcher and agent status/spend exposure against GitHub's Copilot agents mission-control pitch, with the gap fixed and backend/frontend follow-ups
 - `/qa/` - QA-related docs
 - `/services/` - Internal service architecture & patterns
   - `coordination-events.md` - 5 coordination-event notification producers: reassignment, collision-sequencing, unblock, dependency-revival, stale-claim-reaped
