@@ -10,6 +10,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - **Positioning now leads with multi-agent orchestration (ETR, June 2026).** ETR surveyed 21 enterprise technology leaders: 12 planned to increase Cursor spend, 9 to cut it, and 7 of those 9 named Claude Code as the destination. ETR quotes the risk that agentic development is "making any IDE less valuable than ever" unless Cursor delivers multi-agent orchestration ([source](https://research.etr.ai/etr-data-drop/the-cursor-trade-seat-growth-meets-the-agentic-shift)). The README lede and Overview now open with the orchestrated agent workforce, and `docs/positioning/etr-cursor-orchestration-2026-06.md` records what changed and why. No code changed; every claim maps to shipped capability.
 
+- **Positioning now contrasts org-wide routing with Devin's per-task model selection (runtimewire, Aug 2026).** The README and the AI Routing card now say RoboCo routes each role, and each role at a given task complexity, to its own provider and model, with a per-agent pin on top. Devin, per [runtimewire](https://runtimewire.com/article/cognition-adds-grok-4-6-to-devin-s-multi-model-coding-platform), selects a model per task. `docs/positioning/devin-grok-routing-2026-08.md` records what changed and why. Card copy only; no routing code changed.
+
 - **The AI Routing settings card no longer cites a competitor.** Its description carried a dated press citation about Devin's per-task model selection (F-f1d1189f), which goes stale on a config surface. The card now describes only RoboCo's own routing: each role, and each role at a given task complexity, gets its own provider and model. The comparison stays in the README. Copy only; no behavior change.
 
 ### Fixed
