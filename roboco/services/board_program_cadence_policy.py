@@ -112,6 +112,8 @@ class BoardProgramCadencePolicyService(BaseService):
                     approval_rate=metric.approval_rate,
                     sample_size=metric.items_proposed,
                     items_approved=metric.items_approved,
+                    cycles_counted=metric.cycles_counted,
+                    items_approved_counted=metric.items_approved_counted,
                     slowed=slowed,
                     slowdown_disabled=disabled,
                     original_interval_seconds=base,

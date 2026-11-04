@@ -54,12 +54,12 @@ Cross-cutting support layer beneath the delivery services: the service-base/erro
 | `AgentService` | class | `services/agent.py:19` | Read-only agent queries (list/get_by_uuid/get_by_slug/get_by_uuid_or_slug_or_raise) |
 | `check_database` | func | `services/health.py:14` | Opens a DB context, `SELECT 1`, returns `(msg, ok)` |
 | `check_redis` | func | `services/health.py:24` | `redis.from_url(settings.redis_url).ping()` then close |
-| `SettingsService` | class | `services/settings.py:289` | KV CRUD on `system_settings` (get/get_int/get_bool/set/all); `set` validates via `validate_setting`, upserts + flushes, caller commits; a `ceo_name` write also renames the CEO agent row in the same transaction (`_sync_ceo_agent_name`) |
-| `FEATURE_FLAGS` | tuple | `services/settings.py:84` | Panel-tunable flag registry `(key, label)`; maps to `Settings` bool attrs of same name |
-| `validate_setting` | func | `services/settings.py:281` | Reject unknown keys + run per-key validator |
-| `apply_persisted_feature_flags` | func | `services/settings.py:365` | Startup overlay: stored flag value → `setattr(settings, key, bool)`; returns overridden keys |
-| `feature_flag_effective_values` | func | `services/settings.py:350` | Stored override else env default; backs Settings panel card |
-| `SettingValidationError` | class | `services/settings.py:28` | Unknown/invalid setting on write |
+| `SettingsService` | class | `services/settings.py:296` | KV CRUD on `system_settings` (get/get_int/get_bool/set/all); `set` validates via `validate_setting`, upserts + flushes, caller commits; a `ceo_name` write also renames the CEO agent row in the same transaction (`_sync_ceo_agent_name`) |
+| `FEATURE_FLAGS` | tuple | `services/settings.py:85` | Panel-tunable flag registry `(key, label)`; maps to `Settings` bool attrs of same name |
+| `validate_setting` | func | `services/settings.py:288` | Reject unknown keys + run per-key validator |
+| `apply_persisted_feature_flags` | func | `services/settings.py:372` | Startup overlay: stored flag value → `setattr(settings, key, bool)`; returns overridden keys |
+| `feature_flag_effective_values` | func | `services/settings.py:357` | Stored override else env default; backs Settings panel card |
+| `SettingValidationError` | class | `services/settings.py:29` | Unknown/invalid setting on write |
 | `MaintenancePauseService` | class | `services/maintenance_pause.py:42` | CRUD over the three `PauseScope` rows in `system_settings` via `SettingsService`: `get` (expiry resolved on read by the foundation `state_from_payload`) / `all` (every scope, backs the panel GET) |
 | `MaintenancePauseService.pause` | method | `services/maintenance_pause.py:57` | Stamps who/when/why + `expires_at = now + hours` (default `DEFAULT_PAUSE_HOURS`); raises `MaintenancePauseError` on a blank `by` or `hours` outside `(0, MAX_PAUSE_HOURS]`; caller commits |
 | `MaintenancePauseService.resume` | method | `services/maintenance_pause.py:87` | Idempotent clear: writes the not-paused `resume_state` whatever the current state |
