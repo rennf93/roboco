@@ -979,6 +979,10 @@ class IAmDoneMixin(_Base):
             # A fresh token supersedes any other process's job for this task,
             # so only this run's verdict can move it.
             token = await self.task.stamp_gate_run(task_id, notes)
+            # Commit before launch: the job's verdict callback reads this row
+            # in a fresh session, and the request transaction would otherwise
+            # still be open (DbCommitMiddleware commits after the handler).
+            await self.task.session.commit()
             launched = token is not None and registry.launch(
                 task_id,
                 lambda: run_gate_job(agent_id, task_id),
