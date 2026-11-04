@@ -1,6 +1,6 @@
 # RoboCo
 
-AI Agents Company - A virtual organization of 26 AI agents + 1 human CEO, designed to operate as a complete software development workforce.
+Multi-agent orchestration for software delivery: 26 AI agents + 1 human CEO, run as an organization with a task lifecycle, review gates, and CEO-approved merges.
 
 <p align="center">
   <a href="https://www.youtube.com/watch?v=qB5fXv5LeHc">
@@ -24,7 +24,18 @@ AI Agents Company - A virtual organization of 26 AI agents + 1 human CEO, design
 
 ## Overview
 
-RoboCo implements a structured organizational hierarchy with formal communication protocols, task management, and quality controls. The system enables a single human (CEO) to orchestrate complex multi-project development at scale.
+The bar for AI coding tools is orchestration, not editing.
+
+ETR's June 2026 panel of 21 enterprise technology leaders put numbers on it: 12 planned to increase Cursor spend, 9 to cut it. 7 of the 9 decreasers named Claude Code as the destination. The sharpest risk quoted: agentic development is "making any IDE less valuable than ever" unless multi-agent orchestration is delivered. Source: [ETR, The Cursor Trade: Seat Growth Meets the Agentic Shift](https://research.etr.ai/etr-data-drop/the-cursor-trade-seat-growth-meets-the-agentic-shift).
+
+RoboCo is built for that bar. It is not an editor.
+
+- **Org hierarchy.** A CEO, a Board, a Main PM, and three cells (Backend, Frontend, UX/UI), each with its own developers, QA, PM, documenter, and PR reviewer.
+- **Task lifecycle.** Every task moves through claim, build, QA, documentation, and merge, with each status transition role-checked.
+- **Review gates.** QA verifies each task against its acceptance criteria. A separate PR reviewer gates each assembled PR. The agent that wrote the code never reviews it.
+- **CEO-approved merges.** Only the human CEO approves a merge to master.
+
+One human orchestrates multi-project development across all of it.
 
 ```
 CEO (You, the human)

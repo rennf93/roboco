@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **Positioning now leads with multi-agent orchestration (ETR, June 2026).** ETR surveyed 21 enterprise technology leaders: 12 planned to increase Cursor spend, 9 to cut it, and 7 of those 9 named Claude Code as the destination. ETR quotes the risk that agentic development is "making any IDE less valuable than ever" unless Cursor delivers multi-agent orchestration ([source](https://research.etr.ai/etr-data-drop/the-cursor-trade-seat-growth-meets-the-agentic-shift)). The README lede and Overview now open with the orchestrated agent workforce, and `docs/positioning/etr-cursor-orchestration-2026-06.md` records what changed and why. No code changed; every claim maps to shipped capability.
+
 ### Fixed
 
 - **A worktree directory left without its `.git` file no longer locks its task out of that clone.** A reaper's `worktree remove --force` racing an agent's Entire session hooks (still writing `.entire/`) deleted `.git` and stopped, the admin entry was later pruned, and every `worktree add` after that failed with "already exists" (be-pr-reviewer on dc50b7fe, 2026-11-04). `ensure_worktree` and `ensure_worktree_for_resume` now remove such a directory before re-adding the worktree.
