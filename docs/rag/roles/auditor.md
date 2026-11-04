@@ -77,6 +77,21 @@ The Auditor has **silent read access** across the org:
 - Never initiates messages outward — no `notify`, and `dm` only replies inside a DM the CEO opened (never starts one to a peer)
 - Observations are recorded privately via `note(scope="reflect")`
 
+### Reading a task you don't own
+
+`triage()` surfaces tasks (blocked ones included) that are assigned to someone else. `evidence(task_id)` is read-only and works on **any** of them: the gateway's evidence read gate (`ContentActions._evidence_task_or_error` → `_caller_may_read_evidence`) admits the claim-less observer role, so you get the task's content without being its assignee. Other roles keep the stricter rule: a task assigned to someone else is refused unless the caller is a board co-reviewer, depends on the task, or owns an ancestor of it.
+
+Write verbs are a separate, stricter gate and stay closed to you on a task you don't hold:
+
+| Verb | Result for the auditor on a task assigned to someone else |
+|------|-----------------------------------------------------------|
+| `note`, `progress` | refused `not_authorized` ("you are not the assignee of ...") |
+| `dm` | refused `not_authorized` (same assignee check) |
+| `notify` | refused `not_authorized` by its PM/Board-only role gate |
+| `commit` | refused `not_authorized` ("may not commit code"); it takes no `task_id` and is role-gated |
+
+So an "evidence refused: not the assignee" error is no longer expected for you. If you see one, that is a regression. The behavior is pinned by `tests/unit/gateway/test_auditor_evidence_read.py`.
+
 ## Observation Areas
 
 Monitor for:
