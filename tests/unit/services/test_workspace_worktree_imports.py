@@ -168,7 +168,9 @@ def _refused_once_then(
     writes: list[Path] = []
     repairs: list[Path] = []
 
-    def fake_write(clone_root: Path, _source: str) -> subprocess.CompletedProcess[str]:
+    def fake_write(
+        clone_root: Path, _source: str, _venv_name: str = ".venv"
+    ) -> subprocess.CompletedProcess[str]:
         writes.append(clone_root)
         if len(writes) == 1:
             stderr = f"sh: 1: cannot create {clone_root}/x.pth: Permission denied"
