@@ -13133,9 +13133,50 @@ class TaskAdminOverride(_Base):
         except ValueError:
             return await self.unblock(task_id, agent_role="cell_pm")
 
+        if await self._divert_incapable_restore(task, restored_status):
+            return task
         restored = await self._apply_pre_block_restore(task, restored_status)
         await self._notify_unblock(task_id, restored.assigned_to, restored.title)
         return restored
+
+    async def _divert_incapable_restore(
+        self, task: TaskTable, restored_status: TaskStatus
+    ) -> bool:
+        """Divert an unblock restore to the pool when the snapshotted owner's
+        role cannot act on the restored status; True when diverted.
+
+        Same capability predicate the assignment paths use
+        (``_refuse_incapable_assignee`` -> ``lifecycle.assignee_capability_gap``)
+        and the same pool release board-role assignments get. Restoring
+        awaiting_pm_review to an owner with no ``complete`` verb was the
+        4be7d6d3 wedge. Escalation divert (``apply_escalation``) keeps its own
+        target-based check and does not share this path: the escalation target
+        never becomes the restored owner (the snapshot keeps the pre-escalation
+        assignee), so an escalated task's later unblock is covered here.
+        """
+        from roboco.foundation.identity import role_for_uuid_or_none
+        from roboco.foundation.policy import lifecycle as lifecycle_spec
+
+        owner_id = to_python_uuid(task.pre_block_assignee)
+        role = role_for_uuid_or_none(owner_id) if owner_id is not None else None
+        if role is None:
+            return False
+        gap = lifecycle_spec.assignee_capability_gap(
+            role, lifecycle_spec.Status(restored_status.value)
+        )
+        if gap is None:
+            return False
+        await self._divert_owned_task_to_pool(
+            task,
+            note=(
+                f"\n\n[RESTORE REDIRECTED] unblock would restore"
+                f" {restored_status.value} to a {role.value} that cannot act on"
+                f" it ({gap}). Released to the pool for a role-matched claim."
+            ),
+        )
+        self._clear_claim_and_block_snapshot(task)
+        await self.session.flush()
+        return True
 
     async def _apply_pre_block_restore(
         self,
