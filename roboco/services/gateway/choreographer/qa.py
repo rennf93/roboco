@@ -37,7 +37,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import structlog
 
@@ -56,6 +56,9 @@ from roboco.services.gateway.choreographer.collision import build_collision_cont
 from roboco.services.gateway.choreographer.evidence_legs import (
     LegBudget,
     run_bounded_leg,
+)
+from roboco.services.gateway.choreographer.outage_release import (
+    build_or_release,
 )
 from roboco.services.gateway.envelope import Envelope
 from roboco.services.gateway.evidence_builder import build_evidence_for_task
@@ -157,6 +160,16 @@ class QAClaimMixin(_Base):
             None,
         )
 
+    async def _claim_warning_and_evidence(
+        self, qa_agent_id: UUID, t: Any, task_id: UUID, reclaimed: bool
+    ) -> tuple[str | None, dict[str, Any] | None]:
+        """The (warning, evidence) pair claim_review returns: the same-agent
+        re-claim shaping, or a fresh evidence build."""
+        if reclaimed:
+            return await self._reclaim_warning_and_evidence(qa_agent_id, t, task_id)
+        ev = await self._build_qa_claim_evidence(qa_agent_id, t, task_id)
+        return None, ev.as_dict()
+
     async def claim_review(self, qa_agent_id: UUID, task_id: UUID) -> Envelope:
         """QA agent claims task in awaiting_qa for review.
 
@@ -236,17 +249,42 @@ class QAClaimMixin(_Base):
         if claim_rejection is not None:
             return claim_rejection
 
-        # Same-agent re-claim shaping (durability retry vs fleet-loop lean
-        # envelope) lives in ``_reclaim_warning_and_evidence``.
-        warning: str | None = None
-        evidence: dict[str, Any] | None
-        if reclaimed:
-            warning, evidence = await self._reclaim_warning_and_evidence(
-                qa_agent_id, t, task_id
+        return await self._claim_review_result(
+            qa_agent_id, task_id, t, briefing, role_str, reclaimed=reclaimed
+        )
+
+    async def _claim_review_result(
+        self,
+        qa_agent_id: UUID,
+        task_id: UUID,
+        t: Any,
+        briefing: Any,
+        role_str: str,
+        *,
+        reclaimed: bool,
+    ) -> Envelope:
+        """The evidence-bearing envelope for a standing claim. When the build
+        failed during an active review-path outage the claim is released and
+        the retryable rejection returned instead (``outage_release``).
+        Same-agent re-claim shaping lives in ``_reclaim_warning_and_evidence``."""
+        built, released = await build_or_release(
+            self.task,
+            task_id,
+            briefing,
+            verb="claim_review",
+            build=lambda: self._claim_warning_and_evidence(
+                qa_agent_id, t, task_id, reclaimed
+            ),
+            has_gaps=lambda r: bool(r[1] and r[1].get("evidence_gaps")),
+        )
+        if released is not None:
+            return await self._emit_rejection(
+                released.with_introspection(task=t, role=role_str),
+                agent_id=qa_agent_id,
+                task_id=task_id,
+                verb="claim_review",
             )
-        else:
-            ev = await self._build_qa_claim_evidence(qa_agent_id, t, task_id)
-            evidence = ev.as_dict()
+        warning, evidence = cast("tuple[str | None, dict[str, Any] | None]", built)
 
         env = Envelope.ok(
             status=str(t.status),
