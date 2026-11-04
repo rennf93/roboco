@@ -18,4 +18,4 @@ Task 8470a856, PR #1421 (follow-up to PR #1417, AI routing card). Test-only chan
 
 ## Why it was flaky
 
-The original failure was rAF starvation under parallel vitest workers: `requestAnimationFrame` and `performance.now()` stall when many workers compete for CPU, so a real-time `waitFor` can time out even though the hook is correct.
+The flaky test was rAF starvation under parallel vitest workers: `requestAnimationFrame` and `performance.now()` stall when many workers compete for CPU, so a real-time `waitFor` can time out even though the hook is correct.
