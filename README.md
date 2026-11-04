@@ -22,6 +22,22 @@ AI Agents Company - A virtual organization of 26 AI agents + 1 human CEO, design
 > [!TIP]
 > 📚 **Full documentation:** **[docs.roboco.tech](https://docs.roboco.tech)** — install & first run, the company model, a page-by-page panel reference, model providers, the optional subsystems, deployment, and the API.
 
+## RoboCo vs. MetaGPT
+
+MetaGPT is the established open-source "AI software company" framework. It is MIT-licensed and drives PM, architect, project-manager and engineer roles from SOPs ([source](https://github.com/FoundationAgents/MetaGPT)).
+Its commercial spinoff, MGX, is billed as "the world's first AI agent development team" ([source](https://github.com/FoundationAgents/MetaGPT)).
+
+RoboCo makes four different bets. Each one has a receipt in this repo.
+
+| Differentiator | RoboCo | Receipt |
+|---|---|---|
+| Governance | A human CEO holds merge authority. The CEO approves every merge to `master`. | `require_ceo_role` in `roboco/api/deps.py`; `awaiting_ceo_approval` in `roboco/foundation/policy/lifecycle.py`; `roboco/services/gateway/choreographer/pr_gate.py` |
+| Gates per cell | Every cell has its own QA, Documenter and PR Reviewer. | `pass_review` / `fail_review` in `roboco/services/gateway/choreographer/qa.py`; `i_documented` in `doc.py`; `pr_pass` / `pr_fail` in `pr_gate.py` |
+| License and hosting | Self-hosted. AGPL-3.0 only. | `LICENSE` |
+| Model access | Agents run on official provider CLIs and their subscriptions, not metered API keys. | `roboco/llm/providers/` (`codex.py`, `gemini.py`, `grok.py`, `kimi.py`) |
+
+Rationale and sources: [`docs/positioning/metagpt-differentiation-2026-11.md`](docs/positioning/metagpt-differentiation-2026-11.md).
+
 ## Overview
 
 RoboCo implements a structured organizational hierarchy with formal communication protocols, task management, and quality controls. The system enables a single human (CEO) to orchestrate complex multi-project development at scale.
