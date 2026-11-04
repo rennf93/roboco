@@ -116,6 +116,14 @@ def _assistant_texts_from_transcript_entry(entry: object) -> str:
     return "\n".join(_assistant_block_texts(message.get("content"))).strip()
 
 
+# Claude Code's rate_limit_event carries the epoch its usage window resets at;
+# the transcript stores the event JSON-escaped, the stream log plain.
+_SESSION_LIMIT_RESETS_AT = re.compile(r'\\?"resetsAt\\?":\s*(\d{9,11})')
+_SESSION_RESET_GRACE_S = 30.0
+# A weekly window is the longest one Claude reports; a larger value is garbage.
+_SESSION_RESET_MAX_WAIT_S = 8 * 24 * 3600.0
+
+
 class ContainerExitEngine(_Base):
     """A stopped container: the expected-stop breadcrumbs, its state, exit
     diagnostics and log dump, its removal, the crash retry or escalation,
@@ -1833,7 +1841,7 @@ class ProviderParkingEngine(_Base):
                 agent_id,
                 instance,
                 provider=rate_limited_provider,
-                retry_after=_RATE_LIMIT_RETRY_AFTER_S,
+                retry_after=await self._session_limit_retry_after(agent_id),
                 kind="rate_limited",
             )
             return True
@@ -1980,6 +1988,25 @@ class ProviderParkingEngine(_Base):
         if any(marker in lowered for marker in markers):
             return provider_type
         return None
+
+    async def _session_limit_retry_after(self, agent_id: str) -> float:
+        """Seconds to keep a session-limited provider parked: until the
+        ``resetsAt`` Claude Code reports in its rate_limit_event, plus a grace.
+
+        The probe cannot see a subscription's usage window: with no API key it
+        trusts elapsed time alone, and an API key's ``GET /v1/models`` answers
+        regardless of the subscription limit. Parked for only the 300 s floor,
+        it lifted 43 times before the 08:20Z reset on 2026-11-04 and every
+        lift spawned agents straight back into the limit (93 spawns, 93 parks).
+        Falls back to the floor when no future reset is reported.
+        """
+        tail = await self._tail_container_logs(f"roboco-agent-{agent_id}")
+        text = tail + "\n" + self._transcript_tail_text(agent_id)
+        resets = [int(match) for match in _SESSION_LIMIT_RESETS_AT.findall(text)]
+        if not resets:
+            return _RATE_LIMIT_RETRY_AFTER_S
+        wait = max(resets) - datetime.now(UTC).timestamp() + _SESSION_RESET_GRACE_S
+        return min(max(wait, _RATE_LIMIT_RETRY_AFTER_S), _SESSION_RESET_MAX_WAIT_S)
 
     async def _provider_rate_limit_park_target(
         self, agent_id: str, instance: Any
