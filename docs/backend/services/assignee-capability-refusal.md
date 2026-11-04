@@ -1,6 +1,6 @@
 # Assignee-capability refusal on assignment paths
 
-A task must never be assigned to an agent whose role cannot act on the status the task will hold. Two live wedges had this shape: task 54e30535 sat assigned to a product-owner id that has no delivery verbs, so nobody could act on it, and 4be7d6d3 was restored to a status its assignee could not drive. This change closes the **assignment** half: `delegate`, `reassign` and the admin `PATCH assigned_to` path now refuse such an assignment at the moment it is made, and the refusal names the missing capability. The restore-path half (unblock restore, escalation divert) is a separate leaf; it should reuse the same predicate.
+A task must never be assigned to an agent whose role cannot act on the status the task will hold. Two live wedges had this shape: task 54e30535 sat assigned to a product-owner id that has no delivery verbs, so nobody could act on it, and 4be7d6d3 was restored to a status its assignee could not drive. This change closes the **assignment** half: `delegate`, `reassign` and the admin `PATCH assigned_to` path now refuse such an assignment at the moment it is made, and the refusal names the missing capability. The restore-path half (unblock restore, escalation divert) reuses the same predicate; see "Restore-path divert" below.
 
 ## The predicate
 
@@ -42,6 +42,24 @@ The error category is `not_authorized`, with the capability named in the message
 
 Routes and handlers only translate the error; the decision and the DB writes stay in the service layer.
 
+## Restore-path divert
+
+Refusing at assignment time is not enough: `unblock` with restore puts a task back into its pre-block status for its pre-block owner, and that pair can be incoherent. Task 4be7d6d3 was restored to `awaiting_pm_review` for an owner whose role has no `complete` verb; `next` named `complete()`, and `complete()` answered `not_authorized` ("not assigned to you"). Restore now consults the same predicate instead of restoring into a claimable-but-unactable state.
+
+`TaskService._divert_incapable_restore(task, restored_status)` (`roboco/services/task.py`) runs in `unblock_with_restore` just before `_apply_pre_block_restore`:
+
+1. It resolves the role of the snapshotted owner (`task.pre_block_assignee`) via `role_for_uuid_or_none`. No owner, or an unseeded UUID, means no divert (same pass-through as the assignment guard).
+2. It calls `lifecycle.assignee_capability_gap(role, restored_status)`. `None` means the owner can act and the restore proceeds unchanged.
+3. Otherwise it reuses `_divert_owned_task_to_pool`, the pool release Board-role assignments already get, appends a `[RESTORE REDIRECTED]` note to `dev_notes` naming the role, the status and the gap, then clears the claim and the block snapshot. The task lands in `pending` unassigned for a role-matched reclaim, and `unblock_with_restore` returns it without notifying the old owner.
+
+No new capability map or actor-set helper was added.
+
+**Caveat:** a diverted task re-enters as `pending`, not its pre-block status (for example `awaiting_pm_review`). This matches the existing Board divert. The review-queue position is lost, and the next claimant picks the work up from the pool.
+
+### Escalation divert
+
+Escalation divert does **not** share the restore path. `apply_escalation` decides with its own target-based check (`_escalation_diverts_to_pool`) on the escalation target. The escalation target never becomes the restored owner, because the block snapshot keeps the pre-escalation assignee. So a later `unblock` of an escalated task goes through `_divert_incapable_restore` against that snapshotted owner, and both paths are covered without a second capability check.
+
 ## Behavior notes
 
 - Capability is derived, so a change to `CLAIM_RULES` or the action specs changes what is refused with no second table to update.
@@ -52,3 +70,4 @@ Routes and handlers only translate the error; the decision and the DB writes sta
 
 - `tests/unit/foundation/policy/test_assignee_capability.py`: the pure predicate.
 - `tests/unit/services/test_assignee_capability_guard.py`: the service guard on the delegate, reassign and admin-set paths.
+- `tests/unit/services/test_restore_capability_divert.py`: an incapable owner's restore diverts to the pool (status `pending`, unassigned, snapshot cleared, `[RESTORE REDIRECTED]` note); a capable owner's restore is unchanged.
