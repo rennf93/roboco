@@ -4603,7 +4603,9 @@ class TaskLineage(_Base):
         note = (
             f"Upstream base {base_branch!r} has advanced with changes that "
             f"conflict with this branch ({task.branch_name!r}) in: {files}. "
-            f"Merge {base_branch!r} in by hand (sync_branch) before submitting."
+            f"On your own developer branch, run sync_branch and resolve those "
+            f"files. No subtask can bring a root or cell branch current: "
+            f"escalate_up instead of delegating a sync task."
         )
         existing = markers.get_transition_note(task, "base_inheritance_conflict")
         markers.set_transition_note(
