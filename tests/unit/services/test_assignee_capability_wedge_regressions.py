@@ -10,6 +10,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 from uuid import uuid4
 
@@ -17,6 +18,7 @@ import pytest
 from roboco.foundation.identity import AGENTS
 from roboco.models.base import TaskStatus, Team
 from roboco.services.base import AssigneeCapabilityError
+from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
 from roboco.services.task import TaskService
 
 
@@ -71,10 +73,12 @@ async def test_restore_to_status_owner_cannot_act_on_diverts_to_pool(
 
     await svc.unblock_with_restore(uuid4(), task.id, restore=True)
 
-    # Never restored into the unactable status; released for role-matched reclaim.
-    assert task.status == TaskStatus.PENDING
+    # Status kept (no lifecycle restart, no redone work); owner + claim dropped
+    # so the status's own role queue can claim it.
+    assert task.status == TaskStatus(pre_state)
     assert task.assigned_to is None
     assert task.claimed_by is None
+    assert task.active_claimant_id is None
     assert task.pre_block_state is None
     assert task.pre_block_assignee is None
     assert "[RESTORE REDIRECTED]" in task.dev_notes
@@ -169,3 +173,109 @@ async def test_delegate_refuses_incapable_assignee_before_creating() -> None:
     assert "qa" in excinfo.value.message
     assert "pending" in excinfo.value.message
     create.assert_not_awaited()
+
+
+# --- choreographer level: the unblock verb after a divert --------------------
+
+
+def _choreo_deps(task_svc: AsyncMock) -> ChoreographerDeps:
+    journal = AsyncMock()
+    journal.has_decision_for_task.return_value = True
+    journal.has_reflect_for_task.return_value = True
+    journal.latest_decision_at.return_value = datetime.now(UTC)
+    evidence_repo = AsyncMock()
+    for method in (
+        "list_unread_a2a",
+        "list_unread_mentions",
+        "list_pending_notifications",
+        "task_metadata_gaps",
+        "recent_team_activity",
+        "blockers_in_lane",
+        "journal_highlights_for_task",
+    ):
+        getattr(evidence_repo, method).return_value = []
+    task_svc.session.execute = AsyncMock(
+        return_value=MagicMock(
+            scalars=MagicMock(return_value=MagicMock(all=MagicMock(return_value=[])))
+        )
+    )
+    task_svc.session.begin_nested = MagicMock(
+        return_value=MagicMock(
+            __aenter__=AsyncMock(return_value=None),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
+    return ChoreographerDeps(
+        task=task_svc,
+        work_session=AsyncMock(),
+        git=AsyncMock(),
+        a2a=AsyncMock(),
+        journal=journal,
+        audit=AsyncMock(),
+        evidence_repo=evidence_repo,
+    )
+
+
+async def _unblock_incapable_owner() -> tuple[Choreographer, MagicMock, dict]:
+    """Blocked awaiting_pm_review owned by a developer, run through the verb."""
+    svc = _svc()
+    task = _blocked("awaiting_pm_review", "be-dev-1")
+    task.pr_number = 8
+    task.parent_task_id = None
+    object.__setattr__(svc, "get", AsyncMock(return_value=task))
+    object.__setattr__(svc, "_notify_unblock", AsyncMock())
+
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    task_svc.agent_for.return_value = MagicMock(role="main_pm", team="backend")
+    task_svc.unblock_with_restore.side_effect = svc.unblock_with_restore
+    choreo = Choreographer(_choreo_deps(task_svc))
+    env = await choreo.unblock(
+        AGENTS["main-pm"].uuid, task.id, "block resolved upstream; restoring"
+    )
+    return choreo, task, env.as_dict()
+
+
+@pytest.mark.asyncio
+async def test_unblock_verb_after_divert_releases_to_pool_without_stale_verb() -> None:
+    _, task, body = await _unblock_incapable_owner()
+
+    assert body["error"] is None
+    assert body["status"] == "awaiting_pm_review"
+    assert task.assigned_to is None
+    assert "released to the pool" in body["next"]
+    # The old owner's role cannot call complete(); the message must not name it
+    # or promise the original assignee will resume.
+    assert "complete" not in body["next"]
+    assert "will resume" not in body["next"]
+
+
+@pytest.mark.asyncio
+async def test_diverted_task_refuses_old_owner_and_a_capable_pm_completes() -> None:
+    choreo, task, _ = await _unblock_incapable_owner()
+    dev = AGENTS["be-dev-1"].uuid
+    pm = AGENTS["be-pm"].uuid
+    task_svc = choreo.task
+
+    # Pre-fix wedge shape: the incapable owner tries the verb the old message
+    # named and is refused.
+    task_svc.agent_for.return_value = MagicMock(role="developer", team="backend")
+    wedge = await choreo.complete(dev, task.id, "completing the diverted task")
+    assert wedge.as_dict()["error"] == "not_authorized"
+    cell_wedge = await choreo.cell_pm_complete(dev, task.id, "completing it anyway")
+    assert cell_wedge.as_dict()["error"] == "not_authorized"
+
+    # A capable PM claims the status's queue entry (assignee set) and completes.
+    task.assigned_to = pm
+    task.claimed_by = pm
+    task.project_id = uuid4()
+    task.branch_name = "feature/backend/abc--def"
+    task_svc.agent_for.return_value = MagicMock(role="cell_pm", team="backend")
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.cell_pm_complete.return_value = MagicMock(
+        id=task.id, status="completed", title="t"
+    )
+    choreo.git.is_pr_merged_for_task.return_value = True
+    ok = await choreo.cell_pm_complete(pm, task.id, "reviewed and approved the work")
+    assert ok.as_dict()["error"] is None
+    assert ok.status == "completed"

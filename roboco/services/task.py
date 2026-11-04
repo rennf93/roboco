@@ -13166,16 +13166,38 @@ class TaskAdminOverride(_Base):
         )
         if gap is None:
             return False
-        await self._divert_owned_task_to_pool(
-            task,
-            note=(
-                f"\n\n[RESTORE REDIRECTED] unblock would restore"
-                f" {restored_status.value} to a {role.value} that cannot act on"
-                f" it ({gap}). Released to the pool for a role-matched claim."
-            ),
+        # Keep the restored status (a QA-passed awaiting_pm_review must not fall
+        # back to PENDING and redo the lifecycle): only the owner is dropped, so
+        # the status's own role queue (a capable PM for awaiting_pm_review)
+        # claims it. A branchless in_progress still goes PENDING, as in
+        # ``_restore_block_ownership``.
+        if restored_status == TaskStatus.IN_PROGRESS and not task.branch_name:
+            restored_status = TaskStatus.PENDING
+        pre_status = (
+            task.status.value
+            if isinstance(task.status, TaskStatus)
+            else str(task.status)
+        )
+        task.status = restored_status
+        task.assigned_to = cast("Any", None)
+        task.dev_notes = (task.dev_notes or "") + (
+            f"\n\n[RESTORE REDIRECTED] unblock would restore"
+            f" {restored_status.value} to a {role.value} that cannot act on"
+            f" it ({gap}). Released to the pool with the status kept, for a"
+            f" role-matched claim."
         )
         self._clear_claim_and_block_snapshot(task)
+        await self._retarget_agent_claim(owner_id, None, cast("UUID", task.id))
         await self.session.flush()
+        self._emit_status_transition_audit(
+            task,
+            from_status=pre_status,
+            to_status=restored_status.value,
+            agent_role=None,
+            audit_agent_id=owner_id,
+        )
+        if restored_status == TaskStatus.NEEDS_REVISION:
+            task.revision_count = max((task.revision_count or 1) - 1, 0)
         return True
 
     async def _apply_pre_block_restore(
