@@ -7,7 +7,8 @@ const inter = Inter({ subsets: ["latin"], variable: "--font-inter" });
 
 export const metadata: Metadata = {
   title: "RoboCo Control Panel",
-  description: "AI Agents Company - Control Panel",
+  description:
+    "AI Agents Company - Control Panel. The human CEO approves every merge.",
 };
 
 export default function RootLayout({
