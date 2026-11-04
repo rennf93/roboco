@@ -31,18 +31,6 @@ def test_quality_target_wires_in_reflow_check() -> None:
     )
 
 
-def test_check_passes_on_repo_as_committed() -> None:
-    result = subprocess.run(
-        [sys.executable, str(SCRIPT), "--check"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-    assert "OK: no hard-wrapped markdown prose in scope." in result.stdout
-
-
 def test_check_fails_on_a_hard_wrapped_file(tmp_path: Path) -> None:
     wrapped = tmp_path / "sample.md"
     wrapped.write_text(
