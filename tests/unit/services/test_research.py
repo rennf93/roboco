@@ -405,11 +405,30 @@ async def test_keenable_search_keyless_public_endpoint() -> None:
         "https://l.test",
         "https://m.test",
     ]
-    assert out.hits[0].snippet == "d"
+    assert out.hits[0].snippet == "s"
     assert len(out.hits[1].snippet) == KeenableProvider._SNIPPET_MAX_CHARS
     assert len(out.hits[2].snippet) == KeenableProvider._SNIPPET_MAX_CHARS
     with pytest.raises(ResearchUnsupportedError):
         await provider.fetch("https://k.test", 100)
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_keenable_search_snippet_falls_back_to_description() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "results": [
+                    {"title": "Legacy", "url": "https://legacy.test", "description": "d"},
+                ]
+            },
+        )
+
+    client = _client(handler)
+    provider = KeenableProvider(api_key=None, timeout=5.0, client=client)
+    out = await provider.search("q", _RESULTS_CAP)
+    assert out.hits[0].snippet == "d"
     await client.aclose()
 
 

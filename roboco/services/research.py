@@ -392,6 +392,7 @@ class KeenableProvider(SearchProvider):
     name = "keenable"
     _PUBLIC_SEARCH_URL = "https://api.keenable.ai/v1/search/public"
     _SEARCH_URL = "https://api.keenable.ai/v1/search"
+    # Legacy ``description`` fields can be huge; cap snippets for panel payload size.
     _SNIPPET_MAX_CHARS = 1000
 
     @property
@@ -414,7 +415,7 @@ class KeenableProvider(SearchProvider):
             SearchHit(
                 title=str(item.get("title", "")),
                 url=str(item["url"]),
-                snippet=str(item.get("description") or item.get("snippet") or "")[
+                snippet=str(item.get("snippet") or item.get("description") or "")[
                     : self._SNIPPET_MAX_CHARS
                 ],
             )
