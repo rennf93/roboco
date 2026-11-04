@@ -126,7 +126,7 @@ async def test_board_escalate_to_ceo_succeeds_for_head_marketing() -> None:
 async def test_board_escalate_to_ceo_blocks_wrong_state() -> None:
     agent_id = uuid4()
     task_id = uuid4()
-    t = MagicMock(id=task_id, status="in_progress", team="backend")
+    t = MagicMock(id=task_id, status="claimed", team="backend")
     task_svc = AsyncMock()
     task_svc.get.return_value = t
     task_svc.agent_for.return_value = MagicMock(role="product_owner")

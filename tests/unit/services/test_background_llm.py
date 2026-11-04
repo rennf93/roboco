@@ -78,7 +78,8 @@ def _is_gone(pid: int) -> bool:
     """No such process, or only a zombie left for its new parent to reap."""
     try:
         state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
+        # A process reaped mid-read raises ESRCH instead of ENOENT.
         return True
     return state == "Z"
 

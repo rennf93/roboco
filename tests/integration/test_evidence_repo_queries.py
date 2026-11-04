@@ -18,6 +18,7 @@ from roboco.db.tables import (
     NotificationTable,
     ProjectTable,
 )
+from roboco.foundation.policy.content import markers
 from roboco.models import AgentRole, AgentStatus, Team
 from roboco.models.base import (
     Complexity,
@@ -186,10 +187,15 @@ async def test_blockers_and_recent_activity_scoped_to_team(setup: dict) -> None:
         )
     )
     task.status = TaskStatus.BLOCKED
+    reason = "Nothing to commit: the acceptance criteria are already met on the base"
+    markers.set_escalation(task, from_slug="be-dev-1", to_slug="be-pm", reason=reason)
     await setup["db"].flush()
 
     blockers = await setup["repo"].blockers_in_lane(agent.id)
-    assert any(b["task_id"] == str(task.id) for b in blockers)
+    (mine,) = [b for b in blockers if b["task_id"] == str(task.id)]
+    # 2026-11-04: fe-pm unblocked 335deff4 six times reading "no blocker was
+    # recorded", because this row never carried the developer's reason.
+    assert mine["escalation_reason"] == reason
     recent = await setup["repo"].recent_team_activity(agent.id)
     assert any(r["task_id"] == str(task.id) for r in recent)
 

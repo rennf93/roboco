@@ -29,6 +29,7 @@
 | blocked | pending | unblock | any |
 | claimed | cancelled | cancel | cell_pm, ceo, main_pm |
 | claimed | in_progress | start | any |
+| in_progress | awaiting_ceo_approval | escalate_to_ceo | head_marketing, main_pm, product_owner |
 | in_progress | awaiting_pm_review | submit_pm_review | any |
 | in_progress | awaiting_pr_review | submit_for_review | any |
 | in_progress | blocked | block | any |

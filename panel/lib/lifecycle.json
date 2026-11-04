@@ -717,6 +717,16 @@
       "target": "in_progress"
     },
     {
+      "action": "escalate_to_ceo",
+      "roles": [
+        "head_marketing",
+        "main_pm",
+        "product_owner"
+      ],
+      "source": "in_progress",
+      "target": "awaiting_ceo_approval"
+    },
+    {
       "action": "submit_pm_review",
       "roles": null,
       "source": "in_progress",
