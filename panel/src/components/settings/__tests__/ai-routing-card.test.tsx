@@ -28,6 +28,8 @@ const {
   setOpenRouterKey,
   getZaiKey,
   setZaiKey,
+  getHumminKey,
+  setHumminKey,
   searchOpenRouterModels,
   getNebiusKey,
   setNebiusKey,
@@ -82,6 +84,8 @@ const {
   // Mirrors the backend ZaiKeyStatus schema (has_key + enabled).
   getZaiKey: vi.fn(async () => ({ has_key: false, enabled: false })),
   setZaiKey: vi.fn(async () => ({ has_key: true, enabled: true })),
+  getHumminKey: vi.fn(async () => ({ has_key: false, enabled: false })),
+  setHumminKey: vi.fn(async () => ({ has_key: true, enabled: true })),
   searchOpenRouterModels: vi.fn(async (): Promise<OpenRouterModel[]> => []),
   getNebiusKey: vi.fn(async () => ({ has_key: false, enabled: false })),
   setNebiusKey: vi.fn(async () => ({ has_key: true, enabled: true })),
@@ -140,6 +144,8 @@ vi.mock("@/lib/api/providers", () => ({
     setOpenRouterKey,
     getZaiKey,
     setZaiKey,
+    getHumminKey,
+    setHumminKey,
     searchOpenRouterModels,
     getNebiusKey,
     setNebiusKey,
@@ -449,6 +455,8 @@ describe("AIRoutingCard", () => {
     setOpenRouterKey.mockClear();
     getZaiKey.mockClear();
     setZaiKey.mockClear();
+    getHumminKey.mockClear();
+    setHumminKey.mockClear();
     searchOpenRouterModels.mockClear();
     getNebiusKey.mockClear();
     setNebiusKey.mockClear();
@@ -509,7 +517,7 @@ describe("AIRoutingCard", () => {
   it("shows 'not set' badges by default and saves+clears the Grok key", async () => {
     render(withQueryClient(<AIRoutingCard />));
     await screen.findByText("Grok (xAI) API key");
-    expect(screen.getAllByText("not set")).toHaveLength(6); // Grok + Ollama + OpenRouter + Nebius + Z.ai + hummin
+    expect(screen.getAllByText("not set")).toHaveLength(6);
 
     const grokInput = screen.getByPlaceholderText("xai-…");
     fireEvent.change(grokInput, { target: { value: "xai-secret" } });
@@ -643,7 +651,7 @@ describe("AIRoutingCard", () => {
     ).toBe("closed");
 
     const notSetBadges = screen.getAllByText("not set");
-    expect(notSetBadges).toHaveLength(6); // Grok + Ollama + OpenRouter + Nebius + Z.ai + hummin
+    expect(notSetBadges).toHaveLength(6);
     for (const badge of notSetBadges) {
       expect(badge.getAttribute("data-state")).toBe("closed");
     }
@@ -1495,7 +1503,7 @@ describe("AIRoutingCard", () => {
       expect(screen.queryByText(/No models found/)).not.toBeInTheDocument();
     });
 
-    it("maps a 429 to the rate-limit copy and an unknown failure to the generic fallback", async () => {
+    it("maps a 429 to the rate-limit copy", async () => {
       searchOpenRouterModels.mockRejectedValueOnce({
         response: { status: 429 },
       });
@@ -1508,6 +1516,34 @@ describe("AIRoutingCard", () => {
         { timeout: 3000 },
       );
       expect(screen.queryByText(/No models found/)).not.toBeInTheDocument();
+    });
+
+    it("maps an HTTP 400 to the key-not-set copy", async () => {
+      searchOpenRouterModels.mockRejectedValueOnce({
+        response: { status: 400 },
+      });
+      const search = await openPicker();
+      fireEvent.change(search, { target: { value: "glm" } });
+
+      await screen.findByText(
+        /OpenRouter API key not set — save your key above first/,
+        {},
+        { timeout: 3000 },
+      );
+    });
+
+    it("maps an unknown failure to the generic unavailable copy", async () => {
+      searchOpenRouterModels.mockRejectedValueOnce({
+        response: { status: 500 },
+      });
+      const search = await openPicker();
+      fireEvent.change(search, { target: { value: "glm" } });
+
+      await screen.findByText(
+        /OpenRouter API is unavailable — try again in a moment/,
+        {},
+        { timeout: 3000 },
+      );
     });
 
     it("maps a timed-out models query to the timeout copy", async () => {
@@ -1605,6 +1641,87 @@ describe("AIRoutingCard", () => {
   // counterpart above (same has_key contract, same debounce, same Saved-badge
   // rules) against the /providers/nebius-* endpoints.
   // -------------------------------------------------------------------------
+
+  describe("Hummin and Z.ai mode round-trips", () => {
+    // applyMode POST then GET snapshot: the GET returns whatever the POST
+    // stored, as derive_mode does server-side, so the highlighted button
+    // after the refetch must be the mode the backend reports.
+    const cases = [
+      {
+        mode: "hummin",
+        label: "Hummin (GLM)",
+        keyMock: getHumminKey,
+        otherLabel: "Z.ai (GLM)",
+      },
+      {
+        mode: "zai",
+        label: "Z.ai (GLM)",
+        keyMock: getZaiKey,
+        otherLabel: "Hummin (GLM)",
+      },
+    ] as const;
+
+    it.each(cases)(
+      "applying $mode highlights the $label button after the snapshot refetch",
+      async ({ mode, label, keyMock, otherLabel }) => {
+        let stored = "anthropic";
+        getMode.mockImplementation(async () => ({
+          mode: stored,
+          assignments: [],
+        }));
+        applyMode.mockImplementation(async (payload: { mode: string }) => {
+          stored = payload.mode;
+          return {
+            mode: payload.mode as ModeSnapshot["mode"],
+            assignments: [],
+          };
+        });
+        keyMock.mockResolvedValue({ has_key: true, enabled: true });
+        const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+        render(withQueryClient(<AIRoutingCard />));
+        await screen.findByText("Grok (xAI) API key");
+
+        const button = await waitFor(() => {
+          const b = screen.getByText(label).closest("button")!;
+          expect(b).not.toBeDisabled();
+          return b;
+        });
+        expect(within(button).queryByText("active")).not.toBeInTheDocument();
+
+        fireEvent.click(button);
+
+        await waitFor(() => expect(applyMode).toHaveBeenCalledWith({ mode }));
+        await waitFor(() =>
+          expect(
+            within(screen.getByText(label).closest("button")!).getByText(
+              "active",
+            ),
+          ).toBeInTheDocument(),
+        );
+        expect(
+          within(screen.getByText(otherLabel).closest("button")!).queryByText(
+            "active",
+          ),
+        ).not.toBeInTheDocument();
+        confirmSpy.mockRestore();
+        getMode.mockImplementation(async () => ({
+          mode: "anthropic",
+          assignments: [],
+        }));
+        keyMock.mockResolvedValue({ has_key: false, enabled: false });
+      },
+    );
+
+    it.each(cases)(
+      "$label is disabled while its key is not saved",
+      async ({ label }) => {
+        render(withQueryClient(<AIRoutingCard />));
+        await screen.findByText("Grok (xAI) API key");
+
+        expect(screen.getByText(label).closest("button")).toBeDisabled();
+      },
+    );
+  });
 
   describe("Nebius mode button", () => {
     it("applies mode='nebius' on confirm when the key is set", async () => {

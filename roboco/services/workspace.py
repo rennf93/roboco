@@ -500,6 +500,44 @@ class WorkspaceWorktrees(_Base):
             timeout=settings.git_command_timeout_seconds,
         )
 
+    @classmethod
+    def _worktree_is_linked(cls, clone_root: Path, worktree: Path) -> bool:
+        """True when ``worktree`` has its ``.git`` file and the clone's git
+        still lists it, i.e. its admin dir under ``.git/worktrees`` survives."""
+        if not (worktree.exists() and (worktree / ".git").is_file()):
+            return False
+        listed = cls._worktree_git(
+            clone_root, ["worktree", "list", "--porcelain"], check=False
+        )
+        # A failed listing proves nothing: keep the worktree rather than remove it.
+        if listed.returncode != 0:
+            return True
+        target = os.path.realpath(worktree)
+        prefix = "worktree "
+        return any(
+            os.path.realpath(line.removeprefix(prefix)) == target
+            for line in listed.stdout.splitlines()
+            if line.startswith(prefix)
+        )
+
+    @staticmethod
+    def _clear_unlinked_worktree_dir(worktree: Path) -> None:
+        """Remove a worktree directory git no longer links to its clone.
+
+        That is what a ``worktree remove --force`` leaves when files appear
+        while it deletes (an agent's Entire session hooks writing ``.entire/``
+        after the reaper started): git deletes ``.git`` first, the tree stays,
+        and ``worktree add`` then refuses the path for good (be-pr-reviewer on
+        dc50b7fe, 2026-11-04). A ``.git`` file whose admin dir was pruned is
+        the same dead end: every git command in it fails "not a git
+        repository" (be-dev-1 on e7d5fb64, 2026-11-04). Either way nothing in
+        it can be committed.
+        """
+        if worktree.is_symlink() or not worktree.is_dir():
+            return
+        logger.warning("removing unlinked worktree directory", worktree=str(worktree))
+        remove_workspace_tree(worktree, ignore_errors=True)
+
     async def ensure_worktree(
         self, clone_root: Path, worktree: Path, branch: str, base: str
     ) -> None:
@@ -512,7 +550,8 @@ class WorkspaceWorktrees(_Base):
         F123: replaces the shared-clone ``reset --hard`` + ``checkout -b`` that
         clobbered a still-active root.
         """
-        if not (worktree.exists() and (worktree / ".git").is_file()):
+        if not self._worktree_is_linked(clone_root, worktree):
+            self._clear_unlinked_worktree_dir(worktree)
             # Stale registrations (checkout dir deleted out-of-band while the
             # admin dir survives) make `worktree add` fatal — prune first.
             self._worktree_git(clone_root, ["worktree", "prune"], check=False)
@@ -553,7 +592,8 @@ class WorkspaceWorktrees(_Base):
         "invalid reference". ``project_slug`` is optional: callers that know
         it get an authenticated fetch; the rest fall back to unauthenticated.
         """
-        if not (worktree.exists() and (worktree / ".git").is_file()):
+        if not self._worktree_is_linked(clone_root, worktree):
+            self._clear_unlinked_worktree_dir(worktree)
             # Stale registrations (checkout dir deleted out-of-band while the
             # admin dir survives) make `worktree add` fatal — prune first.
             self._worktree_git(clone_root, ["worktree", "prune"], check=False)
@@ -947,7 +987,8 @@ class WorkspaceWorktreeHealing(_Base):
             ).returncode
             != 0
         ):
-            return  # fetch failed, or the branch has no upstream counterpart
+            # fetch failed, or the branch has no upstream counterpart
+            return
         ahead = self._worktree_git(
             clone_root, ["rev-list", "--count", f"{origin_ref}..HEAD"], check=False
         )
@@ -964,7 +1005,8 @@ class WorkspaceWorktreeHealing(_Base):
                     clone_root=str(clone_root),
                     branch=branch,
                 )
-            return  # in-sync, or strictly ahead — nothing to do
+            # in-sync, or strictly ahead, nothing to do
+            return
         reset = self._worktree_git(
             clone_root, ["reset", "--hard", origin_ref], check=False
         )
