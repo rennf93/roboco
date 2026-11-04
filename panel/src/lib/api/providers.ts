@@ -116,6 +116,11 @@ export type RoutingMode =
 export interface ModeSnapshot {
   mode: RoutingMode;
   assignments: ModelAssignment[];
+  /** Effective pinned CLI models (env-overridable) and the Ollama default. */
+  codex_cli_model?: string;
+  gemini_cli_model?: string;
+  kimi_cli_model?: string;
+  ollama_default_model?: string;
 }
 
 export interface ApplyModePayload {
