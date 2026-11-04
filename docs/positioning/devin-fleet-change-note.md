@@ -33,7 +33,7 @@ The use cases Devin lists map onto roles RoboCo already ships:
 | Documentation | `documenter`, gate `awaiting_documentation` |
 | Triage | `triage` verb on PM and Board roles |
 
-Receipt: `roboco/foundation/policy/lifecycle.py` restricts each gate transition to its role. The author of a change cannot pass it. Roles and gates are described in `CLAUDE.md`.
+Receipt: `roboco/foundation/policy/lifecycle.py` restricts each gate transition to its role. The author of a change cannot pass it. Roles and gates are described in `.claude/rules/task-lifecycle.md` and `docs/rag/lifecycle/status-transitions.md`.
 
 ## Scope
 
