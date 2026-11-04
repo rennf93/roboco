@@ -45,6 +45,9 @@ from roboco.foundation.policy.board_programs import (
 from roboco.foundation.policy.content import markers
 from roboco.models.base import TaskStatus
 from roboco.services.base import BaseService
+from roboco.services.board_program_cadence_policy import (
+    get_board_program_cadence_policy_service,
+)
 from roboco.services.settings import get_settings_service
 from roboco.services.task import get_task_service
 
@@ -903,11 +906,15 @@ class BoardProgramEngine(BaseService, BoardProgramCycles, BoardProgramDecisions)
         blocked, last_opened_at = await self._dedup_state(key)
         if blocked:
             return False
+        base_interval = _interval_override(key) or program.default_interval_seconds
+        interval = await get_board_program_cadence_policy_service(
+            self.session
+        ).effective_interval(key, base_interval)
         if not program_due(
             program,
             now=now,
             last_opened_at=last_opened_at,
-            interval_override=_interval_override(key),
+            interval_override=interval,
         ):
             # B13 decisions screen: an ON-mode confident "due early this
             # tick" verdict may open the cycle off-schedule (pure

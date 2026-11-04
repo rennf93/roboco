@@ -22,7 +22,11 @@ from roboco.api.utils.board_programs import require_ceo as _require_ceo
 from roboco.api.utils.board_programs import to_response as _to_response
 from roboco.foundation.policy.board_programs import PROGRAMS
 from roboco.foundation.policy.maintenance_pause import PauseScope
+from roboco.models.board_program_cadence_review import ProgramCadenceReview
 from roboco.security import guard_deco
+from roboco.services.board_program_cadence_policy import (
+    get_board_program_cadence_policy_service,
+)
 from roboco.services.board_programs import get_board_program_engine
 from roboco.services.maintenance_pause import is_paused
 
@@ -37,6 +41,31 @@ async def list_board_programs(
     _require_ceo(agent)
     engine = get_board_program_engine(db)
     return [await _to_response(engine, key) for key in PROGRAMS]
+
+
+@router.get("/cadence-review", response_model=list[ProgramCadenceReview])
+async def cadence_review(
+    db: DbSession, agent: CurrentAgentContext
+) -> list[ProgramCadenceReview]:
+    """Every program's cost per cycle, approval rate and slowdown numbers."""
+    _require_ceo(agent)
+    return await get_board_program_cadence_policy_service(db).review()
+
+
+@router.post("/{key}/cadence-slowdown", response_model=list[ProgramCadenceReview])
+async def set_cadence_slowdown(
+    key: str, disabled: bool, db: DbSession, agent: CurrentAgentContext
+) -> list[ProgramCadenceReview]:
+    """Reverse (``disabled=true``) or restore a program's cadence slowdown."""
+    _require_ceo(agent)
+    if key not in PROGRAMS:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Unknown Board Program"
+        )
+    service = get_board_program_cadence_policy_service(db)
+    await service.set_slowdown_disabled(key, disabled)
+    await db.commit()
+    return await service.review()
 
 
 @router.post("/{key}/run-now", response_model=BoardProgramResponse)
