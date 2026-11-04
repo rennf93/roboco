@@ -45,4 +45,4 @@ The three CLI fields are `Field(default_factory=lambda: settings.<name>)`, so th
 
 ## Frontend note
 
-`panel/src/components/.../ai-routing-card.tsx` still carries a TODO and the hardcoded model names; the frontend cell should switch it to these four fields.
+The panel consumes these four fields: `modeCopy()` in `panel/src/components/settings/ai-routing-card.tsx` renders the mode descriptions from the `ModeSnapshot` type in `panel/src/lib/api/providers.ts`.
