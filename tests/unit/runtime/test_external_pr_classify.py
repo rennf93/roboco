@@ -37,9 +37,12 @@ def test_projects_one_per_repo_collapses_monorepo() -> None:
 
 def test_projects_one_per_repo_normalizes_and_skips_repoless() -> None:
     projects = [
-        _proj("a", "https://github.com/rennf93/roboco"),  # no .git
-        _proj("b", "https://github.com/rennf93/roboco.git/"),  # .git + slash
-        _proj("coordination", None),  # product/coordination project, no repo
+        # no .git
+        _proj("a", "https://github.com/rennf93/roboco"),
+        # .git + slash
+        _proj("b", "https://github.com/rennf93/roboco.git/"),
+        # product/coordination project, no repo
+        _proj("coordination", None),
     ]
     out = AgentOrchestrator._projects_one_per_repo(projects)
     # a & b are the same repo; coordination (no git_url) is skipped.
@@ -55,7 +58,8 @@ def test_projects_one_per_repo_normalizes_and_skips_repoless() -> None:
         ({"is_fork": False, "author_association": "OWNER"}, False),
         ({"is_fork": False, "author_association": "MEMBER"}, False),
         ({"is_fork": False, "author_association": "COLLABORATOR"}, False),
-        ({"is_fork": False, "author_association": "member"}, False),  # case-insensitive
+        # case-insensitive
+        ({"is_fork": False, "author_association": "member"}, False),
         # Outside associations are external even on a same-repo branch.
         ({"is_fork": False, "author_association": "CONTRIBUTOR"}, True),
         ({"is_fork": False, "author_association": "FIRST_TIME_CONTRIBUTOR"}, True),
@@ -93,7 +97,8 @@ def test_pr_author_allowed(
     [
         ("external_pr_supersede pr=42 review=abc", 42),
         ("external_pr_supersede pr=7 review=abc closed=1", 7),
-        ("external_pr_supersede pr=50 review=abc", 50),  # not confused by pr=5
+        # not confused by pr=5
+        ("external_pr_supersede pr=50 review=abc", 50),
         ("", None),
         ("no marker here", None),
         ("external_pr_supersede pr=notanint review=abc", None),
@@ -117,7 +122,8 @@ def _orch() -> AgentOrchestrator:
 
 def _svc(*, owns_branch: bool = False) -> MagicMock:
     svc = MagicMock()
-    svc.ingest_external_pr = AsyncMock(return_value=object())  # truthy "created"
+    # truthy "created"
+    svc.ingest_external_pr = AsyncMock(return_value=object())
     svc.active_task_owns_branch = AsyncMock(return_value=owns_branch)
     return svc
 
@@ -283,6 +289,28 @@ async def test_skip_owner_authored_pr(monkeypatch: pytest.MonkeyPatch) -> None:
         "author_is_owner": True,
         "author_association": "OWNER",
         "head_ref": "feat/grok-provider-seam",
+    }
+    ok = await _orch()._ingest_pr_if_reviewable(
+        svc, SimpleNamespace(id=uuid4()), pr, uuid4(), set()
+    )
+    assert ok is False
+    svc.ingest_external_pr.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_fork", [False, True])
+async def test_skip_draft_pr(monkeypatch: pytest.MonkeyPatch, *, is_fork: bool) -> None:
+    # A draft is work in progress: every push re-filed a review of guard-core-app
+    # #409 while its author was still building it.
+    monkeypatch.setattr(orch_mod.settings, "internal_pr_enabled", True)
+    monkeypatch.setattr(orch_mod.settings, "external_pr_enabled", True)
+    svc = _svc(owns_branch=False)
+    pr = {
+        "number": 409,
+        "is_fork": is_fork,
+        "author_association": "MEMBER",
+        "head_ref": "feat/frontend-premium-p0",
+        "draft": True,
     }
     ok = await _orch()._ingest_pr_if_reviewable(
         svc, SimpleNamespace(id=uuid4()), pr, uuid4(), set()
