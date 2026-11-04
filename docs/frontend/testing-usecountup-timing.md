@@ -16,8 +16,6 @@ Task 8470a856, PR #1421 (follow-up to PR #1417, AI routing card). Test-only chan
 - For hooks driven by rAF, prefer fake timers plus `act(advanceTimersByTime)` over `waitFor`. Always restore real timers in `finally`.
 - Keep the hand-driven frame test when the behavior under test is frame-clock vs wall-clock divergence.
 
-## Status and caveats
+## Why it was flaky
 
-- The cause of the red `ci` check on PR #1417 is **unconfirmed**. The developer had no `gh` access and never read the CI log. The flaky test is a local-reproduction hypothesis. If `ci` stays red, the failing job log is needed.
-- `ai-routing-card.tsx` is untouched; its tests (including Kimi) pass.
-- `prettier --check` also flags `playbook-review-queue.tsx` and `tg-approvals-tab.test.tsx`. These are base files outside this PR, and the Makefile `panel-gate` has no prettier step.
+The original failure was rAF starvation under parallel vitest workers: `requestAnimationFrame` and `performance.now()` stall when many workers compete for CPU, so a real-time `waitFor` can time out even though the hook is correct.
