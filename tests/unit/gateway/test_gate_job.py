@@ -449,6 +449,50 @@ async def test_i_am_done_stamps_a_gate_run_carrying_the_submit_notes(
 
 
 @pytest.mark.asyncio
+async def test_i_am_done_commits_the_stamp_before_launching_the_gate_job(
+    gate_registry: RecordingGateRegistry, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fast verdict must see the committed gate_run stamp, so the session
+    commit is awaited after stamping and before the job launches."""
+    agent_id, task_id = uuid4(), uuid4()
+    task = _ready_task(task_id, agent_id)
+    order: list[str] = []
+    task_svc = AsyncMock()
+    task_svc.get.return_value = task
+    task_svc.agent_for.return_value = MagicMock(
+        id=agent_id, role="developer", team="backend", slug=None
+    )
+    task_svc.submit_verification.return_value = MagicMock(status="verifying")
+
+    async def _stamp(*_a: Any) -> str:
+        order.append("stamp")
+        return "tok-1"
+
+    async def _commit() -> None:
+        order.append("commit")
+
+    task_svc.stamp_gate_run.side_effect = _stamp
+    task_svc.session.commit.side_effect = _commit
+    real_launch = gate_registry.launch
+
+    def _launch(*args: Any, **kwargs: Any) -> bool:
+        order.append("launch")
+        return real_launch(*args, **kwargs)
+
+    monkeypatch.setattr(gate_registry, "launch", _launch)
+    journal = AsyncMock()
+    journal.has_reflect_for_task.return_value = True
+    journal.has_decision_for_task.return_value = True
+    journal.has_learning_for_task.return_value = False
+    journal.has_struggle_for_task.return_value = False
+    c = Choreographer(_make_deps(task=task_svc, journal=journal))
+
+    await c.i_am_done(agent_id, task_id, "done")
+
+    assert order == ["stamp", "commit", "launch"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "mutate",
     [
