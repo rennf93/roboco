@@ -44,4 +44,3 @@
 | pending | claimed | claim | any |
 | verifying | awaiting_qa | submit_qa | any |
 | verifying | cancelled | cancel | cell_pm, ceo, main_pm |
-| verifying | in_progress | gate_failed | any |
