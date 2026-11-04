@@ -9,6 +9,7 @@ stays pure text; every workspace read/write goes through ``workspace_git``
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 from functools import lru_cache
 from pathlib import Path
@@ -110,7 +111,7 @@ async def reflow_worktree_markdown(
         changed = [p for p in result.stdout.splitlines() if p]
         if files:
             changed = [p for p in changed if p in files]
-        return reflow_changed_markdown(workspace, changed)
+        return await asyncio.to_thread(reflow_changed_markdown, workspace, changed)
     except Exception as exc:
         log.warning("markdown reflow skipped", error=str(exc))
         return []
