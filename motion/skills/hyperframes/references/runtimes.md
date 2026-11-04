@@ -27,7 +27,11 @@ Charts and map overlays: drive them from a GSAP tween's `onUpdate`, not the libr
 
 ## dotLottie browser setup
 
-Copy `dist/index.js` and `dist/dotlottie-player.wasm` from the same pinned `@lottiefiles/dotlottie-web` release (for example, 0.81.0) into the project's `lib/dotlottie-web/` directory. Its CommonJS entry cannot run as a classic browser script. Import the ESM entry and set the local WASM URL before creating the player, so rendering loads the SDK, WASM and animation from project files.
+Copy `dist/index.js` and `dist/dotlottie-player.wasm` from the same pinned
+`@lottiefiles/dotlottie-web` release (for example, 0.81.0) into the project's
+`lib/dotlottie-web/` directory. Its CommonJS entry cannot run as a classic
+browser script. Import the ESM entry and set the local WASM URL before creating
+the player, so rendering loads the SDK, WASM and animation from project files.
 
 ```html
 <canvas id="anim" style="width:100%;height:100%"></canvas>
