@@ -42,7 +42,7 @@ def _decide(metric: ProgramCadenceMetric) -> SlowdownDecision:
     return decide_slowdown(
         cost_per_cycle_usd=metric.cost_per_cycle_usd,
         items_proposed=metric.items_proposed,
-        items_approved=metric.items_approved,
+        items_approved=metric.items_approved_counted,
         cycles_counted=metric.cycles_counted,
         limits=CadenceLimits(
             min_proposals=settings.board_cadence_min_proposals,

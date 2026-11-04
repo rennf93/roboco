@@ -7,7 +7,9 @@ A program is SLOWED when all three hold:
 2. cost: ``cost_per_cycle_usd >= cost_threshold_usd`` (inclusive boundary);
 3. unjustified: the approval rate does not justify that cost. The rule is cost
    per approved proposal = ``cost_per_cycle / approved_per_cycle`` where
-   ``approved_per_cycle = items_approved / cycles_counted``; the cost is
+   ``approved_per_cycle = items_approved / cycles_counted`` (both over the
+   cost-known cycles only, so approvals of cost-unknown cycles never inflate
+   it); the cost is
    justified only while that figure stays BELOW ``cost_threshold_usd``. A
    program with zero approvals has an infinite cost per approved proposal.
 

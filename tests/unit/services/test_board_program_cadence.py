@@ -11,6 +11,10 @@ from typing import TYPE_CHECKING
 import pytest
 import pytest_asyncio
 from roboco.db.tables import AgentSpawnSessionTable, BoardProgramCycleTable
+from roboco.foundation.policy.board_program_cadence import (
+    CadenceLimits,
+    decide_slowdown,
+)
 from roboco.foundation.policy.board_programs import PROGRAMS
 from roboco.services.board_program_cadence import get_board_program_cadence_service
 from roboco.services.task import ROADMAP_SOURCE
@@ -28,6 +32,7 @@ MIXED_TOTAL = 60.0
 MIXED_MEAN = 30.0
 OTHER_COST = 99.0
 TWO_CYCLES = 2
+MISSING_CYCLES = 3
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -163,6 +168,52 @@ async def test_mixed_cycles_sum_cost_and_rate_per_program(
     assert main.approval_rate == HALF
     assert metrics[OTHER].total_cost_usd == OTHER_COST
     assert metrics[OTHER].approval_rate == 0
+
+
+@pytest.mark.asyncio
+async def test_approvals_of_missing_cost_cycles_stay_out_of_counted_approvals(
+    db_session: AsyncSession,
+) -> None:
+    await _seed(db_session)
+    task = await _make_exploration(db_session, source=ROADMAP_SOURCE)
+    db_session.add_all(
+        [
+            BoardProgramCycleTable(
+                program_key=KEY,
+                exploration_task_id=task.id,
+                items_proposed=2,
+                items_approved=0,
+            ),
+            *(
+                BoardProgramCycleTable(
+                    program_key=KEY,
+                    exploration_task_id=None,
+                    items_proposed=1,
+                    items_approved=1,
+                )
+                for _ in range(MISSING_CYCLES)
+            ),
+            _session_row(str(task.id), 60.0),
+        ]
+    )
+    await db_session.flush()
+
+    metric = (
+        await get_board_program_cadence_service(db_session).program_cadence_metrics()
+    )[KEY]
+
+    assert metric.cycles_counted == 1
+    assert metric.cycles_missing_cost == MISSING_CYCLES
+    assert metric.items_approved == MISSING_CYCLES
+    assert metric.items_approved_counted == 0
+    decision = decide_slowdown(
+        cost_per_cycle_usd=metric.cost_per_cycle_usd,
+        items_proposed=metric.items_proposed,
+        items_approved=metric.items_approved_counted,
+        cycles_counted=metric.cycles_counted,
+        limits=CadenceLimits(min_proposals=1, cost_threshold_usd=50.0),
+    )
+    assert decision.slowed
 
 
 def test_metric_keys_exist_in_registry() -> None:
