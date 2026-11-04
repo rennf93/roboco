@@ -210,6 +210,47 @@ async def test_resume_replaces_a_tree_left_without_its_git_file(clone: Path) -> 
     assert _git(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() == "feature/dc50b7fe"
 
 
+def _prune_admin_dir(clone: Path, wt: Path) -> None:
+    """A worktree whose .git file points at an admin dir that is gone (a
+    September worktree on be-dev-1: every git command in it failed)."""
+    shutil.rmtree(clone / ".git" / "worktrees" / wt.name)
+
+
+async def test_ensure_worktree_readds_a_worktree_whose_admin_dir_is_gone(
+    clone: Path,
+) -> None:
+    svc = _service()
+    wt = clone / ".worktrees" / "e7d5fb64"
+    await svc.ensure_worktree(clone, wt, "feature/e7d5fb64", "main")
+    _prune_admin_dir(clone, wt)
+
+    await svc.ensure_worktree(clone, wt, "feature/e7d5fb64", "main")
+
+    assert _git(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() == "feature/e7d5fb64"
+
+
+async def test_resume_readds_a_worktree_whose_admin_dir_is_gone(clone: Path) -> None:
+    svc = _service()
+    wt = clone / ".worktrees" / "e7d5fb64"
+    await svc.ensure_worktree(clone, wt, "feature/e7d5fb64", "main")
+    _prune_admin_dir(clone, wt)
+
+    await svc.ensure_worktree_for_resume(clone, wt, "feature/e7d5fb64")
+
+    assert _git(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() == "feature/e7d5fb64"
+
+
+async def test_a_linked_worktree_keeps_its_uncommitted_edits(clone: Path) -> None:
+    svc = _service()
+    wt = clone / ".worktrees" / "e7d5fb64"
+    await svc.ensure_worktree(clone, wt, "feature/e7d5fb64", "main")
+    (wt / "draft.txt").write_text("work in progress")
+
+    await svc.ensure_worktree(clone, wt, "feature/e7d5fb64", "main")
+
+    assert (wt / "draft.txt").read_text() == "work in progress"
+
+
 async def test_ensure_worktree_for_resume_recovers_missing_local_ref_from_origin(
     tmp_path: Path,
 ) -> None:
