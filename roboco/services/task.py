@@ -8107,6 +8107,7 @@ class TaskUnclaim(_Base):
         task.pre_block_metadata = cast("Any", None)
         task.blocker_resolver_type = None
         task.blocker_raised_by = cast("Any", None)
+        markers.clear_marker(task, markers.ESCALATION)
         task.status = TaskStatus.PENDING
         task.assigned_to = cast("Any", None)
         task.claimed_by = cast("Any", None)
