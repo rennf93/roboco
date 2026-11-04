@@ -96,17 +96,19 @@ async def review_path_read_outcome() -> AsyncIterator[None]:
     """Route dependency for the git-readonly reads: a read that completes
     without raising is an observed success toward outage recovery."""
     yield
-    record_review_path_success()
+    await record_review_path_success()
 
 
-def _translate_read_error(e: ServiceError | GitError, task_key: Any) -> HTTPException:
+async def _translate_read_error(
+    e: ServiceError | GitError, task_key: Any
+) -> HTTPException:
     """``_translate_error`` for the git-readonly routes: a 5xx also counts as a
     review-path failure toward cross-task outage detection (4xx are caller errors).
     ``task_key`` comes from ``review_path_key``.
     """
     exc = _translate_error(e)
     if exc.status_code >= status.HTTP_500_INTERNAL_SERVER_ERROR:
-        record_review_path_failure(task_key)
+        await record_review_path_failure(task_key)
     return exc
 
 
