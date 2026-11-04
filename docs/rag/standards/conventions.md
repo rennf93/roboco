@@ -87,4 +87,4 @@ The one exception to "suppressions are violations" is a small allowlist of *stru
 
 ## Panel
 
-The per-project **Conventions** tab (in the edit-project dialog) shows the effective architecture map and its health, and offers **Save** (commit an edited map back to the repo via a PR) and **Restore** (re-scaffold the canonical file).
+The per-project **Conventions** tab (a page-level tab on `/projects/[id]/settings`) shows the effective architecture map and its health, and offers **Save** (commit an edited map back to the repo via a PR) and **Restore** (re-scaffold the canonical file).

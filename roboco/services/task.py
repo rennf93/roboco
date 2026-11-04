@@ -442,6 +442,17 @@ def _append_capped(existing: str | None, addition: str) -> str:
 _CEO_REJECT_ACTUAL_CAP = 300
 _CEO_REJECT_EVIDENCE_CAP = 2000
 
+# Why a PM's gateway complete may close a parent with cancelled descendants:
+# before it merges, the verb's guard requires every subtask terminal and every
+# declared parent criterion covered by a completed subtask, so a cancelled
+# leaf (cancel_leaf records its reason) leaves nothing undelivered. Refusing
+# here instead came after the irreversible merge and wedged the parent. The
+# REST complete keeps force_with_cancelled CEO-only.
+_GATEWAY_COMPLETE_CANCELLED_JUSTIFICATION = (
+    "gateway PM complete: its guard found every subtask terminal and every "
+    "declared criterion covered by a completed subtask"
+)
+
 # Roles whose claim WORKS the branch (and so should inherit an advanced
 # upstream base into it). QA / documenter / PR-gate claims review the branch
 # exactly as the dev pushed it and must never move it.
@@ -4592,7 +4603,9 @@ class TaskLineage(_Base):
         note = (
             f"Upstream base {base_branch!r} has advanced with changes that "
             f"conflict with this branch ({task.branch_name!r}) in: {files}. "
-            f"Merge {base_branch!r} in by hand (sync_branch) before submitting."
+            f"On your own developer branch, run sync_branch and resolve those "
+            f"files. No subtask can bring a root or cell branch current: "
+            f"escalate_up instead of delegating a sync task."
         )
         existing = markers.get_transition_note(task, "base_inheritance_conflict")
         markers.set_transition_note(
@@ -13073,7 +13086,12 @@ class TaskGateReviews(_Base):
             }
             task.commits = [*(task.commits or []), merge_entry]
             await self.session.flush()
-        return await self.complete(task_id, agent_id=pm_agent_id)
+        return await self.complete(
+            task_id,
+            agent_id=pm_agent_id,
+            force_with_cancelled=True,
+            justification=_GATEWAY_COMPLETE_CANCELLED_JUSTIFICATION,
+        )
 
 
 class TaskAdminOverride(_Base):

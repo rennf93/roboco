@@ -147,7 +147,7 @@ RoboCo watching its own repo's CI. All default-off / dormant.
 
 ## Autonomous maintenance
 
-The fan-out generalizations of self-heal — they watch any opted-in project, not just RoboCo's own. All default-off; neither ever auto-merges (every task rides the normal delivery + PR-review gate). Per-project opt-in lives on the project row (set in the panel's edit-project dialog), not in env.
+The fan-out generalizations of self-heal — they watch any opted-in project, not just RoboCo's own. All default-off; neither ever auto-merges (every task rides the normal delivery + PR-review gate). Per-project opt-in lives on the project row (set in the Budget/Ops card on the panel's `/projects/[id]/settings` page), not in env.
 
 | Variable | Default | Description |
 |----------|---------|-------------|
