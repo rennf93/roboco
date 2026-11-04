@@ -80,7 +80,8 @@ async def test_ensure_worktree_symlinks_venv_to_clone_root(clone: Path) -> None:
     # symlink to the clone-root .venv, uv re-syncs per worktree (bad). The
     # symlink lets uv resolve the shared clone-root venv.
     svc = _service()
-    (clone / ".venv").mkdir()  # clone-root venv exists from install_dev_deps
+    # clone-root venv exists from install_dev_deps
+    (clone / ".venv").mkdir()
     wt = clone / ".worktrees" / "a3c40fe7"
 
     await svc.ensure_worktree(clone, wt, "feature/a3c40fe7", "main")
@@ -125,7 +126,8 @@ async def test_ensure_worktree_links_venv_once_clone_root_venv_provisioned(
     await svc.ensure_worktree(clone, wt, "feature/a3c40fe7", "main")
     assert not (wt / ".venv").is_symlink()
 
-    (clone / ".venv").mkdir()  # install_dev_deps completes
+    # install_dev_deps completes
+    (clone / ".venv").mkdir()
     await svc.ensure_worktree_for_resume(clone, wt, "feature/a3c40fe7")
 
     link = wt / ".venv"
@@ -170,6 +172,42 @@ async def test_ensure_worktree_for_resume_readds_pruned_worktree(clone: Path) ->
 
     assert wt.exists()
     assert _git(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() == "feature/a3c40fe7"
+
+
+def _leave_unlinked_tree(clone: Path, wt: Path) -> None:
+    """What a `worktree remove --force` racing an agent's Entire hooks leaves:
+    the tree without its .git file, the admin entry pruned."""
+    (wt / ".git").unlink()
+    (wt / ".entire" / "logs").mkdir(parents=True)
+    (wt / ".entire" / "logs" / "entire.log").write_text("x")
+    _git(clone, "worktree", "prune")
+
+
+async def test_ensure_worktree_replaces_a_tree_left_without_its_git_file(
+    clone: Path,
+) -> None:
+    svc = _service()
+    wt = clone / ".worktrees" / "dc50b7fe"
+    await svc.ensure_worktree(clone, wt, "feature/dc50b7fe", "main")
+    _leave_unlinked_tree(clone, wt)
+
+    await svc.ensure_worktree(clone, wt, "feature/dc50b7fe", "main")
+
+    assert (wt / ".git").is_file()
+    assert not (wt / ".entire").exists()
+    assert _git(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() == "feature/dc50b7fe"
+
+
+async def test_resume_replaces_a_tree_left_without_its_git_file(clone: Path) -> None:
+    svc = _service()
+    wt = clone / ".worktrees" / "dc50b7fe"
+    await svc.ensure_worktree(clone, wt, "feature/dc50b7fe", "main")
+    _leave_unlinked_tree(clone, wt)
+
+    await svc.ensure_worktree_for_resume(clone, wt, "feature/dc50b7fe")
+
+    assert (wt / ".git").is_file()
+    assert _git(wt, "rev-parse", "--abbrev-ref", "HEAD").strip() == "feature/dc50b7fe"
 
 
 async def test_ensure_worktree_for_resume_recovers_missing_local_ref_from_origin(
@@ -242,7 +280,8 @@ async def test_ensure_worktree_for_resume_prunes_stale_registration(
         patch.object(WorkspaceService, "_fetch_branch_ref", new_callable=AsyncMock),
     ):
         await svc.ensure_worktree_for_resume(clone, wt, "feature/stale-reg", "proj")
-        shutil.rmtree(wt)  # dir gone, registration intact
+        # dir gone, registration intact
+        shutil.rmtree(wt)
         assert not wt.exists()
 
         await svc.ensure_worktree_for_resume(clone, wt, "feature/stale-reg", "proj")
@@ -257,7 +296,8 @@ async def test_ensure_worktree_prunes_stale_registration(clone: Path) -> None:
     svc = _service()
     wt = clone / ".worktrees" / "a3c40fe7"
     await svc.ensure_worktree(clone, wt, "feature/a3c40fe7", "main")
-    shutil.rmtree(wt)  # dir gone, registration intact
+    # dir gone, registration intact
+    shutil.rmtree(wt)
     assert not wt.exists()
 
     await svc.ensure_worktree(clone, wt, "feature/a3c40fe7", "main")
@@ -283,7 +323,8 @@ async def test_remove_worktree_noop_on_missing_worktree(clone: Path) -> None:
     # removed) must not raise.
     svc = _service()
     wt = clone / ".worktrees" / "never"
-    await svc.remove_worktree(clone, wt)  # no error
+    # no error
+    await svc.remove_worktree(clone, wt)
     assert not wt.exists()
 
 
@@ -363,7 +404,8 @@ async def test_self_heal_readds_pruned_worktree_from_local_ref(clone: Path) -> N
     svc = _service()
     wt = clone / ".worktrees" / "a3c40fe7"
     await svc.ensure_worktree(clone, wt, "feature/a3c40fe7", "main")
-    _git(clone, "worktree", "remove", str(wt), "--force")  # prune
+    # prune
+    _git(clone, "worktree", "remove", str(wt), "--force")
     assert not wt.exists()
 
     with (
@@ -395,13 +437,16 @@ async def test_self_heal_readd_from_stale_local_ref_lands_on_origin_tip_for_read
     remote = _bare_remote_with_branch(tmp_path, branch, push_branch=False)
     clone = await _synced_clone_and_worktree(tmp_path, remote, branch)
     wt = clone / ".worktrees" / "pruned-stale-ref"
-    _git(clone, "worktree", "remove", str(wt), "--force")  # evicted; local ref survives
+    # evicted; local ref survives
+    _git(clone, "worktree", "remove", str(wt), "--force")
     assert not wt.exists()
     assert _ref_exists(clone, f"refs/heads/{branch}"), (
         "precondition: local ref survives"
     )
-    _push_extra_commit(tmp_path, remote, branch, "other")  # origin advances to tip B
-    _git(clone, "fetch", "origin", branch)  # what the mocked _fetch_branch_ref would do
+    # origin advances to tip B
+    _push_extra_commit(tmp_path, remote, branch, "other")
+    # what the mocked _fetch_branch_ref would do
+    _git(clone, "fetch", "origin", branch)
 
     svc = _service()
     await _run_self_heal(svc, clone, wt, branch, can_author=False)
@@ -578,9 +623,12 @@ async def test_refresh_reader_diverged_resets_to_origin(tmp_path: Path) -> None:
     remote = _bare_remote_with_branch(tmp_path, branch, push_branch=False)
     clone = await _synced_clone_and_worktree(tmp_path, remote, branch)
     wt = clone / ".worktrees" / "reader-diverged"
-    _commit_local_only(wt)  # local ref now ahead of origin/<branch>
-    _push_extra_commit(tmp_path, remote, branch, "other")  # ...and origin too
-    _git(clone, "fetch", "origin", branch)  # what the mocked _fetch_branch_ref would do
+    # local ref now ahead of origin/<branch>
+    _commit_local_only(wt)
+    # ...and origin too
+    _push_extra_commit(tmp_path, remote, branch, "other")
+    # what the mocked _fetch_branch_ref would do
+    _git(clone, "fetch", "origin", branch)
     assert (wt / "local_only.txt").exists(), "precondition: local commit present"
 
     svc = _service()
@@ -601,7 +649,8 @@ async def test_refresh_author_ahead_untouched(tmp_path: Path) -> None:
     remote = _bare_remote_with_branch(tmp_path, branch, push_branch=False)
     clone = await _synced_clone_and_worktree(tmp_path, remote, branch)
     wt = clone / ".worktrees" / "author-ahead"
-    _commit_local_only(wt)  # strictly ahead — origin never moved
+    # strictly ahead, origin never moved
+    _commit_local_only(wt)
     _git(clone, "fetch", "origin", branch)
 
     svc = _service()
@@ -633,7 +682,8 @@ async def test_refresh_behind_fast_forwards_for_any_role(tmp_path: Path) -> None
     remote = _bare_remote_with_branch(tmp_path, branch, push_branch=False)
     clone = await _synced_clone_and_worktree(tmp_path, remote, branch)
     wt = clone / ".worktrees" / "behind"
-    _push_extra_commit(tmp_path, remote, branch, "other")  # local has nothing unique
+    # local has nothing unique
+    _push_extra_commit(tmp_path, remote, branch, "other")
     _git(clone, "fetch", "origin", branch)
 
     svc = _service()
@@ -651,7 +701,8 @@ async def test_refresh_dirty_author_tree_preserved_even_when_behind(
     remote = _bare_remote_with_branch(tmp_path, branch, push_branch=False)
     clone = await _synced_clone_and_worktree(tmp_path, remote, branch)
     wt = clone / ".worktrees" / "dirty-author"
-    (wt / "pyproject.toml").write_text("[project]\nname = 'edited'\n")  # uncommitted
+    # uncommitted
+    (wt / "pyproject.toml").write_text("[project]\nname = 'edited'\n")
     _push_extra_commit(tmp_path, remote, branch, "other")
     _git(clone, "fetch", "origin", branch)
 
@@ -687,9 +738,11 @@ async def test_refresh_skips_reset_when_worktree_drifted_off_task_branch(
     remote = _bare_remote_with_branch(tmp_path, branch, push_branch=False)
     clone = await _synced_clone_and_worktree(tmp_path, remote, branch)
     wt = clone / ".worktrees" / "drifted"
-    _push_extra_commit(tmp_path, remote, branch, "other")  # task branch now behind
+    # task branch now behind
+    _push_extra_commit(tmp_path, remote, branch, "other")
     _git(clone, "fetch", "origin", branch)
-    _git(wt, "checkout", "-b", "other-work")  # worktree drifts off the task branch
+    # worktree drifts off the task branch
+    _git(wt, "checkout", "-b", "other-work")
 
     svc = _service()
     with patch("roboco.services.workspace.logger.warning") as warn:
@@ -810,7 +863,8 @@ async def test_delete_local_branch_skips_default_branches(clone: Path) -> None:
 
 async def test_delete_local_branch_removes_merged_branch(clone: Path) -> None:
     svc = _service()
-    _git(clone, "branch", "feature/merged")  # no new commits -> already merged
+    # no new commits -> already merged
+    _git(clone, "branch", "feature/merged")
     assert _ref_exists(clone, "refs/heads/feature/merged")
 
     await svc.delete_local_branch(clone, "feature/merged", force=False)
@@ -860,10 +914,12 @@ async def test_delete_local_branch_squash_merged_needs_force(clone: Path) -> Non
     _git(clone, "checkout", "main")
     _git(clone, "merge", "--squash", "feature/squashed")
     _git(clone, "commit", "-m", "squash-merge feature")
-    assert (clone / "work.txt").exists()  # the work landed on main
+    # the work landed on main
+    assert (clone / "work.txt").exists()
 
     await svc.delete_local_branch(clone, "feature/squashed", force=False)
-    assert _ref_exists(clone, "refs/heads/feature/squashed")  # -d refused
+    # -d refused
+    assert _ref_exists(clone, "refs/heads/feature/squashed")
 
     await svc.delete_local_branch(clone, "feature/squashed", force=True)
     assert not _ref_exists(clone, "refs/heads/feature/squashed")
@@ -872,8 +928,14 @@ async def test_delete_local_branch_squash_merged_needs_force(clone: Path) -> Non
 async def test_delete_local_branch_missing_branch_is_clean_skip(clone: Path) -> None:
     svc = _service()
     await svc.delete_local_branch(
-        clone, "feature/never-existed", force=False
-    )  # no error
+        clone,
+        "feature/never-existed",
+        force=False,
+        # no error
+    )
     await svc.delete_local_branch(
-        clone, "feature/never-existed", force=True
-    )  # no error
+        clone,
+        "feature/never-existed",
+        force=True,
+        # no error
+    )
