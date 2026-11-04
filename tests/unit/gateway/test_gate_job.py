@@ -248,6 +248,8 @@ async def test_i_am_done_moves_the_task_to_verifying_before_launching_the_gate(
 
 # --- lost-job (restart) recovery -------------------------------------------
 
+_MIN_SWEEPS = 3
+
 
 def _verifying_task(*, run: dict[str, Any] | None = None) -> MagicMock:
     markers = {"gate_run": run} if run is not None else None
@@ -325,6 +327,49 @@ async def test_relaunch_takes_over_a_run_older_than_the_grace_period(
 
     assert await gate_job.relaunch_lost_gate_jobs() == 1
     assert len(registry.launches) == 1
+
+
+@pytest.mark.asyncio
+async def test_young_run_is_skipped_then_relaunched_by_a_later_sweep_once_aged(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The old blue-green color's run is live at the first sweep, gone later."""
+    clock = [1_000.0]
+    monkeypatch.setattr(gate_job.time, "time", lambda: clock[0])
+    run = {"token": "t", "notes": "n", "started_at": 1_000.0}
+    task = _verifying_task(run=run)
+    choreo, registry, _ = _recovery_env(monkeypatch, [task])
+
+    assert await gate_job.relaunch_lost_gate_jobs() == 0
+    choreo.task.stamp_gate_run.assert_not_awaited()
+
+    clock[0] += 10_000
+    assert await gate_job.relaunch_lost_gate_jobs() == 1
+    assert [launch.task_id for launch in registry.launches] == [task.id]
+
+
+@pytest.mark.asyncio
+async def test_recovery_loop_sweeps_repeatedly_and_stops_on_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sweeps = 0
+
+    async def fake_sweep() -> int:
+        nonlocal sweeps
+        sweeps += 1
+        if sweeps == 1:
+            raise RuntimeError("transient")
+        return 0
+
+    monkeypatch.setattr(gate_job, "relaunch_lost_gate_jobs", fake_sweep)
+    loop_task = asyncio.create_task(gate_job.run_gate_recovery_loop(0.01))
+    while sweeps < _MIN_SWEEPS:
+        await asyncio.sleep(0.01)
+
+    loop_task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await loop_task
+    assert loop_task.cancelled()
 
 
 @pytest.mark.asyncio

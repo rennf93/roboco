@@ -12,11 +12,14 @@ Safety properties the registry owns:
 * a job that times out or raises yields a FAILED verdict, never a pass, so a
   crashed gate can neither wedge the task nor let it skip the gate;
 * a raising ``finish`` is logged and swallowed - the task simply stays where it
-  was (before QA), and the developer's next ``i_am_done`` relaunches the job.
+  was (before QA).
 
 The registry is process-local by design. A restart loses an in-flight job, and
-that is safe: the task never left its pre-QA status, so the developer's
-re-submit launches a fresh job.
+that is safe: the task never left its pre-QA status. The developer is never
+respawned on ``verifying``, so recovery is the API lifespan's periodic sweep
+(``relaunch_lost_gate_jobs``, at startup and then every timeout / 4): it
+relaunches only a run older than the job timeout plus a grace period, so a job
+still live in another process is never doubled.
 """
 
 from __future__ import annotations
