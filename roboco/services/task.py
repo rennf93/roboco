@@ -4604,8 +4604,10 @@ class TaskLineage(_Base):
             f"Upstream base {base_branch!r} has advanced with changes that "
             f"conflict with this branch ({task.branch_name!r}) in: {files}. "
             f"On your own developer branch, run sync_branch and resolve those "
-            f"files. No subtask can bring a root or cell branch current: "
-            f"escalate_up instead of delegating a sync task."
+            f"files. No subtask can bring a root or cell branch current, so "
+            f"never delegate a sync task: a cell PM calls escalate_up, and the "
+            f"Main PM calls escalate_to_ceo naming these files (escalate_up on "
+            f"a root only returns it to the pool)."
         )
         existing = markers.get_transition_note(task, "base_inheritance_conflict")
         markers.set_transition_note(
