@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Keenable web research provider.** `ROBOCO_RESEARCH_PROVIDER=keenable` adds a hosted search adapter that works without an API key (keyless public endpoint) and switches to the keyed endpoint when `ROBOCO_RESEARCH_API_KEY` is set. Search only; `web_fetch` is unsupported, like Brave. Queries leave the deployment for `api.keenable.ai`; see `docs/rag/tools/research-tools.md`.
+
 ## [0.32.0] - 2026-10-16
 
 ### Added

@@ -38,6 +38,8 @@ Works with Tavily and Exa (remote extraction endpoints) and with SearXNG, which 
 
 `ROBOCO_RESEARCH_PROVIDER=keenable` uses [Keenable](https://keenable.ai), a hosted search API that works with **no API key** (its keyless public endpoint). Setting `ROBOCO_RESEARCH_API_KEY` switches to the keyed endpoint for higher rate limits. Keenable has no content-extraction endpoint, so `web_fetch` is unsupported with this provider (like Brave).
 
+Unlike SearXNG, Keenable is a third-party hosted service. In either mode every Board/PM search query is sent to `api.keenable.ai` with an `X-Keenable-Title: RoboCo` app-identifier header (required by the public endpoint). Keyless mode needs no Keenable account, so there is no per-deployment agreement in place; check Keenable's [terms](https://keenable.ai/terms) and [privacy policy](https://keenable.ai/privacy) before sending internal query text to it. The public endpoint is rate limited per IP; hitting the limit surfaces as a provider error. API reference: <https://docs.keenable.ai/api-reference/search>.
+
 ## Cite-and-persist rules
 
 Web research is external, unverified-by-the-org information — treat it accordingly:
