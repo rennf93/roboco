@@ -722,6 +722,26 @@ async def get_task(
     return response
 
 
+async def _update_or_translate(
+    service: Any, task_id: UUID, updates: dict[str, Any]
+) -> Any:
+    """``service.update`` with service refusals mapped to HTTP errors.
+
+    ``AssigneeCapabilityError``: the PATCH would plant an assignee whose role
+    cannot act on the task's current status (not_authorized, 403).
+    """
+    try:
+        task = await service.update(task_id, **updates)
+    except (AssigneeCapabilityError, ValidationError) as e:
+        raise _translate_error(e) from e
+    if not task:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Task update failed unexpectedly",
+        )
+    return task
+
+
 @router.put("/{task_id}", response_model=TaskResponse)
 @router.patch("/{task_id}", response_model=TaskResponse)
 @guard_deco.rate_limit(requests=30, window=60)
@@ -819,19 +839,7 @@ async def update_task(
             ),
         )
 
-    try:
-        task = await service.update(task_id, **updates)
-    except AssigneeCapabilityError as e:
-        # Capability-naming refusal: the PATCH would plant an assignee whose
-        # role cannot act on the task's current status (not_authorized).
-        raise _translate_error(e) from e
-    except ValidationError as e:
-        raise _translate_error(e) from e
-    if not task:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Task update failed unexpectedly",
-        )
+    task = await _update_or_translate(service, task_id, updates)
     _apply_null_clears(task, null_clears)
     # Null-clears apply AFTER service.update() (and its shape guard), so re-assert
     # the MegaTask shape here too — a cleared parent_task_id / project_id must not

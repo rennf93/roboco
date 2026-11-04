@@ -3712,6 +3712,31 @@ class OwnershipMixin(_Base):
             context_briefing={},
         )
 
+    async def _apply_reassign(
+        self, t: Any, task_id: UUID, target: UUID, briefing: Any
+    ) -> tuple[Any, Envelope | None]:
+        """Run the reassignment; return ``(task_after, rejection)``."""
+        try:
+            after = await self.task.reassign_active_claim(task_id, target)
+        except AssigneeCapabilityError as exc:
+            # The target assignee's role cannot act on the task's current
+            # status — refused with the missing capability named.
+            return None, Envelope.not_authorized(
+                message=exc.message,
+                remediate=(
+                    "reassign to an agent whose role can act on the task's"
+                    f" current status ({t.status})"
+                ),
+                context_briefing=briefing,
+            )
+        if after is None:
+            return None, Envelope.invalid_state(
+                message=f"cannot reassign from status {t.status}",
+                remediate="only a claimed / in_progress task can be reassigned",
+                context_briefing=briefing,
+            )
+        return after, None
+
     async def reassign(
         self, agent_id: UUID, task_id: UUID, new_assignee: str
     ) -> Envelope:
@@ -3771,29 +3796,9 @@ class OwnershipMixin(_Base):
                 task_id=task_id,
                 verb="reassign",
             )
-        after: Any = None
-        rejection: Envelope | None = None
-        try:
-            after = await self.task.reassign_active_claim(
-                task_id, UUID(AGENT_UUIDS[new_assignee])
-            )
-        except AssigneeCapabilityError as exc:
-            # The target assignee's role cannot act on the task's current
-            # status — refused with the missing capability named.
-            rejection = Envelope.not_authorized(
-                message=exc.message,
-                remediate=(
-                    "reassign to an agent whose role can act on the task's"
-                    f" current status ({t.status})"
-                ),
-                context_briefing=briefing,
-            )
-        if rejection is None and after is None:
-            rejection = Envelope.invalid_state(
-                message=f"cannot reassign from status {t.status}",
-                remediate="only a claimed / in_progress task can be reassigned",
-                context_briefing=briefing,
-            )
+        after, rejection = await self._apply_reassign(
+            t, task_id, UUID(AGENT_UUIDS[new_assignee]), briefing
+        )
         if rejection is not None:
             return await self._emit_rejection(
                 rejection.with_introspection(task=t, role=role_str),

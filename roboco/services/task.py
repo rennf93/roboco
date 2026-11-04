@@ -4709,9 +4709,9 @@ class TaskRecords(_Base):
         # act on the task's current status. No-op clears and same-value sets
         # pass through. Checked BEFORE the field loop so a refusal never
         # leaves the session dirty.
-        new_assignee = updates.get("assigned_to")
-        if new_assignee is not None and new_assignee != task.assigned_to:
-            self._refuse_incapable_assignee(task.status, new_assignee)
+        self._refuse_incapable_assignee(
+            task.status, updates.get("assigned_to"), task.assigned_to
+        )
         for key, value in updates.items():
             if hasattr(task, key) and value is not None:
                 setattr(task, key, value)
@@ -12246,19 +12246,22 @@ class TaskReassignment(_Base):
         if prior_claimant is not None and prior_claimant != effective_assignee:
             task.active_claimant_id = cast("Any", None)
 
-    def _refuse_incapable_assignee(self, status: Any, new_assignee: Any) -> None:
+    def _refuse_incapable_assignee(
+        self, status: Any, new_assignee: Any, current: Any = None
+    ) -> None:
         """Refuse an assignment whose role cannot act on the target status.
 
         Capability is derived from the lifecycle role-transition map
         (``CLAIM_RULES`` + the atomic action specs) — never a parallel
         system; see ``lifecycle.assignee_capability_gap``. Terminal
-        statuses and unknown (non-seeded) assignee UUIDs pass through;
-        the existing identity guards own those.
+        statuses, unknown (non-seeded) assignee UUIDs, clears and
+        same-value sets (``new_assignee == current``) pass through; the
+        existing identity guards own those.
         """
         from roboco.foundation.identity import role_for_uuid_or_none
         from roboco.foundation.policy import lifecycle as lifecycle_spec
 
-        if new_assignee is None:
+        if new_assignee is None or new_assignee == current:
             return
         role = role_for_uuid_or_none(new_assignee)
         if role is None:
