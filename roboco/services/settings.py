@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 from sqlalchemy import select
 
 from roboco.db.tables import AgentRole, SystemSettingTable
+from roboco.foundation.policy.board_programs import PROGRAMS
 from roboco.foundation.policy.maintenance_pause import (
     PauseScope,
     validate_pause_payload,
@@ -274,6 +275,12 @@ _VALIDATORS = {
     **dict.fromkeys(
         (f"maintenance_pause.{s.value}" for s in PauseScope),
         _validate_maintenance_pause,
+    ),
+    # CEO reversal of a cadence slowdown, per program (see
+    # roboco.services.board_program_cadence_policy).
+    **dict.fromkeys(
+        (f"board_program.{k}.cadence_slowdown_disabled" for k in PROGRAMS),
+        _validate_bool,
     ),
 }
 
