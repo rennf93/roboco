@@ -1,7 +1,6 @@
 # Change Note: Response to Thoughtworks Agent/works (June 2026)
 
-On June 16, 2026, Thoughtworks launched Agent/works, a control plane and governed runtime for enterprise agents.
-This note records what we changed in response, and why.
+On June 16, 2026, Thoughtworks launched Agent/works, a control plane and governed runtime for enterprise agents. This note records what we changed in response, and why.
 
 ## Why
 
@@ -14,8 +13,7 @@ RoboCo already ships mechanisms for much of that. We under-marketed them:
 - role separation
 - budget caps
 
-The launch release also cites an AppSec Santa figure: 25% of AI-generated code samples had critical vulnerabilities.
-A buyer who reads it can assume RoboCo output is unsafe too.
+The launch release also cites an AppSec Santa figure: 25% of AI-generated code samples had critical vulnerabilities. A buyer who reads it can assume RoboCo output is unsafe too.
 
 ## What changed
 
@@ -33,16 +31,11 @@ Maps each Agent/works claim to the RoboCo mechanism that answers it, with the fi
 | Scoped permissions | Per-role verb manifests, bash guard |
 | Pre-execution compliance | Conventions validator at submit and PR gates |
 
-It also lists what RoboCo does not claim.
-It does not claim time-limited, per-grant permissions.
-It does not claim pre-execution compliance proofs.
-It does not claim to govern agents it did not spawn.
-It states that budget caps and the conventions validator are both off by default.
+It also lists what RoboCo does not claim. It does not claim time-limited, per-grant permissions. It does not claim pre-execution compliance proofs. It does not claim to govern agents it did not spawn. It states that budget caps and the conventions validator are both off by default.
 
 ### [ai-code-risk-gates-2026-06.md](ai-code-risk-gates-2026-06.md)
 
-Quotes the Sonar 42% and AppSec Santa 25% figures from the release.
-States that both are third-party figures and neither was measured on RoboCo output.
+Quotes the Sonar 42% and AppSec Santa 25% figures from the release. States that both are third-party figures and neither was measured on RoboCo output.
 
 Lists nine verified facts about the gates between agent output and master:
 
@@ -55,10 +48,7 @@ Lists nine verified facts about the gates between agent output and master:
 
 ## What the pages do not say
 
-Neither page claims a vulnerability rate for RoboCo output.
-Neither claims the gates guarantee the absence of vulnerabilities.
-Neither claims a match to Agent/works feature for feature.
-Each page ends with its own does-not-claim list.
+Neither page claims a vulnerability rate for RoboCo output. Neither claims the gates guarantee the absence of vulnerabilities. Neither claims a match to Agent/works feature for feature. Each page ends with its own does-not-claim list.
 
 ## Decision
 
