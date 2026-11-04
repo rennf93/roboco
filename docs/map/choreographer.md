@@ -41,18 +41,18 @@ The Choreographer is the server-side composition layer that turns agent intent-v
 | `i_am_done` | async verb | `dev.py:777` | Dev pre-submit; runs `_i_am_done_gate` then `run_intent("i_am_done")`. |
 | `_i_am_done_gate` | async helper | `dev.py:905` | Ordered gate chain: tracing → submit_qa fields → push → behind_base → quality → toolchain → conventions; then write AC status. |
 | `_behind_base_gate` | async helper | `_impl.py:2524` | Refuse submit when branch behind its base (sibling PR merged); fail-open on git error. |
-| `_toolchain_broken_guard` | async helper | `_impl.py:5479` | Block delivery gate when agent workspace can't run suite; `reviewer=True` for `pr_pass`. |
-| `_conventions_guard` | async helper | `_impl.py:5583` | Run architectural-conventions validator; `block` finding refuses gate. |
+| `_toolchain_broken_guard` | async helper | `_impl.py:5480` | Block delivery gate when agent workspace can't run suite; `reviewer=True` for `pr_pass`. |
+| `_conventions_guard` | async helper | `_impl.py:5584` | Run architectural-conventions validator; `block` finding refuses gate. |
 | `_pm_task_type_error` | static method | `pm.py:455` | Reject a code/non-planning task_type delegated to a PM (cell or main); extracted from `_validate_assignee_task_type` to keep that dispatcher under complexity budget. |
 | `i_am_blocked` | async verb | `_impl.py:3112` | Rate-limit parking vs generic block; `run_intent("i_am_blocked")`. |
 | `_handle_rate_limited_parking` | async helper | `_impl.py:3008` | Park provider on 429/overload/session-limit. |
-| `unclaim` | async verb | `_impl.py:3517` | Release claimed task → pending (optional reassign). |
-| `reassign` | async verb | `_impl.py:3714` | Reassign task with `_validate_reassign`. |
-| `resume` | async verb | `_impl.py:3794` | Resume paused/blocked task. |
+| `unclaim` | async verb | `_impl.py:3518` | Release claimed task → pending (optional reassign). |
+| `reassign` | async verb | `_impl.py:3715` | Reassign task with `_validate_reassign`. |
+| `resume` | async verb | `_impl.py:3795` | Resume paused/blocked task. |
 | `sync_branch` | async verb | `_impl.py:2683` | Gate-level rebase verb (new since baseline). |
-| `i_am_idle` | async verb | `_impl.py:4345` | Idle signal; auto-pause in_progress tasks; pending-assignment / PM review / auditor guards. |
+| `i_am_idle` | async verb | `_impl.py:4346` | Idle signal; auto-pause in_progress tasks; pending-assignment / PM review / auditor guards. |
 | `i_will_plan` | async verb | `_impl.py:2238` | PM plan verb; `_pm_sub_tasks_gate` enforces substantive approach/sub_tasks. |
-| `_held_work_refuses_new_claims` | async method | `_impl.py:4762` | i_am_idle's pending-assignment guard never demands a claim the caller's own claim verb refuses for held work: a non-coordinator holding any task `held_task_blocking_claim` names (claimed, in_progress, verifying, blocked or escalated away, paused) may idle with pending work queued (live 2026-10-28 be-dev-1, two paused tasks: refused to claim at 06:46:09 and to idle at 06:46:46). Coordinators still plan a pending root first. |
+| `_held_work_refuses_new_claims` | async method | `_impl.py:4763` | i_am_idle's pending-assignment guard never demands a claim the caller's own claim verb refuses for held work: a non-coordinator holding any task `held_task_blocking_claim` names (claimed, in_progress, verifying, blocked or escalated away, paused) may idle with pending work queued (live 2026-10-28 be-dev-1, two paused tasks: refused to claim at 06:46:09 and to idle at 06:46:46). Coordinators still plan a pending root first. |
 | `delegate` | async verb | `pm.py:57` | PM creates subtask; sizing, sibling-dedup, spine-cap, lifecycle guards; `_create_subtask_from_inputs`. |
 | `submit_up` | async verb | `pm.py:1567` | Cell PM opens cell→root PR + enters `awaiting_pr_review`; unchanged-PR guard. |
 | `submit_root` | async verb | `pm.py:2039` | Main PM opens root→master PR + enters gate; umbrella hard-reject + unchanged-PR guard. |
@@ -60,7 +60,7 @@ The Choreographer is the server-side composition layer that turns agent intent-v
 | `_current_pr_head_sha` | async helper | `pm.py:2004` | Best-effort current PR head SHA via `_project_slug_for` + `git.get_pr_head_sha`. |
 | `complete` | async verb | `pm.py:3757` | Role-dispatch to `cell_pm_complete` / `main_pm_complete`; umbrella-in-progress bypasses spec gate. |
 | `main_pm_complete` | async verb | `pm.py:3642` | Main PM merge + escalate to CEO (never merges master itself). |
-| `escalate_to_ceo` | async verb | `_impl.py:3398` | Escalate to `awaiting_ceo_approval`. |
+| `escalate_to_ceo` | async verb | `_impl.py:3399` | Escalate to `awaiting_ceo_approval`. |
 | `unblock` | async verb | `pm.py:2441` | Human/PM restores a BLOCKED task; gated by `_oscillation_unblock_guard` (refuses while oscillation-tripped) then, on a real restore, runs `_maybe_trip_oscillation_breaker` (#685). |
 | `_oscillation_unblock_guard` | async helper | `pm.py:2537` | Refuses `unblock` once `markers.is_oscillation_tripped(t)` — an admin override must clear the marker first. |
 | `_maybe_trip_oscillation_breaker` | async helper | `pm.py:2566` | Task-scoped strike counter (#685) at the `unblock()` chokepoint (agent-agnostic — legitimate `needs_revision` rework never calls `unblock`, so it structurally can't trip this): `markers.bump_oscillation_strikes(t, progress_fp)` where the progress fingerprint is commit count + `revision_count` + `terminal_children_count` (a coordination root's children advancing between escalations resets the count); past threshold, sets `blocker_resolver_type=HUMAN`, marks the task oscillation-tripped, and best-effort notifies the CEO (`_notify_ceo_oscillation`) naming both agents + the cycle count. |

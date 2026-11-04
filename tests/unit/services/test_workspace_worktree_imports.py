@@ -50,6 +50,12 @@ def test_entries_inside_the_clone_root_move_to_the_worktree(
     assert path == [expected if expected is not None else entry]
 
 
+def test_a_venv_like_name_that_is_not_the_clone_venv_is_left_alone() -> None:
+    path = [_CLONE]
+    point_clone_root_paths_at_worktree(f"{_CLONE}/.venvx", path, _WORKTREE)
+    assert path == [_CLONE]
+
+
 def test_an_interpreter_started_from_the_clone_root_is_left_alone() -> None:
     path = [_CLONE, f"{_CLONE}/src"]
     point_clone_root_paths_at_worktree(f"{_CLONE}/.venv", path)

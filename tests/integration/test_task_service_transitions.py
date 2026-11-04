@@ -1437,12 +1437,32 @@ async def test_escalate_to_ceo_takes_a_held_or_blocked_root(
     task = await svc.create(_req(task_setup))
     task.status = status
     task.pr_number = 1505
+    task.assigned_to = task_setup["agent_id"]
     await db_session.flush()
     escalated = await svc.escalate_to_ceo(
-        task.id, agent_role="main_pm", notes="CI red on an unchanged head"
+        task.id,
+        agent_role="main_pm",
+        notes="CI red on an unchanged head",
+        actor_agent_id=task_setup["agent_id"],
     )
     assert escalated is not None
     assert escalated.status == TaskStatus.AWAITING_CEO_APPROVAL
+
+
+@pytest.mark.asyncio
+async def test_escalate_to_ceo_refuses_an_in_progress_root_it_does_not_hold(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.IN_PROGRESS
+    task.pr_number = 1505
+    task.assigned_to = task_setup["agent_id"]
+    await db_session.flush()
+    out = await svc.escalate_to_ceo(
+        task.id, agent_role="product_owner", notes="x", actor_agent_id=uuid4()
+    )
+    assert out is None
 
 
 @pytest.mark.asyncio

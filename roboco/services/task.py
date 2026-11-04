@@ -9594,8 +9594,35 @@ class TaskCEOApproval(_Base):
     # CEO APPROVAL WORKFLOW
     # =========================================================================
 
+    @staticmethod
+    def _escalate_to_ceo_status_refusal(
+        task: TaskTable, actor_agent_id: UUID | None
+    ) -> tuple[str, dict[str, Any]] | None:
+        """Refusal when ``task``'s status cannot escalate to the CEO, or None.
+
+        Work in progress reaches the CEO only from the PM holding it, never
+        from another PM or a Board agent reviewing it."""
+        if task.status not in _ATOMIC_ACTIONS["escalate_to_ceo"].source_statuses:
+            return (
+                "Cannot escalate to CEO - task not in an escalatable status",
+                {"current_status": task.status.value},
+            )
+        if task.status == TaskStatus.IN_PROGRESS and (
+            actor_agent_id is None or task.assigned_to != actor_agent_id
+        ):
+            return (
+                "Cannot escalate to CEO - an in_progress task escalates only"
+                " by its holder",
+                {"assigned_to": str(task.assigned_to)},
+            )
+        return None
+
     def _escalate_to_ceo_refusal(
-        self, task: TaskTable, *, allow_subtask_ceo_merge: bool = False
+        self,
+        task: TaskTable,
+        *,
+        allow_subtask_ceo_merge: bool = False,
+        actor_agent_id: UUID | None = None,
     ) -> tuple[str, dict[str, Any]] | None:
         """Eligibility checks for ``escalate_to_ceo``, extracted to keep that
         method's own cyclomatic complexity within the xenon gate. Returns
@@ -9609,11 +9636,9 @@ class TaskCEOApproval(_Base):
         cell PM would bounce escalate_up -> main-pm forever). Set only by
         ``cell_pm_complete``'s head-branch routing; the ``escalate_to_ceo``
         verb never passes it."""
-        if task.status not in _ATOMIC_ACTIONS["escalate_to_ceo"].source_statuses:
-            return (
-                "Cannot escalate to CEO - task not in an escalatable status",
-                {"current_status": task.status.value},
-            )
+        status_refusal = self._escalate_to_ceo_status_refusal(task, actor_agent_id)
+        if status_refusal:
+            return status_refusal
         # Only parent (root) tasks can be escalated to CEO (not subtasks) —
         # EXCEPT a MegaTask root-subtask, which IS parented (the umbrella) yet
         # carries its own project/branch/PR and behaves as a root for
@@ -9692,7 +9717,9 @@ class TaskCEOApproval(_Base):
             return None
 
         refusal = self._escalate_to_ceo_refusal(
-            task, allow_subtask_ceo_merge=allow_subtask_ceo_merge
+            task,
+            allow_subtask_ceo_merge=allow_subtask_ceo_merge,
+            actor_agent_id=actor_agent_id,
         )
         if refusal:
             message, kwargs = refusal
