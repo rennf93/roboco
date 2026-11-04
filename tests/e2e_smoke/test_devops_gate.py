@@ -27,6 +27,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from tests.e2e_smoke.arcs import (
+    GATE_WAIT_SECONDS,
     dev_arc,
     dispatcher_assign,
     doc_arc,
@@ -36,6 +37,7 @@ from tests.e2e_smoke.arcs import (
     seed_project,
     seed_task,
     task_state,
+    wait_for_status,
 )
 from tests.e2e_smoke.harness import ScriptedAgent, expect_error, expect_ok
 
@@ -408,4 +410,5 @@ def test_delegation_lane_devops_claims_and_delivers(
         "devops reflect note",
     )
     expect_ok(devops.flow("i_am_done", task_id=tid), "devops i_am_done")
-    assert task_state(stack, task_id)["status"] == "awaiting_qa"
+    # The background quality gate lands the task in QA once its verdict is green.
+    wait_for_status(stack, task_id, "awaiting_qa", timeout=GATE_WAIT_SECONDS)

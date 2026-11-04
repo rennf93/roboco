@@ -214,6 +214,10 @@ def open_finding_ids(stack: E2EStack, task_id: Any) -> list[str]:
     return ids
 
 
+# Upper bound for the background quality gate verdict to land after i_am_done.
+GATE_WAIT_SECONDS = 60.0
+
+
 def wait_for_status(
     stack: E2EStack,
     task_id: Any,
@@ -479,7 +483,9 @@ def dev_arc(
         "dev reflect note",
     )
     expect_ok(dev.flow("i_am_done", task_id=tid), "dev i_am_done")
-    assert task_state(stack, task_id)["status"] == "awaiting_qa"
+    # The quality gate runs as a background job: i_am_done parks the task in
+    # `verifying` and the verdict callback submits to QA, so wait for it.
+    wait_for_status(stack, task_id, "awaiting_qa", timeout=GATE_WAIT_SECONDS)
 
 
 def _criteria_text(stack: E2EStack, task_id: Any) -> str:
