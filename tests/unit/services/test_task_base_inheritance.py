@@ -245,6 +245,9 @@ async def test_inherit_conflict_notes_the_task() -> None:
     # A PM's root or cell branch has no sync verb; four sync leaves on one root
     # all failed before the note said so.
     assert "escalate_up" in note
+    # escalate_up on a root goes back to the pool, so main-pm reclaimed 82d3eeb0
+    # every one to two minutes (2026-11-04); the Main PM needs escalate_to_ceo.
+    assert "escalate_to_ceo" in note
     # The dev must actually SEE it — dev_notes rides evidence(), the marker
     # does not.
     assert task.dev_notes is not None
