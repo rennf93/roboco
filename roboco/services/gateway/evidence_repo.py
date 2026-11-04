@@ -302,10 +302,12 @@ class EvidenceRepo:
         ]
 
     async def blockers_in_lane(self, agent_id: UUID) -> list[dict[str, Any]]:
-        """Blocked tasks in this agent's team."""
+        """Blocked tasks in this agent's team, each with the reason its raiser
+        gave when escalating (None for a dependency block)."""
         from sqlalchemy import select
 
         from roboco.db.tables import AgentTable, TaskTable
+        from roboco.foundation.policy.content import markers
         from roboco.models.base import TaskStatus
 
         team = await self._db.scalar(
@@ -319,6 +321,7 @@ class EvidenceRepo:
                 TaskTable.title,
                 TaskTable.assigned_to,
                 TaskTable.dependency_ids,
+                TaskTable.orchestration_markers,
             )
             .where(TaskTable.team == team)
             .where(TaskTable.status == TaskStatus.BLOCKED)
@@ -331,6 +334,7 @@ class EvidenceRepo:
                 "title": row.title,
                 "assigned_to": str(row.assigned_to) if row.assigned_to else None,
                 "blocked_on": [str(d) for d in (row.dependency_ids or [])],
+                "escalation_reason": (markers.get_escalation(row) or {}).get("reason"),
             }
             for row in result.all()
         ]
@@ -354,11 +358,13 @@ class EvidenceRepo:
                     select(TaskTable.parent_task_id).where(TaskTable.id == current)
                 )
             ).scalar_one_or_none()
+            # A missing row, or a root.
             if parent_id is None:
-                break  # missing row or reached a root
+                break
             key = str(parent_id)
+            # Cycle guard.
             if key in seen:
-                break  # cycle guard
+                break
             seen.add(key)
             ancestors.append(parent_id)
             current = parent_id
