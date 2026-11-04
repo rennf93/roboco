@@ -94,6 +94,7 @@ from roboco.services.git_relay import (
     relay_for,
     run_private_git,
 )
+from roboco.services.md_reflow import reflow_worktree_markdown
 from roboco.services.project import get_project_service
 from roboco.services.project_hooks import (
     find_project_hook,
@@ -846,6 +847,9 @@ class GitCommits(_Base):
         # (see `git_commit_timeout_seconds`) — the same reason the gateway
         # `commit()` adapter uses it.
         commit_timeout = _commit_git_timeout()
+        await reflow_worktree_markdown(
+            self._run_git, workspace, request.files, commit_timeout, self.log
+        )
         if request.files:
             for file in request.files:
                 await self._run_git(workspace, ["add", file], timeout=commit_timeout)
@@ -6727,6 +6731,9 @@ class GitDiffs(_Base):
         # the hundreds of files) can exceed the short default git timeout, so
         # these ops get the longer `git_commit_timeout_seconds` budget.
         commit_timeout = _commit_git_timeout()
+        await reflow_worktree_markdown(
+            self._run_git, workspace, files, commit_timeout, self.log
+        )
         if files:
             for file in files:
                 await self._run_git(workspace, ["add", file], timeout=commit_timeout)

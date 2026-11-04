@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- **Changed markdown is auto-reflowed in the gateway commit path.** `GitService.commit` and `create_commit` now run the existing `scripts/reflow_md.py` engine (via `roboco/services/md_reflow.py`, loaded by path, not reimplemented) on the worktree's modified or untracked in-scope `*.md` files before staging, so hard-wrapped prose never reaches the merge gate and no fix-up commit is needed at PR-open. Unchanged and out-of-scope markdown is untouched, a second run is a no-op, and a reflow failure is logged without losing the commit. The orchestrator image now ships `scripts/reflow_md.py`.
+
 ## [0.32.0] - 2026-10-16
 
 ### Added

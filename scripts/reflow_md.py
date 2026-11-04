@@ -16,11 +16,16 @@ Usage:
     python scripts/reflow_md.py            # dry run: report what would change
     python scripts/reflow_md.py --apply    # rewrite files in place
     python scripts/reflow_md.py --check    # exit 1 if any in-scope file is wrapped
+    python scripts/reflow_md.py --check --changed [--base REF]
+        # same, but only for markdown the branch changed vs its base, so
+        # hard-wrapped debt already on base cannot fail an untouched file
 """
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -199,6 +204,71 @@ def in_scope(p: Path) -> bool:
     return not any(g in rel for g in EXCLUDE_GLOBS)
 
 
+# Fleet PRs target the dev branch (slave), so it must win over master: diffing a
+# slave-based branch against master would charge it every markdown file slave
+# changed since master.
+DEFAULT_BASES = (
+    "origin/slave",
+    "slave",
+    "origin/master",
+    "origin/main",
+    "master",
+    "main",
+)
+
+
+def _candidate_bases(base: str | None) -> tuple[str, ...]:
+    """Explicit --base, else the CI pull request's target, else the defaults."""
+    if base:
+        return (base,)
+    target = os.environ.get("GITHUB_BASE_REF")
+    if target:
+        return (f"origin/{target}", target)
+    return DEFAULT_BASES
+
+
+def _git(*args: str) -> str | None:
+    """Run git in CWD; None on any failure (not a repo, unknown ref, no git)."""
+    try:
+        res = subprocess.run(
+            ["git", *args], cwd=ROOT, capture_output=True, text=True, check=False
+        )
+    except OSError:
+        return None
+    return res.stdout if res.returncode == 0 else None
+
+
+def changed_markdown(base: str | None) -> list[Path] | None:
+    """Markdown files the branch changed vs its base (committed, staged,
+    unstaged and untracked), relative to CWD. None when no base resolves, so
+    the caller falls back to the full scan rather than silently passing.
+    """
+    for ref in _candidate_bases(base):
+        merge_base = _git("merge-base", "HEAD", ref)
+        if merge_base:
+            break
+    else:
+        return None
+    diff = _git(
+        "diff", "--name-only", "--relative", "--diff-filter=ACMR", merge_base.strip()
+    )
+    untracked = _git("ls-files", "--others", "--exclude-standard")
+    if diff is None or untracked is None:
+        return None
+    names = {n for n in (diff + untracked).splitlines() if n.endswith(".md")}
+    return sorted(Path(n) for n in names if (ROOT / n).is_file())
+
+
+def _candidates(args: list[str]) -> list[Path]:
+    if "--changed" in args:
+        base = args[args.index("--base") + 1] if "--base" in args else None
+        files = changed_markdown(base)
+        if files is not None:
+            return files
+        print("warning: no base ref resolved; checking every markdown file")
+    return sorted(ROOT.rglob("*.md"))
+
+
 def main() -> None:
     args = sys.argv[1:]
     apply = "--apply" in args
@@ -206,7 +276,7 @@ def main() -> None:
 
     changed: list[Path] = []
     skipped: list[Path] = []
-    for p in sorted(ROOT.rglob("*.md")):
+    for p in _candidates(args):
         if not in_scope(p):
             continue
         orig = p.read_text()
