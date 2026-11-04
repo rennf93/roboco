@@ -974,12 +974,19 @@ class IAmDoneMixin(_Base):
         if not registry.is_running(task_id) and status == "in_progress":
             moved = await self.task.submit_verification(agent_id, task_id, notes)
             status = str(moved.status) if moved is not None else status
-        launched = registry.launch(
-            task_id,
-            lambda: run_gate_job(agent_id, task_id),
-            lambda verdict: finish_gate_job(agent_id, task_id, notes, verdict),
-            timeout_seconds=_settings.gate_job_timeout_seconds,
-        )
+        launched = False
+        if not registry.is_running(task_id):
+            # A fresh token supersedes any other process's job for this task,
+            # so only this run's verdict can move it.
+            token = await self.task.stamp_gate_run(task_id, notes)
+            launched = token is not None and registry.launch(
+                task_id,
+                lambda: run_gate_job(agent_id, task_id),
+                lambda verdict: finish_gate_job(
+                    agent_id, task_id, notes, str(token), verdict
+                ),
+                timeout_seconds=_settings.gate_job_timeout_seconds,
+            )
         state = "started" if launched else "already running"
         return Envelope.ok(
             status=status,
@@ -995,37 +1002,36 @@ class IAmDoneMixin(_Base):
         ).with_introspection(task=ctx.task, role=ctx.role_str)
 
     async def apply_gate_verdict(
-        self, agent_id: UUID, task_id: UUID, notes: str, verdict: GateResult
+        self,
+        agent_id: UUID,
+        task_id: UUID,
+        notes: str,
+        token: str,
+        verdict: GateResult,
     ) -> str:
         """Gate-job callback: move the task onward, or hand it back to its author.
 
-        Idempotent: it acts only while the task is still pre-QA and owned by
-        the submitting developer, so a duplicate or late callback (task
-        already in QA, reassigned, cancelled) is a no-op. Returns
-        ``submitted`` / ``rejected`` / ``skipped``.
+        Idempotent and bound to its run: it acts only on a ``verifying`` task
+        owned by the submitting developer whose stamped gate-run ``token``
+        matches, and consumes the token, so a duplicate job, a late verdict or
+        one from a superseded run (task already in QA, reopened, resubmitted,
+        reassigned, cancelled) is a no-op. Returns ``submitted`` / ``rejected``
+        / ``skipped``.
 
-        The normal pre-QA status is ``verifying`` (set before the job
-        launched); ``in_progress`` and ``paused`` stay accepted for a task
-        left on the older flow. A pass submits to QA (resuming a paused task
-        first). A fail records the failure on the progress trail and puts the
-        task back in ``in_progress``, where the dispatcher respawns the author.
+        A pass submits to QA. A fail records the failure on the progress trail
+        and puts the task back in ``in_progress``, where the dispatcher
+        respawns the author.
         """
         t = await self.task.get(task_id)
         if (
             t is None
             or t.assigned_to != agent_id
-            or str(t.status) not in ("in_progress", "verifying", "paused")
+            or str(t.status) != "verifying"
+            or not await self.task.consume_gate_run(task_id, token)
         ):
             return "skipped"
         if not verdict.passed:
             return await self._hand_back_after_red_gate(agent_id, t, verdict)
-        if str(t.status) == "paused":
-            resumed = await self.task.resume_for_agent(task_id, agent_id)
-            if resumed is None:
-                return "skipped"
-            t = resumed
-        if str(t.status) == "in_progress":
-            await self.task.submit_verification(agent_id, task_id, notes)
         submitted = await self.task.submit_qa(agent_id, task_id, notes)
         t = submitted if submitted is not None else t
         await self._notify_qa(agent_id, task_id, t)
@@ -1039,13 +1045,9 @@ class IAmDoneMixin(_Base):
     async def _hand_back_after_red_gate(
         self, agent_id: UUID, t: Any, verdict: GateResult
     ) -> str:
-        """Red verdict: return the task to ``in_progress`` (from ``verifying`` or
-        ``paused``) so the dispatcher respawns the author, and record why."""
-        status = str(t.status)
-        if status == "verifying":
-            await self.task.reopen_after_failed_gate(agent_id, t.id)
-        elif status == "paused":
-            await self.task.resume_for_agent(t.id, agent_id)
+        """Red verdict: return the ``verifying`` task to ``in_progress`` so the
+        dispatcher respawns the author, and record why."""
+        await self.task.reopen_after_failed_gate(agent_id, t.id)
         await self._record_milestone_progress(
             t.id,
             agent_id,

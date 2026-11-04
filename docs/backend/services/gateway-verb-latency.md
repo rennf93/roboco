@@ -8,7 +8,8 @@ Findings for task 1524afe3. The observed numbers come from the intake: `i_am_don
 
 | Verb | Phases emitted (`verb` / `phase`) |
 |---|---|
-| `i_am_done` | `tracing_gates`, `field_gates`, `branch_push`, `behind_base`, `quality_gate`, `toolchain_guard`, `conventions_gate`, `runner_chain`, `post_submit`; inside `branch_push`: `push_task_branch` / `codegen` and `push_task_branch` / `push` |
+| `i_am_done` | `tracing_gates`, `field_gates`, `branch_push`, `behind_base`, `toolchain_guard`, `conventions_gate`; inside `branch_push`: `push_task_branch` / `codegen` and `push_task_branch` / `push` |
+| `i_am_done_gate` (background job) | `quality_gate`, emitted by `run_gate_job`; it runs after the verb has returned, so it no longer counts toward `i_am_done`'s latency |
 | `open_pr` | `task_lock_wait`, `briefing`, `runner_chain`; inside the runner: `side_effect` / `push_branch`, `side_effect` / `create_pr`, and `create_pr` / `ensure_base_on_remote`, `entire_link_before_pr`, `forge_post_pr`, `forge_ensure_labels`, `forge_add_labels` |
 | `i_will_work_on` | `briefing`, `claim_plan_start` (the claim, plan, start chain plus branch and worktree provisioning) |
 | `claim_review` | `briefing`, `evidence_build`; inside it `evidence_git`, `evidence_conventions` |
@@ -26,7 +27,16 @@ Findings for task 1524afe3. The observed numbers come from the intake: `i_am_don
 
 The intake hypothesis (inline gate or self-verify run) is therefore right, with one refinement: the cost is the cold, from-scratch execution of `make gate` in a fresh container on every submit, not the existence of a gate.
 
-### Recommended fix for i_am_done
+### Shipped: background quality gate
+
+The gate now runs as a background job (tasks 4404e71d and f41c9383, hardened by this task). `i_am_done` runs only the cheap guards, moves the task to `verifying`, stamps a gate-run marker and launches `run_gate_job` through `GateJobRegistry`, then returns. Nothing reaches QA until a passing verdict is applied.
+
+- **Verdict binding:** the launch stamps `{token, notes, started_at}` in the task's `gate_run` orchestration marker (`TaskService.stamp_gate_run`). `apply_gate_verdict` acts only on a `verifying` task owned by the submitting developer whose stamped token matches the verdict's job, and consumes the token (`consume_gate_run`). A duplicate job, which happens on every blue-green deploy while the old color still runs its in-process jobs, finds nothing to match: a red verdict followed by a stale pass leaves the task in `in_progress`. The legacy `in_progress` and `paused` acceptance is gone.
+- **Restart recovery:** `relaunch_lost_gate_jobs` takes over a `verifying` task only when its last gate run is older than `ROBOCO_GATE_JOB_TIMEOUT_SECONDS` plus a 60 s grace (an unstamped legacy task counts as lost). It stamps a fresh token and commits before launching, which also invalidates any stale job's verdict, and reuses the developer's persisted submit notes.
+- **Timing:** `run_gate_job` wraps the gate call in `timed_phase("i_am_done_gate", "quality_gate")`.
+- **Tests:** `tests/unit/gateway/test_gate_job.py` covers red-then-stale-pass, token mismatch, young and stale runs in recovery, and notes reuse.
+
+### Recommended fix for i_am_done (superseded: shipped above)
 
 1. First, make the gate cheap rather than asynchronous. Keep a per-worktree cache across gate runs: mount a persistent `.mypy_cache` and uv cache directory for the clone into the throwaway container, and skip the `sync` step when the lockfile hash is unchanged since the last gate run for that worktree. mypy is incremental; a warm cache typically turns a minutes-long full-tree check into seconds for a small diff. This changes no gate semantics, so `i_am_done` still cannot reach QA on a red gate.
 2. Then, if the warm gate is still over the agent-side timeout budget, move it to a background job: `i_am_done` records a `gate_pending` marker and returns, the orchestrator runs the gate and calls back, a green callback performs the `verifying` to `awaiting_qa` transition, and a red one writes the failure to `remediate` for the developer. The invariant to keep: nothing reaches QA until the gate has passed. This is a larger change (new marker, callback path, tests for pass and fail through the callback) and should wait for the numbers from step 1.
@@ -66,6 +76,6 @@ Fix 1 below is implemented (task a48da4df, PR #1429). `_lock_tree` in `roboco/se
 
 Every phase logs `verb_phase` with `verb`, `phase`, `duration_ms`, `outcome`. To rank where a verb's time goes, group the events by `verb` and `phase` and look at p50 and p95 of `duration_ms`. The checks that settle the open questions:
 
-- `i_am_done`: `quality_gate` should account for most of the verb's duration; if `branch_push` or `conventions_gate` is large instead, the gate fix above is the wrong lever.
+- `i_am_done`: with the background gate the verb's own phases (`branch_push`, `behind_base`, `conventions_gate`, ...) should now total seconds. The gate cost shows as `verb=i_am_done_gate phase=quality_gate`; if the verb is still slow, one of its own phases is the lever, not the gate.
 - `open_pr`: a tail where `entire_link_before_pr` (and `task_lock_wait` for a duplicate call) is 55 s or more while `forge_post_pr` stays small confirms the tree-lock cause; a tail in `forge_post_pr`, `forge_ensure_labels` or `side_effect` / `push_branch` points at the forge or network instead.
 - Any phase at 5000 ms or more is logged at warning level, so `level=warning verb_phase` is the quick stall finder.

@@ -186,7 +186,8 @@ async def test_i_am_done_success_releases_sandbox(
     assert env.error is None
     # The deferred gate job's callback ends the engagement, so it releases.
     release.assert_not_awaited()
-    await c.apply_gate_verdict(agent_id, task_id, "done", GateResult(True))
+    t.status = "verifying"
+    await c.apply_gate_verdict(agent_id, task_id, "done", "tok", GateResult(True))
     release.assert_awaited_once_with(agent_id)
 
 

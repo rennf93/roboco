@@ -7,6 +7,7 @@ Handles status transitions, assignments, and queries.
 
 import asyncio
 import shutil
+import time
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -11965,8 +11966,32 @@ class TaskGatewayWork(_Base):
             self._validate_and_set_status(task, TaskStatus.IN_PROGRESS, "developer")
         except TaskLifecycleError:
             return None
+        markers.clear_gate_run(task)
         await self.session.flush()
         return task
+
+    async def stamp_gate_run(self, task_id: UUID, notes: str) -> str | None:
+        """Claim the gate run for ``task_id``: stamp a fresh token + the submit
+        notes on the task and return the token. Any earlier run's token is
+        superseded, so its late verdict is dropped. ``None`` if the task is gone."""
+        task = await self.get(task_id)
+        if task is None:
+            return None
+        token = uuid4().hex
+        markers.set_gate_run(task, token, notes, time.time())
+        await self.session.flush()
+        return token
+
+    async def consume_gate_run(self, task_id: UUID, token: str) -> bool:
+        """Clear the gate-run marker iff ``token`` is the stamped one (one-shot:
+        a second verdict for the same run finds nothing to match)."""
+        task = await self.get(task_id)
+        run = markers.get_gate_run(task) if task is not None else None
+        if task is None or run is None or run.get("token") != token:
+            return False
+        markers.clear_gate_run(task)
+        await self.session.flush()
+        return True
 
     async def list_verifying_with_assignee(self) -> list[TaskTable]:
         """Every ``verifying`` task that still has an assignee (the gate-job
