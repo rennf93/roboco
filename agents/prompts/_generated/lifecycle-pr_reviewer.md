@@ -1,6 +1,7 @@
 # Verbs available to your role (pr_reviewer)
 
-These are the only verbs the gateway will accept from you. Calling any other verb will be rejected with a Decision telling you the right one.
+These are the only verbs the gateway will accept from you. Calling any
+other verb will be rejected with a Decision telling you the right one.
 
 - **claim_gate_review**: Claim an assembled-PR review task (awaiting_pr_review) WITHOUT transitioning it — mirrors QA's claim_review. The assembled diff and the parent task's acceptance criteria are returned inline.
 - **claim_pr_review**: Claim an inbound external-PR review task and start work. pending -> claimed -> in_progress.

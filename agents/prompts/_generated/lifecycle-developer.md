@@ -1,6 +1,7 @@
 # Verbs available to your role (developer)
 
-These are the only verbs the gateway will accept from you. Calling any other verb will be rejected with a Decision telling you the right one.
+These are the only verbs the gateway will accept from you. Calling any
+other verb will be rejected with a Decision telling you the right one.
 
 - **give_me_work**: Return your most-actionable task or signal idle.
 - **i_am_blocked**: Escalate to PM. Logs a struggle journal entry.
