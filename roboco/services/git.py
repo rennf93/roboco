@@ -2590,6 +2590,7 @@ class GitPRQueries(_Base):
                 login and base_owner and login.lower() == base_owner.lower()
             ),
             "author_association": pr.get("author_association"),
+            "draft": bool(pr.get("draft")),
         }
 
     async def resolve_ci_query(
