@@ -2,7 +2,8 @@
 
 triage() surfaces blocked tasks the auditor is not assigned to. evidence() is
 read-only and admits the claim-less observer role, while note/dm/notify/
-progress on that same task keep the assignee/claim gate.
+progress on that same task keep the assignee/claim gate and commit stays
+refused by its role gate.
 """
 
 from __future__ import annotations
@@ -97,3 +98,19 @@ async def test_auditor_is_refused_every_write_on_a_foreign_task(write: str) -> N
     if write != "notify":
         # notify is refused earlier, by its PM/Board-only role gate.
         assert "not the assignee" in body["message"]
+
+
+@pytest.mark.asyncio
+async def test_auditor_is_refused_commit_by_role() -> None:
+    """commit takes no task_id (it targets the caller's own active task), so
+    the auditor is refused by the _COMMIT_ALLOWED_ROLES role gate, not by the
+    assignee check the other write verbs hit."""
+    ca = _actions("auditor", _foreign_task(uuid4(), uuid4()))
+
+    env = await ca.commit(
+        agent_id=uuid4(), message="chore(audit): record an observation about drift"
+    )
+
+    body = env.as_dict()
+    assert body["error"] == "not_authorized"
+    assert "may not commit code" in body["message"]
