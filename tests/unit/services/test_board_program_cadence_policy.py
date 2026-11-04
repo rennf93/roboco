@@ -21,6 +21,8 @@ if TYPE_CHECKING:
 
 SLOW = "scales"
 FAST = "roadmap"
+DELETED = "spackle"
+DELETED_APPROVED = 3
 SAMPLE = 6
 BASE = 1000
 OVERRIDE = 12345
@@ -50,6 +52,17 @@ def _patched_metrics(monkeypatch: pytest.MonkeyPatch) -> None:
         out = {k: _metric(k, cost=None, proposed=0, approved=0) for k in PROGRAMS}
         out[SLOW] = _metric(SLOW, cost=54.86, proposed=SAMPLE, approved=0)
         out[FAST] = _metric(FAST, cost=10.0, proposed=SAMPLE, approved=SAMPLE)
+        out[DELETED] = ProgramCadenceMetric(
+            program_key=DELETED,
+            cycles_counted=0,
+            cycles_missing_cost=2,
+            total_cost_usd=0.0,
+            cost_per_cycle_usd=None,
+            items_proposed=SAMPLE,
+            items_approved=DELETED_APPROVED,
+            approval_rate=DELETED_APPROVED / SAMPLE,
+            items_approved_counted=0,
+        )
         return out
 
     monkeypatch.setattr(BoardProgramCadenceService, "program_cadence_metrics", fake)
@@ -72,6 +85,24 @@ async def test_review_lists_every_program_with_slowdown_numbers(
     assert slow.effective_interval_seconds > slow.original_interval_seconds
     assert not rows[FAST].slowed
     assert rows[FAST].effective_interval_seconds == rows[FAST].original_interval_seconds
+    assert (slow.cycles_counted, slow.items_approved_counted) == (1, 0)
+    assert rows[FAST].cycles_counted == 1
+    assert rows[FAST].items_approved_counted == SAMPLE
+
+
+@pytest.mark.asyncio
+async def test_review_shows_counted_fields_for_deleted_task_cycles(
+    db_session: AsyncSession,
+) -> None:
+    row = next(
+        r
+        for r in await get_board_program_cadence_policy_service(db_session).review()
+        if r.program_key == DELETED
+    )
+    assert row.items_approved == DELETED_APPROVED
+    assert row.cycles_counted == 0
+    assert row.items_approved_counted == 0
+    assert row.cost_per_approved_usd is None
 
 
 @pytest.mark.asyncio

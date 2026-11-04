@@ -13,6 +13,8 @@ class ProgramCadenceReview(BaseModel):
     approval_rate: float | None
     sample_size: int
     items_approved: int
+    cycles_counted: int
+    items_approved_counted: int
     slowed: bool
     slowdown_disabled: bool
     original_interval_seconds: int
