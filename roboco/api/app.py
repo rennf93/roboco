@@ -85,7 +85,7 @@ from roboco.services.decisions.resolver import (
     check_openrouter_fallback_at_startup,
 )
 from roboco.services.extraction import ExtractionPipeline, ExtractionService
-from roboco.services.gateway.choreographer.gate_job import relaunch_lost_gate_jobs
+from roboco.services.gateway.choreographer.gate_job import run_gate_recovery_loop
 from roboco.services.learning import get_learning_service
 from roboco.services.optimal import close_optimal_service, get_optimal_service
 from roboco.services.optimal_brain.indexer_worker import (
@@ -128,15 +128,16 @@ def _cancel_rag_reconcile(app: FastAPI) -> None:
         task.cancel()
 
 
-async def _relaunch_lost_gate_jobs() -> None:
-    """Relaunch quality-gate jobs a restart dropped (best-effort: a failure
-    here must not block startup)."""
-    try:
-        relaunched = await relaunch_lost_gate_jobs()
-        if relaunched:
-            logger.info("Relaunched lost quality gate jobs", count=relaunched)
-    except Exception as e:
-        logger.warning("Gate job recovery failed", error=str(e))
+def _start_gate_recovery(app: FastAPI) -> None:
+    """Run the lost-gate-job sweep periodically for the process lifetime."""
+    app.state.gate_recovery_task = asyncio.create_task(run_gate_recovery_loop())
+
+
+def _cancel_gate_recovery(app: FastAPI) -> None:
+    """Stop the periodic gate-job sweep at shutdown."""
+    task = getattr(app.state, "gate_recovery_task", None)
+    if task is not None and not task.done():
+        task.cancel()
 
 
 async def _apply_flag_overrides() -> None:
@@ -265,7 +266,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
         _schedule_rag_reconcile(app)
 
     if settings.role in ("all", "api"):
-        await _relaunch_lost_gate_jobs()
+        _start_gate_recovery(app)
 
     logger.info("All services initialized, API ready")
 
@@ -275,6 +276,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     logger.info("Shutting down RoboCo API")
 
     _cancel_rag_reconcile(app)
+    _cancel_gate_recovery(app)
 
     if _AppServices.transcription:
         await _AppServices.transcription.stop()

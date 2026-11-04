@@ -7,6 +7,7 @@ itself); ``finish_gate_job`` is the callback that applies the verdict.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from functools import partial
 from typing import TYPE_CHECKING, Any
@@ -103,6 +104,28 @@ async def relaunch_lost_gate_jobs() -> int:
         ):
             launched += 1
     return launched
+
+
+async def run_gate_recovery_loop(interval_seconds: float | None = None) -> None:
+    """Sweep for lost gate jobs forever; only cancellation ends it.
+
+    A blue-green overlap means the startup sweep can run while the old color's
+    jobs are still live (younger than the age threshold, so skipped), and
+    nothing else would relaunch them once that color stops. Sweeping on an
+    interval picks them up as soon as they age past the threshold. A failed
+    sweep is logged and retried at the next tick.
+    """
+    from roboco.config import settings
+
+    interval = interval_seconds or settings.gate_job_timeout_seconds / 4
+    while True:
+        try:
+            relaunched = await relaunch_lost_gate_jobs()
+            if relaunched:
+                logger.info("Relaunched lost quality gate jobs", count=relaunched)
+        except Exception as exc:
+            logger.warning("Gate job recovery sweep failed", error=str(exc))
+        await asyncio.sleep(interval)
 
 
 async def finish_gate_job(
