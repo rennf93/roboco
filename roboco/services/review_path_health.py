@@ -9,26 +9,37 @@ outage is declared only when failures span at least
 never an outage. One notification is emitted per outage window (on trip) and
 one on recovery. Detection only - no auto-remediation.
 
-ponytail: in-memory per process. Failures and the sweep live in the dispatcher
-(agents' API URL), so nginx sends /api/system-health/ there; the api role's
-tracker is always empty. A restart forgets the window, which at worst delays a
-trip by one window. Move to Redis if a second recording process ever appears.
+State (failure window, active/recovered/window_start, transition queue) lives
+in Redis, so the api role (where agents' failures land), the dispatcher (where
+the sweep runs) and whichever process serves the panel read all share one
+tracker. Every mutation is atomic (HSETNX / HDEL decide the single winner of a
+transition, LPOP drains the queue), so each transition is delivered exactly
+once even with concurrent sweeps. Redis errors are logged and swallowed:
+tracking never fails a read.
+
+ponytail: sync redis client (hook sites are sync) with 1s socket timeouts, so a
+dead Redis can stall a read path by up to that long; make the hooks async if
+that ever matters.
 """
 
 from __future__ import annotations
 
 import contextlib
+import functools
 import re
-from collections import deque
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
-from uuid import UUID
+from uuid import UUID, uuid4
+
+import redis
 
 from roboco.config import settings
 from roboco.logging import get_logger
 from roboco.services.base import NotFoundError, UnauthorizedError, ValidationError
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = get_logger(__name__)
@@ -36,83 +47,143 @@ logger = get_logger(__name__)
 OUTAGE_TYPE = "review_path_tools"
 _TASK_KEY_LEN = 8
 _TASK_PREFIX_RE = re.compile(rf"^[0-9a-f]{{{_TASK_KEY_LEN}}}$")
+_FAILURES_KEY = "roboco:review_path:failures"
+_STATE_KEY = "roboco:review_path:state"
+_TRANSITIONS_KEY = "roboco:review_path:transitions"
+_REDIS_TIMEOUT_SECONDS = 1
+
+
+def _fail_open(default: Any) -> Callable[[Callable[..., Any]], Callable[..., Any]]:
+    """Log and swallow any Redis error, returning ``default``."""
+
+    def deco(fn: Callable[..., Any]) -> Callable[..., Any]:
+        @functools.wraps(fn)
+        def wrapper(*args: Any, **kwargs: Any) -> Any:
+            try:
+                return fn(*args, **kwargs)
+            except Exception as exc:
+                logger.warning(
+                    "review_path_health_redis_error", op=fn.__name__, error=str(exc)
+                )
+                return default
+
+        return wrapper
+
+    return deco
+
+
+def _ts(value: datetime) -> float:
+    return value.timestamp()
+
+
+def _dt(value: float | str) -> datetime:
+    return datetime.fromtimestamp(float(value), UTC)
 
 
 class ReviewPathHealthTracker:
-    """Rolling-window failure tracker with a deduplicated outage state."""
+    """Rolling-window failure tracker with a deduplicated outage state,
+    persisted in Redis so every role shares it."""
 
-    def __init__(self) -> None:
-        self._failures: deque[tuple[datetime, str]] = deque()
-        self._consecutive_ok = 0
-        self._active = False
-        self._recovered = False
-        self._window_start: datetime | None = None
-        self._unreported: deque[str] = deque()
+    def __init__(self, client: Any = None) -> None:
+        self._client = client
 
-    def _prune(self, now: datetime) -> None:
-        cutoff = now - timedelta(seconds=settings.review_path_outage_window_seconds)
-        while self._failures and self._failures[0][0] < cutoff:
-            self._failures.popleft()
+    @property
+    def _r(self) -> Any:
+        if self._client is None:
+            self._client = redis.from_url(
+                settings.redis_url,
+                decode_responses=True,
+                socket_timeout=_REDIS_TIMEOUT_SECONDS,
+                socket_connect_timeout=_REDIS_TIMEOUT_SECONDS,
+            )
+        return self._client
+
+    def _window(self, now: datetime) -> list[tuple[str, float]]:
+        cutoff = _ts(now) - settings.review_path_outage_window_seconds
+        self._r.zremrangebyscore(_FAILURES_KEY, "-inf", f"({cutoff}")
+        window: list[tuple[str, float]] = self._r.zrange(
+            _FAILURES_KEY, 0, -1, withscores=True
+        )
+        return window
 
     def _evaluate(self, now: datetime) -> None:
-        self._prune(now)
-        distinct = {key for _, key in self._failures}
-        if not self._active and len(distinct) >= (
-            settings.review_path_outage_distinct_tasks
-        ):
-            self._active = True
-            self._recovered = False
-            self._window_start = self._failures[0][0]
-            self._unreported.append("active")
-        elif self._active and not self._failures:
+        window = self._window(now)
+        active = self._r.hget(_STATE_KEY, "active") == "1"
+        distinct = {member.rsplit("|", 1)[0] for member, _ in window}
+        if not active and len(distinct) >= settings.review_path_outage_distinct_tasks:
+            self._trip(window[0][1])
+        elif active and not window:
             self._expire()
+
+    def _trip(self, window_start: float) -> None:
+        if self._r.hsetnx(_STATE_KEY, "active", "1"):
+            self._r.hset(
+                _STATE_KEY,
+                mapping={
+                    "recovered": "0",
+                    "ok": "0",
+                    "window_start": repr(window_start),
+                },
+            )
+            self._r.rpush(_TRANSITIONS_KEY, "active")
 
     def _expire(self) -> None:
         """The window emptied with no read having succeeded: close the outage
         without claiming recovery (``recovered`` stays False)."""
-        self._active = False
-        self._consecutive_ok = 0
-        self._unreported.append("expired")
+        if self._r.hdel(_STATE_KEY, "active"):
+            self._r.hset(_STATE_KEY, "ok", "0")
+            self._r.rpush(_TRANSITIONS_KEY, "expired")
 
     def _clear(self) -> None:
-        self._active = False
-        self._recovered = True
-        self._consecutive_ok = 0
-        self._unreported.append("recovered")
+        if self._r.hdel(_STATE_KEY, "active"):
+            self._r.hset(_STATE_KEY, mapping={"recovered": "1", "ok": "0"})
+            self._r.rpush(_TRANSITIONS_KEY, "recovered")
 
+    @_fail_open(None)
     def record_failure(self, task_key: str, now: datetime | None = None) -> None:
         now = now or datetime.now(UTC)
-        self._consecutive_ok = 0
-        self._failures.append((now, str(task_key)))
+        self._r.hset(_STATE_KEY, "ok", "0")
+        self._r.zadd(_FAILURES_KEY, {f"{task_key}|{uuid4().hex}": _ts(now)})
         self._evaluate(now)
 
-    def record_success(self, now: datetime | None = None) -> None:
-        now = now or datetime.now(UTC)
-        if not self._active:
+    @_fail_open(None)
+    def record_success(self) -> None:
+        if self._r.hget(_STATE_KEY, "active") != "1":
             return
-        self._consecutive_ok += 1
-        if self._consecutive_ok >= settings.review_path_recovery_successes:
-            self._failures.clear()
+        ok = self._r.hincrby(_STATE_KEY, "ok", 1)
+        if ok >= settings.review_path_recovery_successes:
+            self._r.delete(_FAILURES_KEY)
             self._clear()
 
     def state(self, now: datetime | None = None) -> dict[str, Any]:
         """The panel contract: outage_active, type, window_start, recovered."""
-        self._evaluate(now or datetime.now(UTC))
+        snapshot: dict[str, str] = self._snapshot(now or datetime.now(UTC))
+        window_start = snapshot.get("window_start")
         return {
-            "outage_active": self._active,
+            "outage_active": snapshot.get("active") == "1",
             "type": OUTAGE_TYPE,
-            "window_start": self._window_start,
-            "recovered": self._recovered,
+            "window_start": _dt(window_start) if window_start else None,
+            "recovered": snapshot.get("recovered") == "1",
         }
 
-    def pending_transition(self) -> str | None:
-        """Next unreported 'active' / 'recovered' transition, else None.
+    @_fail_open({})
+    def _snapshot(self, now: datetime) -> dict[str, str]:
+        self._evaluate(now)
+        snapshot: dict[str, str] = self._r.hgetall(_STATE_KEY)
+        return snapshot
 
-        Each transition is queued exactly once when it happens, so an outage
-        that trips and clears between sweeps still yields active then recovered.
+    @_fail_open(None)
+    def pending_transition(self) -> str | None:
+        """Next unreported 'active' / 'recovered' / 'expired' transition.
+
+        Each transition is queued exactly once when it happens, and LPOP hands
+        it to exactly one caller, so an outage that trips and clears between
+        sweeps still yields active then recovered, and concurrent sweeps never
+        double-send.
         """
         self._evaluate(datetime.now(UTC))
-        return self._unreported.popleft() if self._unreported else None
+        transition: str | None = self._r.lpop(_TRANSITIONS_KEY)
+        return transition
 
 
 _tracker = ReviewPathHealthTracker()

@@ -27,9 +27,6 @@ _NGINX_CONF = Path(__file__).parents[2] / "deploy" / "nginx.conf"
 _DEPLOY_SCRIPT = Path(__file__).parents[2] / "scripts" / "deploy-nas.sh"
 _DISPATCHER_LOCATIONS = (
     "location /api/orchestrator/",
-    # The review-path outage tracker is per-process and records in the
-    # dispatcher; the panel must read it there, not from the api role.
-    "location /api/system-health/",
     "location /api/secretary/live/",
     "location /api/prompter/live/",
 )

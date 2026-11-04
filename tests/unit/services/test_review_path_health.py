@@ -33,6 +33,88 @@ from roboco.services.review_path_health import (
 )
 
 
+class FakeRedis:
+    """In-memory stand-in for the sync redis commands the tracker uses."""
+
+    def __init__(self) -> None:
+        self.z: dict[str, dict[str, float]] = {}
+        self.h: dict[str, dict[str, str]] = {}
+        self.lists: dict[str, list[str]] = {}
+
+    def zadd(self, key: str, mapping: dict[str, float]) -> None:
+        self.z.setdefault(key, {}).update(mapping)
+
+    def zremrangebyscore(self, key: str, _lo: str, hi: str) -> None:
+        exclusive = hi.startswith("(")
+        top = float(hi.lstrip("("))
+        zset = self.z.get(key, {})
+        for member in [
+            m for m, sc in zset.items() if (sc < top if exclusive else sc <= top)
+        ]:
+            del zset[member]
+
+    def zrange(
+        self, key: str, _lo: int, _hi: int, withscores: bool = False
+    ) -> list[tuple[str, float]]:
+        assert withscores
+        return sorted(self.z.get(key, {}).items(), key=lambda kv: kv[1])
+
+    def delete(self, key: str) -> None:
+        self.z.pop(key, None)
+
+    def hget(self, key: str, field: str) -> str | None:
+        return self.h.get(key, {}).get(field)
+
+    def hgetall(self, key: str) -> dict[str, str]:
+        return dict(self.h.get(key, {}))
+
+    def hset(
+        self,
+        key: str,
+        field: str | None = None,
+        value: str | None = None,
+        mapping: dict[str, str] | None = None,
+    ) -> None:
+        fields = dict(mapping or {})
+        if field is not None:
+            fields[field] = str(value)
+        self.h.setdefault(key, {}).update(fields)
+
+    def hsetnx(self, key: str, field: str, value: str) -> int:
+        hash_ = self.h.setdefault(key, {})
+        if field in hash_:
+            return 0
+        hash_[field] = value
+        return 1
+
+    def hdel(self, key: str, field: str) -> int:
+        return 1 if self.h.get(key, {}).pop(field, None) is not None else 0
+
+    def hincrby(self, key: str, field: str, amount: int) -> int:
+        hash_ = self.h.setdefault(key, {})
+        hash_[field] = str(int(hash_.get(field, "0")) + amount)
+        return int(hash_[field])
+
+    def rpush(self, key: str, value: str) -> None:
+        self.lists.setdefault(key, []).append(value)
+
+    def lpop(self, key: str) -> str | None:
+        queue = self.lists.get(key, [])
+        return queue.pop(0) if queue else None
+
+
+@pytest.fixture(autouse=True)
+def fake_redis(monkeypatch: pytest.MonkeyPatch) -> FakeRedis:
+    """One shared fake behind every tracker, like separate processes on one
+    Redis."""
+    fake = FakeRedis()
+    monkeypatch.setattr(
+        "roboco.services.review_path_health.redis.from_url",
+        lambda *_a, **_k: fake,
+    )
+    return fake
+
+
 @pytest.fixture
 def t0() -> datetime:
     return datetime.now(UTC) - timedelta(seconds=30)
@@ -121,7 +203,8 @@ def tracker() -> Iterator[ReviewPathHealthTracker]:
 
 
 def _failed_keys(t: ReviewPathHealthTracker) -> list[str]:
-    return [key for _, key in t._failures]
+    members = t._r.zrange("roboco:review_path:failures", 0, -1, withscores=True)
+    return [member.rsplit("|", 1)[0] for member, _ in members]
 
 
 async def _boom(exc: BaseException) -> None:
@@ -336,7 +419,7 @@ def test_window_expiry_closes_outage_without_claiming_recovery(
 async def test_sweep_words_expiry_as_not_recovered(
     tracker: ReviewPathHealthTracker,
 ) -> None:
-    tracker._unreported.append("expired")
+    tracker._r.rpush("roboco:review_path:transitions", "expired")
     send = AsyncMock()
     with patch(
         "roboco.services.notification.NotificationService."
@@ -412,3 +495,36 @@ async def test_resolver_falls_back_to_agent_key() -> None:
 
 def _agent_ctx(agent_id: UUID) -> Any:
     return SimpleNamespace(agent_id=agent_id)
+
+
+def test_state_is_shared_across_tracker_instances_and_delivers_once(
+    t0: datetime,
+) -> None:
+    """The api role records, the dispatcher sweeps, any process serves the
+    panel: separate tracker instances on one Redis agree, and each transition
+    is handed to exactly one caller."""
+    api, dispatcher, panel = (ReviewPathHealthTracker() for _ in range(3))
+    for i, key in enumerate("abc"):
+        api.record_failure(key, t0 + timedelta(seconds=i))
+    seen = panel.state(t0 + timedelta(seconds=5))
+    assert seen["outage_active"] is True
+    assert seen["window_start"] == t0
+    assert dispatcher.pending_transition() == "active"
+    assert api.pending_transition() is None
+    api.record_success()
+    api.record_success()
+    assert panel.state()["recovered"] is True
+    assert dispatcher.pending_transition() == "recovered"
+    assert panel.pending_transition() is None
+
+
+def test_redis_errors_are_swallowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _down(*_a: Any, **_k: Any) -> None:
+        raise ConnectionError("redis down")
+
+    monkeypatch.setattr("roboco.services.review_path_health.redis.from_url", _down)
+    t = ReviewPathHealthTracker()
+    t.record_failure("a")
+    t.record_success()
+    assert t.pending_transition() is None
+    assert t.state()["outage_active"] is False
