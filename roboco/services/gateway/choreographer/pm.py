@@ -691,7 +691,7 @@ class DelegateMixin(_Base):
         have gotten from the upfront completeness check.
         """
         from roboco.foundation.policy.task_completeness import TaskCompletenessError
-        from roboco.services.base import ValidationError
+        from roboco.services.base import AssigneeCapabilityError, ValidationError
 
         parent_task_id = parent.id
         try:
@@ -707,6 +707,23 @@ class DelegateMixin(_Base):
                         "re-issue delegate(...) with corrected fields: "
                         f"{', '.join(exc.missing)}. Each field's required "
                         "shape is in `field_hints`."
+                    ),
+                    context_briefing=briefing,
+                ).with_introspection(task=parent, role=role_str),
+                agent_id=pm_agent_id,
+                task_id=parent_task_id,
+                verb="delegate",
+            )
+        except AssigneeCapabilityError as exc:
+            # The delegated assignee's role cannot act on the status the
+            # subtask will hold — refused at creation with the missing
+            # capability named (the 54e30535 wedge shape).
+            return await self._emit_rejection(
+                Envelope.not_authorized(
+                    message=exc.message,
+                    remediate=(
+                        "re-issue delegate(...) with an assignee whose role"
+                        " can claim/act on the subtask's target status"
                     ),
                     context_briefing=briefing,
                 ).with_introspection(task=parent, role=role_str),

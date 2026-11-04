@@ -15,6 +15,7 @@ Documentation for the Backend Cell team.
   - `release-certificate-endpoint.md` - CEO-only `GET /api/releases/{version}/certificate`: the `ReleaseCertificateResponse` cross-cell contract (CI verdict, conventions-clean verdict, per-AC QA states, findings summary, approval timestamp, changelog excerpt) and the release task-set derivation heuristic
 - `/qa/` - QA-related docs
 - `/services/` - Internal service architecture & patterns
+  - `assignee-capability-refusal.md` - `assignee_can_act` / `assignee_capability_gap` predicate derived from `CLAIM_RULES` + the atomic action specs, and `TaskService._refuse_incapable_assignee`, which makes `delegate`, `reassign` and admin `PATCH assigned_to` refuse (not_authorized / 403) an assignee whose role cannot act on the task's status, naming the missing capability
   - `coordination-events.md` - 5 coordination-event notification producers: reassignment, collision-sequencing, unblock, dependency-revival, stale-claim-reaped
   - `optimal-per-index-timeout.md` - Per-index 15s timeout + partial-result `gaps` list in `OptimalService.search_with_gaps()` / `RAGResponse.gaps` (inner to the route-level 30s bound; follows the `evidence_legs.run_bounded_leg` degradation pattern; `search()` stays backward compatible)
   - `pr-waiver.md` - Zero-diff PR-waiver: `submit_up`/`submit_root` detect a zero-commit branch before `create_pr`/`create_root_pr`, waive PR creation, and route report-only cell/root tasks to `completed` with no PR and no manual status surgery

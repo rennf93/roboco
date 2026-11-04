@@ -27,7 +27,7 @@ Two sequenced leaves built this: `roboco/services/attestation.py` (the assembly 
 | `render_attestation_markdown` | function | `attestation.py:442` | Renders a human-readable Markdown receipt from an ALREADY-assembled `TaskAttestation` — never a second computation over raw tables, so the Markdown can never drift from the JSON the route also returns. Each section (header/AC/findings/CI/conventions/reviewer-chain/work-sessions) is a small pure helper kept under the branch budget. |
 | `TaskAttestationResponse` | Pydantic model | `schemas/attestation.py:100` | Response schema mirroring `TaskAttestation` field-for-field. |
 | `attestation_to_response` | function | `schemas/attestation.py:142` | Converts the assembler's frozen-dataclass tree into its Pydantic twin. Lives in `roboco.api.schemas`, not the route and not the service — services must never import schemas (conventions map layering rule). |
-| `get_task_attestation` | async route | `roboco/api/routes/tasks.py:1038` | `GET /api/tasks/{id}/attestation`; 404 on an unknown task id; `format=json` (default) returns `TaskAttestationResponse`, `format=markdown` returns a `PlainTextResponse` of `render_attestation_markdown`'s output — both call sites pass the SAME `assemble_task_attestation` result, so JSON and Markdown can never diverge. |
+| `get_task_attestation` | async route | `roboco/api/routes/tasks.py:1049` | `GET /api/tasks/{id}/attestation`; 404 on an unknown task id; `format=json` (default) returns `TaskAttestationResponse`, `format=markdown` returns a `PlainTextResponse` of `render_attestation_markdown`'s output — both call sites pass the SAME `assemble_task_attestation` result, so JSON and Markdown can never diverge. |
 
 ## Response shape (cross-cell contract)
 

@@ -61,6 +61,25 @@ class ValidationError(ServiceError):
         self.field = field
 
 
+class AssigneeCapabilityError(ServiceError):
+    """An assignment would plant an assignee whose role cannot act on the
+    task's status. Refusal names the missing capability; API/gateway layers
+    translate to the not_authorized category (403).
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        role: str | None = None,
+        status: str | None = None,
+        details: dict | None = None,
+    ) -> None:
+        super().__init__(message, details)
+        self.role = role
+        self.status = status
+
+
 class ConflictError(ServiceError):
     """Resource conflict (duplicate, state conflict). Translates to 409."""
 

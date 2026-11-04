@@ -339,6 +339,9 @@ class TaskReassignmentSurface(Protocol):
     async def _retarget_agent_claim(
         self, old_agent_id: UUID | None, new_agent_id: UUID | None, task_id: UUID
     ) -> None: ...
+    def _refuse_incapable_assignee(
+        self, status: Any, new_assignee: Any, current: Any = None
+    ) -> None: ...
 
 
 class TaskRecordsSurface(Protocol):
