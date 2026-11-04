@@ -347,6 +347,13 @@ def _legacy_venv(clone_root: Path, version: str) -> None:
     """The clone-time venv: a real `.venv` dir built from the old lockfile."""
     (clone_root / ".venv").mkdir()
     (clone_root / ".venv" / _INSTALLED_VERSION_FILE).write_text(version)
+    tool = clone_root / ".venv" / "bin" / "tool"
+    tool.parent.mkdir()
+    tool.write_text(f"#!{clone_root}/.venv/bin/python\nprint('tool')\n")
+
+
+def _tool_shebang(venv: Path) -> str:
+    return (venv / "bin" / "tool").read_text().splitlines()[0]
 
 
 def _fake_uv_sync(
@@ -466,6 +473,15 @@ async def test_resync_leaves_the_old_venv_usable_until_the_swap(
     # The replaced venv survives the swap for anything still running on it.
     legacy = clone_root / ".venv-legacy" / _INSTALLED_VERSION_FILE
     assert legacy.read_text() == "7.3.1"
+    # Its console scripts must not cross over to the new venv through `.venv`.
+    assert _tool_shebang(clone_root / ".venv-legacy") == (
+        f"#!{clone_root}/.venv-legacy/bin/python"
+    )
+    assert (
+        (clone_root / ".venv-legacy" / "bin" / "tool")
+        .read_text()
+        .endswith("print('tool')\n")
+    )
 
 
 @pytest.mark.asyncio
@@ -490,6 +506,9 @@ async def test_swap_pins_a_clone_root_linked_sibling_to_its_venv(
     assert _installed_version(clone_root) == "Z"
     assert (sibling / ".venv").readlink() == Path("../../.venv-legacy")
     assert (sibling / ".venv" / _INSTALLED_VERSION_FILE).read_text() == "X"
+    assert _tool_shebang(sibling / ".venv") == (
+        f"#!{clone_root}/.venv-legacy/bin/python"
+    )
 
 
 @pytest.mark.asyncio
