@@ -385,6 +385,7 @@ async def test_keenable_search_keyless_public_endpoint() -> None:
                     },
                     {"title": "No URL", "description": "dropped"},
                     {"title": "L", "url": "https://l.test", "snippet": "x" * 2000},
+                    {"title": "M", "url": "https://m.test", "description": "y" * 2000},
                 ]
             },
         )
@@ -399,9 +400,14 @@ async def test_keenable_search_keyless_public_endpoint() -> None:
     assert isinstance(headers, httpx.Headers)
     assert headers["x-keenable-title"] == "RoboCo"
     assert "x-api-key" not in headers
-    assert [h.url for h in out.hits] == ["https://k.test", "https://l.test"]
+    assert [h.url for h in out.hits] == [
+        "https://k.test",
+        "https://l.test",
+        "https://m.test",
+    ]
     assert out.hits[0].snippet == "d"
     assert len(out.hits[1].snippet) == KeenableProvider._SNIPPET_MAX_CHARS
+    assert len(out.hits[2].snippet) == KeenableProvider._SNIPPET_MAX_CHARS
     with pytest.raises(ResearchUnsupportedError):
         await provider.fetch("https://k.test", 100)
     await client.aclose()
