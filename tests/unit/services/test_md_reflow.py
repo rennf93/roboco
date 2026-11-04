@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from roboco.services import md_reflow
 from roboco.services.md_reflow import (
     reflow_changed_markdown,
     reflow_worktree_markdown,
@@ -74,6 +76,20 @@ async def test_git_hook_filters_to_requested_files_and_never_raises(
     run.side_effect = RuntimeError("boom")
     assert await reflow_worktree_markdown(run, tmp_path, None, 5, log) == []
     log.warning.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_reflow_runs_off_the_event_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / "a.md").write_text(WRAPPED)
+    run = AsyncMock(return_value=MagicMock(stdout="a.md\n"))
+    real_to_thread = asyncio.to_thread
+    to_thread = AsyncMock(side_effect=real_to_thread)
+    monkeypatch.setattr(md_reflow.asyncio, "to_thread", to_thread)
+    out = await reflow_worktree_markdown(run, tmp_path, None, 5, MagicMock())
+    assert out == ["a.md"]
+    to_thread.assert_awaited_once_with(reflow_changed_markdown, tmp_path, ["a.md"])
 
 
 def test_symlinked_markdown_pointing_outside_the_clone_is_not_written(
