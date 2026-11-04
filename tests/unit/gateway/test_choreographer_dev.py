@@ -50,6 +50,7 @@ def _make_deps(**overrides: AsyncMock) -> ChoreographerDeps:
             __aexit__=AsyncMock(return_value=False),
         )
     )
+    task.session.commit = AsyncMock()
     work_session = overrides.get("work_session", AsyncMock())
     git = overrides.get("git", AsyncMock())
     a2a = overrides.get("a2a", AsyncMock())

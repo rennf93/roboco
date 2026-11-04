@@ -55,6 +55,7 @@ def _make_deps(**overrides: Any) -> ChoreographerDeps:
         )
     )
     task.session.flush = AsyncMock()
+    task.session.commit = AsyncMock()
     # pass_review's verified-stamp (ReviewFindingsRepository.list_for_task)
     # reads via session.execute — an empty scalars result (no findings).
     task.session.execute = AsyncMock(
