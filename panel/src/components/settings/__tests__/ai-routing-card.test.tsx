@@ -1666,7 +1666,7 @@ describe("AIRoutingCard", () => {
       async ({ mode, label, keyMock, otherLabel }) => {
         let stored = "anthropic";
         getMode.mockImplementation(async () => ({
-          mode: stored,
+          mode: stored as ModeSnapshot["mode"],
           assignments: [],
         }));
         applyMode.mockImplementation(async (payload: { mode: string }) => {
