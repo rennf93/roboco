@@ -1,6 +1,12 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
-import { act, renderHook } from "@testing-library/react";
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  act,
+} from "@testing-library/react";
+import { renderHook } from "@testing-library/react";
 import { TgSheet, useCountUp } from "../motion";
 
 describe("useCountUp", () => {
@@ -24,9 +30,17 @@ describe("useCountUp", () => {
     }
   });
 
-  it("settles on the exact target when animating", async () => {
-    const { result } = renderHook(() => useCountUp(12.34, 50));
-    await waitFor(() => expect(result.current).toBe(12.34));
+  it("settles on the exact target when animating", () => {
+    vi.useFakeTimers();
+    try {
+      const { result } = renderHook(() => useCountUp(12.34, 50));
+      act(() => {
+        vi.advanceTimersByTime(500);
+      });
+      expect(result.current).toBe(12.34);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("counts up on the frame clock even when it lags performance.now()", () => {

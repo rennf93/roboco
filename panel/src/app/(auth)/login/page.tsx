@@ -51,7 +51,9 @@ export default function LoginPage() {
       <Card className="w-full max-w-sm">
         <CardHeader>
           <CardTitle>RoboCo</CardTitle>
-          <CardDescription>Sign in to the control panel</CardDescription>
+          <CardDescription>
+            Sign in to the control panel. The CEO approves every merge.
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="grid gap-4">
