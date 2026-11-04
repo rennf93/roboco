@@ -1,6 +1,6 @@
 # Review-path outage detection
 
-Cross-task outage detection for the evidence / git-readonly pipeline (the "review path"). It exists because on Sep 5 `evidence()` and git-readonly reads failed across unrelated tasks and the outage was only found by hand. It is detection only: nothing is remediated automatically beyond clearing the outage state on recovery.
+Cross-task outage detection for the evidence / git-readonly pipeline (the "review path"). It exists because on Sep 5 `evidence()` and git-readonly reads failed across unrelated tasks and the outage was only found by hand. Detection itself is read-only: the tracker only records failures and clears the outage state on recovery. The one automated reaction to an active outage is the retryable review-claim release described under [Review-claim release during an outage](#review-claim-release-during-an-outage).
 
 ## How it works
 
@@ -68,6 +68,31 @@ Example while an outage is active:
 }
 ```
 
+## Review-claim release during an outage
+
+A reviewer whose evidence assembly dies mid-outage must not be left holding a claim it cannot use. `roboco/services/gateway/choreographer/outage_release.py` wraps the evidence build in `claim_review` (`QAClaimMixin._claim_review_result` in `qa.py`) and `claim_gate_review` (`PRGateMixin._gate_evidence_or_release` in `pr_gate.py`). It reads the outage state from the tracker above (`get_review_path_tracker().state()`); there is no separate outage accounting.
+
+`build_or_release` runs the evidence build and reacts to two failure shapes, **only while `outage_active` is true**:
+
+- the build **raises**: the session is rolled back, then the claim is released;
+- the build **returns a non-empty `evidence_gaps`** (leg timeouts degrade into gaps rather than raising, so this is the common outage shape): the claim is released.
+
+The release calls `TaskService.release_review_claim_for_reaper`, the same path the stale-claim reaper uses, so the task returns to its review queue (`awaiting_qa` / `awaiting_pr_review`) unclaimed, and the release is committed. The caller gets an `invalid_state` envelope that is explicitly retryable:
+
+- `message` starts `retryable: the review path is in an active review_path_tools outage (since <window_start>)` and says the claim was released rather than consumed;
+- `remediate` says to wait for the outage to recover, call the same verb again (`claim_review(<task_id>)` or `claim_gate_review(<task_id>)`), and not to issue a verdict from partial evidence.
+
+The rejection is recorded like any other gateway rejection. Log events: `review_claim_released_on_outage` (released) and `outage_claim_release_failed` (warning, release could not run).
+
+### With no active outage, and exemptions
+
+- **No outage active**: nothing changes. A raising build re-raises the original exception and a gapped result is returned as before; this module does not touch the claim.
+- **The release itself fails** (e.g. a DB error): it is logged and the original behavior applies (the exception re-raises, or the gapped evidence is returned).
+- **DevOps co-claims on `claim_gate_review`** are exempt (`releasable=False`). They ride a marker rather than the primary claim, so releasing would clear the primary reviewer's lock; the evidence is built normally.
+- **Gaps unrelated to the outage** also trigger a release while an outage is active; the reviewer retries after recovery.
+
 ## Tests
+
+`tests/unit/services/test_outage_release.py` covers the release: an active outage releases and names `review_path_tools`, no outage leaves the claim untouched, a failed release falls back to normal behavior, a build that raises with and without an outage (rollback and release vs. original re-raise), gaps with and without an outage, and the DevOps `releasable=False` exemption.
 
 `tests/unit/services/test_review_path_health.py` covers the boundary (a single task failing repeatedly is not an outage), distinct-task tripping, one event per window, recovery by successes, window expiry (closed without claiming recovery), caller errors ignored by evidence legs, task-less git reads keyed per agent/active task, the missed-sweep case, both hook sites (4xx vs 5xx, key passed), the route contract served through an app client, and a regression where one task failing across status, log, diff and file counts as one key and does not trip the outage. Its tests run the tracker over an in-memory async fake Redis: one covers failures recorded by one tracker instance being seen by the state read and sweep of others (each transition delivered once), another that Redis errors are swallowed.
