@@ -169,7 +169,9 @@ async def test_i_am_done_auto_runs_submit_verification_when_in_progress(
     assert len(gate_registry.launches) == 1
 
     t.status = "verifying"
-    outcome = await c.apply_gate_verdict(agent_id, task_id, "done", GateResult(True))
+    outcome = await c.apply_gate_verdict(
+        agent_id, task_id, "done", "tok", GateResult(True)
+    )
     assert outcome == "submitted"
     task_svc.submit_verification.assert_awaited_once()
     task_svc.submit_qa.assert_awaited_once()
@@ -373,7 +375,7 @@ async def test_i_am_done_proceeds_when_all_gates_pass(
     assert len(gate_registry.launches) == 1
 
     outcome = await c.apply_gate_verdict(
-        agent_id, task_id, "all done", GateResult(True)
+        agent_id, task_id, "all done", "tok", GateResult(True)
     )
     assert outcome == "submitted"
     task_svc.submit_qa.assert_awaited_once()
