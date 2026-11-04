@@ -367,6 +367,14 @@ _STATUS_TRANSITIONS: tuple[StatusTransition, ...] = (
         "escalate_to_ceo",
         frozenset({Role.MAIN_PM, Role.PRODUCT_OWNER, Role.HEAD_MARKETING}),
     ),
+    # So can a root the PM holds but can neither submit nor fix: a red CI on
+    # an unchanged head, or a root branch that conflicts with its base.
+    StatusTransition(
+        Status.IN_PROGRESS,
+        Status.AWAITING_CEO_APPROVAL,
+        "escalate_to_ceo",
+        frozenset({Role.MAIN_PM, Role.PRODUCT_OWNER, Role.HEAD_MARKETING}),
+    ),
     # CEO approve / reject
     StatusTransition(
         Status.AWAITING_CEO_APPROVAL,
@@ -674,10 +682,13 @@ _ATOMIC_ACTIONS: dict[str, ActionSpec] = {
                 Role.HEAD_MARKETING,
             }
         ),
-        # Reachable from a completed review (the normal sign-off escalation) AND
-        # from a blocked task the PM cannot resolve — so a wedged task has a
-        # clean verb to a human decision instead of only the admin override.
-        source_statuses=frozenset({Status.AWAITING_PM_REVIEW, Status.BLOCKED}),
+        # Reachable from a completed review (the normal sign-off escalation),
+        # from a blocked task the PM cannot resolve, and from a held root the
+        # PM can neither submit nor fix, so a wedged task has a clean verb to
+        # a human decision instead of only the admin override.
+        source_statuses=frozenset(
+            {Status.AWAITING_PM_REVIEW, Status.BLOCKED, Status.IN_PROGRESS}
+        ),
         target_status=Status.AWAITING_CEO_APPROVAL,
         allowed_task_types=None,
         preconditions=(),

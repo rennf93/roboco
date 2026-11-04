@@ -54,6 +54,9 @@ from roboco.foundation.policy.content.validators import (
 )
 from roboco.foundation.policy.lane import transitive_dependents
 from roboco.foundation.policy.lifecycle import (
+    _ATOMIC_ACTIONS,
+)
+from roboco.foundation.policy.lifecycle import (
     _ORG_WIDE_ROLES as _SPEC_ORG_WIDE_ROLES,
 )
 from roboco.models.base import (
@@ -9606,9 +9609,9 @@ class TaskCEOApproval(_Base):
         cell PM would bounce escalate_up -> main-pm forever). Set only by
         ``cell_pm_complete``'s head-branch routing; the ``escalate_to_ceo``
         verb never passes it."""
-        if task.status != TaskStatus.AWAITING_PM_REVIEW:
+        if task.status not in _ATOMIC_ACTIONS["escalate_to_ceo"].source_statuses:
             return (
-                "Cannot escalate to CEO - task not in PM review",
+                "Cannot escalate to CEO - task not in an escalatable status",
                 {"current_status": task.status.value},
             )
         # Only parent (root) tasks can be escalated to CEO (not subtasks) —

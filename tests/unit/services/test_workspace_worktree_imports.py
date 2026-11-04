@@ -30,6 +30,7 @@ _WORKTREE = f"{_CLONE}/.worktrees/abc12345"
         (_CLONE, _WORKTREE),
         (f"{_CLONE}/src", f"{_WORKTREE}/src"),
         (f"{_CLONE}/.venv/lib/python3.13/site-packages", None),
+        (f"{_CLONE}/.venv-0376944b20b8/lib/python3.13/site-packages", None),
         (f"{_CLONE}/.uv-python/cpython-3.13/lib", None),
         # an editable .pth a sibling worktree's uv sync wrote (79dbdad0)
         (f"{_CLONE}/.worktrees/other", _WORKTREE),
@@ -66,14 +67,17 @@ def test_an_interpreter_started_from_the_clone_root_is_left_alone() -> None:
         ("", _CLONE),
     ],
 )
+@pytest.mark.parametrize("venv", [".venv", ".venv-0376944b20b8"])
 def test_the_canonical_venv_serves_the_worktree_the_process_runs_in(
-    cwd: str, expected: str
+    cwd: str, expected: str, venv: str
 ) -> None:
     """The workspace container runs a worktree's commands with
     ``UV_PROJECT_ENVIRONMENT`` set to the clone root's venv (2026-11-03:
-    fe-doc's ``make codegen`` rendered the clone root's Aug 31 verb table)."""
+    fe-doc's ``make codegen`` rendered the clone root's Aug 31 verb table),
+    resolved to the ``.venv-<digest>`` the ``.venv`` symlink names (2026-11-04:
+    1ce359f2's codegen commits rendered fe-dev-1's Aug 31 clone root)."""
     path = [_CLONE]
-    point_clone_root_paths_at_worktree(f"{_CLONE}/.venv", path, cwd)
+    point_clone_root_paths_at_worktree(f"{_CLONE}/{venv}", path, cwd)
     assert path == [expected]
 
 

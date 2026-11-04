@@ -448,6 +448,7 @@ class SubmitRootSurface:
         delegate_target: str,
         subtask_noun: str,
         work_noun: str,
+        escalate_verb: str,
     ) -> Envelope | None:
         raise NotImplementedError
 
