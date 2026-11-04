@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 import type { ReleaseProposal } from "@/lib/api/release";
+import { AxiosError, AxiosHeaders } from "axios";
 import { PageRefreshProvider } from "@/components/providers";
 
 // Unlike release-proposal-card.test.tsx (which stubs useMutation entirely to
@@ -145,6 +146,38 @@ describe("ReleaseProposalCard — status feedback (silent-bug-sweep #c)", () => 
       expect(toast.info).toHaveBeenCalledWith(
         "Release execute dispatched — running in the background. This card updates as it progresses.",
       ),
+    );
+  });
+
+  it("toasts the route's 409 detail when reject fails", async () => {
+    const detail = "Reject refused (already_in_progress): execute running";
+    reject.mockRejectedValueOnce(
+      new AxiosError(
+        "Request failed with status code 409",
+        "ERR_BAD_REQUEST",
+        undefined,
+        undefined,
+        {
+          status: 409,
+          statusText: "Conflict",
+          headers: {},
+          config: { headers: new AxiosHeaders() },
+          data: { detail },
+        },
+      ),
+    );
+    render(withProviders(<ReleaseProposalCard />));
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Reject with changes/i }),
+    );
+    fireEvent.change(await screen.findByLabelText("Required changes"), {
+      target: { value: "tighten the changelog wording" },
+    });
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Send back for revision/i }),
+    );
+    await waitFor(() =>
+      expect(toast.error).toHaveBeenCalledWith(`Reject failed: ${detail}`),
     );
   });
 });
