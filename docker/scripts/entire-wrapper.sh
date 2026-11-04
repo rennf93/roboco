@@ -29,4 +29,18 @@ if [ "$1" = "brain" ]; then
     exit 1
 fi
 
-exec "$REAL_ENTIRE" "$@"
+if [ "$1" != "hooks" ]; then
+    exec "$REAL_ENTIRE" "$@"
+fi
+
+# Entire writes its git objects 0600. The git user shares only the agent
+# group, so an object it cannot read makes every fetch call the clone corrupt
+# (live: fe-dev-1's sync_branch, 2026-11-03). Grant that group what this uid
+# left under objects/ and refs/entire/, as RoboCo's post-commit does.
+"$REAL_ENTIRE" "$@"
+status=$?
+common=$(git -c safe.directory='*' rev-parse --path-format=absolute --git-common-dir 2>/dev/null) &&
+    find "$common/objects" "$common/refs/entire" -user "$(id -u)" \( \
+        \( -type d ! -perm -g=rwx -exec chmod g+rwx {} + \) -o \
+        \( -type f ! -perm -g=r -exec chmod g+r {} + \) \) 2>/dev/null
+exit "$status"

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { releaseApi, tasksApi } from "@/lib/api";
+import { getErrorMessage } from "@/lib/api/client";
 import { TaskStatus } from "@/types";
 import type {
   ReleaseCertificate,
@@ -275,9 +276,7 @@ export function ReleaseProposalCard({ className }: { className?: string }) {
       closeDialog();
     },
     onError: (error) => {
-      toast.error(
-        `Reject failed: ${error instanceof Error ? error.message : "Unknown error"}`,
-      );
+      toast.error(`Reject failed: ${getErrorMessage(error)}`);
     },
   });
 

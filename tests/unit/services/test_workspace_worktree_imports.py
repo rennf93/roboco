@@ -31,7 +31,11 @@ _WORKTREE = f"{_CLONE}/.worktrees/abc12345"
         (f"{_CLONE}/src", f"{_WORKTREE}/src"),
         (f"{_CLONE}/.venv/lib/python3.13/site-packages", None),
         (f"{_CLONE}/.uv-python/cpython-3.13/lib", None),
-        (f"{_CLONE}/.worktrees/other", None),
+        # an editable .pth a sibling worktree's uv sync wrote (79dbdad0)
+        (f"{_CLONE}/.worktrees/other", _WORKTREE),
+        (f"{_CLONE}/.worktrees/other/src", f"{_WORKTREE}/src"),
+        (f"{_WORKTREE}/src", f"{_WORKTREE}/src"),
+        (f"{_CLONE}/.worktrees", None),
         (f"{_CLONE}-sibling", None),
         ("/usr/lib/python3.13", None),
         ("", None),
@@ -122,6 +126,22 @@ def test_a_worktree_script_on_the_canonical_venv_imports_the_worktree(
 
     WorkspaceService._link_shared_venv(worktree, clone)
 
+    assert _imported_from(worktree, venv=clone / ".venv") == "worktree"
+
+
+def test_an_editable_install_naming_a_sibling_worktree_still_imports_this_one(
+    tmp_path: Path,
+) -> None:
+    clone, worktree = _clone_with_editable_install(tmp_path)
+    sibling = clone / ".worktrees" / "def67890"
+    (sibling / "demo").mkdir(parents=True)
+    (sibling / "demo" / "__init__.py").write_text("WHERE = 'sibling'\n")
+    (site_packages,) = (clone / ".venv" / "lib").glob("python*/site-packages")
+    (site_packages / "_demo.pth").write_text(f"{sibling}\n")
+
+    WorkspaceService._link_shared_venv(worktree, clone)
+
+    assert _imported_from(worktree) == "worktree"
     assert _imported_from(worktree, venv=clone / ".venv") == "worktree"
 
 

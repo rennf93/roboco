@@ -148,7 +148,7 @@ engine-docs-sync
 
 | Name | File | Trigger |
 |---|---|---|
-| `ReleaseProposalService.approve` | `roboco/services/release_proposal.py:386` | CEO panel `POST /api/release/proposal/approve`; runs executor, then calls `_draft_docs_update(report)` on publish success |
+| `ReleaseProposalService.approve` | `roboco/services/release_proposal.py:402` | CEO panel `POST /api/release/proposal/approve`; runs executor, then calls `_draft_docs_update(report)` on publish success |
 | `DocsSyncEngine.originate_docs_update` | `roboco/services/docs_sync_engine.py:72` | Called from `_draft_docs_update`; no background loop or public API route |
 
 ## Config Flags
@@ -186,7 +186,7 @@ The flag is registered in `roboco/services/settings.py`'s `FEATURE_FLAGS` tuple,
 | Title | File:Line | Claim | Severity |
 |---|---|---|---|
 | Missing `roboco-website` project silently skips docs updates | `roboco/services/docs_sync_engine.py:80` | By design the engine logs a warning and no-ops; operators must register the docs project before enabling the flag. | low |
-| Broad exception catch in `_draft_docs_update` could mask persistent engine failures | `roboco/services/release_proposal.py:276` | Best-effort by design so publish success is never endangered, but a persistent failure would only surface as a log warning. | low |
+| Broad exception catch in `_draft_docs_update` could mask persistent engine failures | `roboco/services/release_proposal.py:292` | Best-effort by design so publish success is never endangered, but a persistent failure would only surface as a log warning. | low |
 | Cap/dedupe ordering: open_count is checked before per-version dedupe | `roboco/services/docs_sync_engine.py:97` | Correct: a duplicate for the same version is rejected after the cap check, so the cap is not consumed by duplicates. | low |
 | Instance-level `_per_cycle_originated` counter persists across calls on a reused engine | `roboco/services/docs_sync_engine.py:66` | Safe today because `release_proposal.py` constructs a fresh `DocsSyncEngine` per publish invocation. A future refactor that reuses an instance must either create a fresh engine per publish or add an explicit reset. | low |
 
