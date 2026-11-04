@@ -153,6 +153,7 @@ The fan-out generalizations of self-heal — they watch any opted-in project, no
 | `ROBOCO_CI_WATCH_INTERVAL_SECONDS` | `1800` | Seconds between CI-watch passes |
 | `ROBOCO_CI_WATCH_MAX_OPEN_TASKS` | `3` | Rolling cap on concurrently-open ci_watch tasks |
 | `ROBOCO_CI_WATCH_MAX_PER_CYCLE` | `1` | Max ci_watch fix tasks originated per cycle |
+| `ROBOCO_BASE_RED_CONSECUTIVE_THRESHOLD` | `2` | Consecutive red CI readings on a project's base branch before a base-red incident opens (min 1). Pending/unknown readings neither count nor reset; the first green closes. Rides the CI-watch loop, so it only runs while CI-watch is armed. See `docs/backend/guides/base-red-incident.md` |
 | `ROBOCO_DEP_UPDATE_ENABLED` | `false` | Master switch for the dependency-update bot; off = the loop never runs. Per-project opt-in via `projects.dep_update_command` |
 | `ROBOCO_DEP_UPDATE_INTERVAL_SECONDS` | `604800` | Seconds between dependency-update passes (default weekly) |
 | `ROBOCO_DEP_UPDATE_MAX_OPEN_TASKS` | `3` | Rolling cap on concurrently-open dep_update tasks |
