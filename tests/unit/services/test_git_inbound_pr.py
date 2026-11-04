@@ -97,6 +97,7 @@ async def test_list_open_prs_normalizes_and_flags_fork() -> None:
         "user_login": "corey",
         "author_is_owner": False,
         "author_association": "CONTRIBUTOR",
+        "draft": False,
     }
     # Same-repo head → not a fork.
     assert internal["is_fork"] is False
@@ -375,3 +376,19 @@ async def test_get_latest_ci_conclusion_retries_transient_5xx() -> None:
     assert out["conclusion"] == "failure"
     expected_get_calls = 2
     assert client.get.await_count == expected_get_calls
+
+
+def test_normalize_carries_the_draft_flag() -> None:
+    pr = {
+        "number": 409,
+        "draft": True,
+        "head": {"ref": "feat/x", "sha": "abc", "repo": {"full_name": "acme/repo"}},
+        "user": {"login": "dev"},
+    }
+    assert GitService._normalize_open_pr(pr, "acme/repo")["draft"] is True
+    assert (
+        GitService._normalize_open_pr({**pr, "draft": False}, "acme/repo")["draft"]
+        is False
+    )
+    del pr["draft"]
+    assert GitService._normalize_open_pr(pr, "acme/repo")["draft"] is False

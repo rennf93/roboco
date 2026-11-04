@@ -59,7 +59,7 @@ Don't checkout by hand — there is no `roboco_git_checkout` tool.
 
 **Fix (devs):** Call `sync_branch(task_id)` — that is your gate-level rebase verb (raw `Bash git rebase` is denied). It fetches, rebases your branch onto its base, and force-pushes with-lease. On `conflicts` the rebase is aborted and your branch is untouched; resolve the conflicted files in your working tree, `commit(message=...)`, then `sync_branch(task_id)` again. Do **not** create a rebase task or improvise shell git. After it returns `rebased`, continue editing + `commit`, then `open_pr` / `i_am_done` as normal.
 
-**Fix (PMs, for a cell/root integration branch — NOT a dev leaf):** `escalate_up(task_id, reason='branch behind base — needs rebase')` — bringing an integration branch current is a platform action. A dev's own leaf branch is the dev's to `sync_branch`.
+**Fix (PMs, for a cell/root integration branch, NOT a dev leaf):** bringing an integration branch current is a platform action, never a subtask. A cell PM calls `escalate_up(task_id, reason='cell branch behind base, needs a merge')`. The Main PM calls `escalate_to_ceo(task_id, reason='root branch conflicts with <base> in <files>; needs a merge')`: `escalate_up` on a root only returns it to the pool. A dev's own leaf branch is the dev's to `sync_branch`.
 
 ## DIRTY_WORKSPACE on sync_branch
 
