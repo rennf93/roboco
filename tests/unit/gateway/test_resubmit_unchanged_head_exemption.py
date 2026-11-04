@@ -214,6 +214,8 @@ async def test_second_attempt_at_same_head_is_refused(kind: str) -> None:
     assert second.error == "invalid_state", second.as_dict()
     assert "unchanged" in (second.message or "").lower()
     assert "already used" in (second.message or "").lower()
+    escalate = {"root": "escalate_to_ceo(", "cell": "escalate_up("}[kind]
+    assert escalate in (second.remediate or "")
 
 
 @pytest.mark.asyncio

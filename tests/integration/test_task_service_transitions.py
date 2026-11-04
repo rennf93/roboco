@@ -139,7 +139,8 @@ async def test_start_returns_none_when_invalid_status(
     task_setup: dict,
 ) -> None:
     svc = task_setup["svc"]
-    task = await svc.create(_req(task_setup))  # PENDING
+    # PENDING
+    task = await svc.create(_req(task_setup))
     assert await svc.start(task.id, agent_role="developer") is None
 
 
@@ -279,7 +280,8 @@ async def test_unclaim_for_reaper_skips_when_status_already_pending(
     task_setup: dict,
 ) -> None:
     svc = task_setup["svc"]
-    task = await svc.create(_req(task_setup))  # PENDING
+    # PENDING
+    task = await svc.create(_req(task_setup))
     # Should not raise — branch returns immediately.
     await svc.unclaim_for_reaper(task.id)
 
@@ -555,7 +557,8 @@ async def test_soft_block_returns_none_when_not_in_progress(
 ) -> None:
     """soft_block requires IN_PROGRESS — PENDING task fails the gate."""
     svc = task_setup["svc"]
-    task = await svc.create(_req(task_setup))  # PENDING
+    # PENDING
+    task = await svc.create(_req(task_setup))
     out = await svc.soft_block(
         task.id,
         SoftBlockInfo(reason="x", blocker_type="ext", what_needed="y"),
@@ -1032,7 +1035,8 @@ async def test_wire_by_osmosis_edge_first_dev_task_depends_on_prev_wave_tail(
     # R0's cell-task with two dev tasks; tail = sequence 1.
     ct0 = await _sub(UUID(str(r0.id)), 0)
     d0a = await _sub(UUID(str(ct0.id)), 0)
-    d0b = await _sub(UUID(str(ct0.id)), 1)  # tail
+    # tail
+    d0b = await _sub(UUID(str(ct0.id)), 1)
     # R1's cell-task with the first dev task (sequence 0) + a later one.
     ct1 = await _sub(UUID(str(r1.id)), 0)
     first = await _sub(UUID(str(ct1.id)), 0)
@@ -1138,7 +1142,8 @@ async def test_ceo_approve_returns_none_when_wrong_status(
     task_setup: dict,
 ) -> None:
     svc = task_setup["svc"]
-    task = await svc.create(_req(task_setup))  # PENDING
+    # PENDING
+    task = await svc.create(_req(task_setup))
     assert await svc.ceo_approve(task.id) is None
 
 
@@ -1164,7 +1169,8 @@ async def test_ceo_reject_returns_none_when_wrong_status(
     task_setup: dict,
 ) -> None:
     svc = task_setup["svc"]
-    task = await svc.create(_req(task_setup))  # PENDING
+    # PENDING
+    task = await svc.create(_req(task_setup))
     assert await svc.ceo_reject(task.id, reason="not aligned") is None
 
 
@@ -1250,7 +1256,8 @@ async def test_ceo_reject_routes_coordination_task_to_main_pm(
 
     task = await svc.create(_req(task_setup))
     task.status = TaskStatus.AWAITING_CEO_APPROVAL
-    task.project_id = None  # coordination root: no project, has product
+    # coordination root: no project, has product
+    task.project_id = None
     task.product_id = product.id
     await db_session.flush()
 
@@ -1338,7 +1345,8 @@ async def test_ceo_reject_routes_batch_umbrella_to_main_pm(
 
     task = await svc.create(_req(task_setup))
     task.status = TaskStatus.AWAITING_CEO_APPROVAL
-    task.project_id = None  # umbrella: no project, no product — carries a batch_id
+    # umbrella: no project, no product, carries a batch_id
+    task.project_id = None
     task.product_id = None
     task.batch_id = uuid4()
     task.parent_task_id = None
@@ -1412,8 +1420,48 @@ async def test_escalate_to_ceo_returns_none_when_wrong_status(
     task_setup: dict,
 ) -> None:
     svc = task_setup["svc"]
-    task = await svc.create(_req(task_setup))  # PENDING
+    # PENDING
+    task = await svc.create(_req(task_setup))
     out = await svc.escalate_to_ceo(task.id, agent_role="cell_pm", notes="x")
+    assert out is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED])
+async def test_escalate_to_ceo_takes_a_held_or_blocked_root(
+    task_setup: dict, db_session: AsyncSession, status: TaskStatus
+) -> None:
+    """A root the Main PM holds but can neither submit nor fix (red CI on an
+    unchanged head, a branch that conflicts with its base) reaches the CEO."""
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.status = status
+    task.pr_number = 1505
+    task.assigned_to = task_setup["agent_id"]
+    await db_session.flush()
+    escalated = await svc.escalate_to_ceo(
+        task.id,
+        agent_role="main_pm",
+        notes="CI red on an unchanged head",
+        actor_agent_id=task_setup["agent_id"],
+    )
+    assert escalated is not None
+    assert escalated.status == TaskStatus.AWAITING_CEO_APPROVAL
+
+
+@pytest.mark.asyncio
+async def test_escalate_to_ceo_refuses_an_in_progress_root_it_does_not_hold(
+    task_setup: dict, db_session: AsyncSession
+) -> None:
+    svc = task_setup["svc"]
+    task = await svc.create(_req(task_setup))
+    task.status = TaskStatus.IN_PROGRESS
+    task.pr_number = 1505
+    task.assigned_to = task_setup["agent_id"]
+    await db_session.flush()
+    out = await svc.escalate_to_ceo(
+        task.id, agent_role="product_owner", notes="x", actor_agent_id=uuid4()
+    )
     assert out is None
 
 
@@ -1474,7 +1522,8 @@ async def test_escalate_to_ceo_waives_pr_for_batch_umbrella(
     svc = task_setup["svc"]
     task = await svc.create(_req(task_setup))
     task.status = TaskStatus.AWAITING_PM_REVIEW
-    task.project_id = None  # umbrella: branchless, no repo, no PR
+    # umbrella: branchless, no repo, no PR
+    task.project_id = None
     task.product_id = None
     task.batch_id = uuid4()
     task.parent_task_id = None
@@ -2044,7 +2093,8 @@ async def test_submit_for_pm_review_returns_none_when_not_in_progress(
     task_setup: dict,
 ) -> None:
     svc = task_setup["svc"]
-    task = await svc.create(_req(task_setup))  # PENDING
+    # PENDING
+    task = await svc.create(_req(task_setup))
     out = await svc.submit_for_pm_review(task.id, agent_role="cell_pm")
     assert out is None
 
@@ -2090,7 +2140,8 @@ async def test_submit_for_pm_review_returns_none_when_active_descendants(
     # Create a non-terminal child
     child = await svc.create(_req(task_setup, parent_task_id=parent.id))
     await db_session.flush()
-    assert child is not None  # ensure child exists
+    # ensure child exists
+    assert child is not None
     out = await svc.submit_for_pm_review(parent.id, agent_role="cell_pm")
     assert out is None
 
@@ -2124,10 +2175,12 @@ async def test_submit_for_pm_review_waives_branch_pr_for_batch_umbrella(
     svc = task_setup["svc"]
     task = await svc.create(_req(task_setup))
     task.status = TaskStatus.IN_PROGRESS
-    task.project_id = None  # umbrella: branchless, no repo, no PR
+    # umbrella: branchless, no repo, no PR
+    task.project_id = None
     task.product_id = None
     task.batch_id = uuid4()
-    task.parent_task_id = None  # umbrella is top-level
+    # umbrella is top-level
+    task.parent_task_id = None
     task.branch_name = None
     task.pr_created = False
     task.pr_number = None
@@ -2234,7 +2287,8 @@ async def test_docs_complete_returns_none_when_invalid_status(
     task_setup: dict,
 ) -> None:
     svc = task_setup["svc"]
-    task = await svc.create(_req(task_setup))  # PENDING
+    # PENDING
+    task = await svc.create(_req(task_setup))
     out = await svc.docs_complete(task.id, doc_notes="docs")
     assert out is None
 
@@ -2358,7 +2412,8 @@ async def test_complete_returns_none_when_invalid_status(
     task_setup: dict,
 ) -> None:
     svc = task_setup["svc"]
-    task = await svc.create(_req(task_setup))  # PENDING
+    # PENDING
+    task = await svc.create(_req(task_setup))
     out = await svc.complete(task.id, agent_id=task_setup["agent_id"])
     assert out is None
 
@@ -2969,7 +3024,8 @@ async def test_qa_pass_logs_actor_mismatch(
     await db_session.flush()
     task = await svc.create(_req(task_setup))
     task.status = TaskStatus.AWAITING_QA
-    task.claimed_by = qa_a.id  # Different from qa_b
+    # Different from qa_b
+    task.claimed_by = qa_a.id
     task.pr_number = 1
     task.pr_url = "u"
     await db_session.flush()
@@ -3402,8 +3458,10 @@ async def test_resolve_pm_for_review_returns_none_when_parent_chain_unassigned(
 ) -> None:
     """Edge case: when no ancestor in the chain has an assignee."""
     svc = task_setup["svc"]
-    grand = await svc.create(_req(task_setup))  # Unassigned
-    parent = await svc.create(_req(task_setup, parent_task_id=grand.id))  # Unassigned
+    # Unassigned
+    grand = await svc.create(_req(task_setup))
+    # Unassigned
+    parent = await svc.create(_req(task_setup, parent_task_id=grand.id))
     child = await svc.create(_req(task_setup, parent_task_id=parent.id))
     pm_id = await svc._resolve_pm_for_review(child)
     assert pm_id is None
@@ -3642,6 +3700,9 @@ async def test_unclaim_from_blocked_clears_pre_block_snapshot(
             pre_block_state=TaskStatus.IN_PROGRESS.value,
             pre_block_assignee=owner,
             pre_block_metadata={"reason": "stale"},
+            orchestration_markers={
+                "escalation": {"from": "be-dev-1", "to": "be-pm", "reason": "stale"}
+            },
         )
     )
     await db_session.flush()
@@ -3661,3 +3722,5 @@ async def test_unclaim_from_blocked_clears_pre_block_snapshot(
     assert row.pre_block_metadata is None
     assert row.blocker_resolver_type is None
     assert row.blocker_raised_by is None
+    # A later block must not show this one's reason (blockers_in_lane reads it).
+    assert row.orchestration_markers is None

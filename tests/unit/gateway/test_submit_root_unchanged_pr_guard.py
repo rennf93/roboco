@@ -143,7 +143,9 @@ async def test_submit_root_refuses_unchanged_pr_after_pr_fail() -> None:
     assert env.error == "invalid_state"
     assert "unchanged" in (env.message or "").lower()
     remediate = env.remediate or ""
-    assert "re-delegate" in remediate
+    # Every finding is resolved and the one resubmit is spent: no cell work can
+    # move this head, so the way out is a human decision, not a re-delegation.
+    assert "escalate_to_ceo(" in remediate
     assert "submit_root" in remediate
     # The second attempt's PR was NOT re-opened / re-pushed — the runner ran
     # only for the first (exempted) call.

@@ -15,7 +15,7 @@ The support layer of the agent gateway: pure/cheap components the Choreographer 
 | roboco/services/gateway/content_actions_reports.py | Filed reports and playbook curation, as ContentActions mixins: `PeriscopeActions` (market brief), `SentinelActions` (quality report), `CoronerActions` (postmortem), `LibrarianActions` (playbook drafts), `PlaybookActions` (draft/approve/reject/archive playbooks, the vault narrative), with their role sets, caps and normalizers. | 1610 |
 | roboco/services/gateway/_content_actions_types.py | `ContentActionsSelf`, a TYPE_CHECKING-only Protocol composed of one `<Name>Surface` per class the ContentActions mixins reach into (`ContentSurface` for ContentActions' own helpers and service properties), so mypy checks each mixin against the composed class. | 125 |
 | roboco/services/gateway/evidence_builder.py | Pure assembly of EvidencePayload + context_briefing + task_handoff (incl. pr_review verdict) + role-shaped memory query. | 480 |
-| roboco/services/gateway/evidence_repo.py | Capped DB queries for context_briefing: unread a2a/mentions/notifications, team activity, blockers, journal highlights, company goals, similar_memory. | 530 |
+| roboco/services/gateway/evidence_repo.py | Capped DB queries for context_briefing: unread a2a/mentions/notifications, team activity, blockers, journal highlights, company goals, similar_memory. | 546 |
 | roboco/services/gateway/kb_authz.py | KB/docs authorization -> Envelope.not_authorized with role-list remediate hint. | 90 |
 | roboco/services/gateway/merge_chain.py | Branch-depth + parent-branch resolution by string surgery and via the parent task's real branch_name (cross-team safe); `find_topology_issue` detects a stale/incoherent PR-base vs. parent-topology mismatch, reused at `open_pr` preflight and the `parent_task_id` re-parent write-through. | 242 |
 | roboco/services/gateway/quality_gate.py | run_quality_commands: execute project fast checks in workspace, fail-closed on real failure and on a gate that could not run (`_check_quality_gate`), reap timeout zombies. | 108 |
@@ -98,16 +98,16 @@ The support layer of the agent gateway: pure/cheap components the Choreographer 
 | _extract_pr_review | function | roboco/services/gateway/evidence_builder.py:379 | Pull canonical pr_review slot from notes_structured; well-typed fields only; None when absent/malformed. |
 | build_context_briefing | function | roboco/services/gateway/evidence_builder.py:448 | Compose context_briefing dict; caps each list at BRIEFING_LIST_CAP=10. |
 | shape_memory_query | function | roboco/services/gateway/evidence_builder.py:468 | Role-shape the institutional-memory query (dev=implementation, PM=decomposition, qa=defects, doc=patterns). |
-| EvidenceRepo | class | roboco/services/gateway/evidence_repo.py:47 | Capped DB queries for briefing assembly (single AsyncSession). |
-| EvidenceRepo.company_goals | method | roboco/services/gateway/evidence_repo.py:51 | Singleton charter lookup; None when empty so briefing stays token-light. |
-| EvidenceRepo.list_unread_a2a | method | roboco/services/gateway/evidence_repo.py:91 | Open A2A conversations with unread messages keyed by agent slug. |
-| EvidenceRepo.list_unread_mentions | method | roboco/services/gateway/evidence_repo.py:156 | Unacked MENTION-type notifications (acked_by is the read signal). |
-| EvidenceRepo.list_pending_notifications | method | roboco/services/gateway/evidence_repo.py:196 | Unacked, unexpired notifications addressed to agent. |
-| EvidenceRepo.task_metadata_gaps | method | roboco/services/gateway/evidence_repo.py:254 | Human-readable gaps (no acceptance criteria / no description). |
-| EvidenceRepo.recent_team_activity | method | roboco/services/gateway/evidence_repo.py:270 | Recently-updated tasks in agent's team (lane awareness). |
-| EvidenceRepo.blockers_in_lane | method | roboco/services/gateway/evidence_repo.py:304 | Blocked tasks in agent's team. |
-| EvidenceRepo.journal_highlights_for_task | method | roboco/services/gateway/evidence_repo.py:407 | Task's upstream handoff journal entries (decision/reflection/general, oldest first, cap 50). |
-| EvidenceRepo.similar_memory | method | roboco/services/gateway/evidence_repo.py:476 | Top-K institutional memory (lessons+playbooks) above min_score; best-effort returns [] on failure. |
+| EvidenceRepo | class | roboco/services/gateway/evidence_repo.py:55 | Capped DB queries for briefing assembly (single AsyncSession). |
+| EvidenceRepo.company_goals | method | roboco/services/gateway/evidence_repo.py:59 | Singleton charter lookup; None when empty so briefing stays token-light. |
+| EvidenceRepo.list_unread_a2a | method | roboco/services/gateway/evidence_repo.py:99 | Open A2A conversations with unread messages keyed by agent slug. |
+| EvidenceRepo.list_unread_mentions | method | roboco/services/gateway/evidence_repo.py:164 | Unacked MENTION-type notifications (acked_by is the read signal). |
+| EvidenceRepo.list_pending_notifications | method | roboco/services/gateway/evidence_repo.py:204 | Unacked, unexpired notifications addressed to agent. |
+| EvidenceRepo.task_metadata_gaps | method | roboco/services/gateway/evidence_repo.py:262 | Human-readable gaps (no acceptance criteria / no description). |
+| EvidenceRepo.recent_team_activity | method | roboco/services/gateway/evidence_repo.py:278 | Recently-updated tasks in agent's team (lane awareness). |
+| EvidenceRepo.blockers_in_lane | method | roboco/services/gateway/evidence_repo.py:312 | Blocked tasks in agent's team. |
+| EvidenceRepo.journal_highlights_for_task | method | roboco/services/gateway/evidence_repo.py:423 | Task's upstream handoff journal entries (decision/reflection/general, oldest first, cap 50). |
+| EvidenceRepo.similar_memory | method | roboco/services/gateway/evidence_repo.py:492 | Top-K institutional memory (lessons+playbooks) above min_score; best-effort returns [] on failure. |
 | authorize_kb_action | function | roboco/services/gateway/kb_authz.py:46 | Verdict on a KB action: None=allowed, else Envelope.not_authorized naming allowed roles. |
 | docs_denial_envelope | function | roboco/services/gateway/kb_authz.py:68 | Wrap DocsService denial as Envelope.not_authorized with role-appropriate remediate. |
 | branch_depth | function | roboco/services/gateway/merge_chain.py:31 | Number of --separated hierarchy segments; master=0; raises on invalid branch. |

@@ -38,7 +38,10 @@ import sys
 from pathlib import Path
 
 _WORKTREES_DIR = ".worktrees"
-_CLONE_ROOT_ONLY = frozenset({".venv", _WORKTREES_DIR, ".uv-python"})
+_CLONE_ROOT_ONLY = frozenset({_WORKTREES_DIR, ".uv-python"})
+# The clone root's venv: ``.venv``, or the ``.venv-<digest>`` it links to,
+# which the workspace container hands uv as UV_PROJECT_ENVIRONMENT.
+_VENV = ".venv"
 
 
 def point_clone_root_paths_at_worktree(
@@ -69,7 +72,7 @@ def _worktree_holding(cwd: str, prefix: str) -> Path | None:
     """``<clone root>/.worktrees/<id>`` holding ``cwd`` when ``prefix`` is
     that clone root's ``.venv``."""
     venv = Path(os.path.normpath(prefix))
-    if not cwd or venv.name != ".venv":
+    if not cwd or not _is_clone_root_venv(venv.name):
         return None
     worktrees = venv.parent / _WORKTREES_DIR
     try:
@@ -77,6 +80,10 @@ def _worktree_holding(cwd: str, prefix: str) -> Path | None:
     except ValueError:
         return None
     return worktrees / relative.parts[0] if relative.parts else None
+
+
+def _is_clone_root_venv(name: str) -> bool:
+    return name == _VENV or name.startswith(f"{_VENV}-")
 
 
 def _current_directory() -> str:
@@ -97,7 +104,9 @@ def _same_place_inside_worktree(entry: str, worktree: Path) -> str:
         return entry
     if relative.parts[:1] == (_WORKTREES_DIR,) and len(relative.parts) > 1:
         return str(worktree.joinpath(*relative.parts[2:]))
-    if relative.parts and relative.parts[0] in _CLONE_ROOT_ONLY:
+    if relative.parts and (
+        relative.parts[0] in _CLONE_ROOT_ONLY or _is_clone_root_venv(relative.parts[0])
+    ):
         return entry
     return str(worktree / relative)
 

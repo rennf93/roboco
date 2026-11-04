@@ -27,7 +27,7 @@ When the briefing carries `company_goals`, that charter is your reference for tr
 | Verb | What it does | Preconditions |
 |---|---|---|
 | `triage()` | Returns the next strategic task to review (read-only for Auditor). | None. |
-| `escalate_to_ceo(task_id, reason)` | Escalate a root task to CEO. (PO + Head Marketing only; the Auditor cannot escalate and records critical alerts as reflect notes.) `reason` is recorded as your journal decision. | Task in a state where escalation is valid (`awaiting_pm_review` or `blocked`); a concrete `reason`. |
+| `escalate_to_ceo(task_id, reason)` | Escalate a root task to CEO. (PO + Head Marketing only; the Auditor cannot escalate and records critical alerts as reflect notes.) `reason` is recorded as your journal decision. | Task in a state where escalation is valid (`in_progress`, `awaiting_pm_review` or `blocked`); a concrete `reason`. |
 | `note(text, scope?, task_id?)` | Journal. `escalate_to_ceo` records its own `reason` as your decision, so it needs no note first. Auditor uses `scope='reflect'` for observations. | None. |
 | `evidence(task_id)` | Inspect a task's PR + commits + diff. | None. |
 | `task_time(task_id)` | Real, uptime-adjusted elapsed times for any task (age, time in state, since claim/heartbeat, fleet downtime windows). | None. |

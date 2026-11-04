@@ -229,9 +229,10 @@ def push_checkpoint_refs(
     ctx: OriginContext, refs: Sequence[str]
 ) -> subprocess.CompletedProcess[str]:
     """Push Entire checkpoint refs (``refs/entire/checkpoints/<xx>/<id>``)
-    to origin under their own names, never forced: each is taken into the
-    relay like a branch push (fsck'd), then all go in one push. Anything
-    that is not a checkpoint ref is refused."""
+    to the project's checkpoint repository (``GitRelay.push_checkpoints``)
+    under their own names, never forced: each is taken into the relay like a
+    branch push (fsck'd), then all go in one push. Anything that is not a
+    checkpoint ref is refused."""
     for ref in refs:
         if not _CHECKPOINT_REF.fullmatch(ref):
             raise UnsupportedOriginCommandError(f"{ref} is not an Entire checkpoint")
@@ -245,7 +246,7 @@ def push_checkpoint_refs(
                 return taken
             staged.append(incoming)
         refspecs = [f"{src}:{dst}" for src, dst in zip(staged, refs, strict=True)]
-        return ctx.relay.push_to_origin(refspecs, timeout=ctx.timeout)
+        return ctx.relay.push_checkpoints(refspecs, timeout=ctx.timeout)
     finally:
         for incoming in staged:
             ctx.relay.drop_ref(incoming, timeout=ctx.timeout)

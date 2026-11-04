@@ -27,7 +27,9 @@ from __future__ import annotations
 import base64
 import contextlib
 import fcntl
+import json
 import os
+import re
 import shlex
 import subprocess
 import threading
@@ -56,6 +58,11 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 INCOMING_REF_PREFIX = "refs/roboco/incoming/"
+# Entire's committed settings, and the ``owner/name`` its checkpoint_remote holds.
+_ENTIRE_SETTINGS = ".entire/settings.json"
+_CHECKPOINT_REPO = re.compile(
+    r"[A-Za-z0-9_-][A-Za-z0-9_.-]*/[A-Za-z0-9_-][A-Za-z0-9_.-]*"
+)
 
 # Program settings pinned on root-run git too: a hook or helper here would run
 # as root. Hooks are off entirely in dispatcher-owned repos.
@@ -333,6 +340,30 @@ class GitRelay:
         lease_args = [f"--force-with-lease={lease}" for lease in leases]
         return self._origin_git(["push", *lease_args, self.git_url, *refspecs], timeout)
 
+    def push_checkpoints(
+        self, refspecs: Sequence[str], *, timeout: float
+    ) -> subprocess.CompletedProcess[str]:
+        """``git push <checkpoint repository> <refspecs>``: the repository the
+        head branch's committed Entire settings name, else origin."""
+        return self._origin_git(
+            ["push", self._checkpoint_url(timeout), *refspecs], timeout
+        )
+
+    def _checkpoint_url(self, timeout: float) -> str:
+        """Read from the relay's copy of the head branch, which comes from
+        origin and never from an agent's clone."""
+        if not self._default_branch:
+            return self.git_url
+        shown = run_private_git(
+            self.path,
+            ["show", f"refs/heads/{self._default_branch}:{_ENTIRE_SETTINGS}"],
+            timeout=timeout,
+            check=False,
+        )
+        if shown.returncode != 0:
+            return self.git_url
+        return checkpoint_remote_url(self.git_url, shown.stdout)
+
     # -- moving commits between a repository and the relay (no token) -----
 
     def take_ref(
@@ -436,6 +467,25 @@ class GitRelay:
                     yield
                 finally:
                     fcntl.flock(handle, fcntl.LOCK_UN)
+
+
+def checkpoint_remote_url(git_url: str, entire_settings: str) -> str:
+    """The URL of the ``strategy_options.checkpoint_remote.repo`` that
+    ``entire_settings`` names, on ``git_url``'s own host (the token is scoped
+    to it), else ``git_url``."""
+    try:
+        remote = json.loads(entire_settings)["strategy_options"]["checkpoint_remote"]
+        repo = remote["repo"]
+    except (ValueError, KeyError, TypeError):
+        return git_url
+    parsed = urlparse(git_url)
+    if (
+        not parsed.netloc
+        or not isinstance(repo, str)
+        or not _CHECKPOINT_REPO.fullmatch(repo)
+    ):
+        return git_url
+    return f"{parsed.scheme}://{parsed.netloc}/{repo}.git"
 
 
 def relay_for(project: Any, token: str | None) -> GitRelay:
