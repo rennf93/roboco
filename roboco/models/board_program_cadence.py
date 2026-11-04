@@ -14,6 +14,8 @@ class ProgramCadenceMetric:
     ``exploration_task_id`` is null (task deleted), excluded from the cost mean.
     ``cost_per_cycle_usd`` is None when no cycle has a known cost, and
     ``approval_rate`` is None when nothing was proposed.
+    ``items_approved_counted`` is the approvals of the ``cycles_counted`` cycles
+    only, the numerator matching the cost-known denominator.
     """
 
     program_key: str
@@ -24,3 +26,4 @@ class ProgramCadenceMetric:
     items_proposed: int
     items_approved: int
     approval_rate: float | None
+    items_approved_counted: int = 0

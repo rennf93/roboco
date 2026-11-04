@@ -38,6 +38,7 @@ def _metric(
         items_proposed=proposed,
         items_approved=approved,
         approval_rate=approved / proposed if proposed else None,
+        items_approved_counted=approved,
     )
 
 

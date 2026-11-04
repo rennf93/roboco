@@ -38,7 +38,9 @@ class BoardProgramCadenceService(BaseService):
         costs = await self._cost_by_program()
         out: dict[str, ProgramCadenceMetric] = {}
         for key in PROGRAMS:
-            counted, missing, proposed, approved = cycles.get(key, (0, 0, 0, 0))
+            counted, missing, proposed, approved, approved_counted = cycles.get(
+                key, (0, 0, 0, 0, 0)
+            )
             total = costs.get(key, 0.0)
             out[key] = ProgramCadenceMetric(
                 program_key=key,
@@ -49,11 +51,13 @@ class BoardProgramCadenceService(BaseService):
                 items_proposed=proposed,
                 items_approved=approved,
                 approval_rate=approved / proposed if proposed else None,
+                items_approved_counted=approved_counted,
             )
         return out
 
-    async def _cycle_aggregates(self) -> dict[str, tuple[int, int, int, int]]:
-        """``program_key -> (counted, missing_cost, proposed, approved)``."""
+    async def _cycle_aggregates(self) -> dict[str, tuple[int, int, int, int, int]]:
+        """``program_key -> (counted, missing_cost, proposed, approved,
+        approved_counted)``; the last sums approvals over cost-known cycles."""
         has_task = BoardProgramCycleTable.exploration_task_id.is_not(None)
         rows = await self.session.execute(
             select(
@@ -62,11 +66,14 @@ class BoardProgramCadenceService(BaseService):
                 func.count().filter(~has_task),
                 func.coalesce(func.sum(BoardProgramCycleTable.items_proposed), 0),
                 func.coalesce(func.sum(BoardProgramCycleTable.items_approved), 0),
+                func.coalesce(
+                    func.sum(BoardProgramCycleTable.items_approved).filter(has_task), 0
+                ),
             ).group_by(BoardProgramCycleTable.program_key)
         )
         return {
-            key: (int(counted), int(missing), int(proposed), int(approved))
-            for key, counted, missing, proposed, approved in rows.all()
+            key: (int(counted), int(missing), int(proposed), int(approved), int(appr_c))
+            for key, counted, missing, proposed, approved, appr_c in rows.all()
         }
 
     async def _cost_by_program(self) -> dict[str, float]:
