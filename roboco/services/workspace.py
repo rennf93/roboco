@@ -500,6 +500,21 @@ class WorkspaceWorktrees(_Base):
             timeout=settings.git_command_timeout_seconds,
         )
 
+    @staticmethod
+    def _clear_unlinked_worktree_dir(worktree: Path) -> None:
+        """Remove a worktree directory that has lost its ``.git`` file.
+
+        That is what a ``worktree remove --force`` leaves when files appear
+        while it deletes (an agent's Entire session hooks writing ``.entire/``
+        after the reaper started): git deletes ``.git`` first, the tree stays,
+        and ``worktree add`` then refuses the path for good (be-pr-reviewer on
+        dc50b7fe, 2026-11-04). Without ``.git`` nothing in it can be committed.
+        """
+        if worktree.is_symlink() or not worktree.is_dir():
+            return
+        logger.warning("removing unlinked worktree directory", worktree=str(worktree))
+        remove_workspace_tree(worktree, ignore_errors=True)
+
     async def ensure_worktree(
         self, clone_root: Path, worktree: Path, branch: str, base: str
     ) -> None:
@@ -513,6 +528,7 @@ class WorkspaceWorktrees(_Base):
         clobbered a still-active root.
         """
         if not (worktree.exists() and (worktree / ".git").is_file()):
+            self._clear_unlinked_worktree_dir(worktree)
             # Stale registrations (checkout dir deleted out-of-band while the
             # admin dir survives) make `worktree add` fatal — prune first.
             self._worktree_git(clone_root, ["worktree", "prune"], check=False)
@@ -554,6 +570,7 @@ class WorkspaceWorktrees(_Base):
         it get an authenticated fetch; the rest fall back to unauthenticated.
         """
         if not (worktree.exists() and (worktree / ".git").is_file()):
+            self._clear_unlinked_worktree_dir(worktree)
             # Stale registrations (checkout dir deleted out-of-band while the
             # admin dir survives) make `worktree add` fatal — prune first.
             self._worktree_git(clone_root, ["worktree", "prune"], check=False)
@@ -947,7 +964,8 @@ class WorkspaceWorktreeHealing(_Base):
             ).returncode
             != 0
         ):
-            return  # fetch failed, or the branch has no upstream counterpart
+            # fetch failed, or the branch has no upstream counterpart
+            return
         ahead = self._worktree_git(
             clone_root, ["rev-list", "--count", f"{origin_ref}..HEAD"], check=False
         )
@@ -964,7 +982,8 @@ class WorkspaceWorktreeHealing(_Base):
                     clone_root=str(clone_root),
                     branch=branch,
                 )
-            return  # in-sync, or strictly ahead — nothing to do
+            # in-sync, or strictly ahead, nothing to do
+            return
         reset = self._worktree_git(
             clone_root, ["reset", "--hard", origin_ref], check=False
         )
