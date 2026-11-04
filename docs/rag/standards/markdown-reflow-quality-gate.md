@@ -111,8 +111,9 @@ To ensure the reflow-check wiring does not regress (e.g., if a future Makefile e
 
 **Tests:**
 1. `test_quality_target_wires_in_reflow_check` — Verifies that `make quality` explicitly invokes `scripts/reflow_md.py --check`.
-2. `test_check_passes_on_repo_as_committed` — Confirms the full-repo check exits 0 on HEAD.
-3. `test_check_fails_on_a_hard_wrapped_file` — Verifies the check correctly rejects hard-wrapped prose.
+2. `test_check_fails_on_a_hard_wrapped_file` — Verifies the check correctly rejects hard-wrapped prose.
+
+The suite deliberately has no test that runs `--check` over the whole repo, because hard-wrapped debt already on base would then red-line every clean PR through pytest. The full-repo audit stays available as the opt-in `make reflow-check`, which is not run by pytest or `make quality`. Scoping is covered by the `test_changed_mode_*` tests, which build tmp-repo fixtures.
 4. `test_changed_mode_ignores_untouched_base_debt` — A hard-wrapped file untouched by the branch passes under `--changed`, while the full-repo check still fails on it.
 5. `test_changed_mode_fails_on_changed_wrapped_file` — A new hard-wrapped file fails and is named in the output; untouched debt is not.
 6. `test_changed_mode_fails_on_edited_tracked_file` — Editing a tracked file that is still wrapped fails.
