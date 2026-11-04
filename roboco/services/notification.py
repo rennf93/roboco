@@ -819,6 +819,51 @@ class NotificationReviewNotices(_Base):
             )
         )
 
+    async def send_review_path_outage_notification(
+        self,
+        *,
+        active: bool,
+        window_start: Any,
+        recovered: bool = True,
+        to_agents: tuple[str, ...] = ("ceo", "main-pm"),
+    ) -> None:
+        """One health alert when the review path trips, one when it clears.
+
+        ``recovered=False`` on a clear means the window expired with no read
+        having succeeded: it reports no observed failures, not working reads.
+        """
+        since = window_start.isoformat() if window_start else "unknown"
+        if active:
+            subject = "Review-path tool outage detected"
+            body = (
+                "evidence()/git-readonly reads are failing across multiple "
+                f"distinct tasks (window started {since}). Reviewers cannot "
+                "assemble evidence until this clears; no automatic remediation "
+                "was taken."
+            )
+            priority = NotificationPriority.HIGH
+        elif recovered:
+            subject = "Review-path tool outage recovered"
+            body = "evidence()/git-readonly reads are succeeding again."
+            priority = NotificationPriority.NORMAL
+        else:
+            subject = "Review-path tool outage window closed"
+            body = (
+                "No review-path failures were observed in the last window; no "
+                "successful read has confirmed recovery yet."
+            )
+            priority = NotificationPriority.NORMAL
+        await self._create_notification(
+            CreateNotificationParams(
+                notification_type=NotificationType.ALERT,
+                priority=priority,
+                from_agent="system",
+                to_agents=list(to_agents),
+                subject=subject,
+                body=body,
+            )
+        )
+
     async def send_ack_notification(
         self,
         *,

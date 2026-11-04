@@ -926,7 +926,7 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | docker-compose.registry.yml | Pull-and-run compose using pre-built GHCR/Docker Hub images (ROBOCO_REGISTRY + ROBOCO_VERSION); infra services byte-identical to build compose (incl. `backup` + vault defaults), agent-* services are one-shot pre-pulls, own `roboco_data` network; one `docker-gate` (builds refused, since every image is pulled; `GATE_REGISTRY` from `ROBOCO_REGISTRY`; the same read-only bind roots as the build file's gates) serves the orchestrator and dispatcher | 990 |
 | Makefile | Ops + quality targets: infra, dev/run/orchestrator, quality gate (ruff/mypy/pytest/xenon/radon/vulture/bandit/pip-audit/deptry/lint-imports/alembic/foundation-check), fast pre-submit `gate` target (ruff format/check, mypy, xenon, lint-imports), per-Python test matrix, docs, lifecycle regen | 628 |
 | pyproject.toml | Project + dependency manifest: requires-python >=3.13,<3.15, deps, dev/docs extras, console scripts, ruff/mypy/pytest/coverage/vulture/bandit/radon/xenon/deptry/importlinter config | 717 |
-| roboco/config.py | Pydantic Settings (env prefix ROBOCO_, cached via lru_cache); every tunable: DB, Redis, RAG, LLM/Ollama, workspaces, agent guardrails, gateway thresholds, autonomy-engine flags | 3389 |
+| roboco/config.py | Pydantic Settings (env prefix ROBOCO_, cached via lru_cache); every tunable: DB, Redis, RAG, LLM/Ollama, workspaces, agent guardrails, gateway thresholds, autonomy-engine flags | 3413 |
 | roboco/__init__.py | Package root: __version__ + re-exports settings, exceptions, logging helpers | 36 |
 | roboco/bootstrap.py | Async bootstrap: git-user drop self-test (every role but indexer; SystemExit(1) on failure), a warning when an api or dispatcher has the host Docker socket and no `DOCKER_HOST` (a compose file from before the Docker gate), DB init, Redis event bus, websocket bridge, orchestrator construction, uvicorn API server task, wait-for-ready poll, optional agent spawn, graceful shutdown | 259 |
 | roboco/cli.py | argparse CLI wrapper around bootstrap.main / db-only; the ENTRYPOINT invoked by `python -m roboco.cli` | 67 |
@@ -1020,7 +1020,7 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | Name | Kind | File:Line | Responsibility |
 |---|---|---|---|
 | Settings | class | roboco/config.py:26 | Pydantic BaseSettings; all ROBOCO_ env-backed tunables + derived URL properties (database_url, redis_url, internal_api_url, rag_store_url) |
-| get_settings | function | roboco/config.py:3383 | lru_cache-backed singleton factory returning the cached Settings instance |
+| get_settings | function | roboco/config.py:3407 | lru_cache-backed singleton factory returning the cached Settings instance |
 | internal_api_url | property | roboco/config.py:139 | service-to-service API base URL (api_url override or http://host:port/api, maps 0.0.0.0 to 127.0.0.1) |
 | database_url | property | roboco/config.py:214 | asyncpg connection URL |
 | database_url_sync | property | roboco/config.py:222 | sync psycopg URL for Alembic |
@@ -3125,7 +3125,7 @@ This slice implements RoboCo's formal-notification backbone: NotificationService
 
 | Path | Role | LOC |
 |---|---|---|
-| roboco/services/notification.py | Typed notification factory (blocker/QA/docs/handoff/A2A/board-review/ack/notification-spawn-cap) with slug→UUID recipient resolution, DB purpose-dedup + Redis re-fire guard, owns its own DB context and commit | 1182 |
+| roboco/services/notification.py | Typed notification factory (blocker/QA/docs/handoff/A2A/board-review/ack/notification-spawn-cap) with slug→UUID recipient resolution, DB purpose-dedup + Redis re-fire guard, owns its own DB context and commit | 1215 |
 | roboco/services/_notification_service_types.py | `NotificationServiceSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `NotificationService` mixins reach through `self`, plus its instance attributes; `tests/unit/services/test_notification_service_mixins.py` fails on a stray stub or a member defined twice | 37 |
 | roboco/services/notification_dedup.py | Bounded Redis SET-NX re-fire guard for loop-prone notification types (TASK_ASSIGNMENT/REVIEW_REQUEST/DOCUMENTATION_REQUEST/BROADCAST); 60s TTL, fail-open | 324 |
 | roboco/services/notification_delivery.py | Delivery (transactional-outbox deferred bus publish), ACK/read tracking, expiry sweep, PM/CEO task-handoff notifications (notify_pm_of_block, escalate_and_notify, etc.), API-facing list/CRUD, `_notify_telegram` best-effort CEO DM fan-out (V2: `actionable=True` on escalation attaches an Approve/Reject/Open inline keyboard) | 2223 |
@@ -3344,7 +3344,7 @@ The AgentOrchestrator is the runtime brain of RoboCo: it owns the per-agent Dock
 | roboco/runtime/engines/dispatch_prompts_management.py | `ManagementPromptsEngine`: Main and Cell PM triage, PM review, closure and blocker prompts, the board and marketing prompts; `NotificationPromptsEngine`: the escalation, approval and A2A prompts. | 569 |
 | roboco/runtime/engines/dispatch_prompts_programs.py | The Board Programs' one-shot prompts by owner: `ProductOwnerProgramPromptsEngine` (Roadmap, Pest Control, Scales, Spackle, Dogfood), `MarketingProgramPromptsEngine` (War Room, Mirror, feature spotlight, Periscope, Barfly, Megaphone) and `AuditorPromptsEngine` (Coroner, Sentinel, decisions audit, Librarian, the audit alert, vault curation). | 1121 |
 | roboco/runtime/engines/dispatch_routing.py | `RoutingClassifierEngine`: which role owns a pending task (board, main_pm, cell_pm, dev, marketing) by task type, team, complexity and keywords; `DispatchRoutingEngine`: which agent fills that role (routing-target resolution, the stranded-code-task cell PM, the creator-skip guard, routing an unassigned task, and the review-PM and blocker-resolver slugs). | 446 |
-| roboco/runtime/engines/dispatch_breaker.py | `NotificationSpawnGuardEngine`: the notification-spawn cooldown, attempt cap (with its CEO alert) and live-work check; `RespawnBreakerEngine`: the respawn circuit breaker (per-(agent, task) strike counts, the resets on real progress, the cooldown self-heal, the durable persist); `AgentWorkSignalEngine`: the container-log work/thrash/idle signal; `RespawnTripEngine`: the trip (the B37 override verdict, the stall marker and notice, the B16 coroner post-mortem); `StaleClaimReaperEngine`: the stale-claim and stale-review-claim reaper; `WedgedAgentEngine`: the reaper's live-container skip, the gateway-health probe and recovery, and the wedged-Grok / stuck-Claude kills; `ProviderUpkeepEngine`: the Grok cost budget and the Grok/Codex credential refresh. | 1979 |
+| roboco/runtime/engines/dispatch_breaker.py | `NotificationSpawnGuardEngine`: the notification-spawn cooldown, attempt cap (with its CEO alert) and live-work check; `RespawnBreakerEngine`: the respawn circuit breaker (per-(agent, task) strike counts, the resets on real progress, the cooldown self-heal, the durable persist); `AgentWorkSignalEngine`: the container-log work/thrash/idle signal; `RespawnTripEngine`: the trip (the B37 override verdict, the stall marker and notice, the B16 coroner post-mortem); `StaleClaimReaperEngine`: the stale-claim and stale-review-claim reaper; `WedgedAgentEngine`: the reaper's live-container skip, the gateway-health probe and recovery, and the wedged-Grok / stuck-Claude kills; `ProviderUpkeepEngine`: the Grok cost budget and the Grok/Codex credential refresh. | 1983 |
 | roboco/runtime/engines/sweeps.py | `SweeperLoopEngine`: `_sweeper_loop`, one pass of every sweep, and the dangling-image and transcript-retention prunes; `AgentStopEngine`: `stop_agent` and the stopped agent's claim release; `IdleSessionReaperEngine`: ending idle intake/Secretary chats with the B25 spare; `UsageRollupEngine`: token snapshots and daily rollups; `MemberPerformanceEngine`: the member_performance_daily sweep; `TaskBudgetEngine`: session and task budget enforcement; `BudgetWrapupEngine`: the B32 wrap-up directive; `SupersedeEngine`: external-PR supersede (branch cut, umbrella reconciliation, contributor-PR close); `SandboxEngine`: on-demand sandboxes and their janitor; `ExternalPRIntakeEngine`: inbound PR discovery, classification and B14 triage. | 2866 |
 | roboco/runtime/engines/reconcile.py | `StartupRestoreEngine`: restoring the waiting records and the PM-respawn counters at startup; `StartupReconcileEngine`: the running/heartbeat mark, orphan-claim and orphan-session reconciliation, the stale-token heal and re-adopting running containers; `HealthLoopEngine`: the health loop and loop-liveness check; `BoardProgramLoopEngine`: the Board Program loop and its cadence. | 775 |
 | roboco/runtime/engines/rate_limit_probe.py | `RateLimitProbeEngine`: the rate-limit probe loop and each pass over parked providers, the free liveness probe, lifting the limit on success and the CEO alert at the failure threshold; `WaitResolutionEngine`: `resolve_wait` (respawn with a resume prompt, the parking-row grades on a lift or re-limit, the liveness-confirmed waiting-record teardown). | 606 |
@@ -3410,7 +3410,7 @@ The AgentOrchestrator is the runtime brain of RoboCo: it owns the per-agent Dock
 | AgentOrchestrator._record_spawn_session | method | roboco/runtime/engines/spawn_launch.py:542 | Insert an agent_spawn_sessions row + pin its id on the instance for usage attribution. |
 | AgentOrchestrator._finalize_spawn_session | method | roboco/runtime/engines/spawn_exit.py:1515 | Resolve final token usage (Claude transcript or grok usage.json), update the spawn session row, publish USAGE_SNAPSHOT, evict instance. |
 | AgentOrchestrator._sweep_token_snapshots | method | roboco/runtime/engines/sweeps.py:687 | Periodic live-usage snapshot sweep across active agents; finalizes stopped ones; budget-exceeded termination. |
-| AgentOrchestrator._enforce_grok_cost_budget | method | roboco/runtime/engines/dispatch_breaker.py:1824 | Kill live grok containers whose captured cost exceeds grok_max_cost_usd; release_claim=True. |
+| AgentOrchestrator._enforce_grok_cost_budget | method | roboco/runtime/engines/dispatch_breaker.py:1828 | Kill live grok containers whose captured cost exceeds grok_max_cost_usd; release_claim=True. |
 | AgentOrchestrator.restore_waiting_records | method | roboco/runtime/engines/reconcile.py:92 | Repopulate _waiting_records from the WaitingRecordTable at startup. |
 | AgentOrchestrator.restore_respawn_tracker | method | roboco/runtime/engines/reconcile.py:185 | Repopulate _pm_respawn_tracker from respawn_tracker rows, re-stamping last_check/last_status to live values, evicting terminal/missing rows and rows whose newest strike is older than the trip cooldown. |
 | AgentOrchestrator._partition_respawn_rows | method | roboco/runtime/engines/reconcile.py:127 | Split restored respawn rows into restorable vs evict (terminal/missing task, or last struck longer ago than `max_age_seconds`, the trip cooldown); a restored entry keeps the row's `updated_at`. |
@@ -3421,9 +3421,9 @@ The AgentOrchestrator is the runtime brain of RoboCo: it owns the per-agent Dock
 | AgentOrchestrator._check_health | method | roboco/runtime/engines/reconcile.py:696 | Per-agent docker container inspect; on exit, route through _maybe_park_for_exit_error / _crash_retry_or_escalate / _handle_stopped_container. |
 | AgentOrchestrator._inspect_container_state | method | roboco/runtime/engines/spawn_exit.py:303 | docker container inspect with _DOCKER_INSPECT_TIMEOUT_SECONDS; returns (is_running, exit_code); per-agent failure skips that agent. |
 | AgentOrchestrator._resolve_container_id | method | roboco/runtime/engines/reconcile.py:297 | Resolve a container id by name for re-adoption so _check_health sees the real id. |
-| AgentOrchestrator._probe_gateway_health | method | roboco/runtime/engines/dispatch_breaker.py:1485 | Out-of-band docker exec gateway-venv import probe for broken-but-alive agents; timed via _DOCKER_EXEC_TIMEOUT_SECONDS. |
+| AgentOrchestrator._probe_gateway_health | method | roboco/runtime/engines/dispatch_breaker.py:1489 | Out-of-band docker exec gateway-venv import probe for broken-but-alive agents; timed via _DOCKER_EXEC_TIMEOUT_SECONDS. |
 | AgentOrchestrator._maybe_park_for_exit_error | method | roboco/runtime/engines/spawn_exit.py:1812 | Detect session-limit/overload markers in dead container output + transcript tail; park provider instead of crash-retrying. |
-| AgentOrchestrator._maybe_recover_broken_gateway | method | roboco/runtime/engines/dispatch_breaker.py:1724 | Kill + evict a broken-but-alive agent past gateway_health_grace_seconds so it falls through to release + respawn. |
+| AgentOrchestrator._maybe_recover_broken_gateway | method | roboco/runtime/engines/dispatch_breaker.py:1728 | Kill + evict a broken-but-alive agent past gateway_health_grace_seconds so it falls through to release + respawn. |
 | AgentOrchestrator._strategy_engine_loop | method | roboco/runtime/engines/strategy.py:25 | Default-off strategy engine tick loop (gated by strategy_engine_enabled). |
 | AgentOrchestrator._external_pr_poll_loop | method | roboco/runtime/engines/sweeps.py:2570 | Poll inbound external PRs for review (external_pr_enabled / internal_pr_enabled). |
 | AgentOrchestrator._self_heal_loop | method | roboco/runtime/engines/release_manager.py:55 | Single-repo self-heal CI-watch tick loop (self_heal_enabled). |
@@ -3440,9 +3440,9 @@ The AgentOrchestrator is the runtime brain of RoboCo: it owns the per-agent Dock
 | AgentOrchestrator._readopt_running_agents | method | roboco/runtime/engines/reconcile.py:597 | At startup, re-adopt surviving containers into _instances as ACTIVE with real container ids; inert when nothing runs. |
 | AgentOrchestrator._release_extra_claims_of_work_authors | method | roboco/runtime/engines/reconcile.py:241 | Startup pass after the re-adopt: for every developer/devops slug (`_SINGLE_ACTIVE_TASK_ROLES`) without a live container, `TaskService.release_never_started_extra_claims` puts its never-started extra claims back in its queue (live 2026-11-01: be-dev-1 still held claimed 106f46e3 beside its own f5d66db6 from the 2026-10-28 run). |
 | AgentOrchestrator._release_extra_claims_of | method | roboco/runtime/engines/reconcile.py:266 | One work author's release in its own session, committed; logs each released task; any failure is logged and leaves that author's rows as they were. |
-| AgentOrchestrator._should_skip_live_reap | method | roboco/runtime/engines/dispatch_breaker.py:1787 | Spare a live container from reaping UNLESS wedged (grok) or gateway-broken past grace (those kill+evict). |
-| AgentOrchestrator._assignee_is_provider_parked | method | roboco/runtime/engines/dispatch_breaker.py:1544 | True if a task's assignee is provider-parked; reaper skips it so the claim survives for probe-resume. |
-| AgentOrchestrator._reap_with_service | method | roboco/runtime/engines/dispatch_breaker.py:1103 | Inner stale-claim reaper: skip live (unless wedged/broken), skip provider-parked, unclaim_for_reaper the rest. |
+| AgentOrchestrator._should_skip_live_reap | method | roboco/runtime/engines/dispatch_breaker.py:1791 | Spare a live container from reaping UNLESS wedged (grok) or gateway-broken past grace (those kill+evict). |
+| AgentOrchestrator._assignee_is_provider_parked | method | roboco/runtime/engines/dispatch_breaker.py:1548 | True if a task's assignee is provider-parked; reaper skips it so the claim survives for probe-resume. |
+| AgentOrchestrator._reap_with_service | method | roboco/runtime/engines/dispatch_breaker.py:1107 | Inner stale-claim reaper: skip live (unless wedged/broken), skip provider-parked, unclaim_for_reaper the rest. |
 | AgentOrchestrator._sandbox_available_services | method | roboco/runtime/engines/sweeps.py:2423 | On-demand model (2026-07-08): availability probe only — which services this spawn's project opted into (`sandbox_db_enabled` + `sandbox_services`); `[]` if off/not-opted, byte-for-byte legacy path. No provisioning happens here anymore (see `ensure_sandbox`), so a spawn never fails on sandbox infra. |
 | AgentOrchestrator.ensure_sandbox | method | roboco/runtime/engines/sweeps.py:2451 | On-demand model: idempotent provision called by the `request_sandbox` do-verb. Cache hit (`_sandbox_info`, keyed by agent slug) covering the requested services returns the same creds; a miss provisions via `SandboxProvisioner.provision` (pre-clear tears down stale same-named containers) and caches the result. Evicted at teardown and by the janitor sweep; in-memory only — an orchestrator restart forgets it (next call re-provisions). |
 | AgentOrchestrator._append_sandbox_marker_env | staticmethod | roboco/runtime/engines/spawn_launch.py:1376 | On-demand model: replaces the old eager `_append_sandbox_env` - injects only a cheap informational marker (`ROBOCO_SANDBOX_SERVICES_AVAILABLE=<csv>`), never creds, naming the services `request_sandbox()` will provision on demand. Called INSTEAD OF `_append_gate_env` for an opted-in project's spawn. |
@@ -3509,8 +3509,8 @@ The AgentOrchestrator is the runtime brain of RoboCo: it owns the per-agent Dock
 | AgentOrchestrator._notify_strategy_engine_failure | method | roboco/runtime/engines/strategy.py:75 | Send one CEO alert that the strategy engine is persistently failing. |
 | AgentOrchestrator._repo_key | method | roboco/runtime/engines/_shared.py:114 | Normalized repo identity (delegates to `converters.repo_key`): strips `.git`, trailing slash, lowercases — shared by the poll-set collapse and the DB dedupe queries so ci-watch/dep-update use one normalization. |
 | AgentOrchestrator._agent_holds_live_claim | method | roboco/runtime/engines/reconcile.py:449 | True when a slug owns a non-terminal task; used by `_readopt_running_agents` to skip zombie containers whose claim was already released. |
-| AgentOrchestrator._stuck_claude_slug | method | roboco/runtime/engines/dispatch_breaker.py:1656 | Slug of an ACTIVE non-GROK container holding a task with heartbeat stale past `claude_stuck_kill_seconds`; None when not eligible. |
-| AgentOrchestrator._maybe_kill_stuck_claude | method | roboco/runtime/engines/dispatch_breaker.py:1693 | Kill + evict a stuck non-GROK container past `claude_stuck_kill_seconds` so the reaper can release its task; called from `_should_skip_live_reap`. |
+| AgentOrchestrator._stuck_claude_slug | method | roboco/runtime/engines/dispatch_breaker.py:1660 | Slug of an ACTIVE non-GROK container holding a task with heartbeat stale past `claude_stuck_kill_seconds`; None when not eligible. |
+| AgentOrchestrator._maybe_kill_stuck_claude | method | roboco/runtime/engines/dispatch_breaker.py:1697 | Kill + evict a stuck non-GROK container past `claude_stuck_kill_seconds` so the reaper can release its task; called from `_should_skip_live_reap`. |
 | `UptimeLedger` | class | `roboco/services/uptime.py:249` | Loaded once per sweep (`load`), answers `downtime` / `active_elapsed` / `active_seconds` for any interval |
 | `windows_from_heartbeats` | function | `roboco/services/uptime.py:162` | Downtime windows from ordered `(timestamp, dispatch_paused)` rows |
 | `compose_label_args` | function | `roboco/runtime/compose_labels.py:197` | The `--label` argv for a sibling container of a service, empty when the orchestrator is not compose-managed |
@@ -7179,7 +7179,7 @@ The Choreographer is the server-side composition layer that turns agent intent-v
 | `infra_gate_applies` | function | `roboco/services/gateway/choreographer/devops_gate.py:187` | Whether a gate task requires a devops verdict |
 | `verdict_satisfies_head` | function | `roboco/services/gateway/choreographer/devops_gate.py:81` | Whether a passed verdict still covers the PR's current head |
 | `DocMixin.claim_doc_task` | method | `roboco/services/gateway/choreographer/doc.py:154` | Documenter claims an `awaiting_documentation` task |
-| `run_bounded_leg` | function | `roboco/services/gateway/choreographer/evidence_legs.py:80` | Await a coroutine bounded by the budget's remaining time |
+| `run_bounded_leg` | function | `roboco/services/gateway/choreographer/evidence_legs.py:84` | Await a coroutine bounded by the budget's remaining time |
 
 ## Data Flow
 An MCP `flow/*` call hits the orchestrator → the role-specific gateway verb → `Choreographer.<verb>(agent_id, task_id, ...)`. The verb fetches the task (`self.task.get`), builds a briefing (`_briefing_for`), runs the spec gate (`spec.can_invoke_intent(role, verb, t, ctx)`) and any verb-specific preflight guards (free-text soup, claim guards, conventions, behind-base, unchanged-PR). On rejection it emits via `_emit_rejection` with `next`/`remediate`. On allow it calls `VerbRunner.run_intent(verb, t, agent, ctx)`: `pre_side_effects` (e.g. `create_root_pr` for `submit_root`) run OUTSIDE the SAVEPOINT; then `session.begin_nested()` wraps the composed atomic actions (`claim`/`set_plan`/`start`/`submit_qa`/…) re-fetching the task after each; then `side_effects` (push_branch / create_pr / pr_merge) run after the savepoint commits. An intermediate `None` from a composed action raises `INVALID_STATE` (concurrent transition); a trailing `None` flows out as the verb result. The verb wraps the final task in `Envelope.ok(status, next_hint, briefing)` with `.with_introspection(task, role)`.
@@ -7946,16 +7946,16 @@ External:
 | Flag / setting | Source | Used for |
 |----------------|--------|----------|
 | `ROBOCO_GIT_EXECUTOR_WORKERS` (env, default 16) | `os.environ` at git.py:222 | Dedicated git subprocess pool size |
-| `settings.git_command_timeout_seconds` | config.py:2306 | Default `_run_git` timeout |
-| `settings.git_commit_timeout_seconds` | config.py:2357 | Staging/commit large changeset timeout |
-| `settings.git_network_timeout_seconds` | config.py:2379 | fetch/pull/push/ls-remote timeout |
-| `settings.git_diff_timeout_seconds` | config.py:2390 | `GET /api/git/diff`'s outer "diff" stage bound (default 60s) around the paired `git diff` + `git diff --stat` calls, layered on top of (not instead of) `git_command_timeout_seconds` bounding each call individually |
-| `settings.workspaces_root` | config.py:2070 | Workspace path root (token derivation) |
-| `settings.workspace_auto_clone` | config.py:2074 | `get_workspace` auto-clone branch |
-| `settings.public_base_url` | config.py:2499 | Commit/PR template link base (`+ /api`) |
+| `settings.git_command_timeout_seconds` | config.py:2330 | Default `_run_git` timeout |
+| `settings.git_commit_timeout_seconds` | config.py:2381 | Staging/commit large changeset timeout |
+| `settings.git_network_timeout_seconds` | config.py:2403 | fetch/pull/push/ls-remote timeout |
+| `settings.git_diff_timeout_seconds` | config.py:2414 | `GET /api/git/diff`'s outer "diff" stage bound (default 60s) around the paired `git diff` + `git diff --stat` calls, layered on top of (not instead of) `git_command_timeout_seconds` bounding each call individually |
+| `settings.workspaces_root` | config.py:2094 | Workspace path root (token derivation) |
+| `settings.workspace_auto_clone` | config.py:2098 | `get_workspace` auto-clone branch |
+| `settings.public_base_url` | config.py:2523 | Commit/PR template link base (`+ /api`) |
 | `settings.internal_api_url` | config.py:139 | Internal PR body link base |
-| `settings.github_api_base_url` | config.py:1138 | GitHub REST API base (PR/CI/review) |
-| `settings.release_ci_workflow` | config.py:1614 | Named workflow file (e.g. `ci.yml`) used by the release CI gate in `get_latest_ci_conclusion`; always resolves a named workflow so the gate never degrades to the imprecise all-workflows mode |
+| `settings.github_api_base_url` | config.py:1162 | GitHub REST API base (PR/CI/review) |
+| `settings.release_ci_workflow` | config.py:1638 | Named workflow file (e.g. `ci.yml`) used by the release CI gate in `get_latest_ci_conclusion`; always resolves a named workflow so the gate never degrades to the imprecise all-workflows mode |
 
 Module-level tunables (not env): `_SLOW_GIT_OP_MS=5000`, `_CI_RUN_WINDOW=20`, `_CI_FETCH_ATTEMPTS=3`, `_CI_FETCH_BACKOFF_SECONDS=0.5`, `_CI_RETRYABLE_STATUS`, `_CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS=120`, `_GH_UNPROCESSABLE=422`, `_HTTP_NOT_FOUND=404`, `_HTTP_CONFLICT=409`.
 
@@ -8685,7 +8685,7 @@ support-services
 | `ModelRoutingService.*` assignment/mode ops | `api/routes/provider.py` | `GET/POST/DELETE /api/providers/*` |
 | `ProviderService.*` | `api/routes/provider.py` | provider CRUD routes |
 | `get_agent_service` | `api/routes/agents.py`, `services/task.py`, `services/pitch.py` | `/api/agents`; task/pitch main-pm lookup |
-| `check_database` / `check_redis` | `api/routes/health.py:43` | `GET /health` |
+| `check_database` / `check_redis` | `api/routes/health.py:66` | `GET /health` |
 | `resolve_target_python` | `services/workspace.py:1751` | `WorkspaceService.install_dev_deps` (on clone and on `ensure_workspace` re-entry) via `_resolve_toolchain_target`, only when `toolchain_match_enabled` |
 | `init_event_bus` / `register_default_handlers` / `set_event_context` | `bootstrap.py:180,185,208` | App bootstrap (orchestrator process; `set_event_context` runs after the orchestrator is constructed) |
 | `bus.publish` / `publish_task_event` | services, orchestrator, websocket_bridge | Status transitions, live events |
@@ -9626,6 +9626,7 @@ The product / strategy / research / pitch slice covers the "company layer" above
 |------|------|------------|
 | `roboco/services/project.py` | CRUD + git-token encryption + cell access control for Projects (git repos) | 790 |
 | `roboco/services/_project_service_types.py` | `ProjectServiceSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `ProjectService` mixins reach through `self`, plus its instance attributes; `tests/unit/services/test_project_service_mixins.py` fails on a stray stub or a member defined twice | 42 |
+| `roboco/services/review_path_health.py` | `ReviewPathHealthTracker`: rolling-window, distinct-task failure tracking over evidence/git-readonly reads that flags a `review_path_tools` outage and clears it on recovery | 128 |
 | `roboco/services/product.py` | Product CRUD + per-cell `project_for` routing resolver + idempotent cell-map replace | 247 |
 | `roboco/services/kanban.py` | Role-specific kanban board views (dev/qa/documenter/pm/main-pm/board) from task data | 587 |
 | `roboco/services/_kanban_service_types.py` | `KanbanServiceSelf`, a TYPE_CHECKING-only Protocol declaring the attributes the `KanbanService` mixin reads through `self` (no moved body calls across classes, so it has no `<Class>Surface` yet); `tests/unit/services/test_kanban_service_mixins.py` fails on a stray stub or a member defined twice | 28 |
@@ -10066,32 +10067,32 @@ product-strategy-research-pitch
 
 | Flag | Default | File:Line | Effect |
 |------|---------|-----------|--------|
-| `ROBOCO_CONVENTIONS_ENABLED` | `False` | config.py:776 | `ProjectService.create` best-effort scaffolds `.roboco/conventions.yml` PR; inert when off |
-| `ROBOCO_RESEARCH_ENABLED` | `True` | config.py:882 | Mounts `roboco-search` MCP into Board/PM containers (orchestrator:2914) |
-| `ROBOCO_RESEARCH_PROVIDER` | `tavily` | config.py:889 | `tavily`/`brave`/`exa`/`null` adapter selection |
-| `ROBOCO_RESEARCH_API_KEY` | `None` | config.py:902 | Server-side only; unset → `NullProvider` |
-| `ROBOCO_RESEARCH_MAX_RESULTS` | `5` | config.py:920 | Hard cap on `web_search` results (1-20) |
-| `ROBOCO_RESEARCH_FETCH_MAX_CHARS` | `20000` | config.py:926 | Hard cap on `web_fetch` extracted chars |
-| `ROBOCO_RESEARCH_TIMEOUT_SECONDS` | `15.0` | config.py:931 | Outbound provider HTTP timeout |
-| `ROBOCO_RESEARCH_DAILY_QUOTA_PER_AGENT` | `50` | config.py:936 | Per-agent/day call ceiling (Redis, fail-open) |
-| `ROBOCO_PROVISIONING_ENABLED` | `True` | config.py:1120 | Pitch auto-provisioning master switch (still inert without token+org) |
-| `ROBOCO_PROVISIONING_TOKEN` | `""` | config.py:1127 | GitHub PAT for repo creation (server-side only) |
-| `ROBOCO_PROVISIONING_ORG` | `""` | config.py:1134 | GitHub org where repos are provisioned |
-| `ROBOCO_GITHUB_API_BASE_URL` | `https://api.github.com` | config.py:1138 | Override for GitHub Enterprise |
-| `ROBOCO_PROVISIONING_TIMEOUT_SECONDS` | `30.0` | config.py:1142 | Outbound GitHub provisioning timeout |
-| `ROBOCO_PROVISIONING_REPO_PRIVATE` | `True` | config.py:1147 | Whether provisioned repos are private |
-| `ROBOCO_PROVISIONING_PROVIDER` | `github` | config.py:1151 | Phase 4 forge parity: `github`/`gitlab`/`gitea` selects the concrete provisioning target via `_build_provider` |
-| `ROBOCO_PROVISIONING_HOST` | `""` | config.py:1160 | Self-hosted forge host (e.g. `gitlab.example.com`); `.enabled` additionally requires this when `provisioning_provider` is gitlab/gitea (ignored for github/gitlab.com) |
-| `ROBOCO_STRATEGY_ENGINE_ENABLED` | `False` | config.py:1176 | Master switch: loop never starts when off |
-| `ROBOCO_STRATEGY_ENGINE_INTERVAL_SECONDS` | `1800` | config.py:1183 | Seconds between strategy assessment passes |
-| `ROBOCO_STRATEGY_STRANDED_BLOCKED_MINUTES` | `120` | config.py:1188 | Blocked-task threshold for "stranded" observation |
-| `ROBOCO_PROTECTED_GIT_URLS` | `[]` | config.py:2430 | Denylist: `ProjectService` rejects `git_url` containing any entry |
-| `ROBOCO_ENCRYPTION_KEY` | `""` | config.py:948 | Fernet key for git-token encrypt/decrypt |
-| `ROBOCO_ROADMAP_ENGINE_ENABLED` | `False` | config.py:1967 | Master switch: `_roadmap_engine_loop` never opens an exploration cycle when off |
-| `ROBOCO_ROADMAP_INTERVAL_SECONDS` | `604800` | config.py:1977 | Seconds between roadmap-exploration cycles (default weekly) |
-| `ROBOCO_ROADMAP_MIN_ITEMS_PER_CYCLE` | `3` | config.py:1982 | Minimum item drafts `propose_roadmap` must submit for a themed cycle |
-| `ROBOCO_ROADMAP_MAX_ITEMS_PER_CYCLE` | `7` | config.py:1987 | Maximum item drafts per cycle |
-| `ROBOCO_PEST_REWORK_THRESHOLD` | `0.3` | config.py:2000 | 7-day rework rate above which Pest Control's metric predicate opens a cycle off-schedule, on top of its weekly cron. The ONLY env-settable knob among the twelve new Board Programs: every other one arms exclusively via its own settings-store row (`board_program.{key}.enabled`, no `ROBOCO_*_ENABLED` flag exists for them) |
+| `ROBOCO_CONVENTIONS_ENABLED` | `False` | config.py:800 | `ProjectService.create` best-effort scaffolds `.roboco/conventions.yml` PR; inert when off |
+| `ROBOCO_RESEARCH_ENABLED` | `True` | config.py:906 | Mounts `roboco-search` MCP into Board/PM containers (orchestrator:2914) |
+| `ROBOCO_RESEARCH_PROVIDER` | `tavily` | config.py:913 | `tavily`/`brave`/`exa`/`null` adapter selection |
+| `ROBOCO_RESEARCH_API_KEY` | `None` | config.py:926 | Server-side only; unset → `NullProvider` |
+| `ROBOCO_RESEARCH_MAX_RESULTS` | `5` | config.py:944 | Hard cap on `web_search` results (1-20) |
+| `ROBOCO_RESEARCH_FETCH_MAX_CHARS` | `20000` | config.py:950 | Hard cap on `web_fetch` extracted chars |
+| `ROBOCO_RESEARCH_TIMEOUT_SECONDS` | `15.0` | config.py:955 | Outbound provider HTTP timeout |
+| `ROBOCO_RESEARCH_DAILY_QUOTA_PER_AGENT` | `50` | config.py:960 | Per-agent/day call ceiling (Redis, fail-open) |
+| `ROBOCO_PROVISIONING_ENABLED` | `True` | config.py:1144 | Pitch auto-provisioning master switch (still inert without token+org) |
+| `ROBOCO_PROVISIONING_TOKEN` | `""` | config.py:1151 | GitHub PAT for repo creation (server-side only) |
+| `ROBOCO_PROVISIONING_ORG` | `""` | config.py:1158 | GitHub org where repos are provisioned |
+| `ROBOCO_GITHUB_API_BASE_URL` | `https://api.github.com` | config.py:1162 | Override for GitHub Enterprise |
+| `ROBOCO_PROVISIONING_TIMEOUT_SECONDS` | `30.0` | config.py:1166 | Outbound GitHub provisioning timeout |
+| `ROBOCO_PROVISIONING_REPO_PRIVATE` | `True` | config.py:1171 | Whether provisioned repos are private |
+| `ROBOCO_PROVISIONING_PROVIDER` | `github` | config.py:1175 | Phase 4 forge parity: `github`/`gitlab`/`gitea` selects the concrete provisioning target via `_build_provider` |
+| `ROBOCO_PROVISIONING_HOST` | `""` | config.py:1184 | Self-hosted forge host (e.g. `gitlab.example.com`); `.enabled` additionally requires this when `provisioning_provider` is gitlab/gitea (ignored for github/gitlab.com) |
+| `ROBOCO_STRATEGY_ENGINE_ENABLED` | `False` | config.py:1200 | Master switch: loop never starts when off |
+| `ROBOCO_STRATEGY_ENGINE_INTERVAL_SECONDS` | `1800` | config.py:1207 | Seconds between strategy assessment passes |
+| `ROBOCO_STRATEGY_STRANDED_BLOCKED_MINUTES` | `120` | config.py:1212 | Blocked-task threshold for "stranded" observation |
+| `ROBOCO_PROTECTED_GIT_URLS` | `[]` | config.py:2454 | Denylist: `ProjectService` rejects `git_url` containing any entry |
+| `ROBOCO_ENCRYPTION_KEY` | `""` | config.py:972 | Fernet key for git-token encrypt/decrypt |
+| `ROBOCO_ROADMAP_ENGINE_ENABLED` | `False` | config.py:1991 | Master switch: `_roadmap_engine_loop` never opens an exploration cycle when off |
+| `ROBOCO_ROADMAP_INTERVAL_SECONDS` | `604800` | config.py:2001 | Seconds between roadmap-exploration cycles (default weekly) |
+| `ROBOCO_ROADMAP_MIN_ITEMS_PER_CYCLE` | `3` | config.py:2006 | Minimum item drafts `propose_roadmap` must submit for a themed cycle |
+| `ROBOCO_ROADMAP_MAX_ITEMS_PER_CYCLE` | `7` | config.py:2011 | Maximum item drafts per cycle |
+| `ROBOCO_PEST_REWORK_THRESHOLD` | `0.3` | config.py:2024 | 7-day rework rate above which Pest Control's metric predicate opens a cycle off-schedule, on top of its weekly cron. The ONLY env-settable knob among the twelve new Board Programs: every other one arms exclusively via its own settings-store row (`board_program.{key}.enabled`, no `ROBOCO_*_ENABLED` flag exists for them) |
 
 ## Gotchas
 

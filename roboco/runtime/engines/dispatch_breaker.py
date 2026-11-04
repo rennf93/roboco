@@ -1099,6 +1099,10 @@ class StaleClaimReaperEngine(_Base):
             await self._reap_with_service(svc, dispatch_paused=dispatch_paused)
             await db.commit()
         await self._sandbox_janitor_sweep()
+        if settings.gateway_health_enabled:
+            from roboco.services.review_path_health import sweep_review_path_health
+
+            await sweep_review_path_health()
 
     async def _reap_with_service(
         self, svc: "TaskService", *, dispatch_paused: bool = False
