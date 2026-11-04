@@ -27,6 +27,17 @@ def _disabled_key(key: str) -> str:
     return f"board_program.{key}.cadence_slowdown_disabled"
 
 
+def base_interval_seconds(key: str) -> int:
+    """The cadence the scheduler runs ``key`` at before any slowdown: the
+    operator-configured override (roadmap / x_feature) else the registry default."""
+    override: int | None = None
+    if key == "roadmap":
+        override = settings.roadmap_interval_seconds
+    elif key == "x_feature":
+        override = settings.x_feature_spotlight_interval_seconds
+    return override or PROGRAMS[key].default_interval_seconds
+
+
 def _decide(metric: ProgramCadenceMetric) -> SlowdownDecision:
     return decide_slowdown(
         cost_per_cycle_usd=metric.cost_per_cycle_usd,
@@ -64,13 +75,14 @@ class BoardProgramCadencePolicyService(BaseService):
         program's cadence.
         """
         try:
-            if await self.slowdown_disabled(key):
-                return base_seconds
-            metric = (
-                await get_board_program_cadence_service(
-                    self.session
-                ).program_cadence_metrics()
-            )[key]
+            async with self.session.begin_nested():
+                if await self.slowdown_disabled(key):
+                    return base_seconds
+                metric = (
+                    await get_board_program_cadence_service(
+                        self.session
+                    ).program_cadence_metrics()
+                )[key]
             return effective_interval_seconds(
                 base_seconds,
                 slowed=_decide(metric).slowed,
@@ -87,12 +99,12 @@ class BoardProgramCadencePolicyService(BaseService):
         ).program_cadence_metrics()
         multiplier = settings.board_cadence_slowdown_multiplier
         rows: list[ProgramCadenceReview] = []
-        for key, program in PROGRAMS.items():
+        for key in PROGRAMS:
             metric = metrics[key]
             decision = _decide(metric)
             disabled = await self.slowdown_disabled(key)
             slowed = decision.slowed and not disabled
-            base = program.default_interval_seconds
+            base = base_interval_seconds(key)
             rows.append(
                 ProgramCadenceReview(
                     program_key=key,

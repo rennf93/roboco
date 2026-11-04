@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 
 import pytest
@@ -10,8 +11,10 @@ from roboco.foundation.policy.board_programs import PROGRAMS
 from roboco.models.board_program_cadence import ProgramCadenceMetric
 from roboco.services.board_program_cadence import BoardProgramCadenceService
 from roboco.services.board_program_cadence_policy import (
+    base_interval_seconds,
     get_board_program_cadence_policy_service,
 )
+from roboco.services.board_programs import BoardProgramEngine
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,6 +23,7 @@ SLOW = "scales"
 FAST = "roadmap"
 SAMPLE = 6
 BASE = 1000
+OVERRIDE = 12345
 
 
 def _metric(
@@ -72,7 +76,9 @@ async def test_review_lists_every_program_with_slowdown_numbers(
 @pytest.mark.asyncio
 async def test_effective_interval_only_stretches(db_session: AsyncSession) -> None:
     svc = get_board_program_cadence_policy_service(db_session)
-    assert await svc.effective_interval(SLOW, BASE) >= BASE
+    assert await svc.effective_interval(SLOW, BASE) == int(
+        BASE * cfg.board_cadence_slowdown_multiplier
+    )
     assert await svc.effective_interval(FAST, BASE) == BASE
 
 
@@ -84,3 +90,60 @@ async def test_ceo_can_reverse_a_slowdown(db_session: AsyncSession) -> None:
     row = next(r for r in await svc.review() if r.program_key == SLOW)
     assert not row.slowed
     assert row.slowdown_disabled
+
+
+@pytest.mark.asyncio
+async def test_review_uses_the_scheduler_base_for_override_programs(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(cfg, "roadmap_interval_seconds", OVERRIDE)
+    assert base_interval_seconds(FAST) == OVERRIDE
+    assert base_interval_seconds(SLOW) == PROGRAMS[SLOW].default_interval_seconds
+    row = next(
+        r
+        for r in await get_board_program_cadence_policy_service(db_session).review()
+        if r.program_key == FAST
+    )
+    assert row.original_interval_seconds == OVERRIDE
+    assert row.effective_interval_seconds == OVERRIDE
+
+
+async def _true(*_args: object) -> bool:
+    return True
+
+
+async def _false(*_args: object) -> bool:
+    return False
+
+
+@pytest.mark.asyncio
+async def test_run_due_one_delays_a_slowed_program(
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = PROGRAMS[SLOW].default_interval_seconds
+    now = datetime.now(UTC)
+    opened: list[str] = []
+    state = {"last": now - timedelta(seconds=base + 1)}
+
+    async def _state(_self: BoardProgramEngine, _key: str) -> tuple[bool, datetime]:
+        return False, state["last"]
+
+    async def _originate(_self: BoardProgramEngine, key: str) -> object:
+        opened.append(key)
+        return object()
+
+    monkeypatch.setattr(BoardProgramEngine, "enabled", _true)
+    monkeypatch.setattr(BoardProgramEngine, "_scope_gate", _true)
+    monkeypatch.setattr(BoardProgramEngine, "_decisions_due_early", _false)
+    monkeypatch.setattr(BoardProgramEngine, "_dedup_state", _state)
+    monkeypatch.setattr(BoardProgramEngine, "_originate_and_record", _originate)
+    engine = BoardProgramEngine(db_session)
+
+    # Past the base interval but inside the stretched one: delayed.
+    assert not await engine._run_due_one(SLOW, now)
+    assert opened == []
+    # Past the stretched interval: due.
+    stretched = int(base * cfg.board_cadence_slowdown_multiplier)
+    state["last"] = now - timedelta(seconds=stretched + 1)
+    assert await engine._run_due_one(SLOW, now)
+    assert opened == [SLOW]

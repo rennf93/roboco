@@ -46,6 +46,7 @@ from roboco.foundation.policy.content import markers
 from roboco.models.base import TaskStatus
 from roboco.services.base import BaseService
 from roboco.services.board_program_cadence_policy import (
+    base_interval_seconds,
     get_board_program_cadence_policy_service,
 )
 from roboco.services.settings import get_settings_service
@@ -557,15 +558,6 @@ def resolve_materialize_target(item: dict[str, Any]) -> str | None:
     return slug
 
 
-def _interval_override(key: str) -> int | None:
-    """Per-program configured cadence, when the operator has one set."""
-    if key == "roadmap":
-        return settings.roadmap_interval_seconds
-    if key == "x_feature":
-        return settings.x_feature_spotlight_interval_seconds
-    return None
-
-
 async def program_armed(session: AsyncSession, key: str) -> bool:
     """Whether program ``key`` is armed: the settings-store per-program
     override when a row exists, else the legacy boot flag(s) it aliases.
@@ -906,10 +898,9 @@ class BoardProgramEngine(BaseService, BoardProgramCycles, BoardProgramDecisions)
         blocked, last_opened_at = await self._dedup_state(key)
         if blocked:
             return False
-        base_interval = _interval_override(key) or program.default_interval_seconds
         interval = await get_board_program_cadence_policy_service(
             self.session
-        ).effective_interval(key, base_interval)
+        ).effective_interval(key, base_interval_seconds(key))
         if not program_due(
             program,
             now=now,
