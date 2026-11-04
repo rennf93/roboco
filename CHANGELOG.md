@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **Positioning now leads with multi-agent orchestration (ETR, June 2026).** ETR surveyed 21 enterprise technology leaders: 12 planned to increase Cursor spend, 9 to cut it, and 7 of those 9 named Claude Code as the destination. ETR quotes the risk that agentic development is "making any IDE less valuable than ever" unless Cursor delivers multi-agent orchestration ([source](https://research.etr.ai/etr-data-drop/the-cursor-trade-seat-growth-meets-the-agentic-shift)). The README lede and Overview now open with the orchestrated agent workforce, and `docs/positioning/etr-cursor-orchestration-2026-06.md` records what changed and why. No code changed; every claim maps to shipped capability.
+
 ### Fixed
 
 - **A root branch that conflicts with slave no longer burns sync subtasks no agent can finish.** The base-inheritance note told the owner to `sync_branch`, a developer-only verb, so PMs delegated "resolve the conflict with slave" leaves that could only rebase onto their cell branch (four on root b738f2fc, two on 67e218f2). The note now tells a PM to `escalate_up`, and `CHANGELOG.md` merges with git's union driver, since every branch adds its bullets at the same spot.
