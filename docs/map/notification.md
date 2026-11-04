@@ -5,7 +5,7 @@ This slice implements RoboCo's formal-notification backbone: NotificationService
 
 | Path | Role | LOC |
 |---|---|---|
-| roboco/services/notification.py | Typed notification factory (blocker/QA/docs/handoff/A2A/board-review/ack/notification-spawn-cap) with slug→UUID recipient resolution, DB purpose-dedup + Redis re-fire guard, owns its own DB context and commit | 1182 |
+| roboco/services/notification.py | Typed notification factory (blocker/QA/docs/handoff/A2A/board-review/ack/notification-spawn-cap) with slug→UUID recipient resolution, DB purpose-dedup + Redis re-fire guard, owns its own DB context and commit | 1215 |
 | roboco/services/_notification_service_types.py | `NotificationServiceSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `NotificationService` mixins reach through `self`, plus its instance attributes; `tests/unit/services/test_notification_service_mixins.py` fails on a stray stub or a member defined twice | 37 |
 | roboco/services/notification_dedup.py | Bounded Redis SET-NX re-fire guard for loop-prone notification types (TASK_ASSIGNMENT/REVIEW_REQUEST/DOCUMENTATION_REQUEST/BROADCAST); 60s TTL, fail-open | 324 |
 | roboco/services/notification_delivery.py | Delivery (transactional-outbox deferred bus publish), ACK/read tracking, expiry sweep, PM/CEO task-handoff notifications (notify_pm_of_block, escalate_and_notify, etc.), API-facing list/CRUD, `_notify_telegram` best-effort CEO DM fan-out (V2: `actionable=True` on escalation attaches an Approve/Reject/Open inline keyboard) | 2223 |

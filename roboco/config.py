@@ -737,6 +737,31 @@ class Settings(BaseSettings):
             "recovers it — tolerates a transient probe miss (the gateway mid-call)."
         ),
     )
+    review_path_outage_window_seconds: int = Field(
+        default=300,
+        ge=1,
+        description=(
+            "Rolling window over which evidence/git-readonly failures are counted "
+            "toward a cross-task review-path outage."
+        ),
+    )
+    review_path_outage_distinct_tasks: int = Field(
+        default=3,
+        ge=2,
+        description=(
+            "Distinct tasks that must fail within the window to declare a "
+            "review-path outage (one task failing repeatedly never trips it)."
+        ),
+    )
+    review_path_recovery_successes: int = Field(
+        default=3,
+        ge=1,
+        description=(
+            "Consecutive successful review-path reads that clear an active outage "
+            "as recovered (an outage whose window empties with no success closes "
+            "as expired, recovered stays false)."
+        ),
+    )
     dispatch_claim_inflight_ttl_seconds: int = Field(
         default=600,
         ge=0,
