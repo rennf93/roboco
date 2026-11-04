@@ -8346,6 +8346,7 @@ class TaskBlocking(_Base):
             "Any", task.blocker_raised_by or task.assigned_to or task.claimed_by
         )
         task.blocker_raised_by = None
+        markers.clear_marker(task, markers.ESCALATION)
         if owner is not None:
             task.assigned_to = owner
             task.claimed_by = owner
@@ -13272,6 +13273,7 @@ class TaskAdminOverride(_Base):
         task.pre_block_metadata = None
         task.blocker_resolver_type = None
         task.blocker_raised_by = None
+        markers.clear_marker(task, markers.ESCALATION)
         return pre_status, restored_status, restored_owner
 
     async def _admin_out_of_blocked(
@@ -13334,6 +13336,7 @@ class TaskAdminOverride(_Base):
         task.pre_block_metadata = None
         task.blocker_resolver_type = None
         task.blocker_raised_by = None
+        markers.clear_marker(task, markers.ESCALATION)
 
     def _emit_admin_override_audit(
         self,
