@@ -3369,20 +3369,21 @@ class EscalationMixin(_Base):
         """Rejection for an escalate_to_ceo the runner did not apply.
 
         ``runner_error`` set → the run_intent savepoint raised; otherwise the
-        service declined (task not in awaiting_pm_review). Either way a clean
-        invalid_state, never the unhandled ``None.status`` 500.
+        service declined (see ``TaskService._escalate_to_ceo_refusal``).
+        Either way a clean invalid_state, never the unhandled ``None.status``
+        500.
         """
         if runner_error is not None:
             message = f"verb runner failed: {runner_error}"
             remediate = "check workspace + retry; if persistent, escalate"
         else:
             message = (
-                "escalate_to_ceo did not apply — the task is not in a state"
-                " that escalates to the CEO (needs awaiting_pm_review)"
+                "escalate_to_ceo did not apply: only a root with a PR escalates,"
+                " from awaiting_pm_review, blocked, or in_progress when you hold it"
             )
             remediate = (
-                "resolve or re-route the task; only awaiting_pm_review tasks"
-                " escalate to the CEO"
+                "resolve or re-route the task; a subtask, a task with no PR, or"
+                " an in_progress task someone else holds does not escalate"
             )
         return await self._emit_rejection(
             Envelope.invalid_state(
@@ -3487,7 +3488,7 @@ class EscalationMixin(_Base):
         except Exception as exc:
             updated, runner_error = None, str(exc)
         # run_intent returns None when the service declines the escalation (e.g. a
-        # board agent escalating a task not in awaiting_pm_review). Without this
+        # board agent escalating a task it cannot escalate). Without this
         # guard the OK path below dereferenced ``None.status`` — an unhandled 500
         # (the board's escalate-from-blocked crash loop).
         if updated is None:

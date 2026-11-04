@@ -1852,6 +1852,7 @@ class SubmitUpMixin(_Base):
             delegate_target="owning developer(s)",
             subtask_noun="dev subtasks",
             work_noun="dev work",
+            escalate_verb="escalate_up",
         )
 
 
@@ -1905,6 +1906,7 @@ class SubmitRootMixin(_Base):
         delegate_target: str,
         subtask_noun: str,
         work_noun: str,
+        escalate_verb: str,
     ) -> Envelope | None:
         """Shared unchanged-PR loop-stopper for submit_root (root) / submit_up (cell).
 
@@ -1964,11 +1966,21 @@ class SubmitRootMixin(_Base):
                 f" straight back to awaiting_pr_review.{exemption_note}"
             ),
             remediate=(
-                f"re-delegate the fixes to the {delegate_target} via"
-                f" delegate(...) and wait for the {subtask_noun} to complete"
-                f" and the {pr_scope} branch to be re-assembled. Do NOT call"
-                f" {verb} again until new {work_noun} has advanced the"
-                f" {pr_scope} branch HEAD."
+                (
+                    "every finding was resolved without a code change and this"
+                    f" head's one resubmit is spent, so no {work_noun} will move"
+                    f" it: call {escalate_verb}(task_id, reason='<what still"
+                    f" fails and why no {work_noun} fixes it>') for a human"
+                    f" decision. Do NOT call {verb} again on this head."
+                )
+                if exemption_note
+                else (
+                    f"re-delegate the fixes to the {delegate_target} via"
+                    f" delegate(...) and wait for the {subtask_noun} to complete"
+                    f" and the {pr_scope} branch to be re-assembled. Do NOT call"
+                    f" {verb} again until new {work_noun} has advanced the"
+                    f" {pr_scope} branch HEAD."
+                )
             ),
             context_briefing=briefing,
         )
@@ -1986,6 +1998,7 @@ class SubmitRootMixin(_Base):
             delegate_target="owning cell PM(s)",
             subtask_noun="cell subtasks",
             work_noun="cell work",
+            escalate_verb="escalate_to_ceo",
         )
 
     async def _current_pr_head_sha(self, t: Any) -> str | None:
