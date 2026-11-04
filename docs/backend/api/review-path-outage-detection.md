@@ -44,7 +44,9 @@ All settings are in `roboco/config.py` (env prefix `ROBOCO_`).
 
 ## Panel health surface
 
-`GET /api/system-health/review-path` (route in `roboco/api/routes/health.py`, schema `ReviewPathHealthResponse` in `roboco/api/schemas/health.py`). The route is thin: it returns the tracker's `state()`.
+`GET /api/system-health/review-path` (route in `roboco/api/routes/health.py`, schema `ReviewPathHealthResponse` in `roboco/api/schemas/health.py`). The route is thin: it awaits the tracker's `state()`.
+
+The tracker talks to Redis through `redis.asyncio` (1s socket timeouts), so `record_failure`, `record_success`, `state` and `pending_transition`, plus the module-level `record_review_path_failure` / `record_review_path_success`, are coroutines and never block the event loop. Every caller must `await` them: `run_bounded_leg`, the `review_path_read_outcome` dependency, the git routes' `_translate_read_error` (also async), this route and the sweep.
 
 This is the frozen cross-cell contract with the frontend banner slice.
 
@@ -68,4 +70,4 @@ Example while an outage is active:
 
 ## Tests
 
-`tests/unit/services/test_review_path_health.py` covers the boundary (a single task failing repeatedly is not an outage), distinct-task tripping, one event per window, recovery by successes, window expiry (closed without claiming recovery), caller errors ignored by evidence legs, task-less git reads keyed per agent/active task, the missed-sweep case, both hook sites (4xx vs 5xx, key passed), the route contract served through an app client, and a regression where one task failing across status, log, diff and file counts as one key and does not trip the outage. Its tests run the tracker over an in-memory fake Redis: one covers failures recorded by one tracker instance being seen by the state read and sweep of others (each transition delivered once), another that Redis errors are swallowed.
+`tests/unit/services/test_review_path_health.py` covers the boundary (a single task failing repeatedly is not an outage), distinct-task tripping, one event per window, recovery by successes, window expiry (closed without claiming recovery), caller errors ignored by evidence legs, task-less git reads keyed per agent/active task, the missed-sweep case, both hook sites (4xx vs 5xx, key passed), the route contract served through an app client, and a regression where one task failing across status, log, diff and file counts as one key and does not trip the outage. Its tests run the tracker over an in-memory async fake Redis: one covers failures recorded by one tracker instance being seen by the state read and sweep of others (each transition delivered once), another that Redis errors are swallowed.

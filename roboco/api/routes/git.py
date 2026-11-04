@@ -158,7 +158,7 @@ async def get_git_status(
             task_id=task_id or legacy_task_id,
             project_slug=project_slug,
         )
-        raise _translate_read_error(e, key) from e
+        raise await _translate_read_error(e, key) from e
 
     return GitStatusResponse(
         project_slug=project_slug,
@@ -239,7 +239,7 @@ async def get_git_log(
             branch=requested_branch,
             project_slug=project_slug,
         )
-        raise _translate_read_error(e, key) from e
+        raise await _translate_read_error(e, key) from e
 
     commits = []
     for line in log_result.stdout.strip().split("\n"):
@@ -302,7 +302,7 @@ async def list_branches(
         key = await resolve_review_path_key(
             db, agent.agent_id, project_slug=project_slug
         )
-        raise _translate_read_error(e, key) from e
+        raise await _translate_read_error(e, key) from e
 
     branches = []
     for line in branch_result.stdout.strip().split("\n"):
@@ -379,7 +379,7 @@ async def get_git_diff(
         key = await resolve_review_path_key(
             db, agent.agent_id, task_id=task_id, project_slug=project_slug
         )
-        raise _translate_read_error(e, key) from e
+        raise await _translate_read_error(e, key) from e
 
     files_changed = stat_result.stdout.count("\n") - 1 if stat_result.stdout else 0
 
@@ -426,7 +426,7 @@ async def get_git_file(
         )
     except _TranslatableError as e:
         key = await resolve_review_path_key(db, agent.agent_id, branch=branch)
-        raise _translate_read_error(e, key) from e
+        raise await _translate_read_error(e, key) from e
 
     if content is None:
         raise HTTPException(

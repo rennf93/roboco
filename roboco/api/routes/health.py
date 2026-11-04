@@ -48,7 +48,7 @@ async def health_check() -> HealthResponse:
 )
 async def review_path_health() -> ReviewPathHealthResponse:
     """Panel-readable review-path outage state."""
-    return ReviewPathHealthResponse(**get_review_path_tracker().state())
+    return ReviewPathHealthResponse(**await get_review_path_tracker().state())
 
 
 router.include_router(system_health_router, prefix="/api/system-health")

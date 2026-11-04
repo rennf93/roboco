@@ -111,7 +111,7 @@ async def run_bounded_leg[T](
     try:
         result = await asyncio.wait_for(coro, timeout=timeout)
     except TimeoutError:
-        record_review_path_failure(task_id)
+        await record_review_path_failure(task_id)
         gaps.append(
             f"{leg} unavailable: timed out after {timeout:.0f}s "
             f"(evidence-assembly budget) — {hint}"
@@ -125,7 +125,7 @@ async def run_bounded_leg[T](
         )
         return default
     except GitTimeoutError as exc:
-        record_review_path_failure(task_id)
+        await record_review_path_failure(task_id)
         gaps.append(
             f"{leg} unavailable: a git command timed out after {exc.timeout}s "
             f"(git_command_timeout_seconds) — {hint}"
@@ -140,7 +140,7 @@ async def run_bounded_leg[T](
         return default
     except Exception as exc:
         if is_infrastructure_failure(exc):
-            record_review_path_failure(task_id)
+            await record_review_path_failure(task_id)
         raise
-    record_review_path_success()
+    await record_review_path_success()
     return result
