@@ -278,6 +278,10 @@ class _MultiTaskStubGit:
         await self._session.flush()
         return {"pr_number": pr_number, "pr_url": pr_url, "is_root_pr": is_root_pr}
 
+    async def get_pr_ci_status(self, slug: str, pr_number: int) -> dict[str, Any]:
+        del slug, pr_number
+        return {"state": "no_ci_configured"}
+
     async def diff(
         self,
         *,
