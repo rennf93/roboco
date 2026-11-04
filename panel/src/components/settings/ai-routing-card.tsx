@@ -1072,9 +1072,7 @@ export function AIRoutingCard() {
         </CardTitle>
         <CardDescription>
           RoboCo routes the whole org: each role, and each role at a given task
-          complexity, gets its own provider and model. Cognition&apos;s Devin is
-          reported to pick a model per task (runtimewire, Aug 2026). Anthropic
-          uses the mounted
+          complexity, gets its own provider and model. Anthropic uses the mounted
           <code className="px-1"> ~/.claude </code> auth; Grok (xAI), Ollama
           Cloud, OpenRouter, and Nebius use the API keys you save below; Codex,
           Gemini, and Kimi authenticate via their own mounted CLI subscriptions
