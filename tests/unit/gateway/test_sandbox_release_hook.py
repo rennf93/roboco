@@ -28,6 +28,7 @@ from uuid import uuid4
 
 import pytest
 from roboco.services.gateway.choreographer import Choreographer, ChoreographerDeps
+from roboco.services.gateway.quality_gate import GateResult
 from structlog.testing import capture_logs
 
 
@@ -183,6 +184,10 @@ async def test_i_am_done_success_releases_sandbox(
     env = await c.i_am_done(agent_id, task_id, "done")
 
     assert env.error is None
+    # The deferred gate job's callback ends the engagement, so it releases.
+    release.assert_not_awaited()
+    t.status = "verifying"
+    await c.apply_gate_verdict(agent_id, task_id, "done", "tok", GateResult(True))
     release.assert_awaited_once_with(agent_id)
 
 

@@ -10,6 +10,7 @@ the attempt budget and alert the CEO.
 
 from __future__ import annotations
 
+import time
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -46,6 +47,9 @@ from tests.integration.entire_trails.support import (
 
 if TYPE_CHECKING:
     from tests.integration.entire_trails.support import Bridge
+
+
+MAX_STALL_SECONDS = 5
 
 
 async def _bridged_tree(b: Bridge) -> tuple[TaskTable, TaskTable]:
@@ -410,6 +414,30 @@ async def test_a_failed_link_before_pr_is_queued_not_raised(bridge: Bridge) -> N
         require_uuid(root.id), bridge.project, branch=ROOT_BRANCH, base="master"
     )
 
+    queued = [r for r in await bridge.outbox() if r.op == "link"]
+    assert [r.payload["branch"] for r in queued] == [ROOT_BRANCH]
+
+
+async def test_a_contended_tree_lock_queues_the_link_instead_of_stalling(
+    bridge: Bridge, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = await bridge.task()
+    await bridge.cut(root, ROOT_BRANCH, "master", MAIN_PM)
+    monkeypatch.setattr(settings, "entire_trails_link_lock_wait_seconds", 0.3)
+    calls_before = len(bridge.replay.calls)
+
+    async with bridge.factory() as holder:
+        # a drain row mid-CLI-call holds the tree lock for its whole transaction
+        await drain._lock_tree(holder, require_uuid(root.id), wait=False)
+        started = time.monotonic()
+        await drain.link_before_pr(
+            require_uuid(root.id), bridge.project, branch=ROOT_BRANCH, base="master"
+        )
+        elapsed = time.monotonic() - started
+        await holder.rollback()
+
+    assert elapsed < MAX_STALL_SECONDS
+    assert len(bridge.replay.calls) == calls_before
     queued = [r for r in await bridge.outbox() if r.op == "link"]
     assert [r.payload["branch"] for r in queued] == [ROOT_BRANCH]
 

@@ -926,7 +926,7 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | docker-compose.registry.yml | Pull-and-run compose using pre-built GHCR/Docker Hub images (ROBOCO_REGISTRY + ROBOCO_VERSION); infra services byte-identical to build compose (incl. `backup` + vault defaults), agent-* services are one-shot pre-pulls, own `roboco_data` network; one `docker-gate` (builds refused, since every image is pulled; `GATE_REGISTRY` from `ROBOCO_REGISTRY`; the same read-only bind roots as the build file's gates) serves the orchestrator and dispatcher | 990 |
 | Makefile | Ops + quality targets: infra, dev/run/orchestrator, quality gate (ruff/mypy/pytest/xenon/radon/vulture/bandit/pip-audit/deptry/lint-imports/alembic/foundation-check), fast pre-submit `gate` target (ruff format/check, mypy, xenon, lint-imports), per-Python test matrix, docs, lifecycle regen | 628 |
 | pyproject.toml | Project + dependency manifest: requires-python >=3.13,<3.15, deps, dev/docs extras, console scripts, ruff/mypy/pytest/coverage/vulture/bandit/radon/xenon/deptry/importlinter config | 717 |
-| roboco/config.py | Pydantic Settings (env prefix ROBOCO_, cached via lru_cache); every tunable: DB, Redis, RAG, LLM/Ollama, workspaces, agent guardrails, gateway thresholds, autonomy-engine flags | 3389 |
+| roboco/config.py | Pydantic Settings (env prefix ROBOCO_, cached via lru_cache); every tunable: DB, Redis, RAG, LLM/Ollama, workspaces, agent guardrails, gateway thresholds, autonomy-engine flags | 3406 |
 | roboco/__init__.py | Package root: __version__ + re-exports settings, exceptions, logging helpers | 36 |
 | roboco/bootstrap.py | Async bootstrap: git-user drop self-test (every role but indexer; SystemExit(1) on failure), a warning when an api or dispatcher has the host Docker socket and no `DOCKER_HOST` (a compose file from before the Docker gate), DB init, Redis event bus, websocket bridge, orchestrator construction, uvicorn API server task, wait-for-ready poll, optional agent spawn, graceful shutdown | 259 |
 | roboco/cli.py | argparse CLI wrapper around bootstrap.main / db-only; the ENTRYPOINT invoked by `python -m roboco.cli` | 67 |
@@ -1020,7 +1020,7 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | Name | Kind | File:Line | Responsibility |
 |---|---|---|---|
 | Settings | class | roboco/config.py:26 | Pydantic BaseSettings; all ROBOCO_ env-backed tunables + derived URL properties (database_url, redis_url, internal_api_url, rag_store_url) |
-| get_settings | function | roboco/config.py:3383 | lru_cache-backed singleton factory returning the cached Settings instance |
+| get_settings | function | roboco/config.py:3400 | lru_cache-backed singleton factory returning the cached Settings instance |
 | internal_api_url | property | roboco/config.py:139 | service-to-service API base URL (api_url override or http://host:port/api, maps 0.0.0.0 to 127.0.0.1) |
 | database_url | property | roboco/config.py:214 | asyncpg connection URL |
 | database_url_sync | property | roboco/config.py:222 | sync psycopg URL for Alembic |
@@ -7120,6 +7120,7 @@ The Choreographer is the server-side composition layer that turns agent intent-v
 | `roboco/services/gateway/choreographer/board.py` | `BoardMixin`: Board (Product Owner, Head of Marketing) and Auditor verbs: board triage, auditor triage, and `waive_finding` for a minor/nit finding |
 | `roboco/services/gateway/choreographer/collision.py` | Pure collision-map assembly for a task under review: the same-parent siblings that overlap its declared file globs or also add a migration, with the overlapping globs and a declared-vs-actual drift check; feeds QA and PR-gate evidence, the PM briefing and `GET /api/tasks/{id}/collision-map` |
 | `roboco/services/gateway/choreographer/dev.py` | Developer verb mixins: `GiveMeWorkMixin` (`give_me_work`), `DevClaimMixin` (`i_will_work_on`), `OpenPRMixin` (`open_pr`), `IAmDoneMixin` (`i_am_done`, its gate chain and the QA notice) and `DoneChecksMixin` (the `i_am_done` fast path, the quality gate and the acceptance-criteria status). |
+| `roboco/services/gateway/choreographer/gate_job.py` | Background-job bodies for the `i_am_done` quality gate: `run_gate_job` (runs the gate, fail-open on infra errors) and `finish_gate_job` (applies the verdict in a fresh committed session via `apply_gate_verdict`, which acts only on a `verifying` task whose stamped `gate_run` token matches the verdict's job) and `relaunch_lost_gate_jobs` (sweep run at API startup and then every timeout / 4 by `run_gate_recovery_loop`, which also lives here and is cancelled on shutdown; it relaunches the gate only for assigned `verifying` tasks whose last gate run is older than the job timeout plus a 60 s grace, stamping a fresh token and reusing the persisted submit notes) | 90 |
 | `roboco/services/gateway/choreographer/devops_gate.py` | DevOps infra-review-gate helpers: infra-glob matching over changed files, the stored devops verdict and whether it still covers the PR head, devops-1 co-claim and authorship checks, and `infra_gate_applies`, the predicate for whether a gate task needs a devops verdict |
 | `roboco/services/gateway/choreographer/doc.py` | `DocMixin`: Documenter verbs, `claim_doc_task` (claims an `awaiting_documentation` task and returns evidence inline) and `i_documented` |
 | `roboco/services/gateway/choreographer/evidence_legs.py` | Bounded advisory-evidence legs: `run_bounded_leg` caps one awaitable against a shared `LegBudget` deadline and degrades to a default plus an `evidence_gaps` entry on an asyncio or git timeout, so a slow fetch never holds a flow verb's row locks |
@@ -7133,7 +7134,7 @@ The Choreographer is the server-side composition layer that turns agent intent-v
 | `BaseChoreographer` | class | `_impl.py:423` | Deps-injected base the mixins compose onto: service properties, heartbeat, milestone progress, verb runner, the shared class attributes. Inherits `ChoreographerHelpers` under TYPE_CHECKING, like the mixins. |
 | `ChoreographerDeps` | dataclass | `_impl.py:290` | Dependency injection container (task, work_session, git, a2a, journal, audit, evidence_repo, messaging, product, orchestrator, stream_bus). |
 | `_COORDINATOR_ROLES` | ClassVar | `_impl.py:528` | `{main_pm, cell_pm}` — exempt from `already_active`/`paused` claim guards + advisory lock. |
-| `give_me_work` | async verb | `dev.py:148` | Picks next task for agent + builds briefing (institutional memory injected here). |
+| `give_me_work` | async verb | `dev.py:155` | Picks next task for agent + builds briefing (institutional memory injected here). |
 | `_briefing_for` | async helper | `_impl.py:809` | Builds `context_briefing`. Claim-scoped: `full=True` (context-acquisition verbs only — give_me_work/claims/plan/resume/triage) carries the heavy sections via `_heavy_briefing_sections` (company_goals, recent_team_activity, blockers, task_handoff, institutional_memory); every other verb gets slim signals-only (unread a2a/mentions/notifications + metadata gaps). `include_company_goals=True` is a narrower, cheap-only opt-in (`_resolve_company_goals`) that fetches just the company_goals singleton without the rest of `full`'s heavy sections — used by `board_triage`'s idle branch so the CEO's charter (brand_voice/north_star) still reaches the Product Owner's roadmap-exploration / Head of Marketing's feature-spotlight-exploration one-shot spawns, whose directly-assigned exploration task is never itself a strategic root awaiting PM review (so the `full=True` branch never fires for it). AC coverage stays independent of `full`. |
 | `_run_claim_guards` | async helper | `_impl.py:1173` | already_active / paused / unmet_dependency (with re-check race narrowing) + `_lane_claim_guard`; `skip_dev_guards=False` param skips dev-only guards for pr_reviewer gate claims (claim_gate_review). |
 | `_lane_claim_guard` | async helper | `_impl.py:1549` | Out-of-order-start barrier: refuse code leaf behind an earlier open same-assignee sibling. Fail-closed on lookup error. |
@@ -7142,11 +7143,11 @@ The Choreographer is the server-side composition layer that turns agent intent-v
 | `_claim_plan_start_run` | async helper | `_impl.py:1995` | `runner.run_intent(verb)` + ensure_work_session + `_touch`. |
 | `_post_claim_journal_gate` | async helper | `_impl.py:2084` | After a successful claim, writes the entry the claim's tracing gate asks for (write-then-gate) and then runs that gate: `i_will_plan` records the plan's approach as the PM decision (`_ensure_pm_decision`), `i_will_work_on` records the plan as the at-claim note (`_ensure_claim_note`). A pre-claim `note` is refused by the content-write gate, so the claim verb is every agent's first write on a task. |
 | `_ensure_claim_note` | async helper | `_impl.py:2126` | Savepoint-guarded, best-effort: writes the developer's claim plan as a `scope='note'` journal entry unless one already exists for (agent, task); a failed write leaves `journal:note_at_claim` to the gate. |
-| `i_will_work_on` | async verb | `dev.py:244` | Dev claim+plan+start path; routes re-entry vs fresh claim. |
-| `open_pr` | async verb | `dev.py:499` | Pre-flight + `run_intent("open_pr")` (push_branch + create_pr side effects). |
-| `_open_pr_topology_rejection` | async helper | `dev.py:640` | Calls `merge_chain.find_topology_issue` BEFORE `create_pr` runs; on a bad shape (parented task stranded on the integration branch, or a parentless root nested inside a coordination tree) refuses with an `Envelope.invalid_state` naming the expected base + repair instead of letting `create_pr` fail later. Wrapped in `try/except Exception` (round-1 pr_gate finding F-81e261bd): a `find_topology_issue` DB error is logged (`topology_check_skip`) and returns `None` — fails open like its sibling `_behind_base_gate`, since this check only ever refuses and a transient error must never wedge `open_pr`. |
-| `i_am_done` | async verb | `dev.py:777` | Dev pre-submit; runs `_i_am_done_gate` then `run_intent("i_am_done")`. |
-| `_i_am_done_gate` | async helper | `dev.py:905` | Ordered gate chain: tracing → submit_qa fields → push → behind_base → quality → toolchain → conventions; then write AC status. |
+| `i_will_work_on` | async verb | `dev.py:251` | Dev claim+plan+start path; routes re-entry vs fresh claim. |
+| `open_pr` | async verb | `dev.py:508` | Pre-flight + `run_intent("open_pr")` (push_branch + create_pr side effects). |
+| `_open_pr_topology_rejection` | async helper | `dev.py:652` | Calls `merge_chain.find_topology_issue` BEFORE `create_pr` runs; on a bad shape (parented task stranded on the integration branch, or a parentless root nested inside a coordination tree) refuses with an `Envelope.invalid_state` naming the expected base + repair instead of letting `create_pr` fail later. Wrapped in `try/except Exception` (round-1 pr_gate finding F-81e261bd): a `find_topology_issue` DB error is logged (`topology_check_skip`) and returns `None` — fails open like its sibling `_behind_base_gate`, since this check only ever refuses and a transient error must never wedge `open_pr`. |
+| `i_am_done` | async verb | `dev.py:789` | Dev pre-submit; runs `_i_am_done_gate` then `run_intent("i_am_done")`. |
+| `_i_am_done_gate` | async helper | `dev.py:917` | Ordered gate chain: tracing → submit_qa fields → push → behind_base → quality → toolchain → conventions; then write AC status. |
 | `_behind_base_gate` | async helper | `_impl.py:2524` | Refuse submit when branch behind its base (sibling PR merged); fail-open on git error. |
 | `_toolchain_broken_guard` | async helper | `_impl.py:5479` | Block delivery gate when agent workspace can't run suite; `reviewer=True` for `pr_pass`. |
 | `_conventions_guard` | async helper | `_impl.py:5583` | Run architectural-conventions validator; `block` finding refuses gate. |
@@ -7171,8 +7172,8 @@ The Choreographer is the server-side composition layer that turns agent intent-v
 | `unblock` | async verb | `pm.py:2428` | Human/PM restores a BLOCKED task; gated by `_oscillation_unblock_guard` (refuses while oscillation-tripped) then, on a real restore, runs `_maybe_trip_oscillation_breaker` (#685). |
 | `_oscillation_unblock_guard` | async helper | `pm.py:2524` | Refuses `unblock` once `markers.is_oscillation_tripped(t)` — an admin override must clear the marker first. |
 | `_maybe_trip_oscillation_breaker` | async helper | `pm.py:2553` | Task-scoped strike counter (#685) at the `unblock()` chokepoint (agent-agnostic — legitimate `needs_revision` rework never calls `unblock`, so it structurally can't trip this): `markers.bump_oscillation_strikes(t, progress_fp)` where the progress fingerprint is commit count + `revision_count` + `terminal_children_count` (a coordination root's children advancing between escalations resets the count); past threshold, sets `blocker_resolver_type=HUMAN`, marks the task oscillation-tripped, and best-effort notifies the CEO (`_notify_ceo_oscillation`) naming both agents + the cycle count. |
-| `VerbRunner.run_intent` | async method | `_verb_runner.py:253` | pre_side_effects → SAVEPOINT(composes) → side_effects; intermediate-None raises INVALID_STATE. |
-| `GitSideEffectsMixin._do_pr_merge` | async handler | `_verb_runner.py:230` | `pr_merge` with `project_id` scoping (cross-repo collision fix) + `resolve_parent_branch`. |
+| `VerbRunner.run_intent` | async method | `_verb_runner.py:254` | pre_side_effects → SAVEPOINT(composes) → side_effects; intermediate-None raises INVALID_STATE. |
+| `GitSideEffectsMixin._do_pr_merge` | async handler | `_verb_runner.py:231` | `pr_merge` with `project_id` scoping (cross-repo collision fix) + `resolve_parent_branch`. |
 | `ChoreographerHelpers` | stub class | `_protocol.py:556` | TYPE_CHECKING-only typed view of `self` helpers for role mixins. |
 | `BoardMixin.waive_finding` | method | `roboco/services/gateway/choreographer/board.py:121` | Waive one minor/nit finding by id with a required note |
 | `build_collision_context` | function | `roboco/services/gateway/choreographer/collision.py:170` | The collision map for a task against its surfaced siblings |
@@ -7626,109 +7627,109 @@ This slice is the git substrate every delivery agent works on. `GitService` runs
 | `WorkSessionService.has_unpushed_commits` | method | work_session.py:299 | PR-existence proxy for unpushed commit detection |
 | `WorkSessionService.task_team_for_session` | method | work_session.py:570 | Return the task's team (cell) for a given session; used by route layer's PM cell-ownership check on `merge_pr` |
 | `get_work_session_service` | factory | work_session.py:740 | Construct service from AsyncSession |
-| `GitService` | class | git.py:7078 | All git operations + GitHub API, composed from 20 mixins (the rows below); keeps the `_run_git` / forge / origin / token core |
-| `GitQualityGate` | class | git.py:4735 | Mixin of `GitService` (10 methods): The pre-submit quality gate and codegen drift: the fast gate commands, the codegen run and commit, and a task's toolchain status. |
-| `GitAgentWorkspace` | class | git.py:5014 | Mixin of `GitService` (6 methods): Working in an agent's own workspace: finding it for a branch, checking a branch out there, and pushing the branch with its base. |
-| `GitGatewayPRs` | class | git.py:5189 | Mixin of `GitService` (8 methods): The gateway's PR verbs: creating a PR, and merging one with the parent-task lock, the retry and the merged check. |
-| `GitRebase` | class | git.py:5626 | Mixin of `GitService` (10 methods): Rebasing a task's branch onto its base: the local head ref, a diverged or rewritten origin, stashing, and aborting on conflict. |
-| `GitBranchState` | class | git.py:6010 | Mixin of `GitService` (6 methods): A branch against its base and its PR: unmerged child commits, behind-base checks, commenting on and closing a PR, and the PR's target. |
-| `GitDiffs` | class | git.py:6344 | Mixin of `GitService` (11 methods): Diffs and file reads: resolving the base and head refs, the diff, the changed files, a file at a branch, and the gateway's commit. |
-| `GitConventions` | class | git.py:6772 | Mixin of `GitService` (6 methods): The conventions validator: checking a task's changes, and opening the PR that commits a conventions file. |
-| `GitPRContext` | class | git.py:2259 | Mixin of `GitService` (12 methods): What a pull request is built from: root and internal PR context, commits and agent slugs, the target branch, title and body, the existing PR, and the repo and token. |
-| `GitPRQueries` | class | git.py:2507 | Mixin of `GitService` (8 methods): Reading pull requests and CI from the forge: open PRs, normalized, and the latest CI run's conclusion. |
-| `GitPRCreation` | class | git.py:2735 | Mixin of `GitService` (14 methods): Opening a pull request: posting it, its labels, its base and head, adopting Entire's PR, patching its title and body, and marking it ready. |
-| `GitEnvSync` | class | git.py:3170 | Mixin of `GitService` (5 methods): The environment-branch ladder: syncing an env branch by a local merge, its status, and the sync PR. |
-| `GitPRReviewAndCI` | class | git.py:3398 | Mixin of `GitService` (10 methods): A pull request's review and CI state: reviewers and reviews, its diff and head SHA, and classifying its check runs. |
-| `GitTaskPRs` | class | git.py:3827 | Mixin of `GitService` (5 methods): A task's pull request: creating it with its guard and atomic record, and updating it. |
-| `GitBranchCleanup` | class | git.py:4006 | Mixin of `GitService` (11 methods): Cleaning up after merges: syncing the target branch, deleting remote and PR branches, closing a task's PR, and the stale-branch sweep. |
-| `GitMerge` | class | git.py:4443 | Mixin of `GitService` (6 methods): Merging a pull request: the merge API and method, who may merge, and completing the task on merge. |
-| `GitPushHooks` | class | git.py:521 | Mixin of `GitService` (6 methods): What runs around a push: the project's hooks, the pre-push hook, the Entire hooks before and after, pushing Entire's checkpoint refs, and the pre-push update. |
-| `GitStatus` | class | git.py:662 | Mixin of `GitService` (4 methods): A workspace's status: porcelain classification, ahead/behind counts, and the current branch. |
-| `GitCommits` | class | git.py:783 | Mixin of `GitService` (10 methods): Committing: the commit itself and its stats, the task's worktree and branch checks, and linking the commit to its task. |
-| `GitBranches` | class | git.py:1232 | Mixin of `GitService` (12 methods): Creating branches: the base branch, protected branches, checking out the base, dependency lineage merges, branches from a PR head, and a task's branch. |
-| `GitCheckoutPush` | class | git.py:1696 | Mixin of `GitService` (12 methods): Moving between branches and the remote: checkout and the branches an agent may check out, push, pull, fetch, rebase, and remote branch checks and pruning. |
+| `GitService` | class | git.py:7088 | All git operations + GitHub API, composed from 20 mixins (the rows below); keeps the `_run_git` / forge / origin / token core |
+| `GitQualityGate` | class | git.py:4742 | Mixin of `GitService` (10 methods): The pre-submit quality gate and codegen drift: the fast gate commands, the codegen run and commit, and a task's toolchain status. |
+| `GitAgentWorkspace` | class | git.py:5021 | Mixin of `GitService` (6 methods): Working in an agent's own workspace: finding it for a branch, checking a branch out there, and pushing the branch with its base. |
+| `GitGatewayPRs` | class | git.py:5196 | Mixin of `GitService` (8 methods): The gateway's PR verbs: creating a PR, and merging one with the parent-task lock, the retry and the merged check. |
+| `GitRebase` | class | git.py:5636 | Mixin of `GitService` (10 methods): Rebasing a task's branch onto its base: the local head ref, a diverged or rewritten origin, stashing, and aborting on conflict. |
+| `GitBranchState` | class | git.py:6020 | Mixin of `GitService` (6 methods): A branch against its base and its PR: unmerged child commits, behind-base checks, commenting on and closing a PR, and the PR's target. |
+| `GitDiffs` | class | git.py:6354 | Mixin of `GitService` (11 methods): Diffs and file reads: resolving the base and head refs, the diff, the changed files, a file at a branch, and the gateway's commit. |
+| `GitConventions` | class | git.py:6782 | Mixin of `GitService` (6 methods): The conventions validator: checking a task's changes, and opening the PR that commits a conventions file. |
+| `GitPRContext` | class | git.py:2262 | Mixin of `GitService` (12 methods): What a pull request is built from: root and internal PR context, commits and agent slugs, the target branch, title and body, the existing PR, and the repo and token. |
+| `GitPRQueries` | class | git.py:2510 | Mixin of `GitService` (8 methods): Reading pull requests and CI from the forge: open PRs, normalized, and the latest CI run's conclusion. |
+| `GitPRCreation` | class | git.py:2738 | Mixin of `GitService` (14 methods): Opening a pull request: posting it, its labels, its base and head, adopting Entire's PR, patching its title and body, and marking it ready. |
+| `GitEnvSync` | class | git.py:3177 | Mixin of `GitService` (5 methods): The environment-branch ladder: syncing an env branch by a local merge, its status, and the sync PR. |
+| `GitPRReviewAndCI` | class | git.py:3405 | Mixin of `GitService` (10 methods): A pull request's review and CI state: reviewers and reviews, its diff and head SHA, and classifying its check runs. |
+| `GitTaskPRs` | class | git.py:3834 | Mixin of `GitService` (5 methods): A task's pull request: creating it with its guard and atomic record, and updating it. |
+| `GitBranchCleanup` | class | git.py:4013 | Mixin of `GitService` (11 methods): Cleaning up after merges: syncing the target branch, deleting remote and PR branches, closing a task's PR, and the stale-branch sweep. |
+| `GitMerge` | class | git.py:4450 | Mixin of `GitService` (6 methods): Merging a pull request: the merge API and method, who may merge, and completing the task on merge. |
+| `GitPushHooks` | class | git.py:522 | Mixin of `GitService` (6 methods): What runs around a push: the project's hooks, the pre-push hook, the Entire hooks before and after, pushing Entire's checkpoint refs, and the pre-push update. |
+| `GitStatus` | class | git.py:663 | Mixin of `GitService` (4 methods): A workspace's status: porcelain classification, ahead/behind counts, and the current branch. |
+| `GitCommits` | class | git.py:784 | Mixin of `GitService` (10 methods): Committing: the commit itself and its stats, the task's worktree and branch checks, and linking the commit to its task. |
+| `GitBranches` | class | git.py:1233 | Mixin of `GitService` (12 methods): Creating branches: the base branch, protected branches, checking out the base, dependency lineage merges, branches from a PR head, and a task's branch. |
+| `GitCheckoutPush` | class | git.py:1697 | Mixin of `GitService` (12 methods): Moving between branches and the remote: checkout and the branches an agent may check out, push, pull, fetch, rebase, and remote branch checks and pruning. |
 | `_GIT_EXECUTOR` | module const | git.py:208 | Dedicated ThreadPoolExecutor for git subprocesses (16 workers) |
-| `_run_local_git` | func | git.py:276 | A non-origin git command: `run_private_git` (root) only in a dispatcher-owned repo under the private root, else `run_workspace_git` (the git user) |
-| `_write_repo_file` | func | git.py:285 | Write a file into a repo's working tree: root only in a dispatcher-owned repo, else as the git user (`write_workspace_file`) |
-| `_git_admin_dir` | func | git.py:299 | A repo's admin dir by layout (clone `.git/` or `<clone>/.git/worktrees/<name>`), never by reading an agent-writable `.git` file |
-| `_remove_stale_git_locks` | func | git.py:332 | Best-effort clear orphaned `*.lock` under the admin dir after a timeout SIGKILL, via `find` run as the git user |
-| `_select_ci_head_run` | func | git.py:482 | Pick CI run matching current HEAD (anti-stale-green) |
-| `GitService._run_git` | method | git.py:7128 | Run git in the dedicated pool: an `origin` command (`is_origin_command`) is served through the project's relay (`_origin_context` → `run_origin_command`), anything else via `_run_local_git`; no token parameter exists; lock cleanup on timeout |
-| `GitService._run_project_hooks` | method | git.py:526 | Before a workspace `commit` / `push` (not dispatcher-owned repos, not `--no-verify`): the project's own pre-commit + commit-msg, or pre-push with git's args (`origin <db url>`) and stdin (`<local ref> <local sha> <remote ref> <remote sha>`, remote sha from an `ls-remote` through the relay), each run in the throwaway container (`project_hooks`); a refusal surfaces like git's |
-| `GitService._entire_before` / `_run_entire_after` / `_push_entire_checkpoints` | methods | git.py:567 | When Entire records the agent's session (`entire_hooks.records_entire_sessions`), worked out before a workspace commit or push (`_EntireAfter`): `post-commit` after a commit (sealed container), or the checkpoint refs named by the `Entire-Checkpoint` trailers of the commits on no `origin/*` ref, pushed after the push through the relay (`push_checkpoint_refs`, only those the clone has); only when the command succeeded; best-effort, logged |
-| `GitService._relay_for_repo` / `_project_for_repo` | methods | git.py:7231 | The relay (and project row) a repo belongs to, from its path taken lexically (`<workspaces_root>/<slug>/...`, `<private_root>/{read,release,scratch}/<slug>`, else `get_by_workspace_path`) — never from its config |
-| `GitService._repo_ref_for_workspace` | method | git.py:7260 | The forge repo for REST calls: the project's DB `git_url`, never the clone's agent-writable `remote.origin.url` (replaces `_parse_github_remote`) |
-| `GitService._token_for_project` | method | git.py:7275 | Decrypted project PAT (logs loudly on key-rotation failure) |
-| `GitService.get_workspace` | method | git.py:7301 | Resolve/clone agent workspace (auto_clone aware) |
-| `GitService.get_status` | method | git.py:729 | Porcelain status + ahead/behind |
+| `_run_local_git` | func | git.py:277 | A non-origin git command: `run_private_git` (root) only in a dispatcher-owned repo under the private root, else `run_workspace_git` (the git user) |
+| `_write_repo_file` | func | git.py:286 | Write a file into a repo's working tree: root only in a dispatcher-owned repo, else as the git user (`write_workspace_file`) |
+| `_git_admin_dir` | func | git.py:300 | A repo's admin dir by layout (clone `.git/` or `<clone>/.git/worktrees/<name>`), never by reading an agent-writable `.git` file |
+| `_remove_stale_git_locks` | func | git.py:333 | Best-effort clear orphaned `*.lock` under the admin dir after a timeout SIGKILL, via `find` run as the git user |
+| `_select_ci_head_run` | func | git.py:483 | Pick CI run matching current HEAD (anti-stale-green) |
+| `GitService._run_git` | method | git.py:7138 | Run git in the dedicated pool: an `origin` command (`is_origin_command`) is served through the project's relay (`_origin_context` → `run_origin_command`), anything else via `_run_local_git`; no token parameter exists; lock cleanup on timeout |
+| `GitService._run_project_hooks` | method | git.py:527 | Before a workspace `commit` / `push` (not dispatcher-owned repos, not `--no-verify`): the project's own pre-commit + commit-msg, or pre-push with git's args (`origin <db url>`) and stdin (`<local ref> <local sha> <remote ref> <remote sha>`, remote sha from an `ls-remote` through the relay), each run in the throwaway container (`project_hooks`); a refusal surfaces like git's |
+| `GitService._entire_before` / `_run_entire_after` / `_push_entire_checkpoints` | methods | git.py:568 | When Entire records the agent's session (`entire_hooks.records_entire_sessions`), worked out before a workspace commit or push (`_EntireAfter`): `post-commit` after a commit (sealed container), or the checkpoint refs named by the `Entire-Checkpoint` trailers of the commits on no `origin/*` ref, pushed after the push through the relay (`push_checkpoint_refs`, only those the clone has); only when the command succeeded; best-effort, logged |
+| `GitService._relay_for_repo` / `_project_for_repo` | methods | git.py:7241 | The relay (and project row) a repo belongs to, from its path taken lexically (`<workspaces_root>/<slug>/...`, `<private_root>/{read,release,scratch}/<slug>`, else `get_by_workspace_path`) — never from its config |
+| `GitService._repo_ref_for_workspace` | method | git.py:7270 | The forge repo for REST calls: the project's DB `git_url`, never the clone's agent-writable `remote.origin.url` (replaces `_parse_github_remote`) |
+| `GitService._token_for_project` | method | git.py:7285 | Decrypted project PAT (logs loudly on key-rotation failure) |
+| `GitService.get_workspace` | method | git.py:7311 | Resolve/clone agent workspace (auto_clone aware) |
+| `GitService.get_status` | method | git.py:730 | Porcelain status + ahead/behind |
 | `GitService._classify_porcelain` | static | git.py:667 | Split porcelain into staged/unstaged/untracked (column-safe) |
 | `GitService._parse_git_url` | static | git.py:792 | Extract (owner,repo) from tokened/https/ssh GitHub URL |
-| `GitService.create_commit` | method | git.py:830 | Stage + commit with template message + worktree ensure |
+| `GitService.create_commit` | method | git.py:831 | Stage + commit with template message + worktree ensure |
 | `GitService._worktree_for_task` | static | git.py:937 | Per-task worktree path `{clone_root}/.worktrees/{task_id[:8]}` (F123), via `worktree_path_of` |
-| `GitService._ensure_worktree_for_commit` | method | git.py:946 | Re-attach a pruned worktree before cwd-dependent op |
-| `GitService.ensure_task_worktree` | method | git.py:971 | The task's worktree in the agent's clone, re-attached if pruned (a missing local branch recovered from origin through the relay); `NO_BRANCH` without a branch (the pre-QA gate and the documenter's repo write run there) |
-| `GitService.ensure_branch_worktree_for_agent` | method | git.py:5070 | Attach the worktree of the task owning a branch in the actor's own clone (claim_doc_task: the documenter's clone), branch recovered from origin; never a clone-root checkout |
-| `GitService.tree_for_agent_read` / `_task_for_agent_read` / `_task_uuid` | method / function | git.py:995 | What `/api/git/status` and `/api/git/diff` read: the worktree of the named task, else of the caller's active task (`get_active_task_for_agent`), re-attached for the caller's own task, read-only for another's; the clone root only without a task; returns the task whose worktree it is |
-| `GitService._attached_task_tree` | method | git.py:1054 | The task's worktree when `git worktree list` shows it attached on the task branch, else the clone root; no side effect. Where a task-branch push starts (so `pre-push` runs on the pushed tree) and what a read of someone else's task shows |
-| `GitService._assert_on_task_branch` | method | git.py:1078 | Recover drifted clone onto task branch (never discards work) |
-| `GitService.commit_for_task` | method | git.py:1185 | Agent-facing commit verb backing the `commit` content tool |
-| `GitService.create_branch` | method | git.py:1401 | Build branch name, fetch base, `worktree add` (F123), push -u from that worktree (so a pre-push hook sees the branch's tree) |
-| `GitService.create_branch_for_task` | method | git.py:1671 | Resolve workspace/team, create branch, commit DB |
-| `GitService.checkout_branch_for_agent` / `_check_out_for_agent` | method | git.py:1876 | Allowlist-bounded checkout (`POST /api/git/checkout`): the caller's own task branch attaches its worktree, another agent's task branch is refused (`CHECKOUT_OTHER_TASK`), a branch no task owns (the default) is checked out in the clone root |
-| `GitService.create_branch_from_pr_head` | method | git.py:1600 | Supersede cut: fetch `refs/pull/<n>/head` into a roboco branch and push it by name; never checked out (the system clone root stays on its default branch, a retry can update the branch) |
-| `GitService.push_for_task` | method | git.py:2049 | Push the task's recorded branch by name (clone-checkout-independent), from the task's attached worktree (`_attached_task_tree`); runs `_run_codegen_and_commit` first so any codegen drift lands in the SAME push |
-| `GitService._codegen_command_for` | staticmethod | git.py:4836 | The project's `codegen_command` (nullable string column, migration 078), or `None` — a bare `MagicMock` test double auto-vivifies attributes, so the `isinstance` check also keeps unrelated tests inert |
-| `GitService._run_codegen_and_commit` | method | git.py:4913 | Runs the project's `codegen_command` in the task's worktree right before push (hooked at both `push_for_task`/`push_branch` at git.py:1886 and `push_task_branch` at git.py:4689); fail-open (a broken/timeout command logs a warning and lets the push proceed — CI's own drift gate is the safety net) and a no-op for the common case of no declared command; a clean run with actual drift stages + commits it under the task's normal commit format before the push carries it |
-| `GitService.push_task_branch` | method | git.py:2089 | Gateway branch-keyed push, from the task's attached worktree (`_attached_task_tree`) |
-| `GitService.create_pull_request` | method | git.py:2888 | Open PR via GitHub API (legacy project-scoped) |
-| `GitService.create_pr_for_task` | method | git.py:3974 | Agent-facing open_pr verb |
-| `GitService.update_pr_for_task` | method | git.py:3831 | Patch PR title/body; 404→typed GitError |
-| `GitService.get_pr_head_sha` | method | git.py:3544 | PR head SHA for pr_fail re-submit loop guard (fail-open) |
-| `GitService.get_latest_ci_conclusion` | method | git.py:2626 | Per-project CI signal (unknown never false-green) |
-| `GitService.get_pr_ci_status` | method | git.py:3590 | CI status of a PR's current head commit for the in-path pr_pass gate; returns {state, failing_checks?, head_sha} or None on config gaps (fail-open) |
-| `GitService._ci_status_config` / `_resolve_ci_head_sha` | methods | git.py:3649 | `(repo_ref, git_token)` for a CI-status lookup, else a terminal `no_ci_configured` gap dict; then the PR's head SHA through the forge (`no_ci_configured` on a network error or 404, `error` on any other failure) |
-| `GitService._fetch_check_runs` | method | git.py:3713 | GET check-runs for head_sha; None on any API failure |
-| `GitService._classify_check_runs` | method | git.py:3760 | State classification: success/failure/pending from check-run conclusions list |
-| `GitService._classify_zero_check_runs` | method | git.py:3783 | State classification when zero check-runs exist: pending_not_scheduled or no_ci_configured (depends on workflow count) |
-| `GitService.list_open_prs` | method | git.py:2511 | Normalized open-PR list |
-| `GitService.post_pr_review` | method | git.py:3436 | Post reviewer comments via GitHub API |
-| `GitService.merge_pull_request` | method | git.py:4501 | GitHub merge API + method fallback + already-merged disambiguation |
-| `GitService.merge_pr_for_task` | method | git.py:4633 | Role-gated merge + recorded-PR verification + auto-complete |
-| `GitService._assert_merge_role` | method | git.py:4576 | PM/CEO approval-chain role gate |
-| `GitService.pr_merge` | method | git.py:5493 | Gateway merge: project_id-scoped, parent row lock, 409 retry, CEO-only default guard |
-| `GitService._merge_with_retry` | method | git.py:5370 | Single 409 retry + already-merged disambiguation → MergeConflictError |
-| `GitService._lock_parent_task_for_merge` | method | git.py:5319 | SELECT FOR UPDATE on parent task (sibling merge serialization) |
-| `GitService._resolve_merger_id` | static | git.py:5346 | merged_by attribution: actor→assigned→created→UUID(0) |
-| `GitService.rebase_onto_base` | method | git.py:5630 | Rebase primitive: rebased/superseded/conflicts/**diverged** classification. Post-fetch, `_reset_head_or_diverged` classifies local vs `origin/<head_branch>` BEFORE the old unconditional `reset --hard`: behind-or-equal resets to origin (unchanged); strictly ahead skips the reset and rebases from the local tip (the committed-but-unpushed-work case `commit` leaves behind); a real divergence returns `{"status": "diverged", "local_only", "origin_only"}` untouched — no reset, no rebase, no push. A patch-equivalence probe (`rev-list --right-only --cherry-pick`) first tries to recognize the diverged shape as a prior rebase whose force-push failed (self-heals as "ahead" on retry) before declaring a genuine two-sided divergence (#683). |
-| `GitService.rebase_pr_for_task` | method | git.py:5866 | PR-keyed rebase via PR refs (project_id scoped) |
-| `GitService.sync_task_branch` | method | git.py:5943 | Task-keyed rebase through dev `sync_branch` verb (pre-PR) |
-| `GitService.rebase_task_onto` | method | git.py:5920 | `/api/git/rebase` with a `task_id`: refuses a protected target, then `sync_task_branch` (the task's worktree in the caller's clone, fetch, rebase, force-with-lease push); the route maps the outcome through `api/utils/git.py` `_task_to_rebase` / `_task_rebase_response` |
-| `GitService.unmerged_child_commits` | method | git.py:6014 | Assembly-integrity check: completed children whose commits `git cherry` finds missing from the parent; fetches parent + children through `_fetch_branches_origin_has` so a merged child's deleted branch cannot leave the parent stale (a false "unmerged") |
-| `GitService._fetch_branches_origin_has` / `_branches_on_origin` | method | git.py:1700 | `fetch origin <branches>`; when git aborts on a missing ref, `ls-remote` names the branches origin still has and only those are fetched (unmerged_child_commits, create_branch's base + default) |
-| `GitService.is_behind_base` | method | git.py:6109 | `(behind, ahead)` counts for i_am_done submit gate |
-| `GitService.close_pull_request` | method | git.py:6206 | Close superseded PR + optional comment + branch cleanup (idempotent) |
-| `GitService._delete_remote_branch_best_effort` | method | git.py:4103 | Best-effort remote delete; skips main/master/develop + open-dependent-PR branches, UNIONED with `_protected_branches_for_deletion(project_slug)` — the shared chokepoint every remote-delete path (task cleanup, PR-merge/close cleanup, the stale-branch sweep) routes through; returns `bool` (issued vs skipped/failed) |
-| `GitService._protected_branches_for` | method | git.py:1274 | The project's own declared `protected_branches`, normalized (stripped, deduped into a `frozenset`) and unioned into the hardcoded `{master, main}` floor for rebase refusal (`rebase_onto_base`) and `sync_task_branch`'s force-push refusal; fails OPEN (empty set, logs a warning) on a project-lookup error — a wrongly-blocked rebase over a transient DB blip is the worse tradeoff |
-| `GitService._protected_branches_for_deletion` | method | git.py:1310 | Deletion-only superset of `_protected_branches_for`: the declared field UNIONED with the project's env-ladder rung branches (`effective_environments` — a null ladder's synthesized single rung off `default_branch` is protected too, so a renamed trunk like `trunk` is covered even with no declared list); fails CLOSED (returns the hardcoded floor only, on a lookup error) since a skipped delete is free (next sweep retries) but silently deleting a real declared rung on an unresolvable project is not |
-| `GitService.delete_task_branch` | method | git.py:4194 | Cancel-path remote branch delete; chokepoint for the environment-ladder skip (`effective_environments`) so a task's `branch_name` can never collide-delete a ladder rung; returns `bool` |
-| `GitService.close_task_pr_best_effort` | method | git.py:4227 | No-clone-needed cancel-path cleanup: resolves the project token + `git_url`→`RepoRef`, fetches the PR via `self._forge.get_pr`, no-ops unless `state=="open"`, else `update_pr(payload={"state":"closed"})`; every failure path (missing token/project, unparseable URL, `httpx.HTTPError`) returns `False` rather than raising |
-| `GitService.cleanup_stale_branches` | method | git.py:4269 | `POST /git/branches/cleanup` backing sweep: terminal (completed/cancelled) tasks' branches, remote (`delete_task_branch`) + local force-delete in the assignee's clone; capped 200/call, cursor-resumable |
-| `GitService._stale_branch_window` | method | git.py:4339 | One deterministic `ORDER BY id` window of sweep candidates; ladder rungs excluded from results but still advance the cursor |
-| `GitService._live_task_dependents` | method | git.py:4382 | Companion sweep guard: excludes a terminal candidate's branch when a non-terminal task still records that exact `branch_name`, or when a non-terminal task is a direct child of the candidate (the child's future PR base would resolve to the parent's branch via `resolve_parent_branch` even before it has opened a PR — catches what the OPEN-PR-only `_branch_has_open_dependents` can't see) |
-| `GitService._cleanup_one_stale_branch` | method | git.py:4413 | Per-branch remote+local delete for one sweep candidate; raises on unexpected failure so the caller's try/except counts it as an error |
-| `GitService.pr_target` | method | git.py:6278 | Return PR base branch (project_id scoped) |
-| `GitService.create_pr` | method | git.py:5193 | Branch-keyed open PR (gateway path; ensures base on remote) |
-| `GitService._record_pr_atomically` | method | git.py:3932 | Atomic pr_number/url write to task |
-| `GitService.run_pre_submit_quality_gate` | method | git.py:4813 | `make quality` gate before submit, in the task's worktree (`ensure_task_worktree`) |
-| `GitService.conventions_check_for_task` | method | git.py:6776 | Run conventions validator on changed files (fail-closed); optional `changed_files` kwarg lets a caller that already resolved the branch's file list (e.g. via `diff_and_files`) thread it in instead of paying for a third `list_changed_files` resolution + subprocess |
-| `GitService._run_conventions_validator` | method | git.py:6868 | Subprocess `python -m roboco.conventions` with 120s cap |
-| `GitService.open_conventions_pr` | method | git.py:6935 | Scaffold `.roboco/conventions.yml` on a branch + open PR |
-| `GitService._resolve_diff_refs` | method | git.py:6479 | Shared `(workspace, head_ref, base_ref)` resolution for the whole diff family (`diff`/`list_changed_files`/`diff_and_files`) — factored out so the four sequential lookups (workspace, token, head ref, base ref) aren't repeated per method body |
-| `GitService.diff` / `list_changed_files` / `diff_and_files` / `read_file_at_branch` | methods | git.py:6507/6547/6580/6663 | Read-only git queries (gateway + routes). `diff` and `list_changed_files` each resolve through `_resolve_diff_refs` then run one subprocess; `diff_and_files` resolves ONCE and runs the full diff + the `--name-only` diff CONCURRENTLY via `asyncio.gather`, for a caller (`_build_qa_claim_evidence` in `choreographer/qa.py`, `content_actions.evidence()`) that previously called `diff()` then `list_changed_files()` back to back — each re-resolving workspace/token/head/base from scratch and spawning its own subprocess. `read_file_at_branch` resolves separately through `_resolve_head_ref` (it has no base ref to resolve). |
-| `GitService._resolve_head_ref` | method | git.py:6433 | Shared reader-ref resolution for `diff`/`list_changed_files`/`read_file_at_branch`/`/api/git/log`. Fetches `branch_name`, then prefers `origin/<branch_name>` over the bare local ref whenever origin carries commits local lacks (`origin_only > 0` via `rev-list`) — a reviewer's clone parked on pre-rebase history no longer stays frozen there across every later round; local wins only when it strictly contains everything origin has. Unlike the write-path's `_reset_head_or_diverged`, a read never needs to tell genuine divergence apart from a rewritten history — both resolve to "serve origin" (#690). |
-| `GitService.commit` | method | git.py:6689 | Gateway content-verb commit (branch-keyed) |
-| `get_git_service` | factory | git.py:7371 | Construct GitService from AsyncSession |
-| `GitService.checkout_branch_for_agent` | method | git.py:1876 | Allowlist-bounded checkout for agent verb |
+| `GitService._ensure_worktree_for_commit` | method | git.py:947 | Re-attach a pruned worktree before cwd-dependent op |
+| `GitService.ensure_task_worktree` | method | git.py:972 | The task's worktree in the agent's clone, re-attached if pruned (a missing local branch recovered from origin through the relay); `NO_BRANCH` without a branch (the pre-QA gate and the documenter's repo write run there) |
+| `GitService.ensure_branch_worktree_for_agent` | method | git.py:5077 | Attach the worktree of the task owning a branch in the actor's own clone (claim_doc_task: the documenter's clone), branch recovered from origin; never a clone-root checkout |
+| `GitService.tree_for_agent_read` / `_task_for_agent_read` / `_task_uuid` | method / function | git.py:996 | What `/api/git/status` and `/api/git/diff` read: the worktree of the named task, else of the caller's active task (`get_active_task_for_agent`), re-attached for the caller's own task, read-only for another's; the clone root only without a task; returns the task whose worktree it is |
+| `GitService._attached_task_tree` | method | git.py:1055 | The task's worktree when `git worktree list` shows it attached on the task branch, else the clone root; no side effect. Where a task-branch push starts (so `pre-push` runs on the pushed tree) and what a read of someone else's task shows |
+| `GitService._assert_on_task_branch` | method | git.py:1079 | Recover drifted clone onto task branch (never discards work) |
+| `GitService.commit_for_task` | method | git.py:1186 | Agent-facing commit verb backing the `commit` content tool |
+| `GitService.create_branch` | method | git.py:1402 | Build branch name, fetch base, `worktree add` (F123), push -u from that worktree (so a pre-push hook sees the branch's tree) |
+| `GitService.create_branch_for_task` | method | git.py:1672 | Resolve workspace/team, create branch, commit DB |
+| `GitService.checkout_branch_for_agent` / `_check_out_for_agent` | method | git.py:1877 | Allowlist-bounded checkout (`POST /api/git/checkout`): the caller's own task branch attaches its worktree, another agent's task branch is refused (`CHECKOUT_OTHER_TASK`), a branch no task owns (the default) is checked out in the clone root |
+| `GitService.create_branch_from_pr_head` | method | git.py:1601 | Supersede cut: fetch `refs/pull/<n>/head` into a roboco branch and push it by name; never checked out (the system clone root stays on its default branch, a retry can update the branch) |
+| `GitService.push_for_task` | method | git.py:2050 | Push the task's recorded branch by name (clone-checkout-independent), from the task's attached worktree (`_attached_task_tree`); runs `_run_codegen_and_commit` first so any codegen drift lands in the SAME push |
+| `GitService._codegen_command_for` | staticmethod | git.py:4843 | The project's `codegen_command` (nullable string column, migration 078), or `None` — a bare `MagicMock` test double auto-vivifies attributes, so the `isinstance` check also keeps unrelated tests inert |
+| `GitService._run_codegen_and_commit` | method | git.py:4920 | Runs the project's `codegen_command` in the task's worktree right before push (hooked at both `push_for_task`/`push_branch` at git.py:1886 and `push_task_branch` at git.py:4689); fail-open (a broken/timeout command logs a warning and lets the push proceed — CI's own drift gate is the safety net) and a no-op for the common case of no declared command; a clean run with actual drift stages + commits it under the task's normal commit format before the push carries it |
+| `GitService.push_task_branch` | method | git.py:2090 | Gateway branch-keyed push, from the task's attached worktree (`_attached_task_tree`) |
+| `GitService.create_pull_request` | method | git.py:2895 | Open PR via GitHub API (legacy project-scoped) |
+| `GitService.create_pr_for_task` | method | git.py:3981 | Agent-facing open_pr verb |
+| `GitService.update_pr_for_task` | method | git.py:3838 | Patch PR title/body; 404→typed GitError |
+| `GitService.get_pr_head_sha` | method | git.py:3551 | PR head SHA for pr_fail re-submit loop guard (fail-open) |
+| `GitService.get_latest_ci_conclusion` | method | git.py:2629 | Per-project CI signal (unknown never false-green) |
+| `GitService.get_pr_ci_status` | method | git.py:3597 | CI status of a PR's current head commit for the in-path pr_pass gate; returns {state, failing_checks?, head_sha} or None on config gaps (fail-open) |
+| `GitService._ci_status_config` / `_resolve_ci_head_sha` | methods | git.py:3656 | `(repo_ref, git_token)` for a CI-status lookup, else a terminal `no_ci_configured` gap dict; then the PR's head SHA through the forge (`no_ci_configured` on a network error or 404, `error` on any other failure) |
+| `GitService._fetch_check_runs` | method | git.py:3720 | GET check-runs for head_sha; None on any API failure |
+| `GitService._classify_check_runs` | method | git.py:3767 | State classification: success/failure/pending from check-run conclusions list |
+| `GitService._classify_zero_check_runs` | method | git.py:3790 | State classification when zero check-runs exist: pending_not_scheduled or no_ci_configured (depends on workflow count) |
+| `GitService.list_open_prs` | method | git.py:2514 | Normalized open-PR list |
+| `GitService.post_pr_review` | method | git.py:3443 | Post reviewer comments via GitHub API |
+| `GitService.merge_pull_request` | method | git.py:4508 | GitHub merge API + method fallback + already-merged disambiguation |
+| `GitService.merge_pr_for_task` | method | git.py:4640 | Role-gated merge + recorded-PR verification + auto-complete |
+| `GitService._assert_merge_role` | method | git.py:4583 | PM/CEO approval-chain role gate |
+| `GitService.pr_merge` | method | git.py:5503 | Gateway merge: project_id-scoped, parent row lock, 409 retry, CEO-only default guard |
+| `GitService._merge_with_retry` | method | git.py:5380 | Single 409 retry + already-merged disambiguation → MergeConflictError |
+| `GitService._lock_parent_task_for_merge` | method | git.py:5329 | SELECT FOR UPDATE on parent task (sibling merge serialization) |
+| `GitService._resolve_merger_id` | static | git.py:5356 | merged_by attribution: actor→assigned→created→UUID(0) |
+| `GitService.rebase_onto_base` | method | git.py:5640 | Rebase primitive: rebased/superseded/conflicts/**diverged** classification. Post-fetch, `_reset_head_or_diverged` classifies local vs `origin/<head_branch>` BEFORE the old unconditional `reset --hard`: behind-or-equal resets to origin (unchanged); strictly ahead skips the reset and rebases from the local tip (the committed-but-unpushed-work case `commit` leaves behind); a real divergence returns `{"status": "diverged", "local_only", "origin_only"}` untouched — no reset, no rebase, no push. A patch-equivalence probe (`rev-list --right-only --cherry-pick`) first tries to recognize the diverged shape as a prior rebase whose force-push failed (self-heals as "ahead" on retry) before declaring a genuine two-sided divergence (#683). |
+| `GitService.rebase_pr_for_task` | method | git.py:5876 | PR-keyed rebase via PR refs (project_id scoped) |
+| `GitService.sync_task_branch` | method | git.py:5953 | Task-keyed rebase through dev `sync_branch` verb (pre-PR) |
+| `GitService.rebase_task_onto` | method | git.py:5930 | `/api/git/rebase` with a `task_id`: refuses a protected target, then `sync_task_branch` (the task's worktree in the caller's clone, fetch, rebase, force-with-lease push); the route maps the outcome through `api/utils/git.py` `_task_to_rebase` / `_task_rebase_response` |
+| `GitService.unmerged_child_commits` | method | git.py:6024 | Assembly-integrity check: completed children whose commits `git cherry` finds missing from the parent; fetches parent + children through `_fetch_branches_origin_has` so a merged child's deleted branch cannot leave the parent stale (a false "unmerged") |
+| `GitService._fetch_branches_origin_has` / `_branches_on_origin` | method | git.py:1701 | `fetch origin <branches>`; when git aborts on a missing ref, `ls-remote` names the branches origin still has and only those are fetched (unmerged_child_commits, create_branch's base + default) |
+| `GitService.is_behind_base` | method | git.py:6119 | `(behind, ahead)` counts for i_am_done submit gate |
+| `GitService.close_pull_request` | method | git.py:6216 | Close superseded PR + optional comment + branch cleanup (idempotent) |
+| `GitService._delete_remote_branch_best_effort` | method | git.py:4110 | Best-effort remote delete; skips main/master/develop + open-dependent-PR branches, UNIONED with `_protected_branches_for_deletion(project_slug)` — the shared chokepoint every remote-delete path (task cleanup, PR-merge/close cleanup, the stale-branch sweep) routes through; returns `bool` (issued vs skipped/failed) |
+| `GitService._protected_branches_for` | method | git.py:1275 | The project's own declared `protected_branches`, normalized (stripped, deduped into a `frozenset`) and unioned into the hardcoded `{master, main}` floor for rebase refusal (`rebase_onto_base`) and `sync_task_branch`'s force-push refusal; fails OPEN (empty set, logs a warning) on a project-lookup error — a wrongly-blocked rebase over a transient DB blip is the worse tradeoff |
+| `GitService._protected_branches_for_deletion` | method | git.py:1311 | Deletion-only superset of `_protected_branches_for`: the declared field UNIONED with the project's env-ladder rung branches (`effective_environments` — a null ladder's synthesized single rung off `default_branch` is protected too, so a renamed trunk like `trunk` is covered even with no declared list); fails CLOSED (returns the hardcoded floor only, on a lookup error) since a skipped delete is free (next sweep retries) but silently deleting a real declared rung on an unresolvable project is not |
+| `GitService.delete_task_branch` | method | git.py:4201 | Cancel-path remote branch delete; chokepoint for the environment-ladder skip (`effective_environments`) so a task's `branch_name` can never collide-delete a ladder rung; returns `bool` |
+| `GitService.close_task_pr_best_effort` | method | git.py:4234 | No-clone-needed cancel-path cleanup: resolves the project token + `git_url`→`RepoRef`, fetches the PR via `self._forge.get_pr`, no-ops unless `state=="open"`, else `update_pr(payload={"state":"closed"})`; every failure path (missing token/project, unparseable URL, `httpx.HTTPError`) returns `False` rather than raising |
+| `GitService.cleanup_stale_branches` | method | git.py:4276 | `POST /git/branches/cleanup` backing sweep: terminal (completed/cancelled) tasks' branches, remote (`delete_task_branch`) + local force-delete in the assignee's clone; capped 200/call, cursor-resumable |
+| `GitService._stale_branch_window` | method | git.py:4346 | One deterministic `ORDER BY id` window of sweep candidates; ladder rungs excluded from results but still advance the cursor |
+| `GitService._live_task_dependents` | method | git.py:4389 | Companion sweep guard: excludes a terminal candidate's branch when a non-terminal task still records that exact `branch_name`, or when a non-terminal task is a direct child of the candidate (the child's future PR base would resolve to the parent's branch via `resolve_parent_branch` even before it has opened a PR — catches what the OPEN-PR-only `_branch_has_open_dependents` can't see) |
+| `GitService._cleanup_one_stale_branch` | method | git.py:4420 | Per-branch remote+local delete for one sweep candidate; raises on unexpected failure so the caller's try/except counts it as an error |
+| `GitService.pr_target` | method | git.py:6288 | Return PR base branch (project_id scoped) |
+| `GitService.create_pr` | method | git.py:5200 | Branch-keyed open PR (gateway path; ensures base on remote) |
+| `GitService._record_pr_atomically` | method | git.py:3939 | Atomic pr_number/url write to task |
+| `GitService.run_pre_submit_quality_gate` | method | git.py:4820 | `make quality` gate before submit, in the task's worktree (`ensure_task_worktree`) |
+| `GitService.conventions_check_for_task` | method | git.py:6786 | Run conventions validator on changed files (fail-closed); optional `changed_files` kwarg lets a caller that already resolved the branch's file list (e.g. via `diff_and_files`) thread it in instead of paying for a third `list_changed_files` resolution + subprocess |
+| `GitService._run_conventions_validator` | method | git.py:6878 | Subprocess `python -m roboco.conventions` with 120s cap |
+| `GitService.open_conventions_pr` | method | git.py:6945 | Scaffold `.roboco/conventions.yml` on a branch + open PR |
+| `GitService._resolve_diff_refs` | method | git.py:6489 | Shared `(workspace, head_ref, base_ref)` resolution for the whole diff family (`diff`/`list_changed_files`/`diff_and_files`) — factored out so the four sequential lookups (workspace, token, head ref, base ref) aren't repeated per method body |
+| `GitService.diff` / `list_changed_files` / `diff_and_files` / `read_file_at_branch` | methods | git.py:6517/6557/6590/6673 | Read-only git queries (gateway + routes). `diff` and `list_changed_files` each resolve through `_resolve_diff_refs` then run one subprocess; `diff_and_files` resolves ONCE and runs the full diff + the `--name-only` diff CONCURRENTLY via `asyncio.gather`, for a caller (`_build_qa_claim_evidence` in `choreographer/qa.py`, `content_actions.evidence()`) that previously called `diff()` then `list_changed_files()` back to back — each re-resolving workspace/token/head/base from scratch and spawning its own subprocess. `read_file_at_branch` resolves separately through `_resolve_head_ref` (it has no base ref to resolve). |
+| `GitService._resolve_head_ref` | method | git.py:6443 | Shared reader-ref resolution for `diff`/`list_changed_files`/`read_file_at_branch`/`/api/git/log`. Fetches `branch_name`, then prefers `origin/<branch_name>` over the bare local ref whenever origin carries commits local lacks (`origin_only > 0` via `rev-list`) — a reviewer's clone parked on pre-rebase history no longer stays frozen there across every later round; local wins only when it strictly contains everything origin has. Unlike the write-path's `_reset_head_or_diverged`, a read never needs to tell genuine divergence apart from a rewritten history — both resolve to "serve origin" (#690). |
+| `GitService.commit` | method | git.py:6699 | Gateway content-verb commit (branch-keyed) |
+| `get_git_service` | factory | git.py:7381 | Construct GitService from AsyncSession |
+| `GitService.checkout_branch_for_agent` | method | git.py:1877 | Allowlist-bounded checkout for agent verb |
 | `build_branch_name` | func | templates/git/branch.py:37 | `{type}/{team}/{root}--{sub}--...` up to MAX_TASK_DEPTH |
 | `get_root_task_id` | func | templates/git/branch.py:97 | Walk parent chain to root |
 | `BranchNameError` | exc | templates/git/branch.py:33 | Bad type / missing task / over-depth |
@@ -7746,7 +7747,7 @@ This slice is the git substrate every delivery agent works on. `GitService` runs
 | `ForgeBranches` | ABC | forge/base.py:175 | Role interface of `GitProvider` (5 abstract): Branch refs: merging one branch into another, creating, moving and deleting a ref, and committing files onto a branch through the API. |
 | `ForgeCI` | ABC | forge/base.py:226 | Role interface of `GitProvider` (3 abstract): CI on the forge: a branch's workflow runs, a commit's check runs, and the repo's workflows. |
 | `ForgeReleases` | ABC | forge/base.py:254 | Role interface of `GitProvider` (1 abstract): Publishing a release. |
-| `GitService._forge` | property | git.py:7114 | A fresh `ForgeRouter()` per access (cheap, no I/O — built this way, not `__init__`-cached, so tests can `GitService.__new__` bypass the constructor) |
+| `GitService._forge` | property | git.py:7124 | A fresh `ForgeRouter()` per access (cheap, no I/O — built this way, not `__init__`-cached, so tests can `GitService.__new__` bypass the constructor) |
 | `ForgeRouter` | class | forge/router.py:242 | Implements `GitProvider` by picking a transport per call from `RepoRef.host` |
 | `ForgeRouterRepository` | class | forge/router.py:51 | Mixin of `ForgeRouter` (4 methods): ForgeRepository, delegated per call to the provider for the ref's host. |
 | `ForgeRouterPullRequests` | class | forge/router.py:110 | Mixin of `ForgeRouter` (7 methods): ForgePullRequests, delegated per call to the provider for the ref's host. |
@@ -7945,17 +7946,17 @@ External:
 
 | Flag / setting | Source | Used for |
 |----------------|--------|----------|
-| `ROBOCO_GIT_EXECUTOR_WORKERS` (env, default 16) | `os.environ` at git.py:222 | Dedicated git subprocess pool size |
-| `settings.git_command_timeout_seconds` | config.py:2306 | Default `_run_git` timeout |
-| `settings.git_commit_timeout_seconds` | config.py:2357 | Staging/commit large changeset timeout |
-| `settings.git_network_timeout_seconds` | config.py:2379 | fetch/pull/push/ls-remote timeout |
-| `settings.git_diff_timeout_seconds` | config.py:2390 | `GET /api/git/diff`'s outer "diff" stage bound (default 60s) around the paired `git diff` + `git diff --stat` calls, layered on top of (not instead of) `git_command_timeout_seconds` bounding each call individually |
-| `settings.workspaces_root` | config.py:2070 | Workspace path root (token derivation) |
-| `settings.workspace_auto_clone` | config.py:2074 | `get_workspace` auto-clone branch |
-| `settings.public_base_url` | config.py:2499 | Commit/PR template link base (`+ /api`) |
+| `ROBOCO_GIT_EXECUTOR_WORKERS` (env, default 16) | `os.environ` at git.py:223 | Dedicated git subprocess pool size |
+| `settings.git_command_timeout_seconds` | config.py:2323 | Default `_run_git` timeout |
+| `settings.git_commit_timeout_seconds` | config.py:2374 | Staging/commit large changeset timeout |
+| `settings.git_network_timeout_seconds` | config.py:2396 | fetch/pull/push/ls-remote timeout |
+| `settings.git_diff_timeout_seconds` | config.py:2407 | `GET /api/git/diff`'s outer "diff" stage bound (default 60s) around the paired `git diff` + `git diff --stat` calls, layered on top of (not instead of) `git_command_timeout_seconds` bounding each call individually |
+| `settings.workspaces_root` | config.py:2087 | Workspace path root (token derivation) |
+| `settings.workspace_auto_clone` | config.py:2091 | `get_workspace` auto-clone branch |
+| `settings.public_base_url` | config.py:2516 | Commit/PR template link base (`+ /api`) |
 | `settings.internal_api_url` | config.py:139 | Internal PR body link base |
-| `settings.github_api_base_url` | config.py:1138 | GitHub REST API base (PR/CI/review) |
-| `settings.release_ci_workflow` | config.py:1614 | Named workflow file (e.g. `ci.yml`) used by the release CI gate in `get_latest_ci_conclusion`; always resolves a named workflow so the gate never degrades to the imprecise all-workflows mode |
+| `settings.github_api_base_url` | config.py:1147 | GitHub REST API base (PR/CI/review) |
+| `settings.release_ci_workflow` | config.py:1623 | Named workflow file (e.g. `ci.yml`) used by the release CI gate in `get_latest_ci_conclusion`; always resolves a named workflow so the gate never degrades to the imprecise all-workflows mode |
 
 Module-level tunables (not env): `_SLOW_GIT_OP_MS=5000`, `_CI_RUN_WINDOW=20`, `_CI_FETCH_ATTEMPTS=3`, `_CI_FETCH_BACKOFF_SECONDS=0.5`, `_CI_RETRYABLE_STATUS`, `_CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS=120`, `_GH_UNPROCESSABLE=422`, `_HTTP_NOT_FOUND=404`, `_HTTP_CONFLICT=409`.
 
@@ -8082,7 +8083,7 @@ Every agent container mounts every clone read-write, so an agent controls every 
 | roboco/services/entire_trails/__init__.py | Entire trails bridge (`entire_trails_enabled` + per-project `projects.entire_trails_enabled`, GitHub only): mirrors each task tree (coordination root or MegaTask umbrella) onto ONE Entire trail one way; RoboCo stays canonical and keeps merging. Package docstring only: callers import the submodule they need (the lifecycle imports `hooks`, never `drain`) | 21 |
 | roboco/services/entire_trails/hooks.py | Lifecycle side: outbox rows in the caller's own transaction, each in a savepoint that logs instead of raising. `branch_created` (from `TaskService._create_branch_in_project`; `BranchCut`): the tree's first branch on an opted-in project writes its `entire_trails` row (create fields frozen) + `sync_trail`; a dev branch queues its `link`, a PM-claimed (integration) branch links at its PR. `findings_recorded` / `finding_addressed` / `findings_verified` / `finding_waived` (from `ReviewFindingsRepository`): queue `finding_add` (text rendered once) / `finding_update` / `finding_resolve` / `finding_dismiss` | 287 |
 | roboco/services/entire_trails/outbox.py | Op names, `enqueue`, `pending_op_exists`, `finding_is_mirrored`; tree helpers `tree_top` (topmost ancestor), `starts_tree` (root or MegaTask root-subtask), `bridged_trail` (None when unbridged, closed or closing); `entire_repository` (`gh/<owner>/<repo>` for github.com projects only) / `entire_project_of` | 143 |
-| roboco/services/entire_trails/drain.py | `drain_due` (the loop's pass): needs a token; `reconcile_trails` (queue a sync for an open trail whose tree changed since `synced_at`, the close for one whose top task ended), then each tree's rows in id order under a per-tree `pg_try_advisory_xact_lock` (class `ENTR`), one transaction per row, deleted on success; failures back off 30 s doubling to 1 h, dead after `entire_trails_max_attempts` (holds the tree, one CEO ALERT). Ops: create (idempotency key `roboco-trail:<root>`, frozen fields) + update, close, link (key `roboco-link:...`, change number from `trail show`), finding add (client id = ledger id; a retry first looks it up in `finding list`), update / resolve / dismiss, approve. Inline: `link_before_pr` (from `GitService.create_pr`) and `approve_before_merge` (from `merge_pr_for_task`, CEO only): blocking tree lock, never raise, a failure is queued | 712 |
+| roboco/services/entire_trails/drain.py | `drain_due` (the loop's pass): needs a token; `reconcile_trails` (queue a sync for an open trail whose tree changed since `synced_at`, the close for one whose top task ended), then each tree's rows in id order under a per-tree `pg_try_advisory_xact_lock` (class `ENTR`), one transaction per row, deleted on success; failures back off 30 s doubling to 1 h, dead after `entire_trails_max_attempts` (holds the tree, one CEO ALERT). Ops: create (idempotency key `roboco-trail:<root>`, frozen fields) + update, close, link (key `roboco-link:...`, change number from `trail show`), finding add (client id = ledger id; a retry first looks it up in `finding list`), update / resolve / dismiss, approve. Inline: `link_before_pr` (from `GitService.create_pr`) and `approve_before_merge` (from `merge_pr_for_task`, CEO only): blocking tree lock, never raise, a failure is queued | 736 |
 | roboco/services/entire_trails/render.py | Pure text: `trail_fields` / `trail_body` (description, acceptance criteria, plan, depth-first task table, outcome, canonical-RoboCo footer, 60k cap), `finding_body` (stable per row: criterion, severity/origin/round, expected/actual/fix/evidence, ledger id, author, task) / `addressed_finding_body`; severities blocker/major->high, minor->medium, nit->low; priority 0-3 -> urgent..low | 203 |
 | roboco/services/entire_trails/cli.py | `run_entire`: the pinned CLI (`ENTIRE_CLI`, off PATH) via `create_subprocess_exec`, argv only (`--flag=value`), env from scratch with `ENTIRE_TOKEN` (never argv/file), cwd/HOME the 0700 `<private_data_root>/entire-home`, timeout kills, token scrubbed from every output, non-zero raises `EntireCliError`; `EntireCliResult.json`; `cli_available` | 120 |
 | roboco/services/entire_trails/status.py | `trails_status` (enabled, has_token, cli_available, open trails, pending/dead counts, last error) and `retry_dead` (dead rows back with a fresh attempt budget) for the CEO surface | 70 |
@@ -8426,6 +8427,7 @@ Cross-cutting support layer beneath the delivery services: the service-base/erro
 | `roboco/utils/__init__.py` | Re-exports crypto + converter helpers | 23 |
 | `roboco/utils/converters.py` | `InvalidIdentifierError` + `require_uuid` / `to_python_uuid` / `to_python_uuid_list` + `repo_key` | 99 |
 | `roboco/utils/crypto.py` | Fernet `encrypt_token` / `decrypt_token` / `is_encryption_configured` + `EncryptionError` | 111 |
+| `roboco/utils/timing.py` | `timed_phase` context manager: one `verb_phase` log event per gateway verb phase with `duration_ms` and `outcome` | 50 |
 | `roboco/utils/telegram_initdata.py` | Pure Telegram Mini App `initData` validation (no I/O): `WebAppData`-keyed HMAC-SHA256 derivation, `hmac.compare_digest` check, freshness window (`auth_date` within `max_age_seconds`, ±60s clock-skew tolerance, no far-future) | 76 |
 
 ## Key Symbols
@@ -9627,6 +9629,7 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `roboco/services/project.py` | CRUD + git-token encryption + cell access control for Projects (git repos) | 790 |
 | `roboco/services/_project_service_types.py` | `ProjectServiceSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `ProjectService` mixins reach through `self`, plus its instance attributes; `tests/unit/services/test_project_service_mixins.py` fails on a stray stub or a member defined twice | 42 |
 | `roboco/services/product.py` | Product CRUD + per-cell `project_for` routing resolver + idempotent cell-map replace | 247 |
+| `roboco/services/gate_jobs.py` | `GateJobRegistry`: one in-process background job per task for the `i_am_done` quality gate; a timeout or crash yields a red verdict, a raising callback is swallowed | 104 |
 | `roboco/services/kanban.py` | Role-specific kanban board views (dev/qa/documenter/pm/main-pm/board) from task data | 587 |
 | `roboco/services/_kanban_service_types.py` | `KanbanServiceSelf`, a TYPE_CHECKING-only Protocol declaring the attributes the `KanbanService` mixin reads through `self` (no moved body calls across classes, so it has no `<Class>Surface` yet); `tests/unit/services/test_kanban_service_mixins.py` fails on a stray stub or a member defined twice | 28 |
 | `roboco/services/company_goals.py` | CRUD for the singleton company charter (north star + objectives + constraints + policy + brand_voice + company_name); `resolve_product_name` is the shared product-name fallback chain `XEngine`/`VideoEngine` both call | 110 |
@@ -10067,31 +10070,31 @@ product-strategy-research-pitch
 | Flag | Default | File:Line | Effect |
 |------|---------|-----------|--------|
 | `ROBOCO_CONVENTIONS_ENABLED` | `False` | config.py:776 | `ProjectService.create` best-effort scaffolds `.roboco/conventions.yml` PR; inert when off |
-| `ROBOCO_RESEARCH_ENABLED` | `True` | config.py:882 | Mounts `roboco-search` MCP into Board/PM containers (orchestrator:2914) |
-| `ROBOCO_RESEARCH_PROVIDER` | `tavily` | config.py:889 | `tavily`/`brave`/`exa`/`null` adapter selection |
-| `ROBOCO_RESEARCH_API_KEY` | `None` | config.py:902 | Server-side only; unset → `NullProvider` |
-| `ROBOCO_RESEARCH_MAX_RESULTS` | `5` | config.py:920 | Hard cap on `web_search` results (1-20) |
-| `ROBOCO_RESEARCH_FETCH_MAX_CHARS` | `20000` | config.py:926 | Hard cap on `web_fetch` extracted chars |
-| `ROBOCO_RESEARCH_TIMEOUT_SECONDS` | `15.0` | config.py:931 | Outbound provider HTTP timeout |
-| `ROBOCO_RESEARCH_DAILY_QUOTA_PER_AGENT` | `50` | config.py:936 | Per-agent/day call ceiling (Redis, fail-open) |
-| `ROBOCO_PROVISIONING_ENABLED` | `True` | config.py:1120 | Pitch auto-provisioning master switch (still inert without token+org) |
-| `ROBOCO_PROVISIONING_TOKEN` | `""` | config.py:1127 | GitHub PAT for repo creation (server-side only) |
-| `ROBOCO_PROVISIONING_ORG` | `""` | config.py:1134 | GitHub org where repos are provisioned |
-| `ROBOCO_GITHUB_API_BASE_URL` | `https://api.github.com` | config.py:1138 | Override for GitHub Enterprise |
-| `ROBOCO_PROVISIONING_TIMEOUT_SECONDS` | `30.0` | config.py:1142 | Outbound GitHub provisioning timeout |
-| `ROBOCO_PROVISIONING_REPO_PRIVATE` | `True` | config.py:1147 | Whether provisioned repos are private |
-| `ROBOCO_PROVISIONING_PROVIDER` | `github` | config.py:1151 | Phase 4 forge parity: `github`/`gitlab`/`gitea` selects the concrete provisioning target via `_build_provider` |
-| `ROBOCO_PROVISIONING_HOST` | `""` | config.py:1160 | Self-hosted forge host (e.g. `gitlab.example.com`); `.enabled` additionally requires this when `provisioning_provider` is gitlab/gitea (ignored for github/gitlab.com) |
-| `ROBOCO_STRATEGY_ENGINE_ENABLED` | `False` | config.py:1176 | Master switch: loop never starts when off |
-| `ROBOCO_STRATEGY_ENGINE_INTERVAL_SECONDS` | `1800` | config.py:1183 | Seconds between strategy assessment passes |
-| `ROBOCO_STRATEGY_STRANDED_BLOCKED_MINUTES` | `120` | config.py:1188 | Blocked-task threshold for "stranded" observation |
-| `ROBOCO_PROTECTED_GIT_URLS` | `[]` | config.py:2430 | Denylist: `ProjectService` rejects `git_url` containing any entry |
-| `ROBOCO_ENCRYPTION_KEY` | `""` | config.py:948 | Fernet key for git-token encrypt/decrypt |
-| `ROBOCO_ROADMAP_ENGINE_ENABLED` | `False` | config.py:1967 | Master switch: `_roadmap_engine_loop` never opens an exploration cycle when off |
-| `ROBOCO_ROADMAP_INTERVAL_SECONDS` | `604800` | config.py:1977 | Seconds between roadmap-exploration cycles (default weekly) |
-| `ROBOCO_ROADMAP_MIN_ITEMS_PER_CYCLE` | `3` | config.py:1982 | Minimum item drafts `propose_roadmap` must submit for a themed cycle |
-| `ROBOCO_ROADMAP_MAX_ITEMS_PER_CYCLE` | `7` | config.py:1987 | Maximum item drafts per cycle |
-| `ROBOCO_PEST_REWORK_THRESHOLD` | `0.3` | config.py:2000 | 7-day rework rate above which Pest Control's metric predicate opens a cycle off-schedule, on top of its weekly cron. The ONLY env-settable knob among the twelve new Board Programs: every other one arms exclusively via its own settings-store row (`board_program.{key}.enabled`, no `ROBOCO_*_ENABLED` flag exists for them) |
+| `ROBOCO_RESEARCH_ENABLED` | `True` | config.py:891 | Mounts `roboco-search` MCP into Board/PM containers (orchestrator:2914) |
+| `ROBOCO_RESEARCH_PROVIDER` | `tavily` | config.py:898 | `tavily`/`brave`/`exa`/`null` adapter selection |
+| `ROBOCO_RESEARCH_API_KEY` | `None` | config.py:911 | Server-side only; unset → `NullProvider` |
+| `ROBOCO_RESEARCH_MAX_RESULTS` | `5` | config.py:929 | Hard cap on `web_search` results (1-20) |
+| `ROBOCO_RESEARCH_FETCH_MAX_CHARS` | `20000` | config.py:935 | Hard cap on `web_fetch` extracted chars |
+| `ROBOCO_RESEARCH_TIMEOUT_SECONDS` | `15.0` | config.py:940 | Outbound provider HTTP timeout |
+| `ROBOCO_RESEARCH_DAILY_QUOTA_PER_AGENT` | `50` | config.py:945 | Per-agent/day call ceiling (Redis, fail-open) |
+| `ROBOCO_PROVISIONING_ENABLED` | `True` | config.py:1129 | Pitch auto-provisioning master switch (still inert without token+org) |
+| `ROBOCO_PROVISIONING_TOKEN` | `""` | config.py:1136 | GitHub PAT for repo creation (server-side only) |
+| `ROBOCO_PROVISIONING_ORG` | `""` | config.py:1143 | GitHub org where repos are provisioned |
+| `ROBOCO_GITHUB_API_BASE_URL` | `https://api.github.com` | config.py:1147 | Override for GitHub Enterprise |
+| `ROBOCO_PROVISIONING_TIMEOUT_SECONDS` | `30.0` | config.py:1151 | Outbound GitHub provisioning timeout |
+| `ROBOCO_PROVISIONING_REPO_PRIVATE` | `True` | config.py:1156 | Whether provisioned repos are private |
+| `ROBOCO_PROVISIONING_PROVIDER` | `github` | config.py:1160 | Phase 4 forge parity: `github`/`gitlab`/`gitea` selects the concrete provisioning target via `_build_provider` |
+| `ROBOCO_PROVISIONING_HOST` | `""` | config.py:1169 | Self-hosted forge host (e.g. `gitlab.example.com`); `.enabled` additionally requires this when `provisioning_provider` is gitlab/gitea (ignored for github/gitlab.com) |
+| `ROBOCO_STRATEGY_ENGINE_ENABLED` | `False` | config.py:1185 | Master switch: loop never starts when off |
+| `ROBOCO_STRATEGY_ENGINE_INTERVAL_SECONDS` | `1800` | config.py:1192 | Seconds between strategy assessment passes |
+| `ROBOCO_STRATEGY_STRANDED_BLOCKED_MINUTES` | `120` | config.py:1197 | Blocked-task threshold for "stranded" observation |
+| `ROBOCO_PROTECTED_GIT_URLS` | `[]` | config.py:2447 | Denylist: `ProjectService` rejects `git_url` containing any entry |
+| `ROBOCO_ENCRYPTION_KEY` | `""` | config.py:957 | Fernet key for git-token encrypt/decrypt |
+| `ROBOCO_ROADMAP_ENGINE_ENABLED` | `False` | config.py:1984 | Master switch: `_roadmap_engine_loop` never opens an exploration cycle when off |
+| `ROBOCO_ROADMAP_INTERVAL_SECONDS` | `604800` | config.py:1994 | Seconds between roadmap-exploration cycles (default weekly) |
+| `ROBOCO_ROADMAP_MIN_ITEMS_PER_CYCLE` | `3` | config.py:1999 | Minimum item drafts `propose_roadmap` must submit for a themed cycle |
+| `ROBOCO_ROADMAP_MAX_ITEMS_PER_CYCLE` | `7` | config.py:2004 | Maximum item drafts per cycle |
+| `ROBOCO_PEST_REWORK_THRESHOLD` | `0.3` | config.py:2017 | 7-day rework rate above which Pest Control's metric predicate opens a cycle off-schedule, on top of its weekly cron. The ONLY env-settable knob among the twelve new Board Programs: every other one arms exclusively via its own settings-store row (`board_program.{key}.enabled`, no `ROBOCO_*_ENABLED` flag exists for them) |
 
 ## Gotchas
 

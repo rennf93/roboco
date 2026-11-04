@@ -865,6 +865,15 @@ class Settings(BaseSettings):
             "retrying (its tree's queue holds) and the CEO is alerted."
         ),
     )
+    entire_trails_link_lock_wait_seconds: float = Field(
+        default=5.0,
+        gt=0,
+        description=(
+            "Longest open_pr waits for the tree lock before its Entire link "
+            "(a drain row holds it across a CLI call); past it the link is "
+            "queued and the PR opens anyway."
+        ),
+    )
     entire_trails_cli_timeout_seconds: int = Field(
         default=60,
         ge=5,
@@ -1761,6 +1770,14 @@ class Settings(BaseSettings):
         ge=1,
         description=(
             "Max held reply proposals the mentions poll may originate in one cycle."
+        ),
+    )
+    gate_job_timeout_seconds: float = Field(
+        default=900.0,
+        gt=0,
+        description=(
+            "Ceiling for the background pre-submit quality gate job; a gate that "
+            "outlives it counts as failed and the task stays before QA."
         ),
     )
     x_mentions_min_engagement: int = Field(

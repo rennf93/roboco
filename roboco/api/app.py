@@ -85,6 +85,7 @@ from roboco.services.decisions.resolver import (
     check_openrouter_fallback_at_startup,
 )
 from roboco.services.extraction import ExtractionPipeline, ExtractionService
+from roboco.services.gateway.choreographer.gate_job import run_gate_recovery_loop
 from roboco.services.learning import get_learning_service
 from roboco.services.optimal import close_optimal_service, get_optimal_service
 from roboco.services.optimal_brain.indexer_worker import (
@@ -123,6 +124,18 @@ def _schedule_rag_reconcile(app: FastAPI) -> asyncio.Task[None]:
 def _cancel_rag_reconcile(app: FastAPI) -> None:
     """Stop a still-running background reconcile at shutdown."""
     task = getattr(app.state, "rag_reconcile_task", None)
+    if task is not None and not task.done():
+        task.cancel()
+
+
+def _start_gate_recovery(app: FastAPI) -> None:
+    """Run the lost-gate-job sweep periodically for the process lifetime."""
+    app.state.gate_recovery_task = asyncio.create_task(run_gate_recovery_loop())
+
+
+def _cancel_gate_recovery(app: FastAPI) -> None:
+    """Stop the periodic gate-job sweep at shutdown."""
+    task = getattr(app.state, "gate_recovery_task", None)
     if task is not None and not task.done():
         task.cancel()
 
@@ -252,6 +265,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     if settings.role == "all":
         _schedule_rag_reconcile(app)
 
+    if settings.role in ("all", "api"):
+        _start_gate_recovery(app)
+
     logger.info("All services initialized, API ready")
 
     yield
@@ -260,6 +276,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None]:
     logger.info("Shutting down RoboCo API")
 
     _cancel_rag_reconcile(app)
+    _cancel_gate_recovery(app)
 
     if _AppServices.transcription:
         await _AppServices.transcription.stop()

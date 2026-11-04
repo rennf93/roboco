@@ -883,6 +883,33 @@ def clear_pr_waived(task: HasMarkers) -> None:
     clear_marker(task, PR_WAIVED)
 
 
+# --- background quality-gate run ---------------------------------------------
+# Stamped when i_am_done (or restart recovery) launches the background gate
+# job: {token, notes, started_at (epoch seconds)}. The token ties a verdict to
+# the run that produced it, so a duplicate job (blue-green deploy overlap,
+# relaunch) or a late verdict can never move a task another run already
+# resolved. Notes are the developer's submit notes, reused on recovery.
+
+GATE_RUN = "gate_run"
+
+
+def get_gate_run(task: HasMarkers) -> dict[str, Any] | None:
+    val = get_marker(task, GATE_RUN)
+    return val if isinstance(val, dict) else None
+
+
+def set_gate_run(task: HasMarkers, token: str, notes: str, started_at: float) -> None:
+    set_marker(
+        task,
+        GATE_RUN,
+        {"token": token, "notes": notes, "started_at": started_at},
+    )
+
+
+def clear_gate_run(task: HasMarkers) -> None:
+    clear_marker(task, GATE_RUN)
+
+
 # --- devops gate co-claim ----------------------------------------------------
 # The floating DevOps agent's co-review claim on an awaiting_pr_review gate
 # task. A marker, not active_claimant_id: the primary PR reviewer owns that

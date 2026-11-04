@@ -93,11 +93,30 @@ def _lock_key(root_id: UUID) -> int:
     return int.from_bytes(root_id.bytes[:4], "big", signed=True)
 
 
-async def _lock_tree(session: AsyncSession, root_id: UUID, *, wait: bool) -> bool:
+async def _lock_tree(
+    session: AsyncSession,
+    root_id: UUID,
+    *,
+    wait: bool,
+    wait_seconds: float | None = None,
+) -> bool:
+    """Take the tree's advisory lock. ``wait_seconds`` bounds a blocking wait
+    (the verb path must never sit behind a drain row's CLI call); a timeout
+    raises, which the inline callers already turn into a queued retry."""
     if wait:
+        if wait_seconds is not None:
+            await session.execute(
+                select(
+                    func.set_config(
+                        "lock_timeout", f"{int(wait_seconds * 1000)}ms", True
+                    )
+                )
+            )
         await session.execute(
             select(func.pg_advisory_xact_lock(_LOCK_CLASS, _lock_key(root_id)))
         )
+        if wait_seconds is not None:
+            await session.execute(select(func.set_config("lock_timeout", "0", True)))
         return True
     result = await session.execute(
         select(func.pg_try_advisory_xact_lock(_LOCK_CLASS, _lock_key(root_id)))
@@ -625,7 +644,12 @@ async def link_before_pr(
     }
     try:
         async with get_db_context() as session:
-            await _lock_tree(session, root_id, wait=True)
+            await _lock_tree(
+                session,
+                root_id,
+                wait=True,
+                wait_seconds=settings.entire_trails_link_lock_wait_seconds,
+            )
             if await _change_row(session, repository, branch) is not None:
                 return
             token = await _token(session)

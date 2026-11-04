@@ -16,6 +16,7 @@ Documentation for the Backend Cell team.
 - `/qa/` - QA-related docs
 - `/services/` - Internal service architecture & patterns
   - `coordination-events.md` - 5 coordination-event notification producers: reassignment, collision-sequencing, unblock, dependency-revival, stale-claim-reaped
+  - `gateway-verb-latency.md` - Where time goes in `i_am_done` (cold `make gate` container run dominates), `open_pr` (tail stalls from the blocking Entire per-tree advisory lock in `link_before_pr`), `i_will_work_on` and `claim_review`; the permanent `timed_phase` / `verb_phase` structlog instrumentation (`roboco/utils/timing.py`); recommended fixes and the log queries that confirm them
   - `optimal-per-index-timeout.md` - Per-index 15s timeout + partial-result `gaps` list in `OptimalService.search_with_gaps()` / `RAGResponse.gaps` (inner to the route-level 30s bound; follows the `evidence_legs.run_bounded_leg` degradation pattern; `search()` stays backward compatible)
   - `pr-waiver.md` - Zero-diff PR-waiver: `submit_up`/`submit_root` detect a zero-commit branch before `create_pr`/`create_root_pr`, waive PR creation, and route report-only cell/root tasks to `completed` with no PR and no manual status surgery
   - `shipped-work-digest.md` - Shared `shipped_work_digest` helper in `roboco/services/` (extracted from `MegaphoneEngine`), its delegation refactor, and its injection into the roadmap, Pest Control, and Spackle exploration prompts with "do not propose already-shipped work" instruction text and a three-layer degradation path
