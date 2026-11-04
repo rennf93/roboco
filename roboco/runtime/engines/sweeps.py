@@ -2735,7 +2735,9 @@ class ExternalPRIntakeEngine(_Base):
         # The reviewer reviews PRs the org did NOT author. Skip PRs opened by the
         # repo-owner account: a self-review can't post REQUEST_CHANGES (GitHub
         # 422), and re-reviewing the org's own in-flight PRs every poll is noise.
-        if pr.get("author_is_owner"):
+        # A draft says "not ready for review": each push to a WIP PR has a new
+        # head SHA and filed a fresh review (CEO's guard-core-app #409, 2026-11-04).
+        if pr.get("author_is_owner") or pr.get("draft"):
             return None
         # The org's own in-flight PRs are recognized by BRANCH OWNERSHIP, not
         # author identity: with a GitHub App bound, fleet PRs are authored by
