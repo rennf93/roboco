@@ -1297,6 +1297,106 @@ async def test_cell_pm_complete_idempotent_when_pr_already_merged_to_target() ->
     )
 
 
+@pytest.mark.asyncio
+async def test_cell_pm_complete_backfills_session_when_pr_already_merged() -> None:
+    """Interrupted-complete gap: the H7 skip also skips pr_merge — the only
+    writer of pr_status='merged'. The retry must backfill the work session
+    from forge state (reconcile_already_merged_pr), pass the returned merge
+    sha into complete, and write an auditable backfill record — so the
+    retry self-heals instead of wedging on the PR-merged guard."""
+    pm_id = uuid4()
+    task_id = uuid4()
+    parent_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="awaiting_pm_review",
+        assigned_to=pm_id,
+        pr_number=8,
+        branch_name="feature/backend/abc--def",
+        parent_task_id=parent_id,
+        team="backend",
+    )
+    after = MagicMock(**{**t.__dict__, "status": "completed"})
+    parent = MagicMock(
+        id=parent_id, branch_name="feature/main_pm/abc", parent_task_id=None
+    )
+    task_svc = AsyncMock()
+    task_svc.get.side_effect = lambda tid: parent if tid == parent_id else t
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.cell_pm_complete.return_value = after
+    git_svc = AsyncMock()
+    git_svc.is_pr_merged_for_task.return_value = True  # already merged
+    git_svc.reconcile_already_merged_pr.return_value = "merge-backfill-sha"
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.cell_pm_complete(
+        pm_id, task_id, notes="retry after gateway timeout, post-merge"
+    )
+    body = env.as_dict()
+    assert body.get("error") is None, body
+    git_svc.reconcile_already_merged_pr.assert_awaited_once_with(
+        task_id, actor_agent_id=pm_id
+    )
+    assert not git_svc.pr_merge.called, "backfill path must not re-issue pr_merge"
+    assert (
+        task_svc.cell_pm_complete.await_args.kwargs.get("merge_commit")
+        == "merge-backfill-sha"
+    )
+    deps.audit.log_event.assert_awaited_once()
+    audit_kwargs = deps.audit.log_event.await_args.kwargs
+    assert audit_kwargs["event_type"] == "gateway.pr_merge_backfilled"
+    assert audit_kwargs["details"]["merge_commit_sha"] == "merge-backfill-sha"
+
+
+@pytest.mark.asyncio
+async def test_cell_pm_complete_unmerged_pr_still_merges_normally() -> None:
+    """Constraint: the backfill must not mask the normal path — an unmerged
+    PR still goes through pr_merge and no backfill/audit record is written."""
+    pm_id = uuid4()
+    task_id = uuid4()
+    parent_id = uuid4()
+    t = MagicMock(
+        id=task_id,
+        status="awaiting_pm_review",
+        assigned_to=pm_id,
+        pr_number=8,
+        branch_name="feature/backend/abc--def",
+        parent_task_id=parent_id,
+        team="backend",
+    )
+    after = MagicMock(**{**t.__dict__, "status": "completed"})
+    parent = MagicMock(
+        id=parent_id, branch_name="feature/main_pm/abc", parent_task_id=None
+    )
+    task_svc = AsyncMock()
+    task_svc.get.side_effect = lambda tid: parent if tid == parent_id else t
+    task_svc.all_subtasks_terminal.return_value = True
+    task_svc.cell_pm_complete.return_value = after
+    git_svc = AsyncMock()
+    git_svc.is_pr_merged_for_task.return_value = False
+    git_svc.pr_merge.return_value = {"merge_commit_sha": "merge-normal-sha"}
+    journal_svc = AsyncMock()
+    journal_svc.has_decision_for_task.return_value = True
+    journal_svc.latest_decision_at.return_value = datetime.now(UTC)
+    journal_svc.has_reflect_for_task.return_value = True
+    deps = _make_deps(task=task_svc, git=git_svc, journal=journal_svc)
+    c = Choreographer(deps)
+
+    env = await c.cell_pm_complete(
+        pm_id, task_id, notes="normal completion, merge to parent"
+    )
+    body = env.as_dict()
+    assert body.get("error") is None, body
+    git_svc.pr_merge.assert_awaited_once()
+    git_svc.reconcile_already_merged_pr.assert_not_awaited()
+    deps.audit.log_event.assert_not_awaited()
+
+
 # ---------------------------------------------------------------------------
 # H6: cell_pm_complete survives parent-advance failure
 # ---------------------------------------------------------------------------

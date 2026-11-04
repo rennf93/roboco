@@ -242,6 +242,9 @@ async def test_inherit_conflict_notes_the_task() -> None:
     assert note is not None
     assert "a.py, b.py" in note
     assert "sync_branch" in note
+    # A PM's root or cell branch has no sync verb; four sync leaves on one root
+    # all failed before the note said so.
+    assert "escalate_up" in note
     # The dev must actually SEE it — dev_notes rides evidence(), the marker
     # does not.
     assert task.dev_notes is not None
@@ -301,6 +304,7 @@ async def test_inherit_never_fails_the_claim() -> None:
         ),
         patch("roboco.services.git.get_git_service", MagicMock(return_value=git_svc)),
     ):
-        await svc._inherit_upstream_base(task, uuid4())  # must not raise
+        # must not raise
+        await svc._inherit_upstream_base(task, uuid4())
 
     svc.log.warning.assert_called()

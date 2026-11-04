@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
@@ -37,6 +38,7 @@ from roboco.runtime.orchestrator import (
     AGENT_BASE_IMAGE,
     AGENT_IMAGES,
     AGENT_NETWORK,
+    AGENT_PLUGINS_DATA_DIR,
     CLAUDE_AUTH_HOST_PATH,
     DATA_HOST_PATH,
     GATEWAY_ENABLED_ROLES,
@@ -898,6 +900,47 @@ class SpawnGitContextEngine(_Base):
             project_slug = "default"
         return project_slug
 
+    async def _maybe_refresh_base_clone(
+        self, *, project_slug: str, team: str, agent_id: str
+    ) -> None:
+        """Refresh a non-author agent's base-clone checkout at spawn (#692
+        family — extends the per-task worktree heal, no parallel path).
+
+        A reader clone's own checkout can sit arbitrarily far behind origin
+        (a live one was ~19 wall hours behind), so raw file reads disagreed
+        with the origin-preferring git-log reader (#690). 'Non-author' is
+        capability-based: roles holding the gateway's ``commit`` verb
+        (``foundation.identity.WORKTREE_AUTHOR_ROLES``) are self-maintaining
+        authors and are NEVER touched; when in doubt (an unresolvable role)
+        we treat as author, skip, and log. Best-effort: a failure logs and
+        moves on, never breaking a spawn.
+        """
+        role = get_agent_role(agent_id)
+        if is_worktree_author_role(role):
+            return
+        if role == "unknown":
+            logger.info(
+                "base-clone refresh: unresolvable role, treating as author, skipping",
+                agent_id=agent_id,
+            )
+            return
+        clone_root = Path(_agent_workspace_path(project_slug, team, agent_id))
+        from roboco.db.base import get_db_context
+        from roboco.services.workspace import WorkspaceService
+
+        try:
+            async with get_db_context() as db:
+                await WorkspaceService(db).refresh_base_clone_checkout(
+                    clone_root, project_slug
+                )
+        except Exception as e:  # best-effort — a refresh must never break a spawn
+            logger.warning(
+                "base-clone refresh failed (best-effort)",
+                agent_id=agent_id,
+                clone_root=str(clone_root),
+                error=str(e),
+            )
+
     async def _ensure_worktree_before_spawn(
         self,
         git_context: SpawnGitContext | None,
@@ -932,6 +975,12 @@ class SpawnGitContextEngine(_Base):
         a missing ``-w``. A transient failure (DB/other) aborts without
         releasing — the next tick retries the same claim.
         """
+        # Base-clone refresh (non-author roles only — see the helper) runs on
+        # EVERY spawn, including branchless coordination/board ones, which are
+        # pure readers and used to early-return with a frozen clone.
+        await self._maybe_refresh_base_clone(
+            project_slug=project_slug, team=team, agent_id=agent_id
+        )
         if not (git_context and git_context.task_short_id and git_context.branch_name):
             return
         clone_root = Path(_agent_workspace_path(project_slug, team, agent_id))
@@ -1108,6 +1157,7 @@ class ContainerMountsEngine(_Base):
             "-v",
             f"{hosts['claude']}:/home/agent/.claude",
         ]
+        AgentOrchestrator._append_agent_plugins_mount(cmd)
         AgentOrchestrator._append_claude_json_mount(cmd, hosts)
         AgentOrchestrator._append_optional_host_mounts(cmd, hosts)
         role = get_agent_role(config.agent_id) or "developer"
@@ -1118,6 +1168,32 @@ class ContainerMountsEngine(_Base):
         AgentOrchestrator._append_manifest_args(cmd, config, subagent_model)
         AgentOrchestrator._append_workspace_cwd(cmd, config)
         return cmd
+
+    @staticmethod
+    def _append_agent_plugins_mount(cmd: list[str]) -> None:
+        """Overlay a RoboCo-owned dir on ~/.claude/plugins (after the .claude bind).
+
+        The agent CLI rewrites plugin state with its own HOME paths; on the
+        shared host ~/.claude that broke the CEO's installed plugins. The
+        docker-gate refuses a missing bind source, so create it first.
+        """
+        if PROJECT_HOST_PATH:
+            local = Path(AGENT_PLUGINS_DATA_DIR)
+            host = f"{DATA_HOST_PATH}/agent-claude-plugins"
+        else:
+            local = Path(tempfile.gettempdir()) / "roboco-agent-claude-plugins"
+            host = str(local)
+        try:
+            local.mkdir(parents=True, exist_ok=True)
+            os.chown(local, -1, settings.agent_gid)
+            local.chmod(0o2775)
+        except OSError as exc:
+            logger.warning(
+                "could not pre-create agent plugins dir; agent CLI may EACCES",
+                path=str(local),
+                error=str(exc),
+            )
+        cmd.extend(["-v", f"{host}:/home/agent/.claude/plugins"])
 
     @staticmethod
     def _append_claude_json_mount(cmd: list[str], hosts: dict[str, str | None]) -> None:

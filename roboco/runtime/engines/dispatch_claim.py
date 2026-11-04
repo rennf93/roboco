@@ -970,11 +970,32 @@ class ClaimBarrierEngine(_Base):
         if held is None:
             return False
         held_status, held_id = held
+        self._log_hold_once_per_held_task(agent_slug, held_id, held_status, task["id"])
         if held_status == "paused" and not self._is_agent_active(agent_slug):
             await self._resume_paused_task_for_author(client, held_id, agent_slug)
         elif held_status == "claimed" and status == "claimed":
             await self._release_claim_to_pending(task["id"])
         return True
+
+    def _log_hold_once_per_held_task(
+        self, agent_slug: str, held_id: str, held_status: str, skipped_task_id: str
+    ) -> None:
+        """Say why a developer is not spawned, once per (agent, held task).
+
+        The hold is silent otherwise and the dispatcher ticks every few
+        seconds over every task: a blocked task escalated away from be-dev-1
+        froze its 55 other tasks for hours with nothing in the log.
+        """
+        if self._held_hold_logged_for.get(agent_slug) == held_id:
+            return
+        self._held_hold_logged_for[agent_slug] = held_id
+        logger.info(
+            "Developer not spawned: it holds other work",
+            agent=agent_slug,
+            held_task_id=held_id,
+            held_status=held_status,
+            skipped_task_id=skipped_task_id,
+        )
 
     async def _resume_paused_task_for_author(
         self, client: httpx.AsyncClient, task_id: str, agent_slug: str

@@ -4021,7 +4021,41 @@ class GitBranchCleanup(_Base):
         reconcile divergent branches"), and a local target branch that has
         drifted from origin in a workspace clone is cruft by definition — the
         remote side of the merge is authoritative.
+
+        Git refuses to check a branch out in two worktrees, so when another
+        worktree of this clone already holds ``target_branch`` (the PM's own
+        task worktree on its cell branch) that worktree is synced in place
+        instead of the clone root.
         """
+        holder = await self._worktree_holding_branch(workspace, target_branch)
+        if holder is not None:
+            workspace = holder
+        else:
+            await self._checkout_target_branch(workspace, target_branch)
+        await self._run_git(workspace, ["fetch", "origin", target_branch])
+        await self._run_git(workspace, ["reset", "--hard", f"origin/{target_branch}"])
+        log_result = await self._run_git(workspace, ["log", "-1", "--format=%H"])
+        return log_result.stdout.strip()
+
+    async def _worktree_holding_branch(
+        self, workspace: Path, branch: str
+    ) -> Path | None:
+        """The other worktree of ``workspace``'s clone that has ``branch``
+        checked out, else None (``workspace`` itself does not count)."""
+        listed = await self._run_git(
+            workspace, ["worktree", "list", "--porcelain"], check=False
+        )
+        wanted = f"branch refs/heads/{branch}"
+        for entry in listed.stdout.split("\n\n"):
+            lines = entry.strip().split("\n")
+            if wanted in lines and lines[0].startswith("worktree "):
+                path = Path(lines[0].removeprefix("worktree "))
+                return None if path == workspace else path
+        return None
+
+    async def _checkout_target_branch(
+        self, workspace: Path, target_branch: str
+    ) -> None:
         checkout = await self._run_git(
             workspace, ["checkout", target_branch], check=False
         )
@@ -4046,10 +4080,6 @@ class GitBranchCleanup(_Base):
                         "tracking_stderr": tracking.stderr.strip(),
                     },
                 )
-        await self._run_git(workspace, ["fetch", "origin", target_branch])
-        await self._run_git(workspace, ["reset", "--hard", f"origin/{target_branch}"])
-        log_result = await self._run_git(workspace, ["log", "-1", "--format=%H"])
-        return log_result.stdout.strip()
 
     async def _sync_target_branch_best_effort(
         self, workspace: Path, target_branch: str
@@ -4075,6 +4105,7 @@ class GitBranchCleanup(_Base):
                 " continuing without local sync",
                 target_branch=target_branch,
                 error=str(exc),
+                details=exc.details,
             )
             return None
 
@@ -5489,6 +5520,55 @@ class GitGatewayPRs(_Base):
         repo_ref = await self._repo_ref_for_workspace(workspace)
         merged = await self._pr_is_merged(repo_ref, task.pr_number, git_token)
         return True if merged is None else bool(merged)
+
+    async def reconcile_already_merged_pr(
+        self, task_id: UUID, *, actor_agent_id: UUID | None = None
+    ) -> str | None:
+        """Backfill an already-merged PR's work session from forge state.
+
+        Closes the interrupted-complete() bookkeeping gap: when a prior
+        cell_pm_complete died after the irreversible forge merge but before
+        its work-session write, the retry's H7 pre-check skips ``pr_merge``
+        — which is also the only writer of ``pr_status="merged"`` — leaving
+        ``merge_commit`` None and complete() wedged on the PR-merged guard.
+        This mirrors ``pr_merge``'s session bookkeeping (``merge_pr``) for
+        that case and returns the forge's ``merge_commit_sha`` so the caller
+        can record the merge entry + audit trail. Returns None on any
+        indeterminate lookup (task/project missing, forge error, PR not
+        actually merged) — the session is left untouched, never guessed.
+        """
+        from sqlalchemy import select
+
+        from roboco.db.tables import TaskTable as _TaskTable
+
+        result = await self.session.execute(
+            select(_TaskTable).where(_TaskTable.id == task_id).limit(1)
+        )
+        task = result.scalar_one_or_none()
+        if task is None or not task.pr_number:
+            return None
+        project = await self._project_for_task(task)
+        if project is None:
+            return None
+        workspace_agent_id = self._resolve_workspace_agent_id(task, None)
+        workspace = await self.get_workspace(project.slug, agent_id=workspace_agent_id)
+        git_token = await self._get_project_token_or_raise(project.slug)
+        repo_ref = await self._repo_ref_for_workspace(workspace)
+        try:
+            resp = await self._forge.get_pr(repo_ref, git_token, task.pr_number)
+        except httpx.HTTPError:
+            return None
+        if not resp.is_success or not resp.json().get("merged"):
+            return None
+        sha = resp.json().get("merge_commit_sha")
+        if task.work_session_id:
+            ws_service = get_work_session_service(self.session)
+            await ws_service.merge_pr(
+                require_uuid(task.work_session_id),
+                self._resolve_merger_id(task, actor_agent_id),
+            )
+            await self.session.commit()
+        return str(sha) if sha else None
 
     async def pr_merge(
         self,

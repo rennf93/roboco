@@ -31,8 +31,8 @@ A default-off, release-triggered task-origination engine that keeps the public d
 | `DocsSyncEngine._already_open_for_version` | method | `roboco/services/docs_sync_engine.py:137` | Dedupe check using `TaskService.list_open_docs_sync_tasks(version=...)` filtered by the `docs_sync_release_version` marker. |
 | `DocsSyncEngine._open_task` | method | `roboco/services/docs_sync_engine.py:144` | Builds the `TaskCreateRequest` (Main-PM planning root, `confirmed_by_human=True`, source `docs_sync`) and stamps the release-version marker. |
 | `get_docs_sync_engine` | function | `roboco/services/docs_sync_engine.py:190` | Factory constructing a `DocsSyncEngine` bound to a session. |
-| `DOCS_SYNC_SOURCE` | constant | `roboco/services/task.py:739` | Source tag value `"docs_sync"` used for dedupe queries and task creation. |
-| `list_open_docs_sync_tasks` | method | `roboco/services/task.py:2415` | Returns non-terminal `docs_sync` tasks, optionally scoped to one release version via JSONB marker filtering in SQL. |
+| `DOCS_SYNC_SOURCE` | constant | `roboco/services/task.py:750` | Source tag value `"docs_sync"` used for dedupe queries and task creation. |
+| `list_open_docs_sync_tasks` | method | `roboco/services/task.py:2426` | Returns non-terminal `docs_sync` tasks, optionally scoped to one release version via JSONB marker filtering in SQL. |
 | `get_docs_sync_release_version` / `set_docs_sync_release_version` | functions | `roboco/foundation/policy/content/markers.py:757,762` | Read/write the `docs_sync_release_version` marker used for per-release dedupe. |
 
 ## Data Flow
@@ -148,7 +148,7 @@ engine-docs-sync
 
 | Name | File | Trigger |
 |---|---|---|
-| `ReleaseProposalService.approve` | `roboco/services/release_proposal.py:386` | CEO panel `POST /api/release/proposal/approve`; runs executor, then calls `_draft_docs_update(report)` on publish success |
+| `ReleaseProposalService.approve` | `roboco/services/release_proposal.py:402` | CEO panel `POST /api/release/proposal/approve`; runs executor, then calls `_draft_docs_update(report)` on publish success |
 | `DocsSyncEngine.originate_docs_update` | `roboco/services/docs_sync_engine.py:72` | Called from `_draft_docs_update`; no background loop or public API route |
 
 ## Config Flags
@@ -186,7 +186,7 @@ The flag is registered in `roboco/services/settings.py`'s `FEATURE_FLAGS` tuple,
 | Title | File:Line | Claim | Severity |
 |---|---|---|---|
 | Missing `roboco-website` project silently skips docs updates | `roboco/services/docs_sync_engine.py:80` | By design the engine logs a warning and no-ops; operators must register the docs project before enabling the flag. | low |
-| Broad exception catch in `_draft_docs_update` could mask persistent engine failures | `roboco/services/release_proposal.py:276` | Best-effort by design so publish success is never endangered, but a persistent failure would only surface as a log warning. | low |
+| Broad exception catch in `_draft_docs_update` could mask persistent engine failures | `roboco/services/release_proposal.py:292` | Best-effort by design so publish success is never endangered, but a persistent failure would only surface as a log warning. | low |
 | Cap/dedupe ordering: open_count is checked before per-version dedupe | `roboco/services/docs_sync_engine.py:97` | Correct: a duplicate for the same version is rejected after the cap check, so the cap is not consumed by duplicates. | low |
 | Instance-level `_per_cycle_originated` counter persists across calls on a reused engine | `roboco/services/docs_sync_engine.py:66` | Safe today because `release_proposal.py` constructs a fresh `DocsSyncEngine` per publish invocation. A future refactor that reuses an instance must either create a fresh engine per publish or add an explicit reset. | low |
 

@@ -31,7 +31,11 @@ _WORKTREE = f"{_CLONE}/.worktrees/abc12345"
         (f"{_CLONE}/src", f"{_WORKTREE}/src"),
         (f"{_CLONE}/.venv/lib/python3.13/site-packages", None),
         (f"{_CLONE}/.uv-python/cpython-3.13/lib", None),
-        (f"{_CLONE}/.worktrees/other", None),
+        # an editable .pth a sibling worktree's uv sync wrote (79dbdad0)
+        (f"{_CLONE}/.worktrees/other", _WORKTREE),
+        (f"{_CLONE}/.worktrees/other/src", f"{_WORKTREE}/src"),
+        (f"{_WORKTREE}/src", f"{_WORKTREE}/src"),
+        (f"{_CLONE}/.worktrees", None),
         (f"{_CLONE}-sibling", None),
         ("/usr/lib/python3.13", None),
         ("", None),
@@ -49,6 +53,28 @@ def test_an_interpreter_started_from_the_clone_root_is_left_alone() -> None:
     path = [_CLONE, f"{_CLONE}/src"]
     point_clone_root_paths_at_worktree(f"{_CLONE}/.venv", path)
     assert path == [_CLONE, f"{_CLONE}/src"]
+
+
+@pytest.mark.parametrize(
+    ("cwd", "expected"),
+    [
+        (_WORKTREE, _WORKTREE),
+        (f"{_WORKTREE}/scripts", _WORKTREE),
+        (_CLONE, _CLONE),
+        (f"{_CLONE}/.worktrees", _CLONE),
+        ("/data/workspaces/p/backend/be-dev-2/.worktrees/abc12345", _CLONE),
+        ("", _CLONE),
+    ],
+)
+def test_the_canonical_venv_serves_the_worktree_the_process_runs_in(
+    cwd: str, expected: str
+) -> None:
+    """The workspace container runs a worktree's commands with
+    ``UV_PROJECT_ENVIRONMENT`` set to the clone root's venv (2026-11-03:
+    fe-doc's ``make codegen`` rendered the clone root's Aug 31 verb table)."""
+    path = [_CLONE]
+    point_clone_root_paths_at_worktree(f"{_CLONE}/.venv", path, cwd)
+    assert path == [expected]
 
 
 def _clone_with_editable_install(root: Path) -> tuple[Path, Path]:
@@ -72,9 +98,9 @@ def _clone_with_editable_install(root: Path) -> tuple[Path, Path]:
     return clone, worktree
 
 
-def _imported_from(checkout: Path) -> str:
+def _imported_from(checkout: Path, venv: Path | None = None) -> str:
     done = subprocess.run(
-        [str(checkout / ".venv" / "bin" / "python"), "scripts/show.py"],
+        [str((venv or checkout / ".venv") / "bin" / "python"), "scripts/show.py"],
         cwd=checkout,
         check=True,
         capture_output=True,
@@ -91,6 +117,32 @@ def test_a_script_in_the_worktree_imports_the_worktrees_package(tmp_path: Path) 
     assert (worktree / ".venv").is_symlink()
     assert _imported_from(worktree) == "worktree"
     assert _imported_from(clone) == "clone root"
+
+
+def test_a_worktree_script_on_the_canonical_venv_imports_the_worktree(
+    tmp_path: Path,
+) -> None:
+    clone, worktree = _clone_with_editable_install(tmp_path)
+
+    WorkspaceService._link_shared_venv(worktree, clone)
+
+    assert _imported_from(worktree, venv=clone / ".venv") == "worktree"
+
+
+def test_an_editable_install_naming_a_sibling_worktree_still_imports_this_one(
+    tmp_path: Path,
+) -> None:
+    clone, worktree = _clone_with_editable_install(tmp_path)
+    sibling = clone / ".worktrees" / "def67890"
+    (sibling / "demo").mkdir(parents=True)
+    (sibling / "demo" / "__init__.py").write_text("WHERE = 'sibling'\n")
+    (site_packages,) = (clone / ".venv" / "lib").glob("python*/site-packages")
+    (site_packages / "_demo.pth").write_text(f"{sibling}\n")
+
+    WorkspaceService._link_shared_venv(worktree, clone)
+
+    assert _imported_from(worktree) == "worktree"
+    assert _imported_from(worktree, venv=clone / ".venv") == "worktree"
 
 
 def test_the_hook_comes_back_into_a_venv_rebuilt_under_a_linked_worktree(

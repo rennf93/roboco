@@ -18,6 +18,8 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
+    from collections import deque
+
     from roboco.services.learning import LearningNotification
 
 
@@ -25,5 +27,5 @@ class LearningPropagationServiceSelf(Protocol):
     """Every cross-class member a moved method body reaches via ``self``:
     LearningPropagationService's attributes."""
 
-    _notification_queue: list[LearningNotification]
+    _notification_queue: deque[LearningNotification]
     _optimal_service: Any

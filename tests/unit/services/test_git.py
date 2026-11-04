@@ -1605,6 +1605,67 @@ async def test_sync_target_branch_raises_when_origin_also_missing() -> None:
         await svc._sync_target_branch(Path("/tmp/ws"), "feature/backend/parent")
 
 
+@pytest.mark.asyncio
+async def test_sync_target_branch_syncs_the_worktree_that_holds_the_branch() -> None:
+    """A target branch checked out in one of the clone's worktrees is synced there.
+
+    Git refuses ``checkout <branch>`` in the clone root while another worktree
+    holds it, so the post-merge sync used to fail for the PM's own cell-branch
+    worktree and leave it stale.
+    """
+    svc = _service()
+    calls: list[tuple[Path, list[str]]] = []
+    porcelain = (
+        "worktree /tmp/ws\nHEAD aaa\nbranch refs/heads/main\n\n"
+        "worktree /tmp/ws/.git/wt/f03c38e0\nHEAD bbb\n"
+        "branch refs/heads/feature/backend/parent\n"
+    )
+
+    async def _run_git(workspace: Path, args: list[str], **_kw: object) -> object:
+        calls.append((workspace, args))
+        if args[:2] == ["worktree", "list"]:
+            return MagicMock(returncode=0, stdout=porcelain, stderr="")
+        if args[:2] == ["log", "-1"]:
+            return MagicMock(returncode=0, stdout="worktree-tip-sha", stderr="")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+    sha = await svc._sync_target_branch(Path("/tmp/ws"), "feature/backend/parent")
+    wt = Path("/tmp/ws/.git/wt/f03c38e0")
+    assert sha == "worktree-tip-sha"
+    assert (wt, ["fetch", "origin", "feature/backend/parent"]) in calls
+    assert (wt, ["reset", "--hard", "origin/feature/backend/parent"]) in calls
+    assert (wt, ["log", "-1", "--format=%H"]) in calls
+    assert not [a for _, a in calls if a[0] == "checkout"]
+
+
+@pytest.mark.asyncio
+async def test_sync_target_branch_checks_out_when_no_worktree_holds_it() -> None:
+    """With no worktree on the target branch the root checkout path is unchanged."""
+    svc = _service()
+    calls: list[tuple[Path, list[str]]] = []
+    porcelain = (
+        "worktree /tmp/ws\nHEAD aaa\nbranch refs/heads/main\n\n"
+        "worktree /tmp/ws/.git/wt/x\nHEAD bbb\nbranch refs/heads/feature/other\n"
+    )
+
+    async def _run_git(workspace: Path, args: list[str], **_kw: object) -> object:
+        calls.append((workspace, args))
+        if args[:2] == ["worktree", "list"]:
+            return MagicMock(returncode=0, stdout=porcelain, stderr="")
+        if args[:2] == ["log", "-1"]:
+            return MagicMock(returncode=0, stdout="root-tip-sha", stderr="")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    _bind(svc, "_run_git", AsyncMock(side_effect=_run_git))
+    sha = await svc._sync_target_branch(Path("/tmp/ws"), "feature/backend/parent")
+    root = Path("/tmp/ws")
+    assert sha == "root-tip-sha"
+    assert (root, ["checkout", "feature/backend/parent"]) in calls
+    assert (root, ["reset", "--hard", "origin/feature/backend/parent"]) in calls
+    assert all(w == root for w, _ in calls)
+
+
 # ---------------------------------------------------------------------------
 # _sync_target_branch_best_effort — post-merge local sync must never re-block
 # ---------------------------------------------------------------------------
@@ -1647,6 +1708,35 @@ async def test_sync_target_branch_best_effort_returns_sha_on_success() -> None:
         Path("/tmp/ws"), "feature/backend/parent"
     )
     assert result == "merged-tip-sha"
+
+
+@pytest.mark.asyncio
+async def test_sync_target_branch_best_effort_warning_carries_git_stderr() -> None:
+    """The warning keeps git's stderr, which ``str(exc)`` drops."""
+    svc = _service()
+    _bind(
+        svc,
+        "_sync_target_branch",
+        AsyncMock(
+            side_effect=GitError(
+                "Could not check out target branch 'feature/backend/parent'.",
+                {
+                    "target_branch": "feature/backend/parent",
+                    "checkout_stderr": "already used by worktree",
+                    "tracking_stderr": "branch already exists",
+                },
+            )
+        ),
+    )
+    log = MagicMock()
+    svc.log = log
+    result = await svc._sync_target_branch_best_effort(
+        Path("/tmp/ws"), "feature/backend/parent"
+    )
+    assert result is None
+    kwargs = log.warning.call_args.kwargs
+    assert kwargs["details"]["checkout_stderr"] == "already used by worktree"
+    assert kwargs["details"]["tracking_stderr"] == "branch already exists"
 
 
 # ---------------------------------------------------------------------------
@@ -1999,6 +2089,110 @@ async def test_is_pr_merged_for_task_none_treated_as_merged() -> None:
     with _patch_project_service(fake_project):
         out = await svc.is_pr_merged_for_task(fake_task.id)
     assert out is True
+
+
+# ---------------------------------------------------------------------------
+# Interrupted-complete gap: reconcile_already_merged_pr backfills the session
+# from forge state
+# ---------------------------------------------------------------------------
+
+
+def _forge_response(merged: bool, sha: str | None) -> MagicMock:
+    resp = MagicMock()
+    resp.is_success = True
+    resp.json.return_value = {"merged": merged, "merge_commit_sha": sha}
+    return resp
+
+
+@pytest.mark.asyncio
+async def test_reconcile_already_merged_pr_backfills_session_and_returns_sha() -> None:
+    """A merged PR's session gets merge_pr'd from forge state and the forge
+    merge_commit_sha is returned so complete() can record the merge entry."""
+    project_id = uuid4()
+    session_id = uuid4()
+    actor = uuid4()
+    fake_task = MagicMock(
+        id=uuid4(),
+        project_id=project_id,
+        pr_number=11,
+        parent_task_id=None,
+        work_session_id=session_id,
+        assigned_to=actor,
+    )
+    fake_project = MagicMock(slug="roboco")
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = fake_task
+
+    svc = _service(execute_returns=result)
+    _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
+    _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
+    _bind(
+        svc, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("acme", "repo"))
+    )
+    _bind(svc, "_project_for_task", AsyncMock(return_value=fake_project))
+    _bind(svc, "_resolve_workspace_agent_id", MagicMock(return_value=None))
+    fake_forge = MagicMock(
+        get_pr=AsyncMock(return_value=_forge_response(True, "merge-sha-1"))
+    )
+
+    ws_service = MagicMock(merge_pr=AsyncMock(return_value=MagicMock()))
+    with (
+        _patch_project_service(fake_project),
+        patch("roboco.services.git.get_work_session_service", return_value=ws_service),
+        patch("roboco.services.git.ForgeRouter", return_value=fake_forge),
+    ):
+        sha = await svc.reconcile_already_merged_pr(fake_task.id, actor_agent_id=actor)
+    assert sha == "merge-sha-1"
+    ws_service.merge_pr.assert_awaited_once()
+    args = ws_service.merge_pr.await_args.args
+    assert args[0] == session_id
+    assert args[1] == actor
+
+
+@pytest.mark.asyncio
+async def test_reconcile_already_merged_pr_noop_when_not_merged_or_unknown() -> None:
+    """An unmerged PR / forge error / missing task leaves the session
+    untouched and returns None — no backfill is guessed."""
+    fake_task = MagicMock(
+        id=uuid4(),
+        project_id=uuid4(),
+        pr_number=11,
+        parent_task_id=None,
+        work_session_id=uuid4(),
+    )
+    fake_project = MagicMock(slug="roboco")
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = fake_task
+    svc = _service(execute_returns=result)
+    _bind(svc, "get_workspace", AsyncMock(return_value=Path("/tmp/ws")))
+    _bind(svc, "_get_project_token_or_raise", AsyncMock(return_value="tok"))
+    _bind(
+        svc, "_repo_ref_for_workspace", AsyncMock(return_value=RepoRef("acme", "repo"))
+    )
+    _bind(svc, "_project_for_task", AsyncMock(return_value=fake_project))
+    _bind(svc, "_resolve_workspace_agent_id", MagicMock(return_value=None))
+
+    ws_service = MagicMock(merge_pr=AsyncMock(return_value=MagicMock()))
+
+    # Forge answers: not merged.
+    fake_forge = MagicMock(get_pr=AsyncMock(return_value=_forge_response(False, None)))
+    with (
+        _patch_project_service(fake_project),
+        patch("roboco.services.git.get_work_session_service", return_value=ws_service),
+        patch("roboco.services.git.ForgeRouter", return_value=fake_forge),
+    ):
+        assert await svc.reconcile_already_merged_pr(fake_task.id) is None
+
+    # Forge unreachable (indeterminate).
+    err_forge = MagicMock(get_pr=AsyncMock(side_effect=httpx.HTTPError("boom")))
+    with (
+        _patch_project_service(fake_project),
+        patch("roboco.services.git.get_work_session_service", return_value=ws_service),
+        patch("roboco.services.git.ForgeRouter", return_value=err_forge),
+    ):
+        assert await svc.reconcile_already_merged_pr(fake_task.id) is None
+
+    ws_service.merge_pr.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

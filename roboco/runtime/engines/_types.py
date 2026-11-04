@@ -911,6 +911,7 @@ class AgentOrchestratorSelf(
     _gemini_repark_count: int
     _grok_last_park_at: datetime | None
     _grok_repark_count: int
+    _held_hold_logged_for: dict[str, str]
     _instances: dict[str, AgentInstance]
     _intake_spawn_lock: asyncio.Lock
     _last_audit_spawn_at: datetime | None
