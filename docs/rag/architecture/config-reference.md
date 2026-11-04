@@ -88,7 +88,7 @@ Agents whose provider is `KIMI` run Moonshot AI's official `kimi` (kimi-code) CL
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ROBOCO_HOST_KIMI_DIR` | `~/.kimi-code` | Host dir holding `credentials/`/`oauth/`, mounted read-write and shared across every Kimi agent; the CLI's own cross-process lock serializes token redemptions. Set up once with `kimi login`. |
-| `ROBOCO_KIMI_CLI_MODEL` | `kimi-code/k3` | Kimi CLI model alias; `kimi-code/kimi-for-coding` is the cheaper cost lever |
+| `ROBOCO_KIMI_CLI_MODEL` | `kimi-code/k3` | Kimi CLI model alias; `kimi-code/kimi-for-coding` is the cheaper cost lever; the panel's AI routing card shows the effective value (via `kimi_cli_model` on `GET /api/providers`) in the Kimi button copy |
 | `ROBOCO_KIMI_RATE_LIMIT_RETRY_AFTER_SECONDS` | `60` | Park-and-retry delay after a rate-limit/quota sniff (exit 75) |
 | `ROBOCO_KIMI_AUTH_RETRY_AFTER_SECONDS` | `60` | Park-and-retry delay after a missing/expired credential (exit 78) |
 

@@ -264,6 +264,11 @@ export function AIRoutingCard() {
 
   const hasOllamaKey = !!keyStatus?.has_key;
   const currentMode: RoutingMode = snapshot?.mode ?? "anthropic";
+  // Neutral copy until the mode snapshot (which carries the pinned models) loads.
+  const modeCopy = (name: string, model?: string) =>
+    model
+      ? `Every agent uses ${name} (${model}).`
+      : `Every agent uses ${name}.`;
 
   // Track the latest self-hosted test result so ModeButton can gate access.
   const [selfHostedTestResult, setSelfHostedTestResult] =
@@ -1249,7 +1254,7 @@ export function AIRoutingCard() {
             <ModeButton
               icon={<Bot className="h-4 w-4" />}
               label="Codex"
-              description="Every agent uses Codex (gpt-5.3-codex)."
+              description={modeCopy("Codex", snapshot?.codex_cli_model)}
               active={currentMode === "codex"}
               onClick={flipToCodex}
               disabled={applyMode.isPending}
@@ -1258,7 +1263,7 @@ export function AIRoutingCard() {
             <ModeButton
               icon={<Gem className="h-4 w-4" />}
               label="Gemini"
-              description="Every agent uses Gemini (gemini-2.5-pro)."
+              description={modeCopy("Gemini", snapshot?.gemini_cli_model)}
               active={currentMode === "gemini"}
               onClick={flipToGemini}
               disabled={applyMode.isPending}
@@ -1267,7 +1272,7 @@ export function AIRoutingCard() {
             <ModeButton
               icon={<Moon className="h-4 w-4" />}
               label="Kimi"
-              description="Every agent uses Kimi (kimi-code/k3)."
+              description={modeCopy("Kimi", snapshot?.kimi_cli_model)}
               active={currentMode === "kimi"}
               onClick={flipToKimi}
               disabled={applyMode.isPending}
@@ -1278,7 +1283,7 @@ export function AIRoutingCard() {
               label="Ollama"
               description={
                 hasOllamaKey
-                  ? "Every agent uses Ollama Cloud."
+                  ? modeCopy("Ollama Cloud", snapshot?.ollama_default_model)
                   : "Save the Ollama key first."
               }
               active={currentMode === "ollama"}
