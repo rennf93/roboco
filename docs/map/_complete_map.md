@@ -926,7 +926,7 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | docker-compose.registry.yml | Pull-and-run compose using pre-built GHCR/Docker Hub images (ROBOCO_REGISTRY + ROBOCO_VERSION); infra services byte-identical to build compose (incl. `backup` + vault defaults), agent-* services are one-shot pre-pulls, own `roboco_data` network; one `docker-gate` (builds refused, since every image is pulled; `GATE_REGISTRY` from `ROBOCO_REGISTRY`; the same read-only bind roots as the build file's gates) serves the orchestrator and dispatcher | 990 |
 | Makefile | Ops + quality targets: infra, dev/run/orchestrator, quality gate (ruff/mypy/pytest/xenon/radon/vulture/bandit/pip-audit/deptry/lint-imports/alembic/foundation-check), fast pre-submit `gate` target (ruff format/check, mypy, xenon, lint-imports), per-Python test matrix, docs, lifecycle regen | 628 |
 | pyproject.toml | Project + dependency manifest: requires-python >=3.13,<3.15, deps, dev/docs extras, console scripts, ruff/mypy/pytest/coverage/vulture/bandit/radon/xenon/deptry/importlinter config | 717 |
-| roboco/config.py | Pydantic Settings (env prefix ROBOCO_, cached via lru_cache); every tunable: DB, Redis, RAG, LLM/Ollama, workspaces, agent guardrails, gateway thresholds, autonomy-engine flags | 3413 |
+| roboco/config.py | Pydantic Settings (env prefix ROBOCO_, cached via lru_cache); every tunable: DB, Redis, RAG, LLM/Ollama, workspaces, agent guardrails, gateway thresholds, autonomy-engine flags | 3414 |
 | roboco/__init__.py | Package root: __version__ + re-exports settings, exceptions, logging helpers | 36 |
 | roboco/bootstrap.py | Async bootstrap: git-user drop self-test (every role but indexer; SystemExit(1) on failure), a warning when an api or dispatcher has the host Docker socket and no `DOCKER_HOST` (a compose file from before the Docker gate), DB init, Redis event bus, websocket bridge, orchestrator construction, uvicorn API server task, wait-for-ready poll, optional agent spawn, graceful shutdown | 259 |
 | roboco/cli.py | argparse CLI wrapper around bootstrap.main / db-only; the ENTRYPOINT invoked by `python -m roboco.cli` | 67 |
@@ -3125,7 +3125,7 @@ This slice implements RoboCo's formal-notification backbone: NotificationService
 
 | Path | Role | LOC |
 |---|---|---|
-| roboco/services/notification.py | Typed notification factory (blocker/QA/docs/handoff/A2A/board-review/ack/notification-spawn-cap) with slug→UUID recipient resolution, DB purpose-dedup + Redis re-fire guard, owns its own DB context and commit | 1215 |
+| roboco/services/notification.py | Typed notification factory (blocker/QA/docs/handoff/A2A/board-review/ack/notification-spawn-cap) with slug→UUID recipient resolution, DB purpose-dedup + Redis re-fire guard, owns its own DB context and commit | 1227 |
 | roboco/services/_notification_service_types.py | `NotificationServiceSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `NotificationService` mixins reach through `self`, plus its instance attributes; `tests/unit/services/test_notification_service_mixins.py` fails on a stray stub or a member defined twice | 37 |
 | roboco/services/notification_dedup.py | Bounded Redis SET-NX re-fire guard for loop-prone notification types (TASK_ASSIGNMENT/REVIEW_REQUEST/DOCUMENTATION_REQUEST/BROADCAST); 60s TTL, fail-open | 324 |
 | roboco/services/notification_delivery.py | Delivery (transactional-outbox deferred bus publish), ACK/read tracking, expiry sweep, PM/CEO task-handoff notifications (notify_pm_of_block, escalate_and_notify, etc.), API-facing list/CRUD, `_notify_telegram` best-effort CEO DM fan-out (V2: `actionable=True` on escalation attaches an Approve/Reject/Open inline keyboard) | 2223 |
@@ -4000,7 +4000,7 @@ The two choreographer mixins that implement the PR-reviewer's two distinct surfa
 
 | Path | Role | LOC |
 |---|---|---|
-| roboco/services/gateway/choreographer/pr_gate.py | PRGateMixin — in-path assembled-PR gate verbs (claim_gate_review, pr_pass, pr_fail, record_devops_review) and the shared pr_pass/pr_fail decision body; stacks the four helper mixins below | 543 |
+| roboco/services/gateway/choreographer/pr_gate.py | PRGateMixin — in-path assembled-PR gate verbs (claim_gate_review, pr_pass, pr_fail, record_devops_review) and the shared pr_pass/pr_fail decision body; stacks the four helper mixins below | 573 |
 | roboco/services/gateway/choreographer/pr_gate_preflight.py | PRGatePreflightMixin — what every gate verb checks first: the task fetch, role and ownership (with the DevOps co-reviewer's carve-out), the spec gate with its self-review wiring, the tracing gate | 294 |
 | roboco/services/gateway/choreographer/pr_gate_evidence.py | PRGateEvidenceMixin — what the gate reviewer is shown: the real diff base, the touched files, the collision map, the B43 coherence scaffold, claim_gate_review's inline evidence | 223 |
 | roboco/services/gateway/choreographer/pr_gate_verdicts.py | PRGateVerdictMixin — the canonical pr_review verdict note (summary, payload, head-SHA stamp and re-stamp) and the review posted on the PR | 366 |
@@ -4012,19 +4012,19 @@ The two choreographer mixins that implement the PR-reviewer's two distinct surfa
 
 | Name | Kind | File:Line | Responsibility |
 |---|---|---|---|
-| PRGateMixin | class | roboco/services/gateway/choreographer/pr_gate.py:42 | Mixin: in-path assembled-PR gate verbs (claim_gate_review/pr_pass/pr_fail/record_devops_review) + the shared decision body; inherits PRGatePreflightMixin and PRGatePassMixin, which take ChoreographerHelpers under TYPE_CHECKING only |
+| PRGateMixin | class | roboco/services/gateway/choreographer/pr_gate.py:45 | Mixin: in-path assembled-PR gate verbs (claim_gate_review/pr_pass/pr_fail/record_devops_review) + the shared decision body; inherits PRGatePreflightMixin and PRGatePassMixin, which take ChoreographerHelpers under TYPE_CHECKING only |
 | PRGatePreflightMixin | class | roboco/services/gateway/choreographer/pr_gate_preflight.py:39 | Mixin: the role/ownership/spec/tracing checks every gate verb runs first; calls nothing else in the gate |
 | PRGateEvidenceMixin | class | roboco/services/gateway/choreographer/pr_gate_evidence.py:40 | Mixin: the assembled diff base, its touched files and the claim_gate_review evidence built from them |
 | PRGateVerdictMixin | class | roboco/services/gateway/choreographer/pr_gate_verdicts.py:33 | Mixin: the pr_review verdict note and the review posted on the PR |
 | PRGatePassMixin | class | roboco/services/gateway/choreographer/pr_gate_pass.py:115 | Mixin over PRGateEvidenceMixin + PRGateVerdictMixin: everything only pr_pass runs (guards, CI + CodeQL scope, DevOps precondition, verified-stamp, second review) |
-| PRGateMixin.claim_gate_review | method | roboco/services/gateway/choreographer/pr_gate.py:45 | Reviewer claims an awaiting_pr_review task without transitioning it (status stays awaiting_pr_review); returns assembled PR diff inline as evidence |
-| PRGateMixin.pr_pass | method | roboco/services/gateway/choreographer/pr_gate.py:131 | Pass the assembled PR: awaiting_pr_review → awaiting_pm_review; delegates to _gate_decision |
-| PRGateMixin.pr_fail | method | roboco/services/gateway/choreographer/pr_gate.py:169 | Fail the assembled PR with structured `findings` (the deprecated `issues=[str]` shim still works this release) → needs_revision; validates + count-guards (nudge 5 / hard-cap 10) via `choreographer/findings.py`, inserts one append-only ledger row per finding BEFORE `_record_gate_verdict_for` so the verdict note carries real ids, delegates to `_gate_decision`. See `docs/map/review-findings.md`. |
+| PRGateMixin.claim_gate_review | method | roboco/services/gateway/choreographer/pr_gate.py:64 | Reviewer claims an awaiting_pr_review task without transitioning it (status stays awaiting_pr_review); returns assembled PR diff inline as evidence |
+| PRGateMixin.pr_pass | method | roboco/services/gateway/choreographer/pr_gate.py:161 | Pass the assembled PR: awaiting_pr_review → awaiting_pm_review; delegates to _gate_decision |
+| PRGateMixin.pr_fail | method | roboco/services/gateway/choreographer/pr_gate.py:199 | Fail the assembled PR with structured `findings` (the deprecated `issues=[str]` shim still works this release) → needs_revision; validates + count-guards (nudge 5 / hard-cap 10) via `choreographer/findings.py`, inserts one append-only ledger row per finding BEFORE `_record_gate_verdict_for` so the verdict note carries real ids, delegates to `_gate_decision`. See `docs/map/review-findings.md`. |
 | PRGatePreflightMixin._gate_preflight | method | roboco/services/gateway/choreographer/pr_gate_preflight.py:93 | Ownership + role + spec gate (with self_review_block via actor_slug/original_developer_slug) + free-text soup guard for pr_pass/pr_fail; returns rejection Envelope or (t,agent,role_str,briefing,spec_ctx) |
 | PRGateVerdictMixin._record_gate_verdict_for | method | roboco/services/gateway/choreographer/pr_gate_verdicts.py:36 | Author the canonical pr_review verdict note before the transition; on pr_fail also capture the assembled PR head SHA for the unchanged-PR gate; on pr_pass with ci_note, stamp the ci_status field into the verdict with evidence the CI guard ran |
 | PRGateVerdictMixin._post_gate_review | method | roboco/services/gateway/choreographer/pr_gate_verdicts.py:130 | Post the gate verdict to the PR itself (best-effort, after the DB transition); resolves reviewer slug |
-| PRGateMixin._deliver_pr_fail_to_owner | method | roboco/services/gateway/choreographer/pr_gate.py:337 | a2a the pr_fail change-requests to the owning PM (best-effort) with a Main-PM-root steer to re-delegate not re-submit; closes the blind re-submit loop |
-| PRGateMixin._gate_decision | method | roboco/services/gateway/choreographer/pr_gate.py:376 | Shared body for pr_pass/pr_fail: preflight + tracing + pr_pass blocked guards + record verdict + run_intent + None-guard for concurrent transition + post-PR + a2a on fail |
+| PRGateMixin._deliver_pr_fail_to_owner | method | roboco/services/gateway/choreographer/pr_gate.py:367 | a2a the pr_fail change-requests to the owning PM (best-effort) with a Main-PM-root steer to re-delegate not re-submit; closes the blind re-submit loop |
+| PRGateMixin._gate_decision | method | roboco/services/gateway/choreographer/pr_gate.py:406 | Shared body for pr_pass/pr_fail: preflight + tracing + pr_pass blocked guards + record verdict + run_intent + None-guard for concurrent transition + post-PR + a2a on fail |
 | PRGatePassMixin._pr_pass_blocked | method | roboco/services/gateway/choreographer/pr_gate_pass.py:328 | Refuse pr_pass on a broken toolchain, block-level convention violation, or non-green CI on the assembled PR's head commit; returns (rejection_envelope, ci_note). Both toolchain and conventions guards inert when their flags are off; CI guard fails open on configuration gaps |
 | PRGatePassMixin._ci_status_guard | method | roboco/services/gateway/choreographer/pr_gate_pass.py:471 | Refuse pr_pass unless CI on the assembled PR's head commit is green. Failing/pending/unscheduled CI blocks with reviewer-aware remediation pointing at pr_fail; configuration gaps, unreachable/nonexistent repos, or real API failures on reachable repos each pass through with distinct classifications (no_ci_configured vs error) via git.get_pr_ci_status. When a CodeQL scope relaxation is granted (scope_note is not None), calls _scope_relaxation_drift_guard before the pass-through return |
 | PRGatePassMixin._resolve_ci_status | method | roboco/services/gateway/choreographer/pr_gate_pass.py:444 | Thin wrapper: calls git.get_pr_ci_status, interprets the returned dict (no_ci_configured/pending/failure/error/success), and composes a rejection Envelope if CI must block pr_pass |
@@ -7123,6 +7123,7 @@ The Choreographer is the server-side composition layer that turns agent intent-v
 | `roboco/services/gateway/choreographer/devops_gate.py` | DevOps infra-review-gate helpers: infra-glob matching over changed files, the stored devops verdict and whether it still covers the PR head, devops-1 co-claim and authorship checks, and `infra_gate_applies`, the predicate for whether a gate task needs a devops verdict |
 | `roboco/services/gateway/choreographer/doc.py` | `DocMixin`: Documenter verbs, `claim_doc_task` (claims an `awaiting_documentation` task and returns evidence inline) and `i_documented` |
 | `roboco/services/gateway/choreographer/evidence_legs.py` | Bounded advisory-evidence legs: `run_bounded_leg` caps one awaitable against a shared `LegBudget` deadline and degrades to a default plus an `evidence_gaps` entry on an asyncio or git timeout, so a slow fetch never holds a flow verb's row locks |
+| `roboco/services/gateway/choreographer/outage_release.py` | Releases a review claim whose evidence assembly died on an active review-path outage, returning a retryable error that names the outage instead of holding the claim | 103 |
 | `roboco/services/gateway/choreographer/pm.py` | PM verb mixins: `DelegateMixin` (`delegate` and its guards), `SiblingDedupMixin` (its sizing and duplicate checks), `SubtaskCreateMixin` (creating the sub-task and its cross-cell UX dependencies), `SubmitUpMixin` (`submit_up`), `SubmitRootMixin` (`submit_root` and the unchanged-PR loop-stopper), `PMWorkMixin` (`pm_give_me_work`, `triage`, `triage_all`), `PMReviewMixin` (`unblock`, `request_changes`) and `CompleteMixin` (`complete`, `cell_pm_complete`, `main_pm_complete`). |
 
 ## Key Symbols (landmarks only)
@@ -7179,7 +7180,7 @@ The Choreographer is the server-side composition layer that turns agent intent-v
 | `infra_gate_applies` | function | `roboco/services/gateway/choreographer/devops_gate.py:187` | Whether a gate task requires a devops verdict |
 | `verdict_satisfies_head` | function | `roboco/services/gateway/choreographer/devops_gate.py:81` | Whether a passed verdict still covers the PR's current head |
 | `DocMixin.claim_doc_task` | method | `roboco/services/gateway/choreographer/doc.py:154` | Documenter claims an `awaiting_documentation` task |
-| `run_bounded_leg` | function | `roboco/services/gateway/choreographer/evidence_legs.py:84` | Await a coroutine bounded by the budget's remaining time |
+| `run_bounded_leg` | function | `roboco/services/gateway/choreographer/evidence_legs.py:85` | Await a coroutine bounded by the budget's remaining time |
 
 ## Data Flow
 An MCP `flow/*` call hits the orchestrator → the role-specific gateway verb → `Choreographer.<verb>(agent_id, task_id, ...)`. The verb fetches the task (`self.task.get`), builds a briefing (`_briefing_for`), runs the spec gate (`spec.can_invoke_intent(role, verb, t, ctx)`) and any verb-specific preflight guards (free-text soup, claim guards, conventions, behind-base, unchanged-PR). On rejection it emits via `_emit_rejection` with `next`/`remediate`. On allow it calls `VerbRunner.run_intent(verb, t, agent, ctx)`: `pre_side_effects` (e.g. `create_root_pr` for `submit_root`) run OUTSIDE the SAVEPOINT; then `session.begin_nested()` wraps the composed atomic actions (`claim`/`set_plan`/`start`/`submit_qa`/…) re-fetching the task after each; then `side_effects` (push_branch / create_pr / pr_merge) run after the savepoint commits. An intermediate `None` from a composed action raises `INVALID_STATE` (concurrent transition); a trailing `None` flows out as the verb result. The verb wraps the final task in `Envelope.ok(status, next_hint, briefing)` with `.with_introspection(task, role)`.
@@ -7946,16 +7947,16 @@ External:
 | Flag / setting | Source | Used for |
 |----------------|--------|----------|
 | `ROBOCO_GIT_EXECUTOR_WORKERS` (env, default 16) | `os.environ` at git.py:222 | Dedicated git subprocess pool size |
-| `settings.git_command_timeout_seconds` | config.py:2330 | Default `_run_git` timeout |
-| `settings.git_commit_timeout_seconds` | config.py:2381 | Staging/commit large changeset timeout |
-| `settings.git_network_timeout_seconds` | config.py:2403 | fetch/pull/push/ls-remote timeout |
-| `settings.git_diff_timeout_seconds` | config.py:2414 | `GET /api/git/diff`'s outer "diff" stage bound (default 60s) around the paired `git diff` + `git diff --stat` calls, layered on top of (not instead of) `git_command_timeout_seconds` bounding each call individually |
-| `settings.workspaces_root` | config.py:2094 | Workspace path root (token derivation) |
-| `settings.workspace_auto_clone` | config.py:2098 | `get_workspace` auto-clone branch |
-| `settings.public_base_url` | config.py:2523 | Commit/PR template link base (`+ /api`) |
+| `settings.git_command_timeout_seconds` | config.py:2331 | Default `_run_git` timeout |
+| `settings.git_commit_timeout_seconds` | config.py:2382 | Staging/commit large changeset timeout |
+| `settings.git_network_timeout_seconds` | config.py:2404 | fetch/pull/push/ls-remote timeout |
+| `settings.git_diff_timeout_seconds` | config.py:2415 | `GET /api/git/diff`'s outer "diff" stage bound (default 60s) around the paired `git diff` + `git diff --stat` calls, layered on top of (not instead of) `git_command_timeout_seconds` bounding each call individually |
+| `settings.workspaces_root` | config.py:2095 | Workspace path root (token derivation) |
+| `settings.workspace_auto_clone` | config.py:2099 | `get_workspace` auto-clone branch |
+| `settings.public_base_url` | config.py:2524 | Commit/PR template link base (`+ /api`) |
 | `settings.internal_api_url` | config.py:139 | Internal PR body link base |
-| `settings.github_api_base_url` | config.py:1162 | GitHub REST API base (PR/CI/review) |
-| `settings.release_ci_workflow` | config.py:1638 | Named workflow file (e.g. `ci.yml`) used by the release CI gate in `get_latest_ci_conclusion`; always resolves a named workflow so the gate never degrades to the imprecise all-workflows mode |
+| `settings.github_api_base_url` | config.py:1163 | GitHub REST API base (PR/CI/review) |
+| `settings.release_ci_workflow` | config.py:1639 | Named workflow file (e.g. `ci.yml`) used by the release CI gate in `get_latest_ci_conclusion`; always resolves a named workflow so the gate never degrades to the imprecise all-workflows mode |
 
 Module-level tunables (not env): `_SLOW_GIT_OP_MS=5000`, `_CI_RUN_WINDOW=20`, `_CI_FETCH_ATTEMPTS=3`, `_CI_FETCH_BACKOFF_SECONDS=0.5`, `_CI_RETRYABLE_STATUS`, `_CONVENTIONS_VALIDATOR_TIMEOUT_SECONDS=120`, `_GH_UNPROCESSABLE=422`, `_HTTP_NOT_FOUND=404`, `_HTTP_CONFLICT=409`.
 
@@ -9626,7 +9627,7 @@ The product / strategy / research / pitch slice covers the "company layer" above
 |------|------|------------|
 | `roboco/services/project.py` | CRUD + git-token encryption + cell access control for Projects (git repos) | 790 |
 | `roboco/services/_project_service_types.py` | `ProjectServiceSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `ProjectService` mixins reach through `self`, plus its instance attributes; `tests/unit/services/test_project_service_mixins.py` fails on a stray stub or a member defined twice | 42 |
-| `roboco/services/review_path_health.py` | `ReviewPathHealthTracker`: rolling-window, distinct-task failure tracking over evidence/git-readonly reads that flags a `review_path_tools` outage and clears it on recovery | 128 |
+| `roboco/services/review_path_health.py` | `ReviewPathHealthTracker`: rolling-window, distinct-task failure tracking over evidence/git-readonly reads that flags a `review_path_tools` outage and clears it on recovery | 296 |
 | `roboco/services/product.py` | Product CRUD + per-cell `project_for` routing resolver + idempotent cell-map replace | 247 |
 | `roboco/services/kanban.py` | Role-specific kanban board views (dev/qa/documenter/pm/main-pm/board) from task data | 587 |
 | `roboco/services/_kanban_service_types.py` | `KanbanServiceSelf`, a TYPE_CHECKING-only Protocol declaring the attributes the `KanbanService` mixin reads through `self` (no moved body calls across classes, so it has no `<Class>Surface` yet); `tests/unit/services/test_kanban_service_mixins.py` fails on a stray stub or a member defined twice | 28 |
@@ -10067,32 +10068,32 @@ product-strategy-research-pitch
 
 | Flag | Default | File:Line | Effect |
 |------|---------|-----------|--------|
-| `ROBOCO_CONVENTIONS_ENABLED` | `False` | config.py:800 | `ProjectService.create` best-effort scaffolds `.roboco/conventions.yml` PR; inert when off |
-| `ROBOCO_RESEARCH_ENABLED` | `True` | config.py:906 | Mounts `roboco-search` MCP into Board/PM containers (orchestrator:2914) |
-| `ROBOCO_RESEARCH_PROVIDER` | `tavily` | config.py:913 | `tavily`/`brave`/`exa`/`null` adapter selection |
-| `ROBOCO_RESEARCH_API_KEY` | `None` | config.py:926 | Server-side only; unset → `NullProvider` |
-| `ROBOCO_RESEARCH_MAX_RESULTS` | `5` | config.py:944 | Hard cap on `web_search` results (1-20) |
-| `ROBOCO_RESEARCH_FETCH_MAX_CHARS` | `20000` | config.py:950 | Hard cap on `web_fetch` extracted chars |
-| `ROBOCO_RESEARCH_TIMEOUT_SECONDS` | `15.0` | config.py:955 | Outbound provider HTTP timeout |
-| `ROBOCO_RESEARCH_DAILY_QUOTA_PER_AGENT` | `50` | config.py:960 | Per-agent/day call ceiling (Redis, fail-open) |
-| `ROBOCO_PROVISIONING_ENABLED` | `True` | config.py:1144 | Pitch auto-provisioning master switch (still inert without token+org) |
-| `ROBOCO_PROVISIONING_TOKEN` | `""` | config.py:1151 | GitHub PAT for repo creation (server-side only) |
-| `ROBOCO_PROVISIONING_ORG` | `""` | config.py:1158 | GitHub org where repos are provisioned |
-| `ROBOCO_GITHUB_API_BASE_URL` | `https://api.github.com` | config.py:1162 | Override for GitHub Enterprise |
-| `ROBOCO_PROVISIONING_TIMEOUT_SECONDS` | `30.0` | config.py:1166 | Outbound GitHub provisioning timeout |
-| `ROBOCO_PROVISIONING_REPO_PRIVATE` | `True` | config.py:1171 | Whether provisioned repos are private |
-| `ROBOCO_PROVISIONING_PROVIDER` | `github` | config.py:1175 | Phase 4 forge parity: `github`/`gitlab`/`gitea` selects the concrete provisioning target via `_build_provider` |
-| `ROBOCO_PROVISIONING_HOST` | `""` | config.py:1184 | Self-hosted forge host (e.g. `gitlab.example.com`); `.enabled` additionally requires this when `provisioning_provider` is gitlab/gitea (ignored for github/gitlab.com) |
-| `ROBOCO_STRATEGY_ENGINE_ENABLED` | `False` | config.py:1200 | Master switch: loop never starts when off |
-| `ROBOCO_STRATEGY_ENGINE_INTERVAL_SECONDS` | `1800` | config.py:1207 | Seconds between strategy assessment passes |
-| `ROBOCO_STRATEGY_STRANDED_BLOCKED_MINUTES` | `120` | config.py:1212 | Blocked-task threshold for "stranded" observation |
-| `ROBOCO_PROTECTED_GIT_URLS` | `[]` | config.py:2454 | Denylist: `ProjectService` rejects `git_url` containing any entry |
-| `ROBOCO_ENCRYPTION_KEY` | `""` | config.py:972 | Fernet key for git-token encrypt/decrypt |
-| `ROBOCO_ROADMAP_ENGINE_ENABLED` | `False` | config.py:1991 | Master switch: `_roadmap_engine_loop` never opens an exploration cycle when off |
-| `ROBOCO_ROADMAP_INTERVAL_SECONDS` | `604800` | config.py:2001 | Seconds between roadmap-exploration cycles (default weekly) |
-| `ROBOCO_ROADMAP_MIN_ITEMS_PER_CYCLE` | `3` | config.py:2006 | Minimum item drafts `propose_roadmap` must submit for a themed cycle |
-| `ROBOCO_ROADMAP_MAX_ITEMS_PER_CYCLE` | `7` | config.py:2011 | Maximum item drafts per cycle |
-| `ROBOCO_PEST_REWORK_THRESHOLD` | `0.3` | config.py:2024 | 7-day rework rate above which Pest Control's metric predicate opens a cycle off-schedule, on top of its weekly cron. The ONLY env-settable knob among the twelve new Board Programs: every other one arms exclusively via its own settings-store row (`board_program.{key}.enabled`, no `ROBOCO_*_ENABLED` flag exists for them) |
+| `ROBOCO_CONVENTIONS_ENABLED` | `False` | config.py:801 | `ProjectService.create` best-effort scaffolds `.roboco/conventions.yml` PR; inert when off |
+| `ROBOCO_RESEARCH_ENABLED` | `True` | config.py:907 | Mounts `roboco-search` MCP into Board/PM containers (orchestrator:2914) |
+| `ROBOCO_RESEARCH_PROVIDER` | `tavily` | config.py:914 | `tavily`/`brave`/`exa`/`null` adapter selection |
+| `ROBOCO_RESEARCH_API_KEY` | `None` | config.py:927 | Server-side only; unset → `NullProvider` |
+| `ROBOCO_RESEARCH_MAX_RESULTS` | `5` | config.py:945 | Hard cap on `web_search` results (1-20) |
+| `ROBOCO_RESEARCH_FETCH_MAX_CHARS` | `20000` | config.py:951 | Hard cap on `web_fetch` extracted chars |
+| `ROBOCO_RESEARCH_TIMEOUT_SECONDS` | `15.0` | config.py:956 | Outbound provider HTTP timeout |
+| `ROBOCO_RESEARCH_DAILY_QUOTA_PER_AGENT` | `50` | config.py:961 | Per-agent/day call ceiling (Redis, fail-open) |
+| `ROBOCO_PROVISIONING_ENABLED` | `True` | config.py:1145 | Pitch auto-provisioning master switch (still inert without token+org) |
+| `ROBOCO_PROVISIONING_TOKEN` | `""` | config.py:1152 | GitHub PAT for repo creation (server-side only) |
+| `ROBOCO_PROVISIONING_ORG` | `""` | config.py:1159 | GitHub org where repos are provisioned |
+| `ROBOCO_GITHUB_API_BASE_URL` | `https://api.github.com` | config.py:1163 | Override for GitHub Enterprise |
+| `ROBOCO_PROVISIONING_TIMEOUT_SECONDS` | `30.0` | config.py:1167 | Outbound GitHub provisioning timeout |
+| `ROBOCO_PROVISIONING_REPO_PRIVATE` | `True` | config.py:1172 | Whether provisioned repos are private |
+| `ROBOCO_PROVISIONING_PROVIDER` | `github` | config.py:1176 | Phase 4 forge parity: `github`/`gitlab`/`gitea` selects the concrete provisioning target via `_build_provider` |
+| `ROBOCO_PROVISIONING_HOST` | `""` | config.py:1185 | Self-hosted forge host (e.g. `gitlab.example.com`); `.enabled` additionally requires this when `provisioning_provider` is gitlab/gitea (ignored for github/gitlab.com) |
+| `ROBOCO_STRATEGY_ENGINE_ENABLED` | `False` | config.py:1201 | Master switch: loop never starts when off |
+| `ROBOCO_STRATEGY_ENGINE_INTERVAL_SECONDS` | `1800` | config.py:1208 | Seconds between strategy assessment passes |
+| `ROBOCO_STRATEGY_STRANDED_BLOCKED_MINUTES` | `120` | config.py:1213 | Blocked-task threshold for "stranded" observation |
+| `ROBOCO_PROTECTED_GIT_URLS` | `[]` | config.py:2455 | Denylist: `ProjectService` rejects `git_url` containing any entry |
+| `ROBOCO_ENCRYPTION_KEY` | `""` | config.py:973 | Fernet key for git-token encrypt/decrypt |
+| `ROBOCO_ROADMAP_ENGINE_ENABLED` | `False` | config.py:1992 | Master switch: `_roadmap_engine_loop` never opens an exploration cycle when off |
+| `ROBOCO_ROADMAP_INTERVAL_SECONDS` | `604800` | config.py:2002 | Seconds between roadmap-exploration cycles (default weekly) |
+| `ROBOCO_ROADMAP_MIN_ITEMS_PER_CYCLE` | `3` | config.py:2007 | Minimum item drafts `propose_roadmap` must submit for a themed cycle |
+| `ROBOCO_ROADMAP_MAX_ITEMS_PER_CYCLE` | `7` | config.py:2012 | Maximum item drafts per cycle |
+| `ROBOCO_PEST_REWORK_THRESHOLD` | `0.3` | config.py:2025 | 7-day rework rate above which Pest Control's metric predicate opens a cycle off-schedule, on top of its weekly cron. The ONLY env-settable knob among the twelve new Board Programs: every other one arms exclusively via its own settings-store row (`board_program.{key}.enabled`, no `ROBOCO_*_ENABLED` flag exists for them) |
 
 ## Gotchas
 
