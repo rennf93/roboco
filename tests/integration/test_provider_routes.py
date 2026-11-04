@@ -14,6 +14,7 @@ from httpx import ASGITransport, AsyncClient
 from roboco.api.deps import get_agent_context, get_db
 from roboco.api.routes.provider import router as provider_router
 from roboco.billing.pricing import input_price_per_million
+from roboco.config import settings
 from roboco.db.tables import (
     ModelAssignmentTable,
     ProviderConfigTable,
@@ -21,7 +22,7 @@ from roboco.db.tables import (
 )
 from roboco.models import AgentRole, Team
 from roboco.models.base import AssignmentScope, ModelProvider
-from roboco.models.llm_catalog import MODEL_CATALOG
+from roboco.models.llm_catalog import MODEL_CATALOG, OLLAMA_DEFAULT_MODEL
 from roboco.models.permissions import AgentContext
 from roboco.services.llm import (
     _filter_nebius_models,
@@ -226,6 +227,22 @@ async def test_get_current_mode(app_client_with_ollama: AsyncClient) -> None:
     assert response.status_code == HTTPStatus.OK
     body = response.json()
     assert body["mode"] in {"anthropic", "ollama", "mix"}
+
+
+@pytest.mark.asyncio
+async def test_get_current_mode_returns_overridden_cli_models(
+    app_client_with_ollama: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(settings, "codex_cli_model", "codex/override")
+    monkeypatch.setattr(settings, "gemini_cli_model", "gemini/override")
+    monkeypatch.setattr(settings, "kimi_cli_model", "kimi/override")
+    response = await app_client_with_ollama.get("/api/providers", headers=_HDR_PM)
+    assert response.status_code == HTTPStatus.OK
+    body = response.json()
+    assert body["codex_cli_model"] == "codex/override"
+    assert body["gemini_cli_model"] == "gemini/override"
+    assert body["kimi_cli_model"] == "kimi/override"
+    assert body["ollama_default_model"] == OLLAMA_DEFAULT_MODEL
 
 
 @pytest.mark.asyncio
