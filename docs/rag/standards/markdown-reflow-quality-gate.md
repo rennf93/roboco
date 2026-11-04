@@ -64,13 +64,15 @@ Agents no longer need to run `make reflow-docs` by hand: the gateway `commit` pa
 - It is a no-op, not an error, when no markdown changed or the engine script is absent.
 - It is best-effort: any failure is logged as `markdown reflow skipped` and the commit still proceeds.
 
+**Event-loop safety.** `reflow_worktree_markdown` is async, but the per-file work in `reflow_changed_markdown` is synchronous: each changed file costs two `realpath` calls, a `cat`, and possibly a write, all as the git user through blocking `subprocess.run` wrappers in `workspace_git` (10s timeout each). The helper therefore runs it with `await asyncio.to_thread(reflow_changed_markdown, workspace, changed)`, the same pattern the other async callers of `workspace_git` use, so a commit that touches many markdown files never stalls the orchestrator's event loop. The listing step (`git ls-files`) is already awaited through the injected async runner and is unchanged. The sync helpers are stateless, so running them on a worker thread needs no extra locking. The workspace realpath is still resolved once per file rather than once per call; that optimization was deliberately skipped.
+
 **Packaging.** `docker/orchestrator.Dockerfile` copies `scripts/reflow_md.py` into the image (`/app/scripts`), because the hook runs inside the orchestrator and needs the engine at runtime.
 
 **Limits.** The hook considers only worktree-modified or untracked files, so markdown that was already committed in an earlier step is not revisited. `make quality` (`--check --changed`) remains the authoritative gate.
 
 **Symlink safety.** The orchestrator never reads or writes `/data/workspaces` itself (see `.claude/rules/workspaces-and-git.md`). Besides going through `workspace_git`, the hook resolves each markdown file's real path as the git user and skips any file whose real path leaves the clone, because the git user's `cat` and write would still follow a symlink an agent planted. The cost is one extra git-user process per changed markdown file.
 
-Tests: `tests/unit/services/test_md_reflow.py` covers reflowing a changed hard-wrapped file (and that the check then passes), idempotency, the no-op case, ignoring unlisted and out-of-scope files, and that a symlinked `*.md` pointing outside the clone is not written (`test_symlinked_markdown_pointing_outside_the_clone_is_not_written`).
+Tests: `tests/unit/services/test_md_reflow.py` covers reflowing a changed hard-wrapped file (and that the check then passes), idempotency, the no-op case, ignoring unlisted and out-of-scope files, and that a symlinked `*.md` pointing outside the clone is not written (`test_symlinked_markdown_pointing_outside_the_clone_is_not_written`), and that the reflow is dispatched through `asyncio.to_thread` (`test_reflow_runs_off_the_event_loop`).
 
 ## Quality Gate Integration
 
