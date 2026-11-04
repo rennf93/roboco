@@ -167,6 +167,5 @@ If the orchestrator is pegged at high CPU and nobody can say why, profile it liv
 User-facing documentation is the docs site at **[docs.roboco.tech](https://docs.roboco.tech)** (the `roboco-website` repo). In this repo, `docs/rag/` is the agent-facing RAG corpus and `docs/map/` the agent-facing codebase map, both auto-indexed into the KB at startup (`OptimalService.AUTO_INDEX_DIRS`); `docs/internal/` holds specs and working notes; `docs-redirects/` keeps the old Pages URLs resolving.
 
 <!-- entire-agent:begin -->
-Read .entire/agent-guide.md for this repository's workflow, source inspection, and verification guidance.
-@.entire/agent-guide.md
+Read .entire/agent-guide.md for this repository's workflow, source inspection, and verification guidance. @.entire/agent-guide.md
 <!-- entire-agent:end -->

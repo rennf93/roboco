@@ -227,12 +227,13 @@ class BaseRedIncidentService(BaseService):
         try:
             await get_audit_service().log_event(
                 event_type=event,
-                agent_id=cleared_by,
                 task_id=cast("UUID | None", row.owner_task_id),
                 details={
                     "project_id": str(row.project_id),
                     "base_branch": row.base_branch,
                     "reason": row.closed_reason,
+                    "cleared_by": cleared_by,
+                    "owner_agent": row.owner_agent,
                 },
             )
         except Exception as exc:

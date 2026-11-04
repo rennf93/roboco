@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, cast
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
@@ -211,8 +213,13 @@ async def test_failure_in_one_project_fails_open(
 
 @pytest.mark.asyncio
 async def test_clear_closes_audited_and_is_noop_without_incident(
-    db_session: AsyncSession,
+    db_session: AsyncSession, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    audit = AsyncMock()
+    monkeypatch.setattr(
+        "roboco.services.base_red_incident.get_audit_service",
+        lambda: SimpleNamespace(log_event=audit),
+    )
     proj = await _project(db_session, "br-clear")
     svc = get_base_red_incident_service(db_session)
     assert await svc.clear(_pid(proj), "ceo", "nothing open") is None
@@ -227,6 +234,11 @@ async def test_clear_closes_audited_and_is_noop_without_incident(
     assert cleared.status == "closed"
     assert cleared.cleared_by == "ceo"
     assert cleared.closed_reason == "false positive"
+    cleared_calls = [
+        c for c in audit.call_args_list if c.kwargs["event_type"] == "base_red.cleared"
+    ]
+    assert len(cleared_calls) == 1
+    assert cleared_calls[0].kwargs["details"]["cleared_by"] == "ceo"
     assert await svc.get_open_incident(_pid(proj)) is None
 
 

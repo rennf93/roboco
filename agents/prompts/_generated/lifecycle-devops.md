@@ -1,7 +1,6 @@
 # Verbs available to your role (devops)
 
-These are the only verbs the gateway will accept from you. Calling any
-other verb will be rejected with a Decision telling you the right one.
+These are the only verbs the gateway will accept from you. Calling any other verb will be rejected with a Decision telling you the right one.
 
 - **claim_gate_review**: Claim an assembled-PR review task (awaiting_pr_review) WITHOUT transitioning it — mirrors QA's claim_review. The assembled diff and the parent task's acceptance criteria are returned inline.
 - **give_me_work**: Return your most-actionable task or signal idle.
