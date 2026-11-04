@@ -44,6 +44,14 @@ def _clip(text: str | None, cap: int) -> str:
     return (text or "")[:cap]
 
 
+# A blocker's reason is free text with no upper bound; ten rows share a briefing.
+_BLOCK_REASON_CAP = 1000
+
+
+def _capped(reason: str | None) -> str | None:
+    return reason[:_BLOCK_REASON_CAP] if reason else reason
+
+
 class EvidenceRepo:
     def __init__(self, db_session: AsyncSession) -> None:
         self._db = db_session
@@ -334,7 +342,9 @@ class EvidenceRepo:
                 "title": row.title,
                 "assigned_to": str(row.assigned_to) if row.assigned_to else None,
                 "blocked_on": [str(d) for d in (row.dependency_ids or [])],
-                "escalation_reason": (markers.get_escalation(row) or {}).get("reason"),
+                "escalation_reason": _capped(
+                    (markers.get_escalation(row) or {}).get("reason")
+                ),
             }
             for row in result.all()
         ]

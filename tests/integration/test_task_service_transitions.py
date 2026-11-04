@@ -3642,6 +3642,9 @@ async def test_unclaim_from_blocked_clears_pre_block_snapshot(
             pre_block_state=TaskStatus.IN_PROGRESS.value,
             pre_block_assignee=owner,
             pre_block_metadata={"reason": "stale"},
+            orchestration_markers={
+                "escalation": {"from": "be-dev-1", "to": "be-pm", "reason": "stale"}
+            },
         )
     )
     await db_session.flush()
@@ -3661,3 +3664,5 @@ async def test_unclaim_from_blocked_clears_pre_block_snapshot(
     assert row.pre_block_metadata is None
     assert row.blocker_resolver_type is None
     assert row.blocker_raised_by is None
+    # A later block must not show this one's reason (blockers_in_lane reads it).
+    assert row.orchestration_markers is None
