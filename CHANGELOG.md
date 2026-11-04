@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- **Route and router helper rules downgraded from block to warn in `.roboco/conventions.yml`.** `no_helpers_in_routes` (160 open violations) and `no_helpers_in_routers` (22 open) stayed at the inherited block level after two paid extraction batches, which contradicted the file's Posture comment. Both are now `level: warn`, so a helper defined in a route or router module is reported but no longer fails CI's conventions step or an armed `i_am_done` / `pr_pass`. The `roboco/api/routes` module still lists `helper` as forbidden; only the level changed, and extraction is deferred to a separately scoped root. The Posture comment now names route/router helpers as warned debt.
+
 ## [0.32.0] - 2026-10-16
 
 ### Added

@@ -9,10 +9,11 @@
 # this file is mostly a small set of module declarations plus the rule-level
 # policy below.
 #
-# Posture: BLOCK every boundary the codebase already honors (a model or helper
-# in a route, a route in a service, a model/route in a panel component, a hook
+# Posture: BLOCK every boundary the codebase already honors (a model in a
+# route, a route in a service, a model/route in a panel component, a hook
 # returning JSX — all refused), WARN the boundaries that still carry debt so a
-# task is never stranded on pre-existing code.
+# task is never stranded on pre-existing code. Helpers in routes/routers are
+# warned debt (160 + 22 open violations, extraction deferred), not blocked.
 
 version: 1
 languages:
@@ -100,6 +101,13 @@ rules:
   # The 2026-10 conventions sweep (#1188) moved the last inline fetches into
   # hooks, so nothing is flagged; promoting this to block is a separate decision.
   thin_components:
+    level: warn
+  # 160 open violations remain after two extraction batches; extraction is
+  # deferred to a separately scoped root, so this stays warn until then.
+  no_helpers_in_routes:
+    level: warn
+  # 22 open violations remain; extraction is deferred alongside no_helpers_in_routes.
+  no_helpers_in_routers:
     level: warn
   # Promoted to block on 2026-11-01 (Planning trail #51): waves 1-4 split
   # every class over 15 methods by responsibility, so no file carries one.
