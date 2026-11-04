@@ -1368,9 +1368,36 @@ class TaskBudgetEngine(_Base):
             if cap_usd is None:
                 return None
             spend_usd = await svc.task_spend_usd(task_id)
+            await self._warn_task_budget_nearing_cap(
+                db, task, cap_usd=cap_usd, spend_usd=spend_usd
+            )
         if spend_usd < cap_usd:
             return None
         return cap_usd, spend_usd
+
+    @staticmethod
+    async def _warn_task_budget_nearing_cap(
+        db: Any, task: Any, *, cap_usd: float, spend_usd: float
+    ) -> None:
+        """Best-effort once-per-task CEO warning before the hard stop."""
+        from roboco.foundation.policy.agent_loop import budget_warning_due
+        from roboco.services.notification_delivery import (
+            get_notification_delivery_service,
+        )
+
+        if not budget_warning_due(cap_usd, spend_usd):
+            return
+        try:
+            async with db.begin_nested():
+                await get_notification_delivery_service(
+                    db
+                ).notify_ceo_of_budget_warning(
+                    task=task, task_id=task.id, cap_usd=cap_usd, spend_usd=spend_usd
+                )
+        except Exception as exc:
+            logger.warning(
+                "task budget warning failed", task_id=str(task.id), error=str(exc)
+            )
 
     async def _handle_task_budget_breach(
         self, task_id_str: str, *, cap_usd: float, spend_usd: float

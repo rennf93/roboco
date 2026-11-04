@@ -97,6 +97,18 @@ def effective_task_budget_usd(task: Any) -> float | None:
     return float(budget_usd) if budget_usd is not None else None
 
 
+BUDGET_WARN_FRACTION = 0.8
+
+
+def budget_warning_due(cap_usd: float, spend_usd: float) -> bool:
+    """True once spend crosses the warn fraction but is still under the cap.
+
+    At or past the cap the breach path (block + CEO notify) owns the alert,
+    so the pre-breach warning stays silent there.
+    """
+    return cap_usd > 0 and BUDGET_WARN_FRACTION * cap_usd <= spend_usd < cap_usd
+
+
 # Per-verb retry caps. Verbs that hit a tracing_gap or invalid_state and
 # get retried more than this many times in a 60s window will receive a
 # circuit_open envelope on the next attempt.

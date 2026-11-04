@@ -1899,6 +1899,52 @@ class NotificationCEONotices(_Base):
             task_id=task_id, subject=notification.subject, actionable=True
         )
 
+    async def notify_ceo_of_budget_warning(
+        self,
+        *,
+        task: TaskTable,
+        task_id: UUID,
+        cap_usd: float,
+        spend_usd: float,
+    ) -> bool:
+        """Once-per-task CEO heads-up that spend crossed the warn fraction.
+
+        Informational ALERT (no ack, no block) so the CEO can raise the cap
+        before the hard stop. Deduped by looking for an earlier warning row
+        for the same task. Returns True iff a notification was sent.
+        """
+        ceo = await self._get_ceo_agent()
+        if not ceo:
+            return False
+        subject = f"Budget warning: {task.title or 'Unknown task'}"
+        already = await self.session.execute(
+            select(NotificationTable.id)
+            .where(
+                NotificationTable.related_task_id == task_id,
+                NotificationTable.subject == subject,
+            )
+            .limit(1)
+        )
+        if already.first() is not None:
+            return False
+        from_agent = cast("UUID", task.assigned_to) if task.assigned_to else ceo.id
+        pct = round(100 * spend_usd / cap_usd)
+        notification = NotificationTable(
+            type=NotificationType.ALERT,
+            priority=NotificationPriority.NORMAL,
+            from_agent=from_agent,
+            to_agents=[ceo.id],
+            subject=subject,
+            body=(
+                f"Task {task_display(task, task_id)} has used {pct}% of its cost "
+                f"budget (${spend_usd:,.2f} of ${cap_usd:,.2f}). It will be "
+                "stopped and blocked at 100%; raise the task's Budget (USD) "
+                "now to avoid the interruption."
+            ),
+            related_task_id=task_id,
+        )
+        return await self._persist_and_deliver(notification)
+
     async def notify_ceo_of_completion(self, *, task: TaskTable, task_id: UUID) -> None:
         """CEO-facing completion notification with the granular effort breakdown.
 
