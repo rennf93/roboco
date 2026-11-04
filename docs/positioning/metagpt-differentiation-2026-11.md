@@ -1,6 +1,6 @@
 # RoboCo vs. MetaGPT / MGX: README Differentiation
 
-In November 2026, MetaGPT was flagged as the open-source project that already holds the "First AI Software Company" name. It drives PM, architect, project-manager and engineer roles from SOPs. It is MIT-licensed and has roughly 70k stars. Its commercial spinoff, MGX, is billed as "the world's first AI agent development team."
+In November 2026, MetaGPT was flagged as the open-source project that already holds the "First AI Software Company" name. It drives PM, architect, project-manager and engineer roles from SOPs. The market signal cites it as MIT-licensed with 70k stars. Its commercial spinoff, MGX, is billed as "the world's first AI agent development team."
 
 Source: [MetaGPT on GitHub](https://github.com/FoundationAgents/MetaGPT)
 
