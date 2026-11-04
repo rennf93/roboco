@@ -23,10 +23,12 @@ Entire also leaves the git objects it writes readable by their owner only, so
 the same container then gives the agent group read on them: the git user,
 whose ``upload-pack`` hands a checkpoint to the relay, is in that group.
 
-The checkpoints of the commits a push sends go to the project's origin through
-the relay (``GitService``). Entire's own ``pre-push`` would need the network
-and a token, and the ``.git/hooks`` wrappers an agent's Entire session
-installs only start Entire's CLI (absent from the container's PATH) and chain
+The checkpoints of the commits a push sends go through the relay
+(``GitService``) to the repository the head branch's committed
+``.entire/settings.json`` names as ``checkpoint_remote``, else to origin.
+Entire's own ``pre-push`` would need the network and a token, and the
+``.git/hooks`` wrappers an agent's Entire session installs only start
+Entire's CLI (absent from the container's PATH) and chain
 to the hook they moved aside, so that hook is what ``project_hooks`` runs.
 """
 

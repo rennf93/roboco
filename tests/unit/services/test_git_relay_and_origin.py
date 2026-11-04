@@ -19,7 +19,11 @@ from roboco.services.git_origin import (
     is_origin_command,
     run_origin_command,
 )
-from roboco.services.git_relay import GitRelay, is_dispatcher_owned
+from roboco.services.git_relay import (
+    GitRelay,
+    checkpoint_remote_url,
+    is_dispatcher_owned,
+)
 
 _TOKEN = "ghp_UNITCANARY"
 _GIT_FATAL = 128
@@ -53,6 +57,67 @@ def test_the_token_rides_host_scoped_env_config_only(
     assert push["env"]["GIT_CONFIG_VALUE_0"] == f"Authorization: Basic {basic}"
     assert "protocol.https.allow=always" in push["argv"]
     assert "core.hooksPath=/dev/null" in push["argv"]
+
+
+_ORIGIN = "https://github.com/rennf93/roboco.git"
+_CHECKPOINTS = "https://github.com/rennf93/roboco-checkpoints.git"
+_SETTINGS = (
+    '{"strategy_options": {"checkpoint_remote":'
+    ' {"provider": "github", "repo": "rennf93/roboco-checkpoints"}}}'
+)
+
+
+@pytest.mark.parametrize(
+    ("git_url", "entire_settings", "expected"),
+    [
+        (_ORIGIN, _SETTINGS, _CHECKPOINTS),
+        (_ORIGIN, '{"enabled": true}', _ORIGIN),
+        (_ORIGIN, "not json", _ORIGIN),
+        (_ORIGIN, '["a"]', _ORIGIN),
+        (_ORIGIN, _SETTINGS.replace("rennf93/roboco-checkpoints", "../x"), _ORIGIN),
+        (_ORIGIN, _SETTINGS.replace("rennf93/roboco-checkpoints", "a/b/c"), _ORIGIN),
+        (
+            "git@github.com:rennf93/roboco.git",
+            _SETTINGS,
+            "git@github.com:rennf93/roboco.git",
+        ),
+    ],
+)
+def test_checkpoints_go_where_entire_settings_name_on_origins_host(
+    git_url: str, entire_settings: str, expected: str
+) -> None:
+    assert checkpoint_remote_url(git_url, entire_settings) == expected
+
+
+@pytest.mark.parametrize(
+    ("shown", "expected"), [(_done(_SETTINGS), _CHECKPOINTS), (_done("", 128), _ORIGIN)]
+)
+def test_checkpoints_follow_the_head_branchs_settings_in_the_relay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    shown: subprocess.CompletedProcess[str],
+    expected: str,
+) -> None:
+    """2026-11-04: the fleet pushed its session checkpoints to the public
+    origin although .entire/settings.json names a private checkpoint repo."""
+    monkeypatch.setattr(settings, "private_data_root", str(tmp_path))
+    calls: list[list[str]] = []
+
+    def _run(argv: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return shown if "show" in argv else _done()
+
+    monkeypatch.setattr(git_relay.subprocess, "run", _run)
+    (tmp_path / "relays" / "p.git").mkdir(parents=True)
+    (tmp_path / "relays" / "p.git" / "HEAD").write_text("ref: refs/heads/slave\n")
+    relay = GitRelay("p", _ORIGIN, _TOKEN, default_branch="slave")
+
+    relay.push_checkpoints(["refs/x:refs/entire/checkpoints/3W/a"], timeout=5)
+
+    (show,) = [c for c in calls if "show" in c]
+    assert "refs/heads/slave:.entire/settings.json" in show
+    (push,) = [c for c in calls if "push" in c]
+    assert push[-2:] == [expected, "refs/x:refs/entire/checkpoints/3W/a"]
 
 
 def test_dispatcher_owned_means_under_the_private_root(

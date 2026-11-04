@@ -69,7 +69,7 @@ def test_only_checkpoint_refs_are_pushed_by_this_path() -> None:
     with pytest.raises(UnsupportedOriginCommandError):
         push_checkpoint_refs(_ctx(relay), ["refs/heads/main"])
     relay.take_ref.assert_not_called()
-    relay.push_to_origin.assert_not_called()
+    relay.push_checkpoints.assert_not_called()
 
 
 def test_checkpoints_go_in_one_unforced_push_then_staging_refs_are_dropped() -> None:
@@ -78,14 +78,14 @@ def test_checkpoints_go_in_one_unforced_push_then_staging_refs_are_dropped() -> 
         (subprocess.CompletedProcess([], 0), "refs/roboco/incoming/a"),
         (subprocess.CompletedProcess([], 0), "refs/roboco/incoming/b"),
     ]
-    relay.push_to_origin.return_value = subprocess.CompletedProcess([], 0)
+    relay.push_checkpoints.return_value = subprocess.CompletedProcess([], 0)
     first = f"refs/entire/checkpoints/3W/{_ID}"
     other = "refs/entire/checkpoints/AW/01M620JW5RZ2G6QBKQAM0FZNAW"
 
     result = push_checkpoint_refs(_ctx(relay), [first, other])
 
     assert result.returncode == 0
-    relay.push_to_origin.assert_called_once_with(
+    relay.push_checkpoints.assert_called_once_with(
         [f"refs/roboco/incoming/a:{first}", f"refs/roboco/incoming/b:{other}"],
         timeout=30,
     )
@@ -111,7 +111,7 @@ def test_a_checkpoint_that_cannot_be_taken_pushes_nothing() -> None:
     )
 
     assert result.returncode == 1
-    relay.push_to_origin.assert_not_called()
+    relay.push_checkpoints.assert_not_called()
     relay.drop_ref.assert_called_once_with("refs/roboco/incoming/a", timeout=30)
 
 
