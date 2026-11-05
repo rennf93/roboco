@@ -74,6 +74,7 @@ def test_main_renders_settings_and_env_file(
     monkeypatch.setattr(hummin_cli_config, "HUMMIN_SETTINGS_PATH", settings_path)
     monkeypatch.setattr(hummin_cli_config, "HUMMIN_ENV_FILE", env_file)
     monkeypatch.setattr(hummin_cli_config, "get_agent_role", _role_of)
+    monkeypatch.setattr(hummin_cli_config, "MCP_CONFIG_PATH", tmp_path / "no-mcp.json")
     monkeypatch.setenv("ROBOCO_AGENT_ID", "be-qa-1")
 
     rc = hummin_cli_config.main([])
