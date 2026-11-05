@@ -53,6 +53,8 @@ async def cadence_review(
 
 
 @router.post("/{key}/cadence-slowdown", response_model=list[ProgramCadenceReview])
+@guard_deco.rate_limit(requests=30, window=60)
+@guard_deco.block_clouds()
 async def set_cadence_slowdown(
     key: str, disabled: bool, db: DbSession, agent: CurrentAgentContext
 ) -> list[ProgramCadenceReview]:
