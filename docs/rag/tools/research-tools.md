@@ -28,7 +28,7 @@ web_fetch(url="https://example.com/pricing", max_chars=5000)
 | `url` | yes | The page to extract readable content from. |
 | `max_chars` | no | Cap on returned characters, clamped server-side to `ROBOCO_RESEARCH_FETCH_MAX_CHARS` (default 20000). |
 
-Works with Tavily and Exa (remote extraction endpoints) and with SearXNG, which downloads the page server-side and extracts readable text locally (trafilatura); the response's `truncated` field tells you whether the content was cut at the cap. Brave has no extraction path; calling `web_fetch` against it returns a "does not support web_fetch" error (HTTP 501 at the route, surfaced as an error envelope to the tool). SearXNG's local fetch refuses URLs that are not plain http(s) resolving to a public address, so it can never be aimed at the deployment's internal services.
+Works with Tavily and Exa (remote extraction endpoints) and with SearXNG, which downloads the page server-side and extracts readable text locally (trafilatura); the response's `truncated` field tells you whether the content was cut at the cap. Brave and Keenable have no extraction path; calling `web_fetch` against either returns a "does not support web_fetch" error (HTTP 501 at the route, surfaced as an error envelope to the tool). SearXNG's local fetch refuses URLs that are not plain http(s) resolving to a public address, so it can never be aimed at the deployment's internal services.
 
 ## Self-hosted provider (SearXNG, the default)
 
@@ -52,9 +52,17 @@ Web research is external, unverified-by-the-org information — treat it accordi
 
 Each agent gets `ROBOCO_RESEARCH_DAILY_QUOTA_PER_AGENT` (default 50) combined `web_search` + `web_fetch` calls per UTC day, tracked in Redis. Past the quota, calls return HTTP 429 with a message naming the limit and the UTC reset time. The quota check **fails open** — a Redis outage lets the call through rather than blocking research on an infra hiccup.
 
+## Errors
+
+| HTTP | When |
+|------|------|
+| 429 | Per-agent daily quota exceeded (`ROBOCO_RESEARCH_DAILY_QUOTA_PER_AGENT`). |
+| 501 | `web_fetch` on a provider with no extraction endpoint (`brave`, `keenable`). |
+| 502 | The configured provider raised a search/fetch error (network, HTTP status, malformed body). Applies to SearXNG, Tavily, Brave, Exa, and Keenable. |
+
 ## Graceful degradation
 
-With `ROBOCO_RESEARCH_PROVIDER=null`, or `searxng` selected with no base URL, or a paid adapter selected with no `ROBOCO_RESEARCH_API_KEY`, both tools still respond (never a hard failure): `web_search` returns zero results with `provider: "null"` and a guidance string telling you to proceed without external sources or ask the CEO to configure a provider; `web_fetch` returns empty content. Check the `provider` field in the response rather than assuming a provider is configured.
+With `ROBOCO_RESEARCH_PROVIDER=null`, or `searxng` selected with no base URL, or a paid adapter selected with no `ROBOCO_RESEARCH_API_KEY`, both tools still respond (never a hard failure): `web_search` returns zero results with `provider: "null"` and a guidance string telling you to proceed without external sources or ask the CEO to configure a provider; `web_fetch` returns empty content. `keenable` is different: it never degrades to `NullProvider` (`configured` is always true with or without a key), so `web_search` always calls `api.keenable.ai` and provider failures (including public-endpoint rate limits) surface as HTTP 502 rather than empty results. Check the `provider` field in the response rather than assuming a provider is configured.
 
 ## CEO access
 

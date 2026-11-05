@@ -420,7 +420,11 @@ async def test_keenable_search_snippet_falls_back_to_description() -> None:
             200,
             json={
                 "results": [
-                    {"title": "Legacy", "url": "https://legacy.test", "description": "d"},
+                    {
+                        "title": "Legacy",
+                        "url": "https://legacy.test",
+                        "description": "d",
+                    },
                 ]
             },
         )
