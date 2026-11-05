@@ -11,9 +11,9 @@ Task 3ceca974 (research, no source changes). Findings are from reading the code 
 ## (a) Why out-of-scope files land on cell branches
 
 ### Commit path
-- `roboco/services/gateway/content_actions.py` `ContentActions.commit` (~:889) forwards `files` to `GitService`.
-- `roboco/services/git.py`: `create_commit` (~:896-901) and the sibling commit routine (~:6124-6129) do `git add <file>` per file when `files` is given, else `git add -A`. There is no check of the staged set against the task's declared scope, and no filter on paths.
-- `_commit_git_error_envelope` (content_actions.py ~:961) only handles "files matched no modified paths".
+- `roboco/services/gateway/content_actions.py` `ContentActions.commit` (content_actions.py:1216) forwards `files` to `GitService.commit_for_task` (git.py:1185), which calls `create_commit`.
+- `roboco/services/git.py`: `GitService.create_commit` (def :830; `git add -A` at :853) and `GitService.commit` (def :6689; `git add -A` at :6734, which mirrors create_commit's staging) do `git add <file>` per file when `files` is given, else `git add -A`. There is no check of the staged set against the task's declared scope, and no filter on paths.
+- `_commit_git_error_envelope` (content_actions.py:1288) only handles "files matched no modified paths".
 
 ### Scope field is advisory only
 - Declared: `intends_to_touch` in `roboco/api/schemas/v1/flow.py`, `roboco/db/tables.py`, `roboco/foundation/policy/sequencing/models.py` (collision surface for `SequencingService.analyze`).
@@ -27,9 +27,9 @@ Anything a dev's tool run or editor touches under `docs/` (generated artifacts, 
 
 ## (b) Why the Python gate runs over docs surfaces
 
-- `Makefile` `quality` (~:286-294), `quality-fast` (~:335-338) and `gate` (~:346-350) all run `uv run ruff format --check .` and `uv run ruff check .` against the repo root. They are not path-scoped to `roboco/ tests/` like mypy/xenon/vulture are.
-- `pyproject.toml` `[tool.ruff]` (:123-132): `src = ["src"]` (a stale path; the package is `roboco/`), `exclude = ["vulture_whitelist.py", ".venv", "alembic", ".worktrees"]`. There is no exclude for `docs/`, `panel/`, `motion/`, or generated trees, so every `.py` under any of them is linted and format-checked. `[tool.ruff.lint] select` is broad (E,W,F,I,B,C4,UP,ARG,SIM,TCH,PTH,PL,RUF). `per-file-ignores` only cover `roboco/` paths.
-- Ruff itself only discovers `.py/.pyi/.ipynb`, so pure markdown cannot fail ruff. Markdown has its own gate: `scripts/reflow_md.py --check` (Makefile ~:293-294, `make quality` only), which scans every `*.md` under the root except `SKIP_DIRS`, `docs/internal/`, `agents/prompts/_generated/` and `docs/SPEC_*` (`EXCLUDE_PREFIXES`/`EXCLUDE_GLOBS`). A hard-wrapped doc (the openrouter-routing-ui.md reflow, $90) fails here, and `gate`/`quality-fast` do not run it, so the failure surfaces only at the full gate/CI after submission.
+- `Makefile` `quality` (ruff at :301-304, reflow check at :306), `quality-fast` (:358-359) and `gate` (:369-370; `quality-fast` is the first block, `gate` the second) all run `uv run ruff format --check .` and `uv run ruff check .` against the repo root. They are not path-scoped to `roboco/ tests/` like mypy/xenon/vulture are.
+- `pyproject.toml` `[tool.ruff]` (table at :130; `src` at :132, `exclude` at :138; the other `exclude` lists at :473, :569, :610, :624, :631 belong to other tools): `src = ["src"]` (a stale path; the package is `roboco/`), `exclude = ["vulture_whitelist.py", ".venv", "alembic", ".decomp", ".worktrees"]` (`make lint` at Makefile:187-188 also runs ruff over `.`). There is no exclude for `docs/`, `panel/`, `motion/`, or generated trees, so every `.py` under any of them is linted and format-checked. `[tool.ruff.lint] select` is broad (E,W,F,I,B,C4,UP,ARG,SIM,TCH,PTH,PL,RUF). `per-file-ignores` only cover `roboco/` paths.
+- Ruff itself only discovers `.py/.pyi/.ipynb`, so pure markdown cannot fail ruff. Markdown has its own gate: `scripts/reflow_md.py --check` (Makefile:306, `make quality` only), which scans every `*.md` under the root except `SKIP_DIRS`, `docs/internal/`, `agents/prompts/_generated/` and `docs/SPEC_*` (`EXCLUDE_PREFIXES`/`EXCLUDE_GLOBS`). A hard-wrapped doc (the openrouter-routing-ui.md reflow, $90) fails here, and `gate`/`quality-fast` do not run it, so the failure surfaces only at the full gate/CI after submission.
 - `i_am_done` runs the project `quality_command` (`make gate`), which carries ruff over the whole tree but not the reflow check: docs problems are discovered late, a pattern that converts into rework rounds.
 
 ## Recommended fixes
@@ -41,7 +41,7 @@ Anything a dev's tool run or editor touches under `docs/` (generated artifacts, 
 4. Verify the actual root cause of the $119 release-certificate failure from that task's gate log before finalising (file type and which tool failed).
 
 ### Leaf: commit/claim scoping (gateway; be-dev-2)
-1. In `GitService.create_commit` and the second staging site (`git.py` ~:896, ~:6124), replace the `add -A` default with a scope-aware stage: compute the candidate set (`git status --porcelain`), compare against the task's `intends_to_touch` globs via the existing glob matcher in `collision.py` (`_globs_overlap`/`_drift` — extract a shared pure helper into `roboco/foundation/policy/sequencing/`), stage in-scope files, and return the out-of-scope paths in the `commit` envelope (`remediate`: pass `files=` explicitly or declare scope).
+1. In `GitService.create_commit` and the second staging site (`git.py:853` and `git.py:6734`), replace the `add -A` default with a scope-aware stage: compute the candidate set (`git status --porcelain`), compare against the task's `intends_to_touch` globs via the existing glob matcher in `collision.py` (`_globs_overlap`/`_drift` — extract a shared pure helper into `roboco/foundation/policy/sequencing/`), stage in-scope files, and return the out-of-scope paths in the `commit` envelope (`remediate`: pass `files=` explicitly or declare scope).
 2. Start in warn mode (envelope field + journal), then promote to refuse for tasks with a non-empty `intends_to_touch`; tasks with no declared scope (docs/research) keep today's behaviour. Always allow task-agnostic exemptions (e.g. `.roboco/conventions.yml`).
 3. Add a hard gate at `i_am_done`/`submit_up`: files from `list_changed_files` not matched by declared globs produce a convention-style finding (block for code tasks), reusing `collision._drift`, so scope drift is caught even if staged by other paths.
 4. Require or default a scope for DOC tasks at delegate (`TASK_AT_DELEGATE`'s `when` currently covers `task_type == code` only), e.g. the doc paths the PM names.
