@@ -74,6 +74,7 @@ from roboco.models.task import TaskCreateRequest
 from roboco.models.work_session import WorkSessionCreate
 from roboco.seeds.initial_data import AGENT_UUIDS
 from roboco.services.base import (
+    AssigneeCapabilityError,
     BaseService,
     ConflictError,
     NotFoundError,
@@ -4703,6 +4704,14 @@ class TaskRecords(_Base):
             )
 
         old_parent_id = getattr(task, "parent_task_id", None)
+        # Capability backstop on the admin task-set path (PATCH assigned_to):
+        # a genuine reassignment may not plant an assignee whose role cannot
+        # act on the task's current status. No-op clears and same-value sets
+        # pass through. Checked BEFORE the field loop so a refusal never
+        # leaves the session dirty.
+        self._refuse_incapable_assignee(
+            task.status, updates.get("assigned_to"), task.assigned_to
+        )
         for key, value in updates.items():
             if hasattr(task, key) and value is not None:
                 setattr(task, key, value)
@@ -12135,6 +12144,10 @@ class TaskGatewayWork(_Base):
             adds_migration=req.adds_migration,
             touches_shared=req.touches_shared,
         )
+        # Capability backstop at delegation-creation time: the assignee's role
+        # must be able to act on the status the subtask will hold (PENDING when
+        # assigned). Refuses the 54e30535 wedge shape before the row exists.
+        self._refuse_incapable_assignee(prepared.status, prepared.assigned_to)
         return await self.create(prepared)
 
 
@@ -12233,6 +12246,35 @@ class TaskReassignment(_Base):
         if prior_claimant is not None and prior_claimant != effective_assignee:
             task.active_claimant_id = cast("Any", None)
 
+    def _refuse_incapable_assignee(
+        self, status: Any, new_assignee: Any, current: Any = None
+    ) -> None:
+        """Refuse an assignment whose role cannot act on the target status.
+
+        Capability is derived from the lifecycle role-transition map
+        (``CLAIM_RULES`` + the atomic action specs) — never a parallel
+        system; see ``lifecycle.assignee_capability_gap``. Terminal
+        statuses, unknown (non-seeded) assignee UUIDs, clears and
+        same-value sets (``new_assignee == current``) pass through; the
+        existing identity guards own those.
+        """
+        from roboco.foundation.identity import role_for_uuid_or_none
+        from roboco.foundation.policy import lifecycle as lifecycle_spec
+
+        if new_assignee is None or new_assignee == current:
+            return
+        role = role_for_uuid_or_none(new_assignee)
+        if role is None:
+            return
+        task_status = lifecycle_spec.Status(str(getattr(status, "value", status)))
+        gap = lifecycle_spec.assignee_capability_gap(role, task_status)
+        if gap is not None:
+            raise AssigneeCapabilityError(
+                f"ASSIGNEE_INCAPABLE: {gap}",
+                role=role.value,
+                status=task_status.value,
+            )
+
     async def reassign(
         self, task_id: UUID, new_assignee: UUID | None
     ) -> TaskTable | None:
@@ -12299,6 +12341,11 @@ class TaskReassignment(_Base):
             )
             if redirect.dev_notes_line is not None:
                 task.dev_notes = (task.dev_notes or "") + redirect.dev_notes_line
+
+        # Capability backstop: the (post-redirect) assignee's role must have
+        # at least one action on the task's current status — otherwise the
+        # task sits assigned but unactable (the 54e30535 wedge shape).
+        self._refuse_incapable_assignee(task.status, effective_assignee)
 
         task.assigned_to = (
             cast("Any", effective_assignee) if effective_assignee else None
@@ -12492,6 +12539,10 @@ class TaskReassignment(_Base):
             )
             if redirect.dev_notes_line is not None:
                 task.dev_notes = (task.dev_notes or "") + redirect.dev_notes_line
+
+        # Capability backstop (mirrors `reassign`): the post-redirect claimant
+        # must be able to act on a claimed/in_progress task.
+        self._refuse_incapable_assignee(task.status, effective_assignee)
 
         old_assignee = cast("UUID | None", task.claimed_by)
         now = datetime.now(UTC)
@@ -13082,9 +13133,72 @@ class TaskAdminOverride(_Base):
         except ValueError:
             return await self.unblock(task_id, agent_role="cell_pm")
 
+        if await self._divert_incapable_restore(task, restored_status):
+            return task
         restored = await self._apply_pre_block_restore(task, restored_status)
         await self._notify_unblock(task_id, restored.assigned_to, restored.title)
         return restored
+
+    async def _divert_incapable_restore(
+        self, task: TaskTable, restored_status: TaskStatus
+    ) -> bool:
+        """Divert an unblock restore to the pool when the snapshotted owner's
+        role cannot act on the restored status; True when diverted.
+
+        Same capability predicate the assignment paths use
+        (``_refuse_incapable_assignee`` -> ``lifecycle.assignee_capability_gap``)
+        and the same pool release board-role assignments get. Restoring
+        awaiting_pm_review to an owner with no ``complete`` verb was the
+        4be7d6d3 wedge. Escalation divert (``apply_escalation``) keeps its own
+        target-based check and does not share this path: the escalation target
+        never becomes the restored owner (the snapshot keeps the pre-escalation
+        assignee), so an escalated task's later unblock is covered here.
+        """
+        from roboco.foundation.identity import role_for_uuid_or_none
+        from roboco.foundation.policy import lifecycle as lifecycle_spec
+
+        owner_id = to_python_uuid(task.pre_block_assignee)
+        role = role_for_uuid_or_none(owner_id) if owner_id is not None else None
+        if role is None:
+            return False
+        gap = lifecycle_spec.assignee_capability_gap(
+            role, lifecycle_spec.Status(restored_status.value)
+        )
+        if gap is None:
+            return False
+        # Keep the restored status (a QA-passed awaiting_pm_review must not fall
+        # back to PENDING and redo the lifecycle): only the owner is dropped, so
+        # the status's own role queue (a capable PM for awaiting_pm_review)
+        # claims it. A branchless in_progress still goes PENDING, as in
+        # ``_restore_block_ownership``.
+        if restored_status == TaskStatus.IN_PROGRESS and not task.branch_name:
+            restored_status = TaskStatus.PENDING
+        pre_status = (
+            task.status.value
+            if isinstance(task.status, TaskStatus)
+            else str(task.status)
+        )
+        task.status = restored_status
+        task.assigned_to = cast("Any", None)
+        task.dev_notes = (task.dev_notes or "") + (
+            f"\n\n[RESTORE REDIRECTED] unblock would restore"
+            f" {restored_status.value} to a {role.value} that cannot act on"
+            f" it ({gap}). Released to the pool with the status kept, for a"
+            f" role-matched claim."
+        )
+        self._clear_claim_and_block_snapshot(task)
+        await self._retarget_agent_claim(owner_id, None, cast("UUID", task.id))
+        await self.session.flush()
+        self._emit_status_transition_audit(
+            task,
+            from_status=pre_status,
+            to_status=restored_status.value,
+            agent_role=None,
+            audit_agent_id=owner_id,
+        )
+        if restored_status == TaskStatus.NEEDS_REVISION:
+            task.revision_count = max((task.revision_count or 1) - 1, 0)
+        return True
 
     async def _apply_pre_block_restore(
         self,

@@ -691,7 +691,7 @@ class DelegateMixin(_Base):
         have gotten from the upfront completeness check.
         """
         from roboco.foundation.policy.task_completeness import TaskCompletenessError
-        from roboco.services.base import ValidationError
+        from roboco.services.base import AssigneeCapabilityError, ValidationError
 
         parent_task_id = parent.id
         try:
@@ -707,6 +707,23 @@ class DelegateMixin(_Base):
                         "re-issue delegate(...) with corrected fields: "
                         f"{', '.join(exc.missing)}. Each field's required "
                         "shape is in `field_hints`."
+                    ),
+                    context_briefing=briefing,
+                ).with_introspection(task=parent, role=role_str),
+                agent_id=pm_agent_id,
+                task_id=parent_task_id,
+                verb="delegate",
+            )
+        except AssigneeCapabilityError as exc:
+            # The delegated assignee's role cannot act on the status the
+            # subtask will hold — refused at creation with the missing
+            # capability named (the 54e30535 wedge shape).
+            return await self._emit_rejection(
+                Envelope.not_authorized(
+                    message=exc.message,
+                    remediate=(
+                        "re-issue delegate(...) with an assignee whose role"
+                        " can claim/act on the subtask's target status"
                     ),
                     context_briefing=briefing,
                 ).with_introspection(task=parent, role=role_str),
@@ -2466,17 +2483,29 @@ class PMReviewMixin(_Base):
         # Captured before the restore below clears it (_restore_block_ownership)
         # — the oscillation-trip notification names both sides of the round trip.
         escalator_id = t.blocker_raised_by
+        had_owner = bool(t.pre_block_assignee)
         t = await self.task.unblock_with_restore(pm_agent_id, task_id, restore=restore)
+        # A restore that kept a snapshotted owner re-owns the task; one that
+        # left it unowned was diverted to the pool (the owner's role cannot
+        # act on the restored status).
+        released_to_pool = restore and had_owner and t.assigned_to is None
         await self._maybe_notify_block_flip(task_id, t, t.title)
         if tripped := await self._maybe_trip_oscillation_breaker(
             task_id, t, escalator_id=escalator_id, resolver_id=pm_agent_id
         ):
             return tripped.with_introspection(task=t, role=role)
-        next_msg = (
-            "task restored to its pre-block state — original assignee will resume"
-            if restore
-            else "task back to in_progress; you'll need to re-engage the workflow"
-        )
+        if released_to_pool:
+            next_msg = (
+                f"task released to the pool in {t.status}: its previous owner's"
+                " role cannot act on that status. A role-capable agent will claim"
+                " it; no further call is needed from you."
+            )
+        elif restore:
+            next_msg = (
+                "task restored to its pre-block state — original assignee will resume"
+            )
+        else:
+            next_msg = "task back to in_progress; you'll need to re-engage the workflow"
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),

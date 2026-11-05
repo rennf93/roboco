@@ -41,12 +41,12 @@ Cross-cutting support layer beneath the delivery services: the service-base/erro
 
 | Name | Kind | File:Line | Responsibility |
 |---|---|---|---|
-| `BaseService` | class | `services/base.py:116` | Session-bound service base; holds `self.session` + `self.log` (structlog bound to `service_name`) |
-| `SingletonService` | class | `services/base.py:154` | Stateless singleton base with logger only |
+| `BaseService` | class | `services/base.py:135` | Session-bound service base; holds `self.session` + `self.log` (structlog bound to `service_name`) |
+| `SingletonService` | class | `services/base.py:173` | Stateless singleton base with logger only |
 | `SingletonHolder[T]` | generic class | `services/base.py:184` | PEP-695 generic singleton holder (get/set/clear/is_initialized) |
 | `ServiceError` | class | `services/base.py:25` | Base service exception with `message` + `details` |
 | `NotFoundError` | class | `services/base.py:34` | 404-bound; carries `resource_type` / `resource_id` |
-| `ConflictError` | class | `services/base.py:64` | 409-bound; carries `resource_type` |
+| `ConflictError` | class | `services/base.py:83` | 409-bound; carries `resource_type` |
 | `ValidationError` | class | `services/base.py:51` | 400-bound; carries `field` |
 | `RateLimitError` | class | `services/exceptions.py:31` | Raised after all 429 retries exhausted; carries `provider` + `retry_after` |
 | `parse_retry_after_header` | func | `services/exceptions.py:65` | Numeric `Retry-After` → float seconds (HTTP-date unsupported) |
