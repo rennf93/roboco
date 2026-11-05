@@ -1419,6 +1419,15 @@ class Settings(BaseSettings):
             "the loop originates nothing more while this many are still open."
         ),
     )
+    base_red_consecutive_threshold: int = Field(
+        default=2,
+        ge=1,
+        description=(
+            "Consecutive red CI readings on a project's base branch before a "
+            "base-red incident opens. Pending/unknown readings neither count "
+            "nor reset; the first green reading closes."
+        ),
+    )
     ci_watch_max_per_cycle: int = Field(
         default=1,
         ge=1,
