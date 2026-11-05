@@ -13945,8 +13945,6 @@ class TaskService(
             task.revision_count = (task.revision_count or 0) + 1
             self._maybe_schedule_coroner_bounce_hook(task)
 
-        self._maybe_schedule_wedge_ledger_check(task, to_status)
-
         if audit_agent_id is not None:
             resolved_audit_agent_id: str | None = str(audit_agent_id)
         elif task.claimed_by is not None:
@@ -13988,18 +13986,23 @@ class TaskService(
     ) -> None:
         """Schedule the task-scoped wedge ledger check (the #685 strike
         breaker generalized to every transition — status-keyed, actor- and
-        verb-agnostic; see ``roboco/services/wedge_ledger.py``). Best-effort
-        fire-and-forget on a FRESH DB session (this method is sync and runs
-        mid-transaction — same accepted small race as the coroner bounce
-        hook), so a check failure can never fail the transition. Split out
-        of ``_emit_status_transition_audit`` to keep its own complexity down
-        (xenon budget)."""
+        verb-agnostic; see ``roboco/services/wedge_ledger.py``). Deferred
+        until the caller's transaction COMMITS (``defer_after_commit``;
+        dropped on rollback) so the check, which runs on a fresh DB session,
+        reads committed status/markers and can neither force BLOCKED before
+        the caller's own status lands nor have its ledger marker overwritten
+        by the caller's flush. A failure never fails the transition. Split
+        out of ``_emit_status_transition_audit`` to keep its own complexity
+        down (xenon budget)."""
+        from roboco.services.notification_delivery import defer_after_commit
+
+        task_id = cast("UUID", task.id)
+
+        async def _check() -> None:
+            await run_wedge_ledger_check(task_id, to_status)
+
         try:
-            bg_task = asyncio.create_task(
-                run_wedge_ledger_check(cast("UUID", task.id), to_status)
-            )
-            self._background_tasks.add(bg_task)
-            bg_task.add_done_callback(self._background_tasks.discard)
+            defer_after_commit(self.session, _check)
         except Exception:
             _module_log.warning(
                 "wedge ledger: check scheduling failed (best-effort)",

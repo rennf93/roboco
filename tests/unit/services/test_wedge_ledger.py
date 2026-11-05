@@ -275,8 +275,10 @@ async def test_wedge_blocked_notification_carries_the_cycle(
     params = created[0]
     assert params.notification_type == NotificationType.BLOCKER_ESCALATION
     assert params.to_agents == ["ceo"]
-    # Every loop leg is named: actor, role, transition, timestamp.
+    assert "oldest first" in params.body
+    # Every loop leg is named: actor, role, verb/event, transition, timestamp.
     for entry in cycle:
+        assert entry["event"] in params.body
         assert entry["timestamp"] in params.body
         assert entry["actor"] in params.body
         assert entry["actor_role"] in params.body

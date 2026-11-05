@@ -308,7 +308,7 @@ class NotificationTaskNotices(_Base):
         display = task_display(task_title, task_id)
         lines = [
             f"{c.get('timestamp') or '?'}  {c.get('actor') or '?'}"
-            f" ({c.get('actor_role') or '?'})  "
+            f" ({c.get('actor_role') or '?'})  [{c.get('event') or '?'}]  "
             f"{c.get('from_status') or '?'} -> {c.get('to_status') or '?'}"
             for c in cycle
         ]
@@ -316,7 +316,7 @@ class NotificationTaskNotices(_Base):
             f"Task {display} returned to status '{status}' {strikes} times "
             "with no progress (no new commits, revisions, or terminal "
             "children) across mixed actors and verbs, and has been "
-            "force-blocked for a human. Full cycle (oldest last):\n" + "\n".join(lines)
+            "force-blocked for a human. Full cycle (oldest first):\n" + "\n".join(lines)
         )
         await self._create_notification(
             CreateNotificationParams(
