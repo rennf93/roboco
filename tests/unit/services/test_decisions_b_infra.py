@@ -994,9 +994,19 @@ async def test_b13_off_waits(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
 
+def _stub_cadence_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``_run_due_one`` asks the cadence policy for the interval; on the
+    AsyncMock session that lookup leaks never-awaited mock coroutines."""
+    policy = SimpleNamespace(effective_interval=AsyncMock(return_value=60))
+    monkeypatch.setattr(
+        bp_module, "get_board_program_cadence_policy_service", lambda _s: policy
+    )
+
+
 @pytest.mark.asyncio
 async def test_b13_due_early_opens_cycle(monkeypatch: pytest.MonkeyPatch) -> None:
     engine = _bare(bp_module.BoardProgramEngine)
+    _stub_cadence_policy(monkeypatch)
     monkeypatch.setattr(engine, "enabled", AsyncMock(return_value=True))
     monkeypatch.setattr(engine, "_scope_gate", AsyncMock(return_value=True))
     monkeypatch.setattr(engine, "_dedup_state", AsyncMock(return_value=(False, None)))
@@ -1012,6 +1022,7 @@ async def test_b13_due_early_opens_cycle(monkeypatch: pytest.MonkeyPatch) -> Non
 @pytest.mark.asyncio
 async def test_b13_below_floor_keeps_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
     engine = _bare(bp_module.BoardProgramEngine)
+    _stub_cadence_policy(monkeypatch)
     monkeypatch.setattr(engine, "enabled", AsyncMock(return_value=True))
     monkeypatch.setattr(engine, "_scope_gate", AsyncMock(return_value=True))
     monkeypatch.setattr(engine, "_dedup_state", AsyncMock(return_value=(False, None)))
