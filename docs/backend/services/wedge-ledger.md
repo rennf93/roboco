@@ -4,7 +4,7 @@ The wedge ledger (`roboco/services/wedge_ledger.py`, PR #1127) generalizes the #
 
 ## How a strike is counted
 
-`TaskService._emit_status_transition_audit` is the single transition chokepoint. After every status transition it calls `_maybe_schedule_wedge_ledger_check`, which fires `run_wedge_ledger_check(task_id, to_status)` as a best-effort background task on a **fresh DB session**. A failure in the check is logged and never fails the transition. The check shares the small accepted race the coroner bounce hook already carries, because the caller's transaction may still be open when it runs.
+`TaskService._emit_status_transition_audit` is the single transition chokepoint. After every status transition it calls `_maybe_schedule_wedge_ledger_check` **exactly once** (an earlier revision called it twice, which double-counted every strike). That method registers `run_wedge_ledger_check(task_id, to_status)` with `defer_after_commit(self.session, ...)`, the transactional outbox, so the check runs only **after the caller's transaction commits** and is dropped if it rolls back. The check still uses a **fresh DB session**, but because it runs post-commit it reads committed status and markers. It can no longer force `BLOCKED` before the caller's own status lands, and the caller's marker flush can no longer overwrite its ledger write. A failure in the check is logged and never fails the transition.
 
 `WedgeLedgerService.check_transition` then:
 
@@ -40,10 +40,12 @@ If the notification fails, the failure is logged and the block stands.
 The notification is a `BLOCKER_ESCALATION` with `HIGH` priority from `system` to `ceo`. Its subject reads `Task <title> wedged (Nx no-progress cycle)`. The body names the status and strike count, then lists one line per transition:
 
 ```
-<timestamp>  <actor> (<role>)  <from_status> -> <to_status>
+<timestamp>  <actor> (<role>)  [<event>]  <from_status> -> <to_status>
 ```
 
-The cycle is rebuilt from the task's last 20 `task.*` audit rows (`_CYCLE_LIMIT`), listed oldest first within the window. The audit journey stays the source of truth and the ledger never duplicates it. The notification body's lead-in says "(oldest last)", but `_transition_cycle` reverses the descending query, so the lines are actually ordered oldest first. Trust the timestamps. The cycle carries actor, role, transition and timestamp, but not the verb name. A verb is only visible through the transition it caused.
+`<event>` is the audit event name for that transition (for example `task.pr_fail` or `task.request_changes`), which serves as the verb proxy, so the CEO can see which verb drove each leg. The body's lead-in reads "Full cycle (oldest first):".
+
+The cycle is rebuilt from the task's last 20 `task.*` audit rows (`_CYCLE_LIMIT`). `_transition_cycle` reverses the descending query, so lines run oldest first within that window. The audit journey stays the source of truth and the ledger never duplicates it.
 
 ## Storage
 
@@ -65,4 +67,4 @@ Payload:
 
 ## Tests
 
-`tests/unit/services/test_wedge_ledger.py` covers the strike and reset rules and the September mixed-verb loop shape: unblock succeeds, the next verb is `not_authorized`, an escalate bounce, then a pool reclaim. It also tests that mixing actors across a same-status cycle still accumulates strikes. `tests/unit/services/test_task.py` now ignores the sanctioned `run_wedge_ledger_check` background task when it asserts that no fire-and-forget audit task was spawned.
+`tests/unit/services/test_wedge_ledger.py` covers the strike and reset rules and the September mixed-verb loop shape: unblock succeeds, the next verb is `not_authorized`, an escalate bounce, then a pool reclaim. It also tests that mixing actors across a same-status cycle still accumulates strikes. The notification test asserts the "oldest first" label and that every cycle line carries its event. `tests/unit/services/test_task.py` runs the real `_emit_status_transition_audit` and asserts exactly one deferred wedge check is registered per transition, that it does not run before commit, and that the deferred work awaits `run_wedge_ledger_check` with the task id and target status. The existing no-background-task assertion is now strict, since the check is deferred rather than spawned.
