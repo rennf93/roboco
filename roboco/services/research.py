@@ -8,11 +8,13 @@ an agent container — and the agent never egresses: the provider's own API does
 Design:
 
 * ``SearchProvider`` is the abstract adapter. Concrete adapters
-  (``TavilyProvider``, ``BraveProvider``, ``ExaProvider``, ``SearXNGProvider``)
-  translate a query into the provider's wire format and normalise the response
-  into our dataclasses. ``SearXNGProvider`` is the keyless self-hosted default:
-  search via the instance's JSON endpoint, fetch via a local trafilatura
-  extraction guarded against internal-network SSRF. ``NullProvider`` is the
+  (``TavilyProvider``, ``BraveProvider``, ``ExaProvider``, ``SearXNGProvider``,
+  ``KeenableProvider``) translate a query into the provider's wire format and
+  normalise the response into our dataclasses. ``SearXNGProvider`` is the
+  keyless self-hosted default: search via the instance's JSON endpoint, fetch
+  via a local trafilatura extraction guarded against internal-network SSRF.
+  ``KeenableProvider`` is a hosted search API whose key is optional (keyless
+  public endpoint without one, keyed endpoint with one). ``NullProvider`` is the
   graceful-degradation stub returned when no provider is configured; it never
   raises and always yields empty results.
 * ``ResearchService`` selects an adapter from settings, clamps result/byte
@@ -371,6 +373,60 @@ class SearXNGProvider(SearchProvider):
         return _truncated_fetch(url, extracted or "", max_chars, self.name)
 
 
+class KeenableProvider(SearchProvider):
+    """Keenable: web search that works without an API key.
+
+    With no key it calls the keyless public endpoint; with a key, the keyed
+    endpoint (higher rate limits). ``configured`` is always True because the
+    key is optional. No content-extraction endpoint, so ``fetch`` is
+    unsupported (like Brave).
+
+    Wire contract (API reference: https://docs.keenable.ai/api-reference/search,
+    OpenAPI: https://api.keenable.ai/openapi.json): ``POST /v1/search`` with an
+    ``X-API-Key`` header, or ``POST /v1/search/public`` with the required
+    ``X-Keenable-Title`` app identifier and no key; both take
+    ``{"query", "max_results"}`` and return ``results[]`` of
+    ``{title, url, snippet}`` (``description`` is deprecated and empty).
+    """
+
+    name = "keenable"
+    _PUBLIC_SEARCH_URL = "https://api.keenable.ai/v1/search/public"
+    _SEARCH_URL = "https://api.keenable.ai/v1/search"
+    # Legacy ``description`` fields can be huge; cap snippets for panel payload size.
+    _SNIPPET_MAX_CHARS = 1000
+
+    @property
+    def configured(self) -> bool:
+        return True
+
+    async def search(self, query: str, max_results: int) -> SearchOutcome:
+        headers = {"Content-Type": "application/json", "X-Keenable-Title": "RoboCo"}
+        url = self._PUBLIC_SEARCH_URL
+        if self._api_key:
+            headers["X-API-Key"] = self._api_key
+            url = self._SEARCH_URL
+        body = await self._request_json(
+            "POST",
+            url,
+            headers=headers,
+            json_body={"query": query, "max_results": max_results},
+        )
+        hits = [
+            SearchHit(
+                title=str(item.get("title", "")),
+                url=str(item["url"]),
+                snippet=str(item.get("snippet") or item.get("description") or "")[
+                    : self._SNIPPET_MAX_CHARS
+                ],
+            )
+            for item in body.get("results", [])
+            if isinstance(item, dict) and item.get("url")
+        ]
+        return SearchOutcome(
+            query=query, hits=hits[:max_results], answer=None, provider=self.name
+        )
+
+
 class NullProvider(SearchProvider):
     """Graceful stub used when no provider key is configured.
 
@@ -409,9 +465,10 @@ def build_provider(
 ) -> SearchProvider:
     """Construct the adapter for ``name``: NullProvider when unconfigured.
 
-    SearXNG is the keyless exception: it needs a base URL instead of an API
-    key, so it is constructed (and gated on that URL) before the shared
-    ``api_key`` path below.
+    Two adapters are keyless exceptions, constructed before the shared
+    ``api_key`` path below: SearXNG needs a base URL instead of an API key (and
+    is gated on that URL), and Keenable works with or without a key (keyless
+    public endpoint when unset, keyed endpoint when set).
     """
     if name == "searxng":
         if searxng_base_url:
@@ -419,6 +476,9 @@ def build_provider(
                 base_url=searxng_base_url, timeout=timeout, client=client
             )
         return NullProvider(api_key=None, timeout=timeout, client=client)
+    if name == "keenable":
+        # Keyless by default; a key, when set, selects the keyed endpoint.
+        return KeenableProvider(api_key=api_key, timeout=timeout, client=client)
     if name == "null" or not api_key:
         return NullProvider(api_key=None, timeout=timeout, client=client)
     provider_cls = _PROVIDERS.get(name)
