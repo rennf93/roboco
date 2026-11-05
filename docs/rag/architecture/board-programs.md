@@ -80,6 +80,75 @@ Pest Control, Spackle, Mirror, and Dogfood share one round-robin picker, `pick_r
 
 `BoardProgramEngine.record_decision(program_key, item_ref, verdict, reason, exploration_task_id=...)` accrues one CEO approve/reject onto the cycle row's `decisions` jsonb column, incrementing `items_proposed`/`items_approved`/`items_rejected`. `prior_cycle_context(program_key, limit=2)` renders the last two CLOSED cycles ("proposed N, approved N; rejected: item — reason") for injection into the NEXT cycle's exploration prompt — every producer of a per-item decision (`RoadmapService`, `PestControlService`-equivalent per-program services) calls this, so a program stops re-proposing something the CEO already rejected without explanation. This is the one genuinely new pipeline stage the registry introduced; the pre-registry roadmap/spotlight engines had no memory of prior outcomes at all.
 
+## Cadence metric: cost per cycle vs approval rate
+
+`BoardProgramCadenceService.program_cadence_metrics()` (`roboco/services/board_program_cadence.py`, built with `get_board_program_cadence_service(session)`) is a read-only service that reports, per program, what a cycle costs next to how much of what it proposes the CEO approves. Its consumer is `BoardProgramCadencePolicyService` (`roboco/services/board_program_cadence_policy.py`), which turns these numbers into slowdown decisions and the CEO review — see "Cadence policy and CEO review" below (`GET /board-programs/cadence-review`, `POST /board-programs/{key}/cadence-slowdown`, the `board_cadence_*` settings). The method name and the `ProgramCadenceMetric` field names (`roboco/models/board_program_cadence.py`, a dataclass) are a stable interface.
+
+It returns `dict[program_key, ProgramCadenceMetric]` with an entry for **every** key in `PROGRAMS`, including programs that have never run a cycle (zeros and `None` rates).
+
+| Field | Meaning |
+|-------|---------|
+| `program_key` | The `PROGRAMS` key. |
+| `cycles_counted` | Cycles whose `exploration_task_id` is set, so cost is attributable. |
+| `cycles_missing_cost` | Cycles whose `exploration_task_id` is null (the task was deleted, FK `SET NULL`). Excluded from the cost mean. |
+| `total_cost_usd` | Summed spend of the counted cycles' exploration tasks. |
+| `cost_per_cycle_usd` | `total_cost_usd / cycles_counted`; `None` when `cycles_counted` is 0. |
+| `items_proposed` / `items_approved` | Sums over **all** of the program's cycles, including the ones missing cost. |
+| `approval_rate` | `items_approved / items_proposed`; `None` when nothing was proposed. |
+| `items_approved_counted` | Approvals summed over the `cycles_counted` cycles only. The cadence policy uses this, not `items_approved`, so approvals of cost-unknown cycles never inflate approvals per cycle. |
+
+**Where cost comes from.** The `tasks` table has no cost column. Cost is the sum of `agent_spawn_sessions.estimated_cost_usd` for the exploration task (`agent_spawn_sessions.task_id` is a string, so the join casts `exploration_task_id`) — the same source as `TaskService.task_spend_usd`. `daily_usage_rollups.total_cost_usd` has no task id and cannot attribute spend to a cycle.
+
+**Query shape.** Two grouped aggregate queries, no per-cycle loop: one over `board_program_cycles` (counts split by null/non-null task, plus summed proposals/approvals), one joining cycles to spawn sessions (summed cost). Python then fills in every `PROGRAMS` key.
+
+**Known limits.**
+
+- A session that is still open has a null `estimated_cost_usd` until it closes, so an in-flight cycle undercounts.
+- A cycle whose task has no spawn sessions counts as `cycles_counted` with cost 0, which pulls the mean down; it is not reported as missing cost.
+
+Tests: `tests/unit/services/test_board_program_cadence.py` (real Postgres) covers zero cycles, a null-task cycle, zero proposals, and a mixed multi-program case.
+
+## Cadence policy and CEO review
+
+A Board Program whose approval rate does not justify its cycle cost is run less often. The CEO can see every program's numbers and reverse any slowdown. The policy consumes the metric above (`cost_per_cycle_usd`, `items_proposed`, `items_approved_counted`, `cycles_counted`).
+
+### The rule
+
+Implemented as a pure function, `decide_slowdown`, in `roboco/foundation/policy/board_program_cadence.py`. A program is slowed only when all three hold:
+
+1. **Sample**: `items_proposed >= board_cadence_min_proposals`. Below the minimum a program is never slowed (n-1 is not slowed, n is eligible).
+2. **Cost**: `cost_per_cycle_usd >= board_cadence_cost_threshold_usd`. The boundary is inclusive. A missing cost (`None`) is never slowed.
+3. **Unjustified**: cost per approved proposal is at or above the threshold. Cost per approved proposal = `cost_per_cycle / (items_approved_counted / cycles_counted)`; numerator and denominator both cover cost-known cycles only. A program with zero approvals has an infinite cost per approved proposal, so it is slowed. The cost is justified while this figure stays strictly below the threshold.
+
+Example with the $50 default: $60 per cycle, 2 cycles, 4 approved gives 2 approved per cycle, so $30 per approved proposal; not slowed. With 1 approved per cycle it is $60 per approved proposal; slowed.
+
+### Effective interval
+
+`effective_interval_seconds(base, slowed=, multiplier=)` returns `base` when not slowed, otherwise `max(base, int(base * multiplier))`. It can only delay, never accelerate.
+
+The base interval comes from `base_interval_seconds(key)` in `roboco/services/board_program_cadence_policy.py`: the operator override (`roadmap_interval_seconds` for `roadmap`, `x_feature_spotlight_interval_seconds` for `x_feature`), else the program's registry `default_interval_seconds`. `BoardProgramEngine._run_due_one` passes `effective_interval(key, base)` as `interval_override` to `program_due`; the decisions-due-early path is untouched. The lookup runs in a savepoint and **fails open**: any error is logged and the base interval is used, so a metrics failure never stalls a program.
+
+### Settings
+
+All in `roboco/config.py`:
+
+| Setting | Default | Constraint | Meaning |
+|---|---|---|---|
+| `board_cadence_cost_threshold_usd` | `50.0` | `>= 0` | Cycle cost at or above which a program can be slowed; also the per-approved-proposal limit. |
+| `board_cadence_min_proposals` | `5` | `>= 1` | Proposals needed before a program can ever be slowed. |
+| `board_cadence_slowdown_multiplier` | `2.0` | `>= 1.0` | Factor a slowed program's interval is stretched by. |
+
+### CEO review and reversal
+
+Both routes live in `roboco/api/routes/board_programs.py`, are CEO-only, and delegate to `BoardProgramCadencePolicyService`.
+
+- `GET /board-programs/cadence-review` returns a `ProgramCadenceReview` per program (`roboco/models/board_program_cadence_review.py`): `program_key`, `cost_per_cycle_usd`, `approval_rate`, `sample_size`, `items_approved` (all cycles), `cycles_counted` and `items_approved_counted` (the cost-known cycles and their approvals, the figures `decide_slowdown` actually uses), `slowed`, `slowdown_disabled`, `original_interval_seconds`, `effective_interval_seconds`, `reason`, and the triggering numbers `cost_threshold_usd`, `min_proposals`, `slowdown_multiplier`, `cost_per_approved_usd` (`null` when infinite or not computed). A program with deleted-task cycles can show a nonzero `items_approved` while `items_approved_counted` is 0 and `cost_per_approved_usd` is `null`; read the counted fields to see why.
+- `POST /board-programs/{key}/cadence-slowdown?disabled=true|false` reverses (`true`) or restores (`false`) a program's slowdown and returns the refreshed review. Unknown keys return 404.
+
+Reversal is stored in the settings store under `board_program.{key}.cadence_slowdown_disabled`. When set, `effective_interval` returns the base interval and the review shows `slowed=false`, `slowdown_disabled=true`.
+
+Tests: `tests/unit/foundation/policy/test_board_program_cadence.py` and `tests/unit/services/test_board_program_cadence_policy.py`.
+
 ## Panel and API
 
 `GET /api/board-programs` and `POST /api/board-programs/{key}/run-now` (`roboco/api/routes/board_programs.py`, CEO-only, `require_ceo_role`) back the Board Programs page (Business section, `board-programs-card.tsx`): each program's live enablement, trigger kind, scope, opted-in project slugs, last-run timestamp, whether a cycle is currently open, and the most recent closed cycle's summary — plus a `Switch` that writes `board_program.{key}.enabled` through the generic feature-flag settings endpoint and a "Run now" button (disabled while a cycle is already open) that calls `open_program_cycle` off-schedule. `run-now` 404s on an unregistered key and 409s when the program is disabled, already has an open cycle, or (a project-scoped program) has no opted-in project — the three collapse into one `None` result with no finer-grained distinction available to the caller.

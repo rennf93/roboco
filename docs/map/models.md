@@ -37,6 +37,8 @@ The Pydantic/dataclass domain surface of RoboCo — the typed contract the API, 
 | `dashboard.py` | `FlagData`/`ReportData`/`TeamHealthData`/`AuditQueueItem`/`CreateFlagParams`/`DashboardStorage` | 96 |
 | `secretary.py` | `DirectiveKind`/`DirectiveStatus` StrEnums + `GATED_KINDS` frozenset | 41 |
 | `README.md` | Architecture doc for the models package | ~419 |
+| `roboco/models/board_program_cadence.py` | `ProgramCadenceMetric` dataclass: one Board Program's cost per cycle next to its proposal approval rate, with the cost-known cycle count and the approvals of those cycles only | 29 |
+| `roboco/models/board_program_cadence_review.py` | `ProgramCadenceReview`: the CEO cadence-review row per program, carrying the counted cycles and approvals the slowdown decision used alongside the all-cycle totals | 26 |
 | `roboco/models/env_branches.py` | Per-project environment ladder helpers: an ordered `list[{name, branch}]` where index 0 is the head (dev trunk PR target) and the last rung is prod (release target); resolves a null ladder to a single rung from `default_branch`, and derives cascade pairs and the promotion chain | 129 |
 
 ## Key Symbols

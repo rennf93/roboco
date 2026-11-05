@@ -926,7 +926,7 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | docker-compose.registry.yml | Pull-and-run compose using pre-built GHCR/Docker Hub images (ROBOCO_REGISTRY + ROBOCO_VERSION); infra services byte-identical to build compose (incl. `backup` + vault defaults), agent-* services are one-shot pre-pulls, own `roboco_data` network; one `docker-gate` (builds refused, since every image is pulled; `GATE_REGISTRY` from `ROBOCO_REGISTRY`; the same read-only bind roots as the build file's gates) serves the orchestrator and dispatcher | 990 |
 | Makefile | Ops + quality targets: infra, dev/run/orchestrator, quality gate (ruff/mypy/pytest/xenon/radon/vulture/bandit/pip-audit/deptry/lint-imports/alembic/foundation-check), fast pre-submit `gate` target (ruff format/check, mypy, xenon, lint-imports), per-Python test matrix, docs, lifecycle regen | 628 |
 | pyproject.toml | Project + dependency manifest: requires-python >=3.13,<3.15, deps, dev/docs extras, console scripts, ruff/mypy/pytest/coverage/vulture/bandit/radon/xenon/deptry/importlinter config | 717 |
-| roboco/config.py | Pydantic Settings (env prefix ROBOCO_, cached via lru_cache); every tunable: DB, Redis, RAG, LLM/Ollama, workspaces, agent guardrails, gateway thresholds, autonomy-engine flags | 3389 |
+| roboco/config.py | Pydantic Settings (env prefix ROBOCO_, cached via lru_cache); every tunable: DB, Redis, RAG, LLM/Ollama, workspaces, agent guardrails, gateway thresholds, autonomy-engine flags | 3407 |
 | roboco/__init__.py | Package root: __version__ + re-exports settings, exceptions, logging helpers | 36 |
 | roboco/bootstrap.py | Async bootstrap: git-user drop self-test (every role but indexer; SystemExit(1) on failure), a warning when an api or dispatcher has the host Docker socket and no `DOCKER_HOST` (a compose file from before the Docker gate), DB init, Redis event bus, websocket bridge, orchestrator construction, uvicorn API server task, wait-for-ready poll, optional agent spawn, graceful shutdown | 259 |
 | roboco/cli.py | argparse CLI wrapper around bootstrap.main / db-only; the ENTRYPOINT invoked by `python -m roboco.cli` | 67 |
@@ -1020,7 +1020,7 @@ This slice is the packaging, build, and runtime-tooling layer of RoboCo: the Doc
 | Name | Kind | File:Line | Responsibility |
 |---|---|---|---|
 | Settings | class | roboco/config.py:26 | Pydantic BaseSettings; all ROBOCO_ env-backed tunables + derived URL properties (database_url, redis_url, internal_api_url, rag_store_url) |
-| get_settings | function | roboco/config.py:3383 | lru_cache-backed singleton factory returning the cached Settings instance |
+| get_settings | function | roboco/config.py:3401 | lru_cache-backed singleton factory returning the cached Settings instance |
 | internal_api_url | property | roboco/config.py:139 | service-to-service API base URL (api_url override or http://host:port/api, maps 0.0.0.0 to 127.0.0.1) |
 | database_url | property | roboco/config.py:214 | asyncpg connection URL |
 | database_url_sync | property | roboco/config.py:222 | sync psycopg URL for Alembic |
@@ -2189,6 +2189,7 @@ The "misc" foundation-policy slice holds the pure, service-agnostic rule catalog
 | roboco/foundation/policy/content/markers.py | Typed accessors for Task.orchestration_markers JSON column (original_developer, documenter, escalation, release report, transition notes, etc.) | 1086 |
 | roboco/foundation/policy/content/models.py | Pydantic content models (PrReviewContent, TaskDescription, ResumptionNote, DeveloperNote, QaNote, DocNote, AuditorNote) + CONTENT_MODELS registry + validate_content + pr_review_conflict + required_shape | 669 |
 | roboco/foundation/policy/content/validators.py | Shared validation primitives: BANNED_PHRASES, reject_trivial, coerce_to_list, coerce_str_list, ContentValidationError | 158 |
+| `roboco/foundation/policy/board_program_cadence.py` | Pure cadence-slowdown policy: `CadenceLimits`, `SlowdownDecision`, `decide_slowdown` (cost per approved item against the cost threshold once the minimum proposal sample is met) and `effective_interval_seconds` (stretch, never shorten) | 99 |
 | `roboco/foundation/policy/display_time.py` | Display-timezone day bucketing, pure and DB-free: resolve the `display_timezone` setting to a `ZoneInfo` (UTC fallback), the local date of an instant, trailing calendar dates, and a day's UTC bounds | 53 |
 | `roboco/foundation/policy/flow_timeouts.py` | Flow-verb timeout budgets: `SLOW_VERBS` (i_am_done, submit_up, submit_root, open_pr, i_will_work_on) and `CLIENT_HEADROOM_SECONDS`, imported by both the server `FlowVerbTimeoutMiddleware` and the agent-side MCP flow client so the client wall always outlasts the server's 504 | 35 |
 | `roboco/foundation/policy/lane.py` | Per-dev lane ordering: `transitive_dependents`, the closure of tasks that depend (transitively, within a dependency map) on a task | 34 |
@@ -5498,6 +5499,8 @@ The Pydantic/dataclass domain surface of RoboCo — the typed contract the API, 
 | `dashboard.py` | `FlagData`/`ReportData`/`TeamHealthData`/`AuditQueueItem`/`CreateFlagParams`/`DashboardStorage` | 96 |
 | `secretary.py` | `DirectiveKind`/`DirectiveStatus` StrEnums + `GATED_KINDS` frozenset | 41 |
 | `README.md` | Architecture doc for the models package | ~419 |
+| `roboco/models/board_program_cadence.py` | `ProgramCadenceMetric` dataclass: one Board Program's cost per cycle next to its proposal approval rate, with the cost-known cycle count and the approvals of those cycles only | 29 |
+| `roboco/models/board_program_cadence_review.py` | `ProgramCadenceReview`: the CEO cadence-review row per program, carrying the counted cycles and approvals the slowdown decision used alongside the all-cycle totals | 26 |
 | `roboco/models/env_branches.py` | Per-project environment ladder helpers: an ordered `list[{name, branch}]` where index 0 is the head (dev trunk PR target) and the last rung is prod (release target); resolves a null ladder to a single rung from `default_branch`, and derives cascade pairs and the promotion chain | 129 |
 
 ## Key Symbols
@@ -7946,13 +7949,13 @@ External:
 | Flag / setting | Source | Used for |
 |----------------|--------|----------|
 | `ROBOCO_GIT_EXECUTOR_WORKERS` (env, default 16) | `os.environ` at git.py:222 | Dedicated git subprocess pool size |
-| `settings.git_command_timeout_seconds` | config.py:2306 | Default `_run_git` timeout |
-| `settings.git_commit_timeout_seconds` | config.py:2357 | Staging/commit large changeset timeout |
-| `settings.git_network_timeout_seconds` | config.py:2379 | fetch/pull/push/ls-remote timeout |
-| `settings.git_diff_timeout_seconds` | config.py:2390 | `GET /api/git/diff`'s outer "diff" stage bound (default 60s) around the paired `git diff` + `git diff --stat` calls, layered on top of (not instead of) `git_command_timeout_seconds` bounding each call individually |
-| `settings.workspaces_root` | config.py:2070 | Workspace path root (token derivation) |
-| `settings.workspace_auto_clone` | config.py:2074 | `get_workspace` auto-clone branch |
-| `settings.public_base_url` | config.py:2499 | Commit/PR template link base (`+ /api`) |
+| `settings.git_command_timeout_seconds` | config.py:2324 | Default `_run_git` timeout |
+| `settings.git_commit_timeout_seconds` | config.py:2375 | Staging/commit large changeset timeout |
+| `settings.git_network_timeout_seconds` | config.py:2397 | fetch/pull/push/ls-remote timeout |
+| `settings.git_diff_timeout_seconds` | config.py:2408 | `GET /api/git/diff`'s outer "diff" stage bound (default 60s) around the paired `git diff` + `git diff --stat` calls, layered on top of (not instead of) `git_command_timeout_seconds` bounding each call individually |
+| `settings.workspaces_root` | config.py:2088 | Workspace path root (token derivation) |
+| `settings.workspace_auto_clone` | config.py:2092 | `get_workspace` auto-clone branch |
+| `settings.public_base_url` | config.py:2517 | Commit/PR template link base (`+ /api`) |
 | `settings.internal_api_url` | config.py:139 | Internal PR body link base |
 | `settings.github_api_base_url` | config.py:1138 | GitHub REST API base (PR/CI/review) |
 | `settings.release_ci_workflow` | config.py:1614 | Named workflow file (e.g. `ci.yml`) used by the release CI gate in `get_latest_ci_conclusion`; always resolves a named workflow so the gate never degrades to the imprecise all-workflows mode |
@@ -8445,12 +8448,12 @@ Cross-cutting support layer beneath the delivery services: the service-base/erro
 | `AgentService` | class | `services/agent.py:19` | Read-only agent queries (list/get_by_uuid/get_by_slug/get_by_uuid_or_slug_or_raise) |
 | `check_database` | func | `services/health.py:14` | Opens a DB context, `SELECT 1`, returns `(msg, ok)` |
 | `check_redis` | func | `services/health.py:24` | `redis.from_url(settings.redis_url).ping()` then close |
-| `SettingsService` | class | `services/settings.py:289` | KV CRUD on `system_settings` (get/get_int/get_bool/set/all); `set` validates via `validate_setting`, upserts + flushes, caller commits; a `ceo_name` write also renames the CEO agent row in the same transaction (`_sync_ceo_agent_name`) |
-| `FEATURE_FLAGS` | tuple | `services/settings.py:84` | Panel-tunable flag registry `(key, label)`; maps to `Settings` bool attrs of same name |
-| `validate_setting` | func | `services/settings.py:281` | Reject unknown keys + run per-key validator |
-| `apply_persisted_feature_flags` | func | `services/settings.py:365` | Startup overlay: stored flag value → `setattr(settings, key, bool)`; returns overridden keys |
-| `feature_flag_effective_values` | func | `services/settings.py:350` | Stored override else env default; backs Settings panel card |
-| `SettingValidationError` | class | `services/settings.py:28` | Unknown/invalid setting on write |
+| `SettingsService` | class | `services/settings.py:296` | KV CRUD on `system_settings` (get/get_int/get_bool/set/all); `set` validates via `validate_setting`, upserts + flushes, caller commits; a `ceo_name` write also renames the CEO agent row in the same transaction (`_sync_ceo_agent_name`) |
+| `FEATURE_FLAGS` | tuple | `services/settings.py:85` | Panel-tunable flag registry `(key, label)`; maps to `Settings` bool attrs of same name |
+| `validate_setting` | func | `services/settings.py:288` | Reject unknown keys + run per-key validator |
+| `apply_persisted_feature_flags` | func | `services/settings.py:372` | Startup overlay: stored flag value → `setattr(settings, key, bool)`; returns overridden keys |
+| `feature_flag_effective_values` | func | `services/settings.py:357` | Stored override else env default; backs Settings panel card |
+| `SettingValidationError` | class | `services/settings.py:29` | Unknown/invalid setting on write |
 | `MaintenancePauseService` | class | `services/maintenance_pause.py:42` | CRUD over the three `PauseScope` rows in `system_settings` via `SettingsService`: `get` (expiry resolved on read by the foundation `state_from_payload`) / `all` (every scope, backs the panel GET) |
 | `MaintenancePauseService.pause` | method | `services/maintenance_pause.py:57` | Stamps who/when/why + `expires_at = now + hours` (default `DEFAULT_PAUSE_HOURS`); raises `MaintenancePauseError` on a blank `by` or `hours` outside `(0, MAX_PAUSE_HOURS]`; caller commits |
 | `MaintenancePauseService.resume` | method | `services/maintenance_pause.py:87` | Idempotent clear: writes the not-paused `resume_state` whatever the current state |
@@ -9649,9 +9652,11 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `roboco/foundation/policy/board_programs.py` | Board Program registry: `BoardProgram` dataclass, `PROGRAMS` (14 entries), `program_due`/`project_participates`/`validate_board_programs_field` (pure) | 424 |
 | `roboco/services/board_programs.py` | `BoardProgramEngine` — trigger/dedup/originate/LEARN over every registered program; `program_armed` settings-store chokepoint; `pick_rotation_target` for project-scoped round-robin | 998 |
 | `roboco/services/_board_program_engine_types.py` | `BoardProgramEngineSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `BoardProgramEngine` mixins reach through `self`, plus its instance attributes; `tests/unit/services/test_board_program_engine_mixins.py` fails on a stray stub or a member defined twice | 53 |
+| `roboco/services/board_program_cadence.py` | `BoardProgramCadenceService.program_cadence_metrics`: per-program cost per cycle (from exploration task cost) joined to proposal approval rate off the cycle ledger | 100 |
+| `roboco/services/board_program_cadence_policy.py` | `BoardProgramCadencePolicyService`: applies the slowdown policy to live metrics, resolves effective intervals (fail-open), the CEO reversal switch, and the `review()` rows | 137 |
 | `roboco/api/schemas/board_programs.py` | `BoardProgramResponse` / `BoardProgramCycleResponse` / `BoardProgramDecisionResponse` response shapes | 51 |
 | `roboco/api/utils/board_programs.py` | Route glue: `require_ceo`, `to_response` (engine state → `BoardProgramResponse`), `cycle_to_response` | 65 |
-| `roboco/api/routes/board_programs.py` | CEO-only routes: list every program's live status, `POST /{key}/run-now`, `GET /{key}/cycles` (LEARN history) | 116 |
+| `roboco/api/routes/board_programs.py` | CEO-only routes: list every program's live status, `POST /{key}/run-now`, `GET /{key}/cycles` (LEARN history) | 145 |
 | `roboco/services/pest_control_engine.py` | `PestControlEngine` — weekly+metric cron, project-scoped; evidence context (rework hotspots, recurring/waived findings) | 199 |
 | `roboco/services/spackle_engine.py` | `SpackleEngine` — biweekly cron, project-scoped gap-fill audit | 142 |
 | `roboco/services/scales_engine.py` | `ScalesEngine` — monthly cron, org-scoped portfolio rebalance; stale-backlog snapshot | 176 |
@@ -9777,14 +9782,14 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `program_due` | func | foundation/policy/board_programs.py:355 | Pure cron-due check; METRIC/EVENT programs always return False (opened by their own hooks, never the loop) |
 | `project_participates` | func | foundation/policy/board_programs.py:371 | Dual-polarity scope predicate — affirmative opt-in for `scope="project"`, opt-out (`"!key"`) for `scope="org"` |
 | `validate_board_programs_field` | func | foundation/policy/board_programs.py:388 | Rejects an unknown key or a polarity mismatched to the program's own scope |
-| `BoardProgramEngine` | class | services/board_programs.py:835 | Trigger/dedup/originate/LEARN over every registered program |
-| `BoardProgramDecisions` | class | board_programs.py:585 | Mixin of `BoardProgramEngine` (6 methods): Recording a program cycle's decision: resolving its cycle and snapshot, the decision or nothing-to-propose, the dedup state, and closing the cycle. |
-| `BoardProgramCycles` | class | board_programs.py:751 | Mixin of `BoardProgramEngine` (6 methods): Reading program cycles: one cycle's state, listing them, the prior cycles' context, rendering one, the latest, and the cycle an exploration belongs to. |
-| `BoardProgramEngine.run_due_programs` | method | services/board_programs.py:844 | Originates a cycle for every enabled+due CRON program, then every metric predicate that fires off-schedule; one program's failure never blocks the rest |
-| `BoardProgramEngine.open_program_cycle` | method | services/board_programs.py:941 | Enabled+scope+dedup only, no cron-due check — the CEO "run now" / strategy-engine idle-trigger seam |
-| `BoardProgramEngine.record_decision` / `prior_cycle_context` | method | services/board_programs.py:621 / 778 | LEARN: accrue a CEO approve/reject onto the cycle row; render the last N closed cycles for the next exploration prompt |
-| `program_armed` | func | services/board_programs.py:566 | THE arming chokepoint — settings-store `board_program.{key}.enabled`, falling back to a legacy flag only for `roadmap`/`x_feature` |
-| `pick_rotation_target` | func | services/board_programs.py:214 | Shared round-robin for project-scoped programs (Pest Control/Spackle/Mirror/Dogfood): never-explored first, else oldest `last_opened_at` |
+| `BoardProgramEngine` | class | services/board_programs.py:830 | Trigger/dedup/originate/LEARN over every registered program |
+| `BoardProgramDecisions` | class | board_programs.py:580 | Mixin of `BoardProgramEngine` (6 methods): Recording a program cycle's decision: resolving its cycle and snapshot, the decision or nothing-to-propose, the dedup state, and closing the cycle. |
+| `BoardProgramCycles` | class | board_programs.py:746 | Mixin of `BoardProgramEngine` (6 methods): Reading program cycles: one cycle's state, listing them, the prior cycles' context, rendering one, the latest, and the cycle an exploration belongs to. |
+| `BoardProgramEngine.run_due_programs` | method | services/board_programs.py:839 | Originates a cycle for every enabled+due CRON program, then every metric predicate that fires off-schedule; one program's failure never blocks the rest |
+| `BoardProgramEngine.open_program_cycle` | method | services/board_programs.py:939 | Enabled+scope+dedup only, no cron-due check — the CEO "run now" / strategy-engine idle-trigger seam |
+| `BoardProgramEngine.record_decision` / `prior_cycle_context` | method | services/board_programs.py:616 / 773 | LEARN: accrue a CEO approve/reject onto the cycle row; render the last N closed cycles for the next exploration prompt |
+| `program_armed` | func | services/board_programs.py:561 | THE arming chokepoint — settings-store `board_program.{key}.enabled`, falling back to a legacy flag only for `roadmap`/`x_feature` |
+| `pick_rotation_target` | func | services/board_programs.py:218 | Shared round-robin for project-scoped programs (Pest Control/Spackle/Mirror/Dogfood): never-explored first, else oldest `last_opened_at` |
 | `PestControlEngine.run_cycle` / `evidence_context` | method | pest_control_engine.py:79 / 152 | Weekly+metric cron; server-assembles rework-hotspot/recurring/waived-finding evidence for the PO's prompt |
 | `SpackleEngine.run_cycle` | method | spackle_engine.py:71 | Biweekly cron, project-scoped gap-fill audit |
 | `ScalesEngine.run_cycle` / `_stale_backlog_snapshot` | method | scales_engine.py:70 / 140 | Monthly cron; snapshots BACKLOG/PENDING tasks older than 30 days for the rebalance prompt |
@@ -10085,7 +10090,7 @@ product-strategy-research-pitch
 | `ROBOCO_STRATEGY_ENGINE_ENABLED` | `False` | config.py:1176 | Master switch: loop never starts when off |
 | `ROBOCO_STRATEGY_ENGINE_INTERVAL_SECONDS` | `1800` | config.py:1183 | Seconds between strategy assessment passes |
 | `ROBOCO_STRATEGY_STRANDED_BLOCKED_MINUTES` | `120` | config.py:1188 | Blocked-task threshold for "stranded" observation |
-| `ROBOCO_PROTECTED_GIT_URLS` | `[]` | config.py:2430 | Denylist: `ProjectService` rejects `git_url` containing any entry |
+| `ROBOCO_PROTECTED_GIT_URLS` | `[]` | config.py:2448 | Denylist: `ProjectService` rejects `git_url` containing any entry |
 | `ROBOCO_ENCRYPTION_KEY` | `""` | config.py:948 | Fernet key for git-token encrypt/decrypt |
 | `ROBOCO_ROADMAP_ENGINE_ENABLED` | `False` | config.py:1967 | Master switch: `_roadmap_engine_loop` never opens an exploration cycle when off |
 | `ROBOCO_ROADMAP_INTERVAL_SECONDS` | `604800` | config.py:1977 | Seconds between roadmap-exploration cycles (default weekly) |

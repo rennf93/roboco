@@ -33,9 +33,11 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `roboco/foundation/policy/board_programs.py` | Board Program registry: `BoardProgram` dataclass, `PROGRAMS` (14 entries), `program_due`/`project_participates`/`validate_board_programs_field` (pure) | 424 |
 | `roboco/services/board_programs.py` | `BoardProgramEngine` — trigger/dedup/originate/LEARN over every registered program; `program_armed` settings-store chokepoint; `pick_rotation_target` for project-scoped round-robin | 998 |
 | `roboco/services/_board_program_engine_types.py` | `BoardProgramEngineSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `BoardProgramEngine` mixins reach through `self`, plus its instance attributes; `tests/unit/services/test_board_program_engine_mixins.py` fails on a stray stub or a member defined twice | 53 |
+| `roboco/services/board_program_cadence.py` | `BoardProgramCadenceService.program_cadence_metrics`: per-program cost per cycle (from exploration task cost) joined to proposal approval rate off the cycle ledger | 100 |
+| `roboco/services/board_program_cadence_policy.py` | `BoardProgramCadencePolicyService`: applies the slowdown policy to live metrics, resolves effective intervals (fail-open), the CEO reversal switch, and the `review()` rows | 137 |
 | `roboco/api/schemas/board_programs.py` | `BoardProgramResponse` / `BoardProgramCycleResponse` / `BoardProgramDecisionResponse` response shapes | 51 |
 | `roboco/api/utils/board_programs.py` | Route glue: `require_ceo`, `to_response` (engine state → `BoardProgramResponse`), `cycle_to_response` | 65 |
-| `roboco/api/routes/board_programs.py` | CEO-only routes: list every program's live status, `POST /{key}/run-now`, `GET /{key}/cycles` (LEARN history) | 116 |
+| `roboco/api/routes/board_programs.py` | CEO-only routes: list every program's live status, `POST /{key}/run-now`, `GET /{key}/cycles` (LEARN history) | 145 |
 | `roboco/services/pest_control_engine.py` | `PestControlEngine` — weekly+metric cron, project-scoped; evidence context (rework hotspots, recurring/waived findings) | 199 |
 | `roboco/services/spackle_engine.py` | `SpackleEngine` — biweekly cron, project-scoped gap-fill audit | 142 |
 | `roboco/services/scales_engine.py` | `ScalesEngine` — monthly cron, org-scoped portfolio rebalance; stale-backlog snapshot | 176 |
@@ -161,14 +163,14 @@ The product / strategy / research / pitch slice covers the "company layer" above
 | `program_due` | func | foundation/policy/board_programs.py:355 | Pure cron-due check; METRIC/EVENT programs always return False (opened by their own hooks, never the loop) |
 | `project_participates` | func | foundation/policy/board_programs.py:371 | Dual-polarity scope predicate — affirmative opt-in for `scope="project"`, opt-out (`"!key"`) for `scope="org"` |
 | `validate_board_programs_field` | func | foundation/policy/board_programs.py:388 | Rejects an unknown key or a polarity mismatched to the program's own scope |
-| `BoardProgramEngine` | class | services/board_programs.py:835 | Trigger/dedup/originate/LEARN over every registered program |
-| `BoardProgramDecisions` | class | board_programs.py:585 | Mixin of `BoardProgramEngine` (6 methods): Recording a program cycle's decision: resolving its cycle and snapshot, the decision or nothing-to-propose, the dedup state, and closing the cycle. |
-| `BoardProgramCycles` | class | board_programs.py:751 | Mixin of `BoardProgramEngine` (6 methods): Reading program cycles: one cycle's state, listing them, the prior cycles' context, rendering one, the latest, and the cycle an exploration belongs to. |
-| `BoardProgramEngine.run_due_programs` | method | services/board_programs.py:844 | Originates a cycle for every enabled+due CRON program, then every metric predicate that fires off-schedule; one program's failure never blocks the rest |
-| `BoardProgramEngine.open_program_cycle` | method | services/board_programs.py:941 | Enabled+scope+dedup only, no cron-due check — the CEO "run now" / strategy-engine idle-trigger seam |
-| `BoardProgramEngine.record_decision` / `prior_cycle_context` | method | services/board_programs.py:621 / 778 | LEARN: accrue a CEO approve/reject onto the cycle row; render the last N closed cycles for the next exploration prompt |
-| `program_armed` | func | services/board_programs.py:566 | THE arming chokepoint — settings-store `board_program.{key}.enabled`, falling back to a legacy flag only for `roadmap`/`x_feature` |
-| `pick_rotation_target` | func | services/board_programs.py:214 | Shared round-robin for project-scoped programs (Pest Control/Spackle/Mirror/Dogfood): never-explored first, else oldest `last_opened_at` |
+| `BoardProgramEngine` | class | services/board_programs.py:830 | Trigger/dedup/originate/LEARN over every registered program |
+| `BoardProgramDecisions` | class | board_programs.py:580 | Mixin of `BoardProgramEngine` (6 methods): Recording a program cycle's decision: resolving its cycle and snapshot, the decision or nothing-to-propose, the dedup state, and closing the cycle. |
+| `BoardProgramCycles` | class | board_programs.py:746 | Mixin of `BoardProgramEngine` (6 methods): Reading program cycles: one cycle's state, listing them, the prior cycles' context, rendering one, the latest, and the cycle an exploration belongs to. |
+| `BoardProgramEngine.run_due_programs` | method | services/board_programs.py:839 | Originates a cycle for every enabled+due CRON program, then every metric predicate that fires off-schedule; one program's failure never blocks the rest |
+| `BoardProgramEngine.open_program_cycle` | method | services/board_programs.py:939 | Enabled+scope+dedup only, no cron-due check — the CEO "run now" / strategy-engine idle-trigger seam |
+| `BoardProgramEngine.record_decision` / `prior_cycle_context` | method | services/board_programs.py:616 / 773 | LEARN: accrue a CEO approve/reject onto the cycle row; render the last N closed cycles for the next exploration prompt |
+| `program_armed` | func | services/board_programs.py:561 | THE arming chokepoint — settings-store `board_program.{key}.enabled`, falling back to a legacy flag only for `roadmap`/`x_feature` |
+| `pick_rotation_target` | func | services/board_programs.py:218 | Shared round-robin for project-scoped programs (Pest Control/Spackle/Mirror/Dogfood): never-explored first, else oldest `last_opened_at` |
 | `PestControlEngine.run_cycle` / `evidence_context` | method | pest_control_engine.py:79 / 152 | Weekly+metric cron; server-assembles rework-hotspot/recurring/waived-finding evidence for the PO's prompt |
 | `SpackleEngine.run_cycle` | method | spackle_engine.py:71 | Biweekly cron, project-scoped gap-fill audit |
 | `ScalesEngine.run_cycle` / `_stale_backlog_snapshot` | method | scales_engine.py:70 / 140 | Monthly cron; snapshots BACKLOG/PENDING tasks older than 30 days for the rebalance prompt |
@@ -469,7 +471,7 @@ product-strategy-research-pitch
 | `ROBOCO_STRATEGY_ENGINE_ENABLED` | `False` | config.py:1176 | Master switch: loop never starts when off |
 | `ROBOCO_STRATEGY_ENGINE_INTERVAL_SECONDS` | `1800` | config.py:1183 | Seconds between strategy assessment passes |
 | `ROBOCO_STRATEGY_STRANDED_BLOCKED_MINUTES` | `120` | config.py:1188 | Blocked-task threshold for "stranded" observation |
-| `ROBOCO_PROTECTED_GIT_URLS` | `[]` | config.py:2430 | Denylist: `ProjectService` rejects `git_url` containing any entry |
+| `ROBOCO_PROTECTED_GIT_URLS` | `[]` | config.py:2448 | Denylist: `ProjectService` rejects `git_url` containing any entry |
 | `ROBOCO_ENCRYPTION_KEY` | `""` | config.py:948 | Fernet key for git-token encrypt/decrypt |
 | `ROBOCO_ROADMAP_ENGINE_ENABLED` | `False` | config.py:1967 | Master switch: `_roadmap_engine_loop` never opens an exploration cycle when off |
 | `ROBOCO_ROADMAP_INTERVAL_SECONDS` | `604800` | config.py:1977 | Seconds between roadmap-exploration cycles (default weekly) |

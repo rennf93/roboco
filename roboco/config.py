@@ -2007,6 +2007,24 @@ class Settings(BaseSettings):
         ),
     )
 
+    # Board Program cadence review (roboco.foundation.policy.board_program_cadence):
+    # a program whose approval rate does not justify its cycle cost is slowed.
+    board_cadence_cost_threshold_usd: float = Field(
+        default=50.0,
+        ge=0.0,
+        description="Cycle cost (USD) at/above which a program can be slowed.",
+    )
+    board_cadence_min_proposals: int = Field(
+        default=5,
+        ge=1,
+        description="Proposals a program needs before it can ever be slowed.",
+    )
+    board_cadence_slowdown_multiplier: float = Field(
+        default=2.0,
+        ge=1.0,
+        description="Factor a slowed program's cron interval is stretched by.",
+    )
+
     # ==========================================================================
     # Fable-mode (opus-fable-playbook + ponytail build-laziness adoption) — DEFAULT OFF
     # ==========================================================================
