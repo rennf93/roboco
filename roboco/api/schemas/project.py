@@ -253,6 +253,12 @@ class SetWorkspaceRequest(BaseModel):
     workspace_path: str
 
 
+class ClearBaseRedRequest(BaseModel):
+    """Request to manually clear a project's open base-red incident."""
+
+    reason: str = Field(min_length=10, max_length=500)
+
+
 class SyncStateRequest(BaseModel):
     """Request to update sync state."""
 

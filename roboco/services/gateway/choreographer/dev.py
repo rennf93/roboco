@@ -14,6 +14,7 @@ from roboco.foundation.policy import lifecycle as spec_module
 from roboco.foundation.policy.content import (
     markers,
 )
+from roboco.services.gateway.base_red_gate import base_red_submission_guard
 from roboco.services.gateway.choreographer import findings as findings_lib
 from roboco.services.gateway.choreographer._impl import (
     _PM_APPROACH_MIN_LEN,
@@ -491,6 +492,15 @@ class DevClaimMixin(_Base):
         )
 
 
+async def _submission_refusal(
+    base_red: Any, task: Any | None, task_id: UUID
+) -> Envelope | None:
+    """Not-found, else the base-red refusal, for the submission verbs."""
+    if task is None:
+        return Envelope.not_found(message=f"task {task_id} not found")
+    return await base_red_submission_guard(base_red, task)
+
+
 class OpenPRMixin(_Base):
     """``open_pr``: the ownership and branch-topology preflight, the push and
     create-PR run with its success and failure envelopes, and the
@@ -533,12 +543,10 @@ class OpenPRMixin(_Base):
         # legitimate-concurrency regression.
         await self.task.acquire_task_lock(task_id)
         t = await self.task.get(task_id)
-        if t is None:
+        early = await _submission_refusal(self._deps.base_red, t, task_id)
+        if early is not None:
             return await self._emit_rejection(
-                Envelope.not_found(message=f"task {task_id} not found"),
-                agent_id=agent_id,
-                task_id=task_id,
-                verb="open_pr",
+                early, agent_id=agent_id, task_id=task_id, verb="open_pr"
             )
         briefing = await self._briefing_for(agent_id, task_id, task=t)
         agent = await self.task.agent_for(agent_id)
@@ -818,12 +826,10 @@ class IAmDoneMixin(_Base):
         IS the self-verification.
         """
         t = await self.task.get(task_id)
-        if t is None:
+        early = await _submission_refusal(self._deps.base_red, t, task_id)
+        if early is not None:
             return await self._emit_rejection(
-                Envelope.not_found(message=f"task {task_id} not found"),
-                agent_id=agent_id,
-                task_id=task_id,
-                verb="i_am_done",
+                early, agent_id=agent_id, task_id=task_id, verb="i_am_done"
             )
         agent = await self.task.agent_for(agent_id)
         role_str = str(agent.role) if agent is not None else "developer"

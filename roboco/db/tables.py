@@ -3312,3 +3312,53 @@ class EntireTrailOutboxTable(Base):
         index=True,
         server_default=func.now(),
     )
+
+
+class BaseRedIncidentTable(Base):
+    """One red-integration-base incident per (project, base branch).
+
+    ``status`` is ``watching`` (red readings accumulating, below the open
+    threshold), ``open`` (a live P0 incident with one owner) or ``closed``.
+    The partial unique index admits at most one live (watching/open) row per
+    project+base, so a second cycle can never open a duplicate incident.
+    """
+
+    __tablename__ = "base_red_incidents"
+
+    id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid4
+    )
+    project_id: Mapped[UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("projects.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    base_branch: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="watching")
+    consecutive_red: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    owner_task_id: Mapped[UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tasks.id", ondelete="SET NULL"), nullable=True
+    )
+    owner_agent: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    opened_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    closed_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cleared_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "uq_base_red_incidents_one_live",
+            "project_id",
+            "base_branch",
+            unique=True,
+            postgresql_where=text("status IN ('watching', 'open')"),
+        ),
+    )

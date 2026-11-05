@@ -125,9 +125,9 @@ The FastAPI surface of RoboCo: every HTTP route under `roboco/api/routes/` (the 
 | `require_any_authenticated_agent` | dep | v1/_role_dep.py (instance built from `_require_authenticated_agent()`, impl in utils/v1_role_dep.py) | HMAC-verify X-Agent-ID/role/team token; router-level guard on do + a2a. |
 | `require_<role>` (require_dev/qa/...) | dep | v1/_role_dep.py (instances built from `_require_roles`, impl in utils/v1_role_dep.py) | Per-role guard: HMAC + role assertion, applied as router dependency. |
 | `envelope_to_response` | fn | utils/v1_role_dep.py (re-imported into v1/_role_dep.py) | Convert Choreographer `Envelope` to JSON, set status from `envelope.status`. |
-| `_check_agent_auth_token` | fn | api/deps.py:251 | Core HMAC verify; rejects invalid tokens even in dev; required-only in prod. |
-| `require_panel_token` | dep | api/deps.py:300 | CEO-signed HMAC gate for live-chat bridges (HTTP analog of WS gate). |
-| `CurrentAgentContext` | dep | api/deps.py:592 | Resolves agent from headers + HMAC, injects `AgentContext`. |
+| `_check_agent_auth_token` | fn | api/deps.py:252 | Core HMAC verify; rejects invalid tokens even in dev; required-only in prod. |
+| `require_panel_token` | dep | api/deps.py:301 | CEO-signed HMAC gate for live-chat bridges (HTTP analog of WS gate). |
+| `CurrentAgentContext` | dep | api/deps.py:593 | Resolves agent from headers + HMAC, injects `AgentContext`. |
 | `_require_ceo` | dep | utils/orchestrator.py:35 (re-imported into routes/orchestrator.py, extracted 2026-08-08, finding F-6342aeab) | Router-level CEO-HMAC guard on orchestrator control routes. |
 | `_validated_agent_id` | fn | utils/orchestrator.py:70 (re-imported into routes/orchestrator.py, extracted 2026-08-08, finding F-6342aeab) | Path-injection guard (rejects empty/`.`/`..`/`/`/`\`/NUL) then normalizes via `_resolve_to_slug` — spawn/stop/status/resolve-wait/mark-waiting accept either a DB UUID or a slug and address the runtime container by the resolved slug; an unknown UUID passes through unchanged. |
 | `_build_manual_spawn_prompt` | fn | utils/orchestrator.py:102 (re-imported into routes/orchestrator.py) | Builds the initial prompt for a CEO-triggered manual (panel) spawn — points the agent at the task id/title/status and trusts the gateway envelope's `next`/`remediate` for the actual claim verb. |

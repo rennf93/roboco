@@ -26,6 +26,7 @@ from roboco.config import settings
 from roboco.foundation import identity as _foundation
 from roboco.models.base import Complexity, TaskNature, TaskStatus, TaskType
 from roboco.services.base import BaseService
+from roboco.services.base_red_incident import get_base_red_incident_service
 from roboco.services.notification import NotificationService
 from roboco.services.task import (
     CI_WATCH_SOURCE,
@@ -92,10 +93,10 @@ class CiWatchEngine(BaseService):
 
         await record_runs(self.session, samples, workflow=None)
         breaches = [s for s in samples if s.is_breach]
-        if not breaches:
-            return []
         by_slug = {str(getattr(p, "slug", "")): p for p in projects}
-        return await self._originate(breaches, by_slug)
+        created = await self._originate(breaches, by_slug) if breaches else []
+        await get_base_red_incident_service(self.session).observe(samples, projects)
+        return created
 
     async def _release_pool_connection(self) -> None:
         """End the current transaction so its pool connection is returned.
