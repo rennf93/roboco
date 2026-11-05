@@ -10,6 +10,7 @@ decision points deterministically (logs + tracker + finalize stubbed).
 from __future__ import annotations
 
 import asyncio
+import time
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock
 
@@ -77,7 +78,8 @@ def orch(monkeypatch: pytest.MonkeyPatch) -> AgentOrchestrator:
     orch._auth_parked_agents = set()
     orch._instances = {}
     orch._bg_tasks = set()
-    orch._resume_confirm_delay = 0.0  # #71: deterministic liveness confirmation
+    # #71: deterministic liveness confirmation
+    orch._resume_confirm_delay = 0.0
     # Default to unpaused; the pause-race test overrides this.
     monkeypatch.setattr(orch, "_is_paused", AsyncMock(return_value=False))
     return orch
@@ -174,7 +176,8 @@ async def test_disabled_flag_never_parks(
     tail = AsyncMock(return_value=_OVERLOAD_LOG)
     monkeypatch.setattr(orch, "_tail_container_logs", tail)
     assert await orch._provider_overload_park_target("be-dev-1", _instance()) is None
-    tail.assert_not_awaited()  # short-circuits before reading logs
+    # short-circuits before reading logs
+    tail.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -201,7 +204,8 @@ async def test_park_offlines_and_activates_with_kind(
     orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     inst = _instance()
-    inst.error_count = 2  # prior crashes — parking must NOT count one
+    # prior crashes, parking must NOT count one
+    inst.error_count = 2
     tracker = _FakeTracker()
     monkeypatch.setattr(orch, "_make_tracker", lambda _p: tracker)
     monkeypatch.setattr(orch, "_finalize_spawn_session", AsyncMock())
@@ -273,7 +277,8 @@ async def test_probe_success_respawns_parked_agent(
 
     await orch._on_probe_success("anthropic", tracker)
 
-    spawn.assert_awaited_once()  # parked agent respawned, not stranded
+    # parked agent respawned, not stranded
+    spawn.assert_awaited_once()
     # #71: the record is kept past the launch and torn down only once liveness
     # is confirmed (deferred, not on the bare launch) — so a container that
     # launches then dies immediately keeps its record for the orphan fallback.
@@ -313,7 +318,8 @@ async def test_stopped_container_parks_on_overload(
         retry_after=_OVERLOAD_RETRY_AFTER_S,
         kind="overloaded",
     )
-    spawn.assert_not_awaited()  # the crash-retry path is short-circuited
+    # the crash-retry path is short-circuited
+    spawn.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -393,7 +399,8 @@ async def test_session_limit_disabled_flag_never_parks(
     tail = AsyncMock(return_value=_SESSION_LIMIT_LOG)
     monkeypatch.setattr(orch, "_tail_container_logs", tail)
     assert await orch._provider_rate_limit_park_target("be-dev-1", _instance()) is None
-    tail.assert_not_awaited()  # short-circuits before reading logs
+    # short-circuits before reading logs
+    tail.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -412,6 +419,9 @@ async def test_stopped_container_parks_on_session_limit(
     monkeypatch.setattr(orch, "_park_provider_unavailable", park)
     monkeypatch.setattr(orch, "_finalize_spawn_session", AsyncMock())
     monkeypatch.setattr(orch, "spawn_agent", spawn)
+    monkeypatch.setattr(
+        orch, "_session_limit_retry_after", AsyncMock(return_value=4321.0)
+    )
 
     await orch._handle_stopped_container("be-dev-1", inst, exit_code=1)
 
@@ -419,11 +429,13 @@ async def test_stopped_container_parks_on_session_limit(
         "be-dev-1",
         inst,
         provider="anthropic",
-        retry_after=_RATE_LIMIT_RETRY_AFTER_S,
+        retry_after=4321.0,
         kind="rate_limited",
     )
-    spawn.assert_not_awaited()  # crash-retry short-circuited
-    overload.assert_not_awaited()  # session-limit checked before the overload path
+    # crash-retry short-circuited
+    spawn.assert_not_awaited()
+    # session-limit checked before the overload path
+    overload.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -520,7 +532,8 @@ async def test_dispatch_pause_blocks_crash_respawn(
     await orch._crash_retry_or_escalate("be-dev-1", inst)
 
     spawn.assert_not_awaited()
-    assert inst.error_count == 0  # full retry budget preserved for post-resume
+    # full retry budget preserved for post-resume
+    assert inst.error_count == 0
 
 
 # ---------------------------------------------------------------------------
@@ -661,3 +674,74 @@ async def test_unrelated_graceful_exit_does_not_rearm(
     # be-dev-2 crashes on the same still-dead credential: must NOT re-notify.
     await orch._handle_stopped_container("be-dev-2", _instance(), exit_code=1)
     notify.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# How long a session limit parks: until the reported resetsAt
+# ---------------------------------------------------------------------------
+
+
+_HOUR = 3600
+_GRACE_SLACK = 60
+
+
+def _rate_limit_event(resets_at: int) -> str:
+    return (
+        '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected",'
+        f'"resetsAt":{resets_at},"rateLimitType":"five_hour"}}}}'
+    )
+
+
+async def _retry_after(
+    orch: AgentOrchestrator,
+    monkeypatch: pytest.MonkeyPatch,
+    log: str,
+    transcript: str = "",
+) -> float:
+    monkeypatch.setattr(orch, "_tail_container_logs", AsyncMock(return_value=log))
+    monkeypatch.setattr(orch, "_transcript_tail_text", lambda _agent: transcript)
+    return await orch._session_limit_retry_after("be-dev-1")
+
+
+@pytest.mark.asyncio
+async def test_session_limit_parks_until_the_reported_reset(
+    orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Live 2026-11-04: parked for 300 s at a time, the probe lifted 43 times
+    # before the 08:20Z reset and every lift re-parked.
+    resets_at = int(time.time()) + 2 * _HOUR
+    wait = await _retry_after(orch, monkeypatch, _rate_limit_event(resets_at))
+    assert 2 * _HOUR <= wait <= 2 * _HOUR + _GRACE_SLACK
+
+
+@pytest.mark.asyncio
+async def test_session_limit_reads_the_escaped_transcript_event(
+    orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    resets_at = int(time.time()) + _HOUR
+    escaped = _rate_limit_event(resets_at).replace('"', '\\"')
+    wait = await _retry_after(orch, monkeypatch, "", transcript=escaped)
+    assert _HOUR <= wait <= _HOUR + _GRACE_SLACK
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "log",
+    [
+        "",
+        _rate_limit_event(int(time.time()) - 60),
+        "hit your session limit",
+    ],
+)
+async def test_session_limit_without_a_future_reset_keeps_the_floor(
+    orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch, log: str
+) -> None:
+    assert await _retry_after(orch, monkeypatch, log) == _RATE_LIMIT_RETRY_AFTER_S
+
+
+@pytest.mark.asyncio
+async def test_session_limit_caps_an_absurd_reset(
+    orch: AgentOrchestrator, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    wait = await _retry_after(orch, monkeypatch, _rate_limit_event(99_999_999_999))
+    assert wait == 8 * 24 * _HOUR

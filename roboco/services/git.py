@@ -609,8 +609,9 @@ class GitPushHooks(_Base):
     async def _push_entire_checkpoints(
         self, workspace: Path, refs: list[str], timeout: int
     ) -> None:
-        """Push those of ``refs`` the workspace has to origin, through the
-        relay, under the same names; a failure is logged, never raised."""
+        """Push those of ``refs`` the workspace has to the project's
+        checkpoint repository, through the relay, under the same names; a
+        failure is logged, never raised."""
         listed = await self._run_git(
             workspace,
             ["for-each-ref", "--format=%(refname)", "refs/entire/checkpoints/"],
