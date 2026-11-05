@@ -1,6 +1,7 @@
 # Verbs available to your role (main_pm)
 
-These are the only verbs the gateway will accept from you. Calling any other verb will be rejected with a Decision telling you the right one.
+These are the only verbs the gateway will accept from you. Calling any
+other verb will be rejected with a Decision telling you the right one.
 
 - **cancel_leaf**: Close a zero-diff leaf: a delegated child whose findings a merged sibling already fixed, so no legitimate diff remains and i_am_done/complete can never accept it. Refuses a target with any children of its own (not a leaf), any commit ahead of its base, or an open PR - those go through the normal review path, not this. `reason` is recorded as your journal:decision and on the task's audit trail. Cell PM: only your own coordination task's children. Main PM: any root's descendant.
 - **complete**: Cell PM merges the PR (leaf into the cell branch, or the gated cell→root PR into the root branch) + transitions to completed; Main PM escalates the root to the CEO (who merges root→master). The merge runs BEFORE the complete transition: TaskService.complete asserts the PR is already merged, so the choreographer verb body (cell_pm_complete / main_pm_complete) owns the merge-first ordering — no trailing pr_merge side_effect is declared here.

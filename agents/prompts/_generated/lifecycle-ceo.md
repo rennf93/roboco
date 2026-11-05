@@ -1,4 +1,5 @@
 # Verbs available to your role (ceo)
 
-These are the only verbs the gateway will accept from you. Calling any other verb will be rejected with a Decision telling you the right one.
+These are the only verbs the gateway will accept from you. Calling any
+other verb will be rejected with a Decision telling you the right one.
 
