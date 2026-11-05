@@ -1149,7 +1149,7 @@ class PRGateMixin(_Base):
         CI guard fails open on an unresolvable gate-level slug/PR number
         (``None`` from ``_resolve_ci_status``) and also passes through —
         with an evidence stamp — when ``get_pr_ci_status`` itself classifies
-        a missing project/git_url/token or an unreachable/nonexistent repo
+        a missing project/git_url/token or a nonexistent repo
         as ``no_ci_configured``, or when every failing check on a ``failure``
         status is a CodeQL check outside the task's declared
         ``intends_to_touch`` scope (see ``_scope_gate_codeql_failure``).

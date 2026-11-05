@@ -41,6 +41,16 @@ Stale-base drift outside this PR's files. These may be what keeps the hosted che
 
 Environmental only in the agent sandbox: the three `test_stale_review_claim_reaper` tests (no docker) and `test_release_readiness_audit` (no git tags).
 
+## Follow-up (task 77a60dfd, PR 1526)
+
+The round-5 pr_gate findings were handled on a leaf branch synced to its base with `sync_branch`:
+
+- The `_pr_pass_blocked` docstring in `pr_gate.py` no longer lists `unreachable/` repos as `no_ci_configured`. Network errors return `error`, matching the `get_pr_ci_status` docstring and `docs/map/pr-gate-review.md`. This is the only file changed.
+- After the sync, the three `test_llm_routing` / `test_provider_routes` drift tests above no longer fail, so the stale base caused them and no test fix was needed.
+- `test_hummin_cli_config::test_main_renders_settings_and_env_file` still fails: the test expects no `ROBOCO_HUMMIN_MCP_TOOLS` line but the code emits one. This is a real test/code mismatch from the base and needs its own task.
+- The remaining local failures are sandbox-only: `test_cloud_auth` login route (no Postgres), the three `test_stale_review_claim_reaper` tests (no docker), and `test_release_readiness_audit` (no git tags).
+- Not confirmed: which hosted step was red on `aa7e64a6`. The sandbox could not read the hosted job log, so that was inferred from the local gate.
+
 ## Not verified
 
 The hosted CI result itself; the commit advances the branch head so CI re-runs.
