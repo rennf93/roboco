@@ -8,6 +8,7 @@ The product / strategy / research / pitch slice covers the "company layer" above
 
 | Path | Role | approx LOC |
 |------|------|------------|
+| `roboco/services/wedge_ledger.py` | Task-scoped wedge ledger: generalizes the oscillation breaker to count same-status cycling without real progress across every status transition, whatever the actor or verb | 274 |
 | `roboco/services/project.py` | CRUD + git-token encryption + cell access control for Projects (git repos) | 790 |
 | `roboco/services/_project_service_types.py` | `ProjectServiceSelf`, a TYPE_CHECKING-only Protocol composed of one `<Class>Surface` per class whose members the `ProjectService` mixins reach through `self`, plus its instance attributes; `tests/unit/services/test_project_service_mixins.py` fails on a stray stub or a member defined twice | 42 |
 | `roboco/services/product.py` | Product CRUD + per-cell `project_for` routing resolver + idempotent cell-map replace | 247 |
