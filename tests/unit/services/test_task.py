@@ -2480,8 +2480,40 @@ async def test_emit_status_transition_audit_writes_in_session_atomically() -> No
     assert row.details["team"] == "backend"
     # The claiming agent is attributed (resolved from claimed_by).
     assert row.agent_id == task.claimed_by
-    # No fire-and-forget audit task was spawned (the old decoupled path).
+    # No fire-and-forget AUDIT task was spawned (the old decoupled path); the
+    # wedge-ledger check is deferred to post-commit, never a bare create_task.
     assert svc._background_tasks == prior_bg
+
+
+@pytest.mark.asyncio
+async def test_emit_status_transition_audit_defers_exactly_one_wedge_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The REAL chokepoint registers exactly one post-commit wedge-ledger check
+    per transition (two would double every strike), and the deferred work runs
+    ``run_wedge_ledger_check`` with the transition's task id and target status."""
+    deferred: list[Any] = []
+    monkeypatch.setattr(
+        "roboco.services.notification_delivery.defer_after_commit",
+        lambda _session, work: deferred.append(work),
+    )
+    ran = AsyncMock()
+    monkeypatch.setattr("roboco.services.task.run_wedge_ledger_check", ran)
+    svc = TaskService(MagicMock())
+    task = MagicMock(id=uuid4(), claimed_by=uuid4(), team=Team.BACKEND)
+
+    svc._emit_status_transition_audit(
+        task,
+        from_status="pending",
+        to_status="claimed",
+        agent_role="developer",
+        audit_agent_id=None,
+    )
+
+    assert len(deferred) == 1
+    ran.assert_not_called()
+    await deferred[0]()
+    ran.assert_awaited_once_with(task.id, "claimed")
 
 
 # ---------------------------------------------------------------------------

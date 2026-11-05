@@ -85,6 +85,7 @@ from roboco.services.content_notes import apply_structured_note
 from roboco.services.entire_trails import hooks as entire_trails
 from roboco.services.repositories.review_findings import ReviewFindingsRepository
 from roboco.services.uptime import UptimeLedger
+from roboco.services.wedge_ledger import run_wedge_ledger_check
 from roboco.services.work_session import WorkSessionService
 from roboco.utils.converters import repo_key, require_uuid, to_python_uuid
 from roboco.utils.workspace_paths import worktree_path_of
@@ -13978,6 +13979,35 @@ class TaskService(
                 )
             )
         self._touch_vault_frontmatter(task, to_status=to_status, team=details["team"])
+        self._maybe_schedule_wedge_ledger_check(task, to_status)
+
+    def _maybe_schedule_wedge_ledger_check(
+        self, task: TaskTable, to_status: str
+    ) -> None:
+        """Schedule the task-scoped wedge ledger check (the #685 strike
+        breaker generalized to every transition — status-keyed, actor- and
+        verb-agnostic; see ``roboco/services/wedge_ledger.py``). Deferred
+        until the caller's transaction COMMITS (``defer_after_commit``;
+        dropped on rollback) so the check, which runs on a fresh DB session,
+        reads committed status/markers and can neither force BLOCKED before
+        the caller's own status lands nor have its ledger marker overwritten
+        by the caller's flush. A failure never fails the transition. Split
+        out of ``_emit_status_transition_audit`` to keep its own complexity
+        down (xenon budget)."""
+        from roboco.services.notification_delivery import defer_after_commit
+
+        task_id = cast("UUID", task.id)
+
+        async def _check() -> None:
+            await run_wedge_ledger_check(task_id, to_status)
+
+        try:
+            defer_after_commit(self.session, _check)
+        except Exception:
+            _module_log.warning(
+                "wedge ledger: check scheduling failed (best-effort)",
+                task_id=str(task.id),
+            )
 
     @staticmethod
     def _clear_stale_stalled_marker(task: TaskTable) -> None:

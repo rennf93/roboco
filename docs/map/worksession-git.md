@@ -388,7 +388,7 @@ External:
 | `settings.git_diff_timeout_seconds` | config.py:2390 | `GET /api/git/diff`'s outer "diff" stage bound (default 60s) around the paired `git diff` + `git diff --stat` calls, layered on top of (not instead of) `git_command_timeout_seconds` bounding each call individually |
 | `settings.workspaces_root` | config.py:2070 | Workspace path root (token derivation) |
 | `settings.workspace_auto_clone` | config.py:2074 | `get_workspace` auto-clone branch |
-| `settings.public_base_url` | config.py:2499 | Commit/PR template link base (`+ /api`) |
+| `settings.public_base_url` | config.py:2509 | Commit/PR template link base (`+ /api`) |
 | `settings.internal_api_url` | config.py:139 | Internal PR body link base |
 | `settings.github_api_base_url` | config.py:1138 | GitHub REST API base (PR/CI/review) |
 | `settings.release_ci_workflow` | config.py:1614 | Named workflow file (e.g. `ci.yml`) used by the release CI gate in `get_latest_ci_conclusion`; always resolves a named workflow so the gate never degrades to the imprecise all-workflows mode |
