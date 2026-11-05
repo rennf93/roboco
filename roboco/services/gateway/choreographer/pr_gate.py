@@ -28,6 +28,9 @@ from roboco.foundation.policy import lifecycle as spec_module
 from roboco.foundation.policy.content import ContentValidationError
 from roboco.services.gateway.choreographer import devops_gate as devops_gate_lib
 from roboco.services.gateway.choreographer import findings as findings_lib
+from roboco.services.gateway.choreographer.outage_release import (
+    build_or_release,
+)
 from roboco.services.gateway.choreographer.pr_gate_pass import PRGatePassMixin
 from roboco.services.gateway.choreographer.pr_gate_preflight import PRGatePreflightMixin
 from roboco.services.gateway.envelope import Envelope
@@ -41,6 +44,22 @@ logger = structlog.get_logger()
 
 class PRGateMixin(PRGatePreflightMixin, PRGatePassMixin):
     """In-path PR-review-gate verbs (assembled cell→root + root→master PRs)."""
+
+    async def _gate_evidence_or_release(
+        self, t: Any, task_id: UUID, briefing: Any, *, releasable: bool
+    ) -> tuple[dict[str, Any] | None, Envelope | None]:
+        """Build the gate evidence; on an active review-path outage release the
+        claim instead (see ``outage_release``). Non-releasable callers just build."""
+        if not releasable:
+            return await self._build_gate_review_evidence(t), None
+        return await build_or_release(
+            self.task,
+            task_id,
+            briefing,
+            verb="claim_gate_review",
+            build=lambda: self._build_gate_review_evidence(t),
+            has_gaps=lambda ev: bool(ev.get("evidence_gaps")),
+        )
 
     async def claim_gate_review(
         self, reviewer_agent_id: UUID, task_id: UUID
@@ -119,7 +138,18 @@ class PRGateMixin(PRGatePreflightMixin, PRGatePassMixin):
             t = claimed
             await self.task.session.commit()
 
-        evidence = await self._build_gate_review_evidence(t)
+        # DevOps co-claims ride a marker, not the primary claim: releasing it
+        # here would clear the primary reviewer's lock, so they are exempt.
+        evidence, released = await self._gate_evidence_or_release(
+            t, task_id, briefing, releasable=role_str != spec_module.Role.DEVOPS.value
+        )
+        if released is not None:
+            return await self._emit_rejection(
+                released.with_introspection(task=t, role=role_str),
+                agent_id=reviewer_agent_id,
+                task_id=task_id,
+                verb="claim_gate_review",
+            )
         return Envelope.ok(
             status=str(t.status),
             task_id=str(task_id),
