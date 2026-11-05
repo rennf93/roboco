@@ -494,6 +494,37 @@ async def test_pr_pass_fails_open_when_ci_status_unresolvable() -> None:
     assert env.status == "awaiting_pm_review"
 
 
+@pytest.mark.asyncio
+async def test_pr_pass_refused_when_ci_lookup_raises_and_pr_fail_still_works() -> None:
+    """An unexpected exception from get_pr_ci_status must refuse pr_pass with a
+    retryable invalid_state (never pass with the 'no CI configured' note);
+    pr_fail stays callable regardless."""
+    reviewer_id = uuid4()
+    t_before = _t()
+    c = _make_choreographer()
+    record_spy = _stub_gate_path(
+        c, reviewer_id=reviewer_id, t_before=t_before, t_after=None
+    )
+    c.git.get_pr_ci_status = AsyncMock(side_effect=RuntimeError("connection reset"))
+
+    env = await c.pr_pass(reviewer_id, t_before.id, "Looks clean to me.")
+
+    assert env.error == "invalid_state"
+    assert "CI status lookup failed" in (env.message or "")
+    assert "connection reset" in (env.message or "")
+    assert "retry pr_pass" in (env.remediate or "")
+    record_spy.assert_not_called()
+
+    # pr_fail on the same (still-raising) CI lookup is unaffected.
+    t_after = _t(status="needs_revision")
+    _stub_gate_path(c, reviewer_id=reviewer_id, t_before=t_before, t_after=t_after)
+    fail_env = await c.pr_fail(
+        reviewer_id, t_before.id, ["a concrete actionable issue"]
+    )
+    assert fail_env.error is None, fail_env.as_dict()
+    assert fail_env.status == "needs_revision"
+
+
 # ---------------------------------------------------------------------------
 # Regression: pr_fail is unaffected by CI state entirely
 # ---------------------------------------------------------------------------

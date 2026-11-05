@@ -3374,17 +3374,16 @@ class GitService(BaseService):
         exist for this commit but the repo has workflows configured — CI
         just hasn't started), ``no_ci_configured`` (zero check-runs AND the
         repo has no workflows at all — or the project/git_url/token is
-        missing, or the repo/PR is unreachable/nonexistent), or ``error`` (a
-        genuine GitHub API failure on a real, reachable repo).
+        missing, or the repo/PR is nonexistent), or ``error`` (a network
+        failure or a genuine GitHub API failure).
 
         Every unresolvable case is now classified explicitly rather than
-        returning ``None``: a missing project/git_url/git-token, or an
-        unreachable/nonexistent repo or PR (a network failure or a 404 on
-        the PR-head, check-runs, or workflows lookup) all classify as
-        ``no_ci_configured`` — ``pr_pass`` passes through cleanly and still
-        stamps the evidence note, instead of silently skipping the guard. A
-        genuine GitHub API failure on a real, reachable repo (any other
-        non-2xx, or an unparseable response) classifies as ``error`` so
+        returning ``None``: a missing project/git_url/git-token, or a
+        nonexistent repo or PR (a 404 on the PR-head, check-runs, or
+        workflows lookup) classifies as ``no_ci_configured`` — ``pr_pass``
+        passes through cleanly and still stamps the evidence note, instead
+        of silently skipping the guard. A network failure, any other
+        non-2xx, or an unparseable response classifies as ``error`` so
         ``pr_pass`` stays fail-closed and retryable. This mirrors ``get_pr_head_sha`` /
         ``_capture_pr_head_sha`` in spirit (never mistake a configuration gap
         for a CI signal) but resolves head-sha lookups via a dedicated helper
@@ -3446,13 +3445,11 @@ class GitService(BaseService):
         """Resolve the PR's head SHA for ``get_pr_ci_status`` specifically.
 
         Returns the head SHA (``str``) on success, or a terminal gap-state
-        dict to return directly from the caller on failure. A network error
-        or a 404 (the repo or PR doesn't exist / isn't reachable) is
-        ``no_ci_configured`` — there is no way to determine a CI signal, so
-        the guard should pass through, not block. Any other non-2xx or an
-        unparseable response is a real, reachable repo whose API call itself
-        failed, so it is ``error`` — a retryable signal the guard must not
-        treat as green.
+        dict to return directly from the caller on failure. A 404 (the repo or
+        PR doesn't exist) is ``no_ci_configured`` — there is no CI signal to
+        determine, so the guard passes through. A network error, any other
+        non-2xx, or an unparseable response is ``error`` — a retryable
+        signal the guard must not treat as green.
         """
         try:
             resp = await self._forge.get_pr(repo_ref, git_token, pr_number)
@@ -3462,7 +3459,7 @@ class GitService(BaseService):
                 project=project_slug,
                 error=str(e),
             )
-            return {"state": "no_ci_configured", "head_sha": None}
+            return {"state": "error", "head_sha": None}
         if resp.status_code == _HTTP_NOT_FOUND:
             return {"state": "no_ci_configured", "head_sha": None}
         if not resp.is_success:
