@@ -12,7 +12,7 @@ The "misc" foundation-policy slice holds the pure, service-agnostic rule catalog
 | roboco/foundation/policy/agent_loop.py | Per-agent budget/loop policy defaults, per-verb retry caps, unlimited-retry verb set, retry_limit_for lookup | 176 |
 | roboco/foundation/policy/content/__init__.py | Public surface re-export for the content schema package | 55 |
 | roboco/foundation/policy/content/enums.py | Severity + Verdict controlled vocabularies for PR-review/QA content | 35 |
-| roboco/foundation/policy/content/markers.py | Typed accessors for Task.orchestration_markers JSON column (original_developer, documenter, escalation, release report, transition notes, etc.) | 1086 |
+| roboco/foundation/policy/content/markers.py | Typed accessors for Task.orchestration_markers JSON column (original_developer, documenter, escalation, release report, transition notes, etc.) | 1115 |
 | roboco/foundation/policy/content/models.py | Pydantic content models (PrReviewContent, TaskDescription, ResumptionNote, DeveloperNote, QaNote, DocNote, AuditorNote) + CONTENT_MODELS registry + validate_content + pr_review_conflict + required_shape | 669 |
 | roboco/foundation/policy/content/validators.py | Shared validation primitives: BANNED_PHRASES, reject_trivial, coerce_to_list, coerce_str_list, ContentValidationError | 158 |
 | `roboco/foundation/policy/display_time.py` | Display-timezone day bucketing, pure and DB-free: resolve the `display_timezone` setting to a `ZoneInfo` (UTC fallback), the local date of an instant, trailing calendar dates, and a day's UTC bounds | 53 |
