@@ -60,6 +60,8 @@ CEO (You, the human)
 
 The 26 agents = Intake + Secretary + PR Reviewer + DevOps + the Board (3) + Main PM + the three 6-agent cells (18). Agents run on Anthropic Claude by default, or on xAI Grok, OpenAI Codex, Google Gemini, or Moonshot Kimi K3 (each on its own official CLI and subscription, no metered API key) — see the provider note under Configuration.
 
+RoboCo routes the whole org, not one task at a time. Each role, and each role at a given task complexity (`role:complexity`), can run on a different provider and model, and a per-agent pin overrides both. Cognition's Devin, per [runtimewire's report](https://runtimewire.com/article/cognition-adds-grok-4-6-to-devin-s-multi-model-coding-platform), selects a model per task.
+
 ## How it works
 
 You hand a task to the company; it runs through a real *build → review → document → merge* pipeline and comes back to you to approve.
