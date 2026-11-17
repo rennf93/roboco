@@ -759,14 +759,16 @@ class Settings(BaseSettings):
     )
     research_provider: str = Field(
         default="searxng",
-        pattern="^(tavily|brave|exa|searxng|null)$",
+        pattern="^(tavily|brave|exa|keenable|searxng|null)$",
         description=(
             "Web-search provider adapter. 'searxng' (DEFAULT: self-hosted "
             "metasearch via the bundled roboco-searxng container, no API "
             "key, needs research_searxng_base_url), 'tavily' (LLM-native "
             "cited results + extract; opt-in paid fallback), 'brave' "
             "(independent index; no fetch), 'exa' (neural search + "
-            "contents), or 'null' (always-empty stub). Swapping providers "
+            "contents), 'keenable' (web search with no API key required; "
+            "optional key for higher limits; no fetch), or 'null' "
+            "(always-empty stub). Swapping providers "
             "is a config change only."
         ),
     )
@@ -775,7 +777,8 @@ class Settings(BaseSettings):
         description=(
             "API key for the selected research provider. Server-side only — "
             "never reaches an agent container. Unset => NullProvider. Not "
-            "used by 'searxng', which keys off research_searxng_base_url."
+            "used by 'searxng', which keys off research_searxng_base_url. "
+            "Optional for 'keenable'."
         ),
     )
     research_searxng_base_url: str | None = Field(
