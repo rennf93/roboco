@@ -23,6 +23,14 @@
       "created_at": "2026-10-06T20:00:23Z",
       "repoId": 1112644870,
       "pullRequestNo": 1136
+    },
+    {
+      "name": "KGKallasmaa",
+      "id": 29797627,
+      "comment_id": 7237164559,
+      "created_at": "2026-11-28T09:19:27Z",
+      "repoId": 1112644870,
+      "pullRequestNo": 1418
     }
   ]
 }
